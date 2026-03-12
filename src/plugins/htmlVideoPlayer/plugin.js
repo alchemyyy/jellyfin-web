@@ -450,6 +450,17 @@ export class HtmlVideoPlayer {
                     maxBufferLength = 6;
                 }
 
+                // Calculate back buffer length dynamically based on bitrate.
+                // With backBufferLength set to Infinity, high bitrate content (e.g. 4K remux)
+                // fills the SourceBuffer quota, causing an infinite loop of bufferFullError
+                // as hls.js retries appending the same segment without evicting back buffer.
+                // Instead, budget a fixed SourceBuffer size and allocate remaining space to back buffer.
+                const sourceBufferBudget = 512 * 1024 * 1024; // 512MB
+                const bitrate = options.mediaSource.Bitrate || playbackManager.getMaxStreamingBitrate(this);
+                const bytesPerSecond = bitrate / 8;
+                const forwardBufferBytes = maxBufferLength * bytesPerSecond;
+                const backBufferLength = Math.max(10, Math.floor((sourceBufferBudget - forwardBufferBytes) / bytesPerSecond));
+
                 const includeCorsCredentials = await getIncludeCorsCredentials();
 
                 const hls = new Hls({
@@ -457,6 +468,7 @@ export class HtmlVideoPlayer {
                     manifestLoadingTimeOut: 20000,
                     maxBufferLength: maxBufferLength,
                     maxMaxBufferLength: maxBufferLength,
+                    backBufferLength: backBufferLength,
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
