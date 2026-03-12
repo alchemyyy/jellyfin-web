@@ -363,18 +363,6 @@ export class HtmlVideoPlayer {
      * @type {number | null}
      */
     #detectedAspectRatio = null;
-    /**
-     * @type {number | undefined}
-     */
-    #clientHDRToneMappingPostProcessingInterval;
-    /**
-     * @type {HTMLVideoElement | undefined}
-     */
-    #clientHDRToneMappingPostProcessingElement;
-    /**
-     * @type {number | undefined}
-     */
-    #clientHDRToneMappingPostProcessingSaturation;
 
     /**
      * @private (used in other files)
@@ -2444,8 +2432,8 @@ export class HtmlVideoPlayer {
             }
         }
 
-        if (this.#currentBitmapSubRenderer) {
-            this.#currentBitmapSubRenderer.updateCanvasSize?.();
+        if (this.#currentPgsRenderer) {
+            this.#currentPgsRenderer.aspectRatio = val === 'auto' || val === 'detected' ? 'contain' : val;
         }
     }
 
@@ -2456,10 +2444,6 @@ export class HtmlVideoPlayer {
 
     getAspectRatio() {
         const saved = appSettings.aspectRatio() || 'auto';
-        // Prefer detected cropping when Auto has trickplay analysis available
-        if (saved === 'auto' && this.#detectedAspectRatio !== null) {
-            return 'detected';
-        }
         // Fall back to auto if detected was saved but isn't available for this file
         if (saved === 'detected' && this.#detectedAspectRatio === null) {
             return 'auto';
