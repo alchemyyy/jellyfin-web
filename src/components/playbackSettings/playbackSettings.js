@@ -232,7 +232,6 @@ function loadForm(context, user, userSettings, systemInfo, apiClient) {
     context.querySelector('.chkEnableHi10p').checked = appSettings.enableHi10p();
     context.querySelector('.chkEnableCinemaMode').checked = userSettings.enableCinemaMode();
     context.querySelector('#selectAudioNormalization').value = userSettings.selectAudioNormalization();
-    context.querySelector('#chkAudioNormalizationGlobal').checked = userSettings.isGlobalSetting('selectAudioNormalization');
     context.querySelector('.chkEnableNextVideoOverlay').checked = userSettings.enableNextVideoInfoOverlay();
     context.querySelector('.chkRememberAudioSelections').checked = user.Configuration.RememberAudioSelections || false;
     context.querySelector('.chkRememberSubtitleSelections').checked = user.Configuration.RememberSubtitleSelections || false;
@@ -303,7 +302,6 @@ function saveUser(context, user, userSettingsInstance, apiClient) {
     userSettingsInstance.preferFmp4HlsContainer(context.querySelector('.chkPreferFmp4HlsContainer').checked);
     userSettingsInstance.limitSegmentLength(context.querySelector('.chkLimitSegmentLength').checked);
     userSettingsInstance.enableCinemaMode(context.querySelector('.chkEnableCinemaMode').checked);
-    userSettingsInstance.setGlobalSetting('selectAudioNormalization', context.querySelector('#chkAudioNormalizationGlobal').checked);
     userSettingsInstance.selectAudioNormalization(context.querySelector('#selectAudioNormalization').value);
     userSettingsInstance.enableNextVideoInfoOverlay(context.querySelector('.chkEnableNextVideoOverlay').checked);
     user.Configuration.RememberAudioSelections = context.querySelector('.chkRememberAudioSelections').checked;
@@ -363,19 +361,6 @@ function embed(options, self) {
     if (options.enableSaveButton) {
         options.element.querySelector('.btnSave').classList.remove('hide');
     }
-
-    options.element.querySelector('#chkAudioNormalizationGlobal').addEventListener('change', function () {
-        const userSettings = self.options.userSettings;
-        userSettings.setGlobalSetting('selectAudioNormalization', this.checked);
-        if (this.checked && userSettings.displayPrefs) {
-            const serverVal = userSettings.displayPrefs.CustomPrefs['selectAudioNormalization'];
-            if (serverVal != null && serverVal !== '') {
-                options.element.querySelector('#selectAudioNormalization').value = serverVal;
-            } else {
-                userSettings.selectAudioNormalization(options.element.querySelector('#selectAudioNormalization').value);
-            }
-        }
-    });
 
     self.loadData();
 

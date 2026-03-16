@@ -197,12 +197,11 @@ export class UserSettings {
      * @return {string} 'Enable Audio Normalization' state.
      */
     selectAudioNormalization(val) {
-        const enableOnServer = this.isGlobalSetting('selectAudioNormalization') ? undefined : false;
         if (val !== undefined) {
-            return this.set('selectAudioNormalization', val, enableOnServer);
+            return this.set('selectAudioNormalization', val, false);
         }
 
-        return this.get('selectAudioNormalization', enableOnServer) || 'TrackGain';
+        return this.get('selectAudioNormalization', false) || 'TrackGain';
     }
 
     /**
@@ -484,12 +483,11 @@ export class UserSettings {
      * @return {number} Library page size.
      */
     libraryPageSize(val) {
-        const enableOnServer = this.isGlobalSetting('libraryPageSize') ? undefined : false;
         if (val !== undefined) {
-            return this.set('libraryPageSize', val.toString(), enableOnServer);
+            return this.set('libraryPageSize', val.toString(), false);
         }
 
-        const libraryPageSize = parseInt(this.get('libraryPageSize', enableOnServer), 10);
+        const libraryPageSize = parseInt(this.get('libraryPageSize', false), 10);
         if (libraryPageSize === 0) {
             // Explicitly return 0 to avoid returning 100 because 0 is falsy.
             return 0;
@@ -672,24 +670,6 @@ export class UserSettings {
             sortBy: this.getFilter(key + '-sortby') || defaultSortBy,
             sortOrder: this.getFilter(key + '-sortorder') === 'Descending' ? 'Descending' : 'Ascending'
         };
-    }
-
-    /**
-     * Check if a setting is configured to sync globally (server-side).
-     * @param {string} name - Setting name.
-     * @return {boolean} True if the setting syncs to the server.
-     */
-    isGlobalSetting(name) {
-        return localStorage.getItem(name + '-useGlobal') === 'true';
-    }
-
-    /**
-     * Set whether a setting should sync globally (server-side).
-     * @param {string} name - Setting name.
-     * @param {boolean} enabled - Whether to enable global sync.
-     */
-    setGlobalSetting(name, enabled) {
-        localStorage.setItem(name + '-useGlobal', enabled ? 'true' : 'false');
     }
 }
 
