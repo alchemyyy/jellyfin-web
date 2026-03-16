@@ -130,6 +130,7 @@ function loadForm(context, user, userSettings) {
     context.querySelector('.selectDateTimeLocale').value = userSettings.dateTimeLocale() || '';
 
     context.querySelector('#txtLibraryPageSize').value = userSettings.libraryPageSize();
+    context.querySelector('#chkLibraryPageSizeGlobal').checked = userSettings.isGlobalSetting('libraryPageSize');
 
     context.querySelector('#txtMaxDaysForNextUp').value = userSettings.maxDaysForNextUp();
     context.querySelector('#chkRewatchingNextUp').checked = userSettings.enableRewatchingInNextUp();
@@ -159,6 +160,7 @@ function saveUser(context, user, userSettingsInstance, apiClient) {
     userSettingsInstance.backdropScreensaverInterval(context.querySelector('#txtBackdropScreensaverInterval').value);
     userSettingsInstance.screensaverTime(context.querySelector('#txtScreensaverTime').value);
 
+    userSettingsInstance.setGlobalSetting('libraryPageSize', context.querySelector('#chkLibraryPageSizeGlobal').checked);
     userSettingsInstance.libraryPageSize(context.querySelector('#txtLibraryPageSize').value);
 
     userSettingsInstance.maxDaysForNextUp(context.querySelector('#txtMaxDaysForNextUp').value);
@@ -221,6 +223,20 @@ function embed(options, self) {
     if (options.enableSaveButton) {
         options.element.querySelector('.btnSave').classList.remove('hide');
     }
+
+    options.element.querySelector('#chkLibraryPageSizeGlobal').addEventListener('change', function () {
+        const userSettings = self.options.userSettings;
+        userSettings.setGlobalSetting('libraryPageSize', this.checked);
+        if (this.checked && userSettings.displayPrefs) {
+            const serverVal = userSettings.displayPrefs.CustomPrefs['libraryPageSize'];
+            if (serverVal != null && serverVal !== '') {
+                options.element.querySelector('#txtLibraryPageSize').value = serverVal;
+            } else {
+                userSettings.libraryPageSize(options.element.querySelector('#txtLibraryPageSize').value);
+            }
+        }
+    });
+
     self.loadData(options.autoFocus);
 }
 
