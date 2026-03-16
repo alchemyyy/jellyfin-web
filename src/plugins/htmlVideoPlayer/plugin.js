@@ -457,6 +457,10 @@ export class HtmlVideoPlayer {
                     manifestLoadingTimeOut: 20000,
                     maxBufferLength: maxBufferLength,
                     maxMaxBufferLength: maxBufferLength,
+                    stretchShortVideoTrack: true,
+                    nudgeMaxRetry: 10,
+                    nudgeOffset: 0.1,
+                    maxBufferHole: 0.5,
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
