@@ -139,31 +139,6 @@ function fillImageElement(elem, url, retries = 2) {
     });
 }
 
-function emptyImageElement(elem) {
-    elem.removeEventListener('animationend', onAnimationEnd);
-    const canvas = elem.previousSibling;
-    if (canvas?.tagName === 'CANVAS') {
-        canvas.classList.remove('lazy-hidden');
-    }
-
-    // HACK: Unhide the content of the card padder
-    elem.parentNode?.querySelector('.cardPadder')?.classList.remove('lazy-hidden-children');
-
-    let url;
-
-    if (elem.tagName !== 'IMG') {
-        url = elem.style.backgroundImage.slice(4, -1).replace(/"/g, '');
-        elem.style.backgroundImage = 'none';
-    } else {
-        url = elem.getAttribute('src');
-        elem.setAttribute('src', '');
-    }
-    elem.setAttribute('data-src', url);
-
-    elem.classList.remove('lazy-image-fadein-fast', 'lazy-image-fadein');
-    elem.classList.add('lazy-hidden');
-}
-
 export function lazyChildren(elem) {
     if (userSettings.enableBlurhash()) {
         for (const lazyElem of elem.querySelectorAll('.lazy')) {
