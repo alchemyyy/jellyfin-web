@@ -183,7 +183,7 @@ function supportsFullscreen() {
 }
 
 function getDefaultLayout() {
-    return LayoutMode.Modern;
+    return browser.mobile ? LayoutMode.MobileLegacy : LayoutMode.DesktopLegacy;
 }
 
 function supportsHtmlMediaAutoplay() {
