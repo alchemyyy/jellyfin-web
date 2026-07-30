@@ -1621,78 +1621,18 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    renderPgs(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
-        const options = this.createBitmapSubtitleRendererOptions(videoElement, track, item, targetTextTrackIndex);
-        const onLoaded = options.onLoaded;
-        const onError = options.onError;
-        options.onLoaded = () => {
-            if (this.#currentBitmapSubRenderer) {
-                this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                this.#currentBitmapSubRenderer.updateCanvasSize?.();
-            }
-            onLoaded?.();
-        };
-        options.onError = (error) => {
-            console.error('[libbitsub] pgs error', error);
-            onError?.(error);
-        };
-        options.onEvent = (event) => {
-            if (event?.type === 'error' || event?.type === 'loaded' || event?.type === 'cue-change' || event?.type === 'renderer-change' || event?.type === 'worker-state') {
-                console.debug('[libbitsub] pgs', event);
-            }
-        };
-        import('libbitsub').then((libbitsub) => {
-            this.#currentBitmapSubRenderer = new libbitsub.PgsRenderer(options);
-            requestAnimationFrame(() => {
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
-        }).catch((error) => {
-            this.endPendingSubtitleLoad(targetTextTrackIndex);
-            console.error(error);
-        });
-    }
-
-    /**
-     * @private
-     */
-    renderVobSub(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
-        const options = {
-            ...this.createBitmapSubtitleRendererOptions(videoElement, track, item, targetTextTrackIndex),
-            fileName: getSubtitleFileNameHint(track)
-        };
-        const onLoaded = options.onLoaded;
-        const onError = options.onError;
-        options.onLoaded = () => {
-            if (this.#currentBitmapSubRenderer) {
-                this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                this.#currentBitmapSubRenderer.setDebandEnabled?.(true);
-                this.#currentBitmapSubRenderer.setDebandThreshold?.(VOBSUB_DEBAND_THRESHOLD);
-                this.#currentBitmapSubRenderer.setDebandRange?.(VOBSUB_DEBAND_RANGE);
-                this.#currentBitmapSubRenderer.updateCanvasSize?.();
-            }
-            onLoaded?.();
-        };
-        options.onError = (error) => {
-            console.error('[libbitsub] vobsub error', error);
-            onError?.(error);
-        };
-        options.onEvent = (event) => {
-            if (event?.type === 'error' || event?.type === 'loaded' || event?.type === 'cue-change' || event?.type === 'renderer-change' || event?.type === 'worker-state') {
-                console.debug('[libbitsub] vobsub', event);
-            }
-        };
-        import('libbitsub').then((libbitsub) => {
-            this.#currentBitmapSubRenderer = new libbitsub.VobSubRenderer(options);
-            requestAnimationFrame(() => {
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
-        }).catch((error) => {
-            this.endPendingSubtitleLoad(targetTextTrackIndex);
-            console.error(error);
+    renderPgs(videoElement, track, item) {
+        import('libpgs').then((libpgs) => {
+            const selectedAspectRatio = this.getAspectRatio();
+            const aspectRatio = selectedAspectRatio === 'auto' || selectedAspectRatio === 'detected' ? 'contain' : selectedAspectRatio;
+            const options = {
+                video: videoElement,
+                subUrl: getTextTrackUrl(track, item),
+                workerUrl: `${appRouter.baseUrl()}/libraries/libpgs.worker.js`,
+                timeOffset: (this._currentPlayOptions.transcodingOffsetTicks || 0) / 10000000,
+                aspectRatio
+            };
+            this.#currentPgsRenderer = new libpgs.PgsRenderer(options);
         });
     }
 
@@ -2444,6 +2384,10 @@ export class HtmlVideoPlayer {
 
     getAspectRatio() {
         const saved = appSettings.aspectRatio() || 'auto';
+        // Prefer detected cropping when Auto has trickplay analysis available
+        if (saved === 'auto' && this.#detectedAspectRatio !== null) {
+            return 'detected';
+        }
         // Fall back to auto if detected was saved but isn't available for this file
         if (saved === 'detected' && this.#detectedAspectRatio === null) {
             return 'auto';
