@@ -2301,11 +2301,15 @@ export class HtmlVideoPlayer {
 
     setAspectRatio(val) {
         appSettings.aspectRatio(val);
-        this.#applyAspectRatio(val);
+        this.#applyAspectRatio(this.getAspectRatio());
     }
 
     getAspectRatio() {
         const saved = appSettings.aspectRatio() || 'auto';
+        // Prefer detected cropping when Auto has trickplay analysis available
+        if (saved === 'auto' && this.#detectedAspectRatio !== null) {
+            return 'detected';
+        }
         // Fall back to auto if detected was saved but isn't available for this file
         if (saved === 'detected' && this.#detectedAspectRatio === null) {
             return 'auto';
