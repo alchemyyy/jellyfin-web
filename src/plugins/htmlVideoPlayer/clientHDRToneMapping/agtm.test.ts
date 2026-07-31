@@ -122,18 +122,18 @@ describe('AGTM serialization', () => {
         expect(earlierKneePayload).not.toEqual(strictPayload);
     });
 
-    it('keeps the quantized BT.2390 curve valid at parameter limits', () => {
+    it('keeps the quantized BT.2390 curve valid outside the former tuning ranges', () => {
         const parameterCases: BT2390ToneMappingParameters[] = [];
         parameterCases.push(
             {
                 kneeOffset: 0.5,
-                sourcePeakNits: 500,
-                targetPeakNits: 400
+                sourcePeakNits: 1000,
+                targetPeakNits: 50
             },
             {
-                kneeOffset: 2,
-                sourcePeakNits: 6400,
-                targetPeakNits: 100
+                kneeOffset: 3,
+                sourcePeakNits: 8000,
+                targetPeakNits: 150
             },
             {
                 kneeOffset: 1,
@@ -151,6 +151,12 @@ describe('AGTM serialization', () => {
                 parameters.sourcePeakNits / parameters.targetPeakNits
             );
         }
+
+        expect(createBT2390AGTMPayload({
+            kneeOffset: 0,
+            sourcePeakNits: 1000,
+            targetPeakNits: 203
+        })).toBeInstanceOf(Uint8Array);
     });
 
     it('coalesces control points that share one encoded input', () => {
@@ -173,23 +179,40 @@ describe('AGTM serialization', () => {
         );
     });
 
-    it('normalizes untrusted BT.2390 parameters to safe ranges', () => {
+    it('preserves format-valid values outside the former tuning ranges', () => {
         expect(normalizeBT2390ToneMappingParameters(undefined)).toEqual(
             DEFAULT_BT2390_TONE_MAPPING_PARAMETERS
         );
         expect(normalizeBT2390ToneMappingParameters({
-            kneeOffset: '1.25',
-            sourcePeakNits: 10000,
+            kneeOffset: '3',
+            sourcePeakNits: 8000,
+            targetPeakNits: 150
+        })).toEqual({
+            kneeOffset: 3,
+            sourcePeakNits: 8000,
+            targetPeakNits: 150
+        });
+        expect(normalizeBT2390ToneMappingParameters({
+            kneeOffset: 0.25,
+            sourcePeakNits: 1000,
             targetPeakNits: 50
         })).toEqual({
-            kneeOffset: 1.25,
-            sourcePeakNits: 6400,
-            targetPeakNits: 100
+            kneeOffset: 0.25,
+            sourcePeakNits: 1000,
+            targetPeakNits: 50
         });
+    });
+
+    it('falls back corrupt or unrepresentable BT.2390 parameters', () => {
         expect(normalizeBT2390ToneMappingParameters({
             kneeOffset: Number.NaN,
             sourcePeakNits: '',
             targetPeakNits: null
+        })).toEqual(DEFAULT_BT2390_TONE_MAPPING_PARAMETERS);
+        expect(normalizeBT2390ToneMappingParameters({
+            kneeOffset: 1,
+            sourcePeakNits: 10000,
+            targetPeakNits: 50
         })).toEqual(DEFAULT_BT2390_TONE_MAPPING_PARAMETERS);
     });
 
@@ -202,7 +225,7 @@ describe('AGTM serialization', () => {
         expect(() => createSDRAGTMPayload(10000.1, 20000, 0.75))
             .toThrow(RangeError);
         expect(() => createBT2390AGTMPayload({
-            kneeOffset: 0.49,
+            kneeOffset: -0.01,
             sourcePeakNits: 1000,
             targetPeakNits: 203
         })).toThrow(RangeError);
