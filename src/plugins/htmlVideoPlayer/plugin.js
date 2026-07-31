@@ -49,6 +49,7 @@ const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'v
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
 const VOBSUB_SUBTITLE_CODECS = ['dvdsub', 'vobsub'];
 const BITMAP_SUBTITLE_ASPECT_MODES = ['stretch', 'contain', 'cover'];
+const HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS = 20000;
 
 /**
  * Returns resolved URL.
@@ -124,6 +125,8 @@ function requireHlsPlayer(callback) {
         hls.DefaultConfig.lowLatencyMode = false;
         hls.DefaultConfig.backBufferLength = Infinity;
         hls.DefaultConfig.liveBackBufferLength = 90;
+        // Give cold storage enough time to start producing a segment
+        hls.DefaultConfig.fragLoadPolicy.default.maxTimeToFirstByteMs = HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS;
         window.Hls = hls;
         callback();
     });
