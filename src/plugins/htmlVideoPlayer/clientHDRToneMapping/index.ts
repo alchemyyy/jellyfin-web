@@ -12,7 +12,7 @@ import {
     type HlsConstructorWithDefaultConfig
 } from './hlsFragmentLoader';
 
-const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET: ClientHDRToneMappingPreset = 'balanced';
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET: ClientHDRToneMappingPreset = 'bt2390';
 
 /**
  * Resolves browser-local setting data to a supported preset.

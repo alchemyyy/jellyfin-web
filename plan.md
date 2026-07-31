@@ -16,7 +16,7 @@ shader. This must not require a custom Chromium build or video re-encoding.
 - Recorded playback on one fixed HLS level
 - Unencrypted, single-`moof`/single-`mdat` Jellyfin segments
 - One AGTM metadata sample covering every video sample in a fragment
-- Disabled by default and fail-open: unsupported or malformed input is returned
+- Enabled by default and fail-open: unsupported or malformed input is returned
   unchanged
 
 Pure Dolby Vision without an HDR10 base layer, HLG, MPEG-TS, encrypted
@@ -32,7 +32,7 @@ and live curve editing are excluded from the first proof of concept.
    - Enable experimental client-side HDR tone mapping
    - Select a validated tone-mapping preset
    - Adjust source peak, SDR target peak, and knee offset for BT.2390 mode
-   - Scale automatic CSS desaturation from 0 to 100 percent
+   - Scale automatic CSS desaturation with an unclamped percentage
 2. Force fMP4 HLS when the experiment is enabled.
 3. Enable the transformer only for supported HDR range types.
 4. Supply a custom hls.js fragment loader with progressive loading disabled.
@@ -96,7 +96,7 @@ SDR paper-white fraction:
 | Balanced | 0.75 | 152 nits |
 | Bright | 0.85 | 173 nits |
 
-`Balanced` is the initial recommendation. Preset changes apply to the next
+`BT.2390` is the default. Preset changes apply to the next
 playback during the proof-of-concept phase.
 
 The adjustable `BT.2390` preset samples the PQ-domain EETF from ITU-R
@@ -104,11 +104,11 @@ BT.2390-7 into a 16-point ST 2094-50 gain curve. Its default knee offset is
 `1.0`, matching current mpv/libplacebo behavior; `0.5` selects the report's
 original knee. The browser-local controls are:
 
-| Parameter | Default | Range |
+| Parameter | Default | Format constraint |
 | --- | ---: | ---: |
-| HDR source peak | 1000 nits | 500-6400 nits |
-| SDR target peak / AGTM reference white | 203 nits | 100-400 nits |
-| Knee offset | 1.0 | 0.5-2.0 |
+| HDR source peak | 1000 nits | Above target, at most 10000 nits, and at most 6 stops above target |
+| SDR target peak / AGTM reference white | 203 nits | 0.2-10000 nits and below source peak |
+| Knee offset | 1.0 | Non-negative finite value |
 
 Jellyfin's `PlaybackInfo` response does not expose MaxCLL or mastering-display
 peak luminance, so the source peak is manual. The BT.2390 black-point lift is
@@ -169,7 +169,7 @@ The experiment is not considered operational until all of these pass:
 - The same complete `meta`/`it35` initialization track and timed fragment
   samples produced no visual change on Chrome 150 because that release dropped
   HDR side data at the renderer-to-GPU Mojo boundary.
-- The live production configuration uses bounded presets rather than the
+- The live production configuration uses normal presets rather than the
   extreme diagnostic payload.
 - The adjustable BT.2390 path was deployed and verified with a 3629-nit source
   peak, 203-nit target peak, and 1.0 knee offset. Chrome played the transformed
@@ -215,6 +215,5 @@ The experiment is not considered operational until all of these pass:
 
 ## Rollback
 
-The feature is disabled by default. Turning it off removes the custom fragment
-loader and restores the existing hls.js path without changing server profiles or
-media files.
+Turning the feature off removes the custom fragment loader and restores the
+existing hls.js path without changing server profiles or media files.

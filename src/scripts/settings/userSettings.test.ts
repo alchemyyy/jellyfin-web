@@ -23,20 +23,20 @@ describe('client-side HDR tone-mapping settings', () => {
         window.localStorage.clear();
     });
 
-    it('disables client-side HDR tone mapping by default', () => {
+    it('enables client-side HDR tone mapping by default', () => {
         const settings = new UserSettings();
-
-        expect(settings.enableClientHDRToneMapping(undefined)).toBe(false);
-
-        settings.enableClientHDRToneMapping(true);
 
         expect(settings.enableClientHDRToneMapping(undefined)).toBe(true);
+
+        settings.enableClientHDRToneMapping(false);
+
+        expect(settings.enableClientHDRToneMapping(undefined)).toBe(false);
     });
 
-    it('uses balanced as the default preset', () => {
+    it('uses BT.2390 as the default preset', () => {
         const settings = new UserSettings();
 
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('balanced');
+        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
     });
 
     it('stores valid presets and rejects invalid presets', () => {
@@ -49,10 +49,10 @@ describe('client-side HDR tone-mapping settings', () => {
         expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
 
         settings.clientHDRToneMappingPreset('invalid');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('balanced');
+        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
 
         window.localStorage.setItem('clientHDRToneMappingPreset', 'invalid');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('balanced');
+        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
     });
 
     it('stores validated BT.2390 parameters locally', () => {
@@ -88,7 +88,7 @@ describe('client-side HDR tone-mapping settings', () => {
         ).toBe(0.75);
     });
 
-    it('clamps finite BT.2390 parameters and replaces corrupt values', () => {
+    it('stores unclamped finite BT.2390 parameters and replaces corrupt values', () => {
         const settings = new UserSettings();
 
         settings.clientHDRToneMappingBT2390SourcePeakNits(10000);
@@ -97,13 +97,13 @@ describe('client-side HDR tone-mapping settings', () => {
 
         expect(
             settings.clientHDRToneMappingBT2390SourcePeakNits(undefined)
-        ).toBe(6400);
+        ).toBe(10000);
         expect(
             settings.clientHDRToneMappingBT2390TargetPeakNits(undefined)
-        ).toBe(100);
+        ).toBe(50);
         expect(
             settings.clientHDRToneMappingBT2390KneeOffset(undefined)
-        ).toBe(2);
+        ).toBe(3);
 
         window.localStorage.setItem(
             'clientHDRToneMappingBT2390SourcePeakNits',
@@ -129,7 +129,7 @@ describe('client-side HDR tone-mapping settings', () => {
         ).toBe(1);
     });
 
-    it('stores and clamps the live CSS desaturation strength', () => {
+    it('stores the unclamped live CSS desaturation strength', () => {
         const settings = new UserSettings();
 
         expect(
@@ -144,11 +144,11 @@ describe('client-side HDR tone-mapping settings', () => {
         settings.clientHDRToneMappingDesaturationStrength(-20);
         expect(
             settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(0);
+        ).toBe(-20);
 
         settings.clientHDRToneMappingDesaturationStrength(150);
         expect(
             settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(100);
+        ).toBe(150);
     });
 });
