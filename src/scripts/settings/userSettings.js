@@ -13,25 +13,17 @@ import appSettings from './appSettings';
 const DISPLAY_PREFERENCES_ID = 'usersettings';
 // TODO: We should really update the client ID at some point
 const CLIENT_ID = 'emby';
-const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET = 'balanced';
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET = 'bt2390';
 const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 1000;
 const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 203;
 const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 1;
 const DEFAULT_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 100;
-const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 500;
-const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 6400;
-const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 100;
-const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 400;
-const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 0.5;
-const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 2;
-const MIN_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 0;
-const MAX_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 100;
 
 function normalizeClientHDRToneMappingPreset(preset) {
     switch (preset) {
         case 'control':
         case 'mild':
-        case DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET:
+        case 'balanced':
         case 'bright':
         case 'bt2390':
             return preset;
@@ -40,12 +32,7 @@ function normalizeClientHDRToneMappingPreset(preset) {
     }
 }
 
-function normalizeClientHDRToneMappingNumber(
-    value,
-    fallback,
-    minimum,
-    maximum
-) {
+function normalizeClientHDRToneMappingNumber(value, fallback) {
     if (
         value === null
         || value === undefined
@@ -62,7 +49,7 @@ function normalizeClientHDRToneMappingNumber(
         return fallback;
     }
 
-    return Math.min(Math.max(numericValue, minimum), maximum);
+    return numericValue;
 }
 
 function onSaveTimeout() {
@@ -245,7 +232,7 @@ export class UserSettings {
             return this.set('enableClientHDRToneMapping', val.toString(), false);
         }
 
-        return toBoolean(this.get('enableClientHDRToneMapping', false), false);
+        return toBoolean(this.get('enableClientHDRToneMapping', false), true);
     }
 
     /**
@@ -277,9 +264,7 @@ export class UserSettings {
             value === undefined ?
                 this.get('clientHDRToneMappingBT2390SourcePeakNits', false) :
                 value,
-            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS,
-            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS,
-            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS
         );
 
         if (value !== undefined) {
@@ -303,9 +288,7 @@ export class UserSettings {
             value === undefined ?
                 this.get('clientHDRToneMappingBT2390TargetPeakNits', false) :
                 value,
-            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS,
-            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS,
-            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS
         );
 
         if (value !== undefined) {
@@ -329,9 +312,7 @@ export class UserSettings {
             value === undefined ?
                 this.get('clientHDRToneMappingBT2390KneeOffset', false) :
                 value,
-            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET,
-            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET,
-            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET
         );
 
         if (value !== undefined) {
@@ -358,9 +339,7 @@ export class UserSettings {
                     false
                 ) :
                 value,
-            DEFAULT_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH,
-            MIN_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH,
-            MAX_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH
         );
 
         if (value !== undefined) {

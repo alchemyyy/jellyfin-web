@@ -11,7 +11,8 @@ const MINIMUM_AUTOMATIC_SATURATION = 0.6;
 
 /**
  * Derives a global CSS saturation value from the active tone-mapping curve.
- * The strength interpolates between unmodified chroma and the automatic value.
+ * A strength of 100 applies the automatic value; larger finite values increase
+ * the effect without making the CSS saturation invalid.
  */
 export function calculateClientHDRToneMappingSaturation(
     preset: ClientHDRToneMappingPreset,
@@ -38,7 +39,7 @@ export function calculateClientHDRToneMappingSaturation(
         desaturationStrength
     ) / FULL_DESATURATION_STRENGTH;
 
-    return 1 - normalizedStrength * (1 - automaticSaturation);
+    return automaticSaturation ** normalizedStrength;
 }
 
 function normalizeDesaturationStrength(value: unknown): number {
@@ -55,8 +56,5 @@ function normalizeDesaturationStrength(value: unknown): number {
         return FULL_DESATURATION_STRENGTH;
     }
 
-    return Math.min(
-        Math.max(numericValue, 0),
-        FULL_DESATURATION_STRENGTH
-    );
+    return numericValue;
 }

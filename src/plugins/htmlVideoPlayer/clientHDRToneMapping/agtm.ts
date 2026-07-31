@@ -6,6 +6,7 @@ const CONTROL_POINT_COUNT = 8;
 const BT2390_CONTROL_POINT_COUNT = 16;
 const HDR_REFERENCE_WHITE_NITS = 203;
 const HDR_SOURCE_PEAK_NITS = 1000;
+const MIN_HDR_REFERENCE_WHITE_NITS = 0.2;
 const MAX_HDR_REFERENCE_WHITE_NITS = 10000;
 const MAX_HDR_HEADROOM_STOPS = 6;
 const MAX_LINEAR_HDR_HEADROOM = 2 ** MAX_HDR_HEADROOM_STOPS;
@@ -16,13 +17,6 @@ const PQ_M2 = 2523 / 32;
 const PQ_C1 = 3424 / 4096;
 const PQ_C2 = 2413 / 128;
 const PQ_C3 = 2392 / 128;
-
-export const MIN_BT2390_SOURCE_PEAK_NITS = 500;
-export const MAX_BT2390_SOURCE_PEAK_NITS = 6400;
-export const MIN_BT2390_TARGET_PEAK_NITS = 100;
-export const MAX_BT2390_TARGET_PEAK_NITS = 400;
-export const MIN_BT2390_KNEE_OFFSET = 0.5;
-export const MAX_BT2390_KNEE_OFFSET = 2;
 
 export interface BT2390ToneMappingParameters {
     kneeOffset: number;
@@ -101,7 +95,8 @@ export function createAGTMPayload(
 }
 
 /**
- * Resolves untrusted browser-local values to the supported BT.2390 ranges.
+ * Resolves untrusted browser-local values without imposing tuning ranges.
+ * Values outside the AGTM or PQ format domains fall back to the defaults.
  */
 export function normalizeBT2390ToneMappingParameters(
     parameters: unknown
@@ -116,26 +111,27 @@ export function normalizeBT2390ToneMappingParameters(
         >> :
         {};
 
-    return {
+    const normalizedParameters: BT2390ToneMappingParameters = {
         kneeOffset: normalizeNumericParameter(
             candidateParameters.kneeOffset,
-            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.kneeOffset,
-            MIN_BT2390_KNEE_OFFSET,
-            MAX_BT2390_KNEE_OFFSET
+            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.kneeOffset
         ),
         sourcePeakNits: normalizeNumericParameter(
             candidateParameters.sourcePeakNits,
-            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.sourcePeakNits,
-            MIN_BT2390_SOURCE_PEAK_NITS,
-            MAX_BT2390_SOURCE_PEAK_NITS
+            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.sourcePeakNits
         ),
         targetPeakNits: normalizeNumericParameter(
             candidateParameters.targetPeakNits,
-            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.targetPeakNits,
-            MIN_BT2390_TARGET_PEAK_NITS,
-            MAX_BT2390_TARGET_PEAK_NITS
+            DEFAULT_BT2390_TONE_MAPPING_PARAMETERS.targetPeakNits
         )
     };
+
+    const canonicalParameters = canonicalizeBT2390ToneMappingParameters(
+        normalizedParameters
+    );
+    return hasValidBT2390ToneMappingParameters(canonicalParameters) ?
+        normalizedParameters :
+        { ...DEFAULT_BT2390_TONE_MAPPING_PARAMETERS };
 }
 
 /**
@@ -197,12 +193,10 @@ export function createSDRAGTMPayload(
 export function createBT2390AGTMPayload(
     parameters: BT2390ToneMappingParameters
 ): Uint8Array {
-    validateBT2390ToneMappingParameters(parameters);
-
-    const canonicalParameters: BT2390ToneMappingParameters = {
-        ...parameters,
-        targetPeakNits: Math.round(parameters.targetPeakNits * 5) / 5
-    };
+    const canonicalParameters = canonicalizeBT2390ToneMappingParameters(
+        parameters
+    );
+    validateBT2390ToneMappingParameters(canonicalParameters);
     const baselineHeadroom = Math.log2(
         canonicalParameters.sourcePeakNits
             / canonicalParameters.targetPeakNits
@@ -633,24 +627,23 @@ function createGainCurveControlPoints(
 function validateBT2390ToneMappingParameters(
     parameters: BT2390ToneMappingParameters
 ): void {
-    validateNumericRange(
-        parameters.sourcePeakNits,
-        MIN_BT2390_SOURCE_PEAK_NITS,
-        MAX_BT2390_SOURCE_PEAK_NITS,
-        'HDR source peak'
-    );
-    validateNumericRange(
-        parameters.targetPeakNits,
-        MIN_BT2390_TARGET_PEAK_NITS,
-        MAX_BT2390_TARGET_PEAK_NITS,
-        'SDR target peak'
-    );
-    validateNumericRange(
-        parameters.kneeOffset,
-        MIN_BT2390_KNEE_OFFSET,
-        MAX_BT2390_KNEE_OFFSET,
-        'BT.2390 knee offset'
-    );
+    if (
+        !Number.isFinite(parameters.sourcePeakNits)
+        || parameters.sourcePeakNits <= 0
+        || parameters.sourcePeakNits > MAX_HDR_REFERENCE_WHITE_NITS
+    ) {
+        throw new RangeError(
+            'HDR source peak must be greater than zero and at most 10000 nits'
+        );
+    }
+
+    validateReferenceWhiteNits(parameters.targetPeakNits);
+
+    if (!Number.isFinite(parameters.kneeOffset) || parameters.kneeOffset < 0) {
+        throw new RangeError(
+            'BT.2390 knee offset must be finite and non-negative'
+        );
+    }
 
     if (parameters.sourcePeakNits <= parameters.targetPeakNits) {
         throw new RangeError(
@@ -661,6 +654,40 @@ function validateBT2390ToneMappingParameters(
     validateBaselineHeadroom(Math.log2(
         parameters.sourcePeakNits / parameters.targetPeakNits
     ));
+}
+
+function hasValidBT2390ToneMappingParameters(
+    parameters: BT2390ToneMappingParameters
+): boolean {
+    if (
+        !Number.isFinite(parameters.sourcePeakNits)
+        || parameters.sourcePeakNits <= 0
+        || parameters.sourcePeakNits > MAX_HDR_REFERENCE_WHITE_NITS
+        || !Number.isFinite(parameters.targetPeakNits)
+        || parameters.targetPeakNits < MIN_HDR_REFERENCE_WHITE_NITS
+        || parameters.targetPeakNits > MAX_HDR_REFERENCE_WHITE_NITS
+        || !Number.isFinite(parameters.kneeOffset)
+        || parameters.kneeOffset < 0
+        || parameters.sourcePeakNits <= parameters.targetPeakNits
+    ) {
+        return false;
+    }
+
+    const baselineHeadroom = Math.log2(
+        parameters.sourcePeakNits / parameters.targetPeakNits
+    );
+    return Number.isFinite(baselineHeadroom)
+        && baselineHeadroom > 0
+        && baselineHeadroom <= MAX_HDR_HEADROOM_STOPS;
+}
+
+function canonicalizeBT2390ToneMappingParameters(
+    parameters: BT2390ToneMappingParameters
+): BT2390ToneMappingParameters {
+    return {
+        ...parameters,
+        targetPeakNits: Math.round(parameters.targetPeakNits * 5) / 5
+    };
 }
 
 function validateBaselineHeadroom(baselineHeadroom: number): void {
@@ -747,34 +774,19 @@ function validateCurveParameters(
     }
 }
 
-function validateNumericRange(
-    value: number,
-    minimum: number,
-    maximum: number,
-    name: string
-): void {
-    if (!Number.isFinite(value) || value < minimum || value > maximum) {
-        throw new RangeError(
-            `${name} must be finite and between ${minimum} and ${maximum}`
-        );
-    }
-}
-
 function validateReferenceWhiteNits(referenceWhiteNits: number): void {
     if (
         !Number.isFinite(referenceWhiteNits)
-        || referenceWhiteNits <= 0
+        || referenceWhiteNits < MIN_HDR_REFERENCE_WHITE_NITS
         || referenceWhiteNits > MAX_HDR_REFERENCE_WHITE_NITS
     ) {
-        throw new RangeError('HDR reference white must be greater than zero and at most 10000 nits');
+        throw new RangeError('HDR reference white must be between 0.2 and 10000 nits');
     }
 }
 
 function normalizeNumericParameter(
     value: unknown,
-    fallback: number,
-    minimum: number,
-    maximum: number
+    fallback: number
 ): number {
     if (
         typeof value !== 'number'
@@ -792,7 +804,7 @@ function normalizeNumericParameter(
         return fallback;
     }
 
-    return Math.min(Math.max(numericValue, minimum), maximum);
+    return numericValue;
 }
 
 function clampInteger(value: number, minimum: number, maximum: number): number {

@@ -81,12 +81,12 @@ describe('client HDR tone-mapping hls.js configuration', () => {
         expect(config.fLoader).toBeTypeOf('function');
     });
 
-    it('falls back invalid browser-local values to balanced', () => {
+    it('falls back invalid browser-local values to BT.2390', () => {
         expect(resolveClientHDRToneMappingPreset('control')).toBe('control');
         expect(resolveClientHDRToneMappingPreset('bright')).toBe('bright');
         expect(resolveClientHDRToneMappingPreset('bt2390')).toBe('bt2390');
-        expect(resolveClientHDRToneMappingPreset('invalid')).toBe('balanced');
-        expect(resolveClientHDRToneMappingPreset(undefined)).toBe('balanced');
+        expect(resolveClientHDRToneMappingPreset('invalid')).toBe('bt2390');
+        expect(resolveClientHDRToneMappingPreset(undefined)).toBe('bt2390');
     });
 });
 

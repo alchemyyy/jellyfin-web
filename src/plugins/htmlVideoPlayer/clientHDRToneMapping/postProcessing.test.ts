@@ -25,7 +25,7 @@ describe('client HDR tone-mapping CSS post-processing', () => {
         )).toBeCloseTo((203 / 1000) ** (1 / 8), 8);
     });
 
-    it('interpolates the user strength without changing the curve value', () => {
+    it('scales the user strength without changing the curve value', () => {
         const automaticSaturation = calculateClientHDRToneMappingSaturation(
             'bt2390',
             DEFAULT_PARAMETERS,
@@ -41,7 +41,7 @@ describe('client HDR tone-mapping CSS post-processing', () => {
             'bt2390',
             DEFAULT_PARAMETERS,
             50
-        )).toBeCloseTo((1 + automaticSaturation) / 2, 8);
+        )).toBeCloseTo(automaticSaturation ** 0.5, 8);
     });
 
     it('responds to the active source and target peak settings', () => {
@@ -64,7 +64,7 @@ describe('client HDR tone-mapping CSS post-processing', () => {
         expect(strongerCompressionSaturation).toBeLessThan(defaultSaturation);
     });
 
-    it('clamps automatic saturation and untrusted strength values', () => {
+    it('supports unclamped finite strengths and defaults invalid values', () => {
         expect(calculateClientHDRToneMappingSaturation(
             'bt2390',
             {
@@ -73,7 +73,7 @@ describe('client HDR tone-mapping CSS post-processing', () => {
                 targetPeakNits: 100
             },
             500
-        )).toBe(0.6);
+        )).toBeCloseTo(0.6 ** 5, 8);
         expect(calculateClientHDRToneMappingSaturation(
             'bt2390',
             DEFAULT_PARAMETERS,
