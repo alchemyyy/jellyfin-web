@@ -1,6 +1,7 @@
 import browser from './browser';
 import appSettings from './settings/appSettings';
 import * as userSettings from './settings/userSettings';
+import { isClientHDRToneMappingRuntimeAvailable } from '../plugins/htmlVideoPlayer/clientHDRToneMapping/runtime';
 
 function canPlayH264(videoTestElement) {
     return !!(videoTestElement.canPlayType?.('video/mp4; codecs="avc1.42E01E, mp4a.40.2"').replace(/no/, ''));
@@ -851,7 +852,11 @@ export default function (options) {
     profile.TranscodingProfiles = [];
 
     const hlsBreakOnNonKeyFrames = browser.iOS || browser.osx || browser.edge || !canPlayNativeHls();
-    let enableFmp4Hls = userSettings.preferFmp4HlsContainer();
+    const enableClientHDRToneMapping = userSettings.enableClientHDRToneMapping()
+        && isClientHDRToneMappingRuntimeAvailable();
+    // AGTM metadata is injected as a timed fMP4 metadata track.
+    let enableFmp4Hls = enableClientHDRToneMapping
+        || userSettings.preferFmp4HlsContainer();
     if ((browser.safari || browser.tizen || browser.web0s) && !canPlayNativeHlsInFmp4()) {
         enableFmp4Hls = false;
     }
@@ -1227,6 +1232,14 @@ export default function (options) {
         hevcVideoRangeTypes += '|HDR10|HDR10Plus';
         vp9VideoRangeTypes += '|HDR10|HDR10Plus';
         av1VideoRangeTypes += '|HDR10|HDR10Plus';
+
+        if (enableClientHDRToneMapping) {
+            // Chrome can decode the HDR10 base layer while ignoring Dolby
+            // Vision enhancement data and RPU metadata.
+            const dolbyVisionHDR10FallbackRangeTypes = '|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithEL|DOVIWithELHDR10Plus';
+            hevcVideoRangeTypes += dolbyVisionHDR10FallbackRangeTypes;
+            av1VideoRangeTypes += dolbyVisionHDR10FallbackRangeTypes;
+        }
 
         if (browser.tizenVersion >= 3 || browser.vidaa || isWebOsWithoutDolbyVision) {
             // Tizen TV does not support Dolby Vision at all, but it can safely play the HDR fallback.
