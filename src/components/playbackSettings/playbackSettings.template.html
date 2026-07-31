@@ -202,6 +202,59 @@
             <div class="fieldDescription checkboxFieldDescription">${LimitSegmentLengthHelp}</div>
         </div>
 
+        <div class="fldClientHDRToneMapping hide">
+            <div class="checkboxContainer checkboxContainer-withDescription">
+                <label>
+                    <input type="checkbox" is="emby-checkbox" class="chkEnableClientHDRToneMapping" />
+                    <span>${EnableClientHDRToneMapping}</span>
+                </label>
+                <div class="fieldDescription checkboxFieldDescription">${EnableClientHDRToneMappingHelp}</div>
+            </div>
+
+            <div class="selectContainer">
+                <select is="emby-select" id="selectClientHDRToneMappingPreset" label="${LabelClientHDRToneMappingPreset}">
+                    <option value="control">${ClientHDRToneMappingPresetControl}</option>
+                    <option value="mild">${ClientHDRToneMappingPresetMild}</option>
+                    <option value="balanced">${ClientHDRToneMappingPresetBalanced}</option>
+                    <option value="bright">${ClientHDRToneMappingPresetBright}</option>
+                    <option value="bt2390">${ClientHDRToneMappingPresetBT2390}</option>
+                </select>
+                <div class="fieldDescription">${ClientHDRToneMappingPresetHelp}</div>
+            </div>
+
+            <div class="clientHDRToneMappingDesaturationFields hide">
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtClientHDRToneMappingDesaturationStrength"
+                        required="required" disabled="disabled" min="0" max="100" step="1"
+                        label="${LabelClientHDRToneMappingDesaturationStrength}" />
+                    <div class="fieldDescription">${ClientHDRToneMappingDesaturationStrengthHelp}</div>
+                </div>
+            </div>
+
+            <div class="clientHDRToneMappingBT2390Fields hide">
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtClientHDRToneMappingBT2390SourcePeakNits"
+                        required="required" disabled="disabled" min="500" max="6400" step="1"
+                        label="${LabelClientHDRToneMappingBT2390SourcePeakNits}" />
+                    <div class="fieldDescription">${ClientHDRToneMappingBT2390SourcePeakNitsHelp}</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtClientHDRToneMappingBT2390TargetPeakNits"
+                        required="required" disabled="disabled" min="100" max="400" step="1"
+                        label="${LabelClientHDRToneMappingBT2390TargetPeakNits}" />
+                    <div class="fieldDescription">${ClientHDRToneMappingBT2390TargetPeakNitsHelp}</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" id="txtClientHDRToneMappingBT2390KneeOffset"
+                        required="required" disabled="disabled" min="0.5" max="2" step="0.05"
+                        label="${LabelClientHDRToneMappingBT2390KneeOffset}" />
+                    <div class="fieldDescription">${ClientHDRToneMappingBT2390KneeOffsetHelp}</div>
+                </div>
+            </div>
+        </div>
+
         <div class="selectContainer">
             <select is="emby-select" id="selectPreferredTranscodeVideoCodec" label="${LabelSelectPreferredTranscodeVideoCodec}">
                 <option value="">${Auto}</option>
