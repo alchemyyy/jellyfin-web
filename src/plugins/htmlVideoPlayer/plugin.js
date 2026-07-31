@@ -44,11 +44,22 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
+import {
+    calculateClientHDRToneMappingSaturation,
+    createClientHDRToneMappingHlsConfig,
+    isClientHDRToneMappingRuntimeAvailable,
+    resolveClientHDRToneMappingPreset
+} from './clientHDRToneMapping';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
 const VOBSUB_SUBTITLE_CODECS = ['dvdsub', 'vobsub'];
 const BITMAP_SUBTITLE_ASPECT_MODES = ['stretch', 'contain', 'cover'];
+const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_INTERVAL_MS = 250;
+const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS =
+    'clientHDRToneMappingPostProcessing';
+const CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY =
+    '--client-hdr-tone-mapping-saturation';
 
 /**
  * Returns resolved URL.
@@ -345,6 +356,18 @@ export class HtmlVideoPlayer {
      * @type {number | null | undefined}
      */
     #currentTime;
+    /**
+     * @type {number | undefined}
+     */
+    #clientHDRToneMappingPostProcessingInterval;
+    /**
+     * @type {HTMLVideoElement | undefined}
+     */
+    #clientHDRToneMappingPostProcessingElement;
+    /**
+     * @type {number | undefined}
+     */
+    #clientHDRToneMappingPostProcessingSaturation;
 
     /**
      * @private (used in other files)
@@ -554,6 +577,21 @@ export class HtmlVideoPlayer {
                 }
 
                 const includeCorsCredentials = await getIncludeCorsCredentials();
+                const clientHDRToneMappingPreset =
+                    userSettings.clientHDRToneMappingPreset();
+                const clientHDRToneMappingBT2390Parameters = {
+                    kneeOffset: userSettings.clientHDRToneMappingBT2390KneeOffset(),
+                    sourcePeakNits: userSettings.clientHDRToneMappingBT2390SourcePeakNits(),
+                    targetPeakNits: userSettings.clientHDRToneMappingBT2390TargetPeakNits()
+                };
+                const clientHDRToneMappingConfig = createClientHDRToneMappingHlsConfig(
+                    Hls,
+                    options.mediaSource,
+                    userSettings.enableClientHDRToneMapping()
+                        && isClientHDRToneMappingRuntimeAvailable(),
+                    clientHDRToneMappingPreset,
+                    clientHDRToneMappingBT2390Parameters
+                );
 
                 const hls = new Hls({
                     startPosition: options.playerStartPositionTicks / 10000000,
@@ -563,8 +601,21 @@ export class HtmlVideoPlayer {
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
-                    }
+                    },
+                    ...clientHDRToneMappingConfig
                 });
+                if (clientHDRToneMappingConfig.fLoader) {
+                    this.#startClientHDRToneMappingPostProcessing(
+                        elem,
+                        clientHDRToneMappingPreset,
+                        clientHDRToneMappingBT2390Parameters
+                    );
+                    // Chrome cannot re-register one timed metadata track on a
+                    // SourceBuffer, so keep this HLS session on one level.
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        hls.loadLevel = hls.firstLevel;
+                    });
+                }
                 hls.loadSource(url);
                 hls.attachMedia(elem);
 
@@ -582,6 +633,7 @@ export class HtmlVideoPlayer {
      * @private
      */
     async setCurrentSrc(elem, options) {
+        this.#stopClientHDRToneMappingPostProcessing();
         elem.removeEventListener('error', this.onError);
 
         let val = options.url;
@@ -953,6 +1005,7 @@ export class HtmlVideoPlayer {
 
     destroy() {
         this.setSubtitleOffset.cancel();
+        this.#stopClientHDRToneMappingPostProcessing();
 
         destroyHlsPlayer(this);
         destroyFlvPlayer(this);
@@ -994,6 +1047,83 @@ export class HtmlVideoPlayer {
             // iOS Safari
             document.webkitCancelFullscreen();
         }
+    }
+
+    /**
+     * Applies curve-derived global desaturation and follows strength changes
+     * without restarting the active stream.
+     * @private
+     */
+    #startClientHDRToneMappingPostProcessing(
+        videoElement,
+        preset,
+        bt2390Parameters
+    ) {
+        this.#stopClientHDRToneMappingPostProcessing();
+
+        const resolvedPreset = resolveClientHDRToneMappingPreset(preset);
+        const updateSaturation = () => {
+            const saturation = calculateClientHDRToneMappingSaturation(
+                resolvedPreset,
+                bt2390Parameters,
+                userSettings.clientHDRToneMappingDesaturationStrength()
+            );
+
+            if (
+                this.#clientHDRToneMappingPostProcessingElement !== videoElement
+                || this.#clientHDRToneMappingPostProcessingSaturation
+                    === saturation
+            ) {
+                return;
+            }
+
+            this.#clientHDRToneMappingPostProcessingSaturation = saturation;
+            videoElement.style.setProperty(
+                CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY,
+                saturation.toFixed(6)
+            );
+            videoElement.classList.toggle(
+                CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS,
+                saturation < 1
+            );
+            console.debug(
+                `client HDR tone-mapping CSS saturation: ${saturation.toFixed(3)}`
+            );
+        };
+
+        this.#clientHDRToneMappingPostProcessingElement = videoElement;
+        updateSaturation();
+        this.#clientHDRToneMappingPostProcessingInterval = window.setInterval(
+            updateSaturation,
+            CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_INTERVAL_MS
+        );
+    }
+
+    /**
+     * Removes the post-processing state from the current video element.
+     * @private
+     */
+    #stopClientHDRToneMappingPostProcessing() {
+        if (this.#clientHDRToneMappingPostProcessingInterval !== undefined) {
+            window.clearInterval(
+                this.#clientHDRToneMappingPostProcessingInterval
+            );
+            this.#clientHDRToneMappingPostProcessingInterval = undefined;
+        }
+
+        const videoElement =
+            this.#clientHDRToneMappingPostProcessingElement;
+        if (videoElement) {
+            videoElement.classList.remove(
+                CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS
+            );
+            videoElement.style.removeProperty(
+                CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY
+            );
+        }
+
+        this.#clientHDRToneMappingPostProcessingElement = undefined;
+        this.#clientHDRToneMappingPostProcessingSaturation = undefined;
     }
 
     /**

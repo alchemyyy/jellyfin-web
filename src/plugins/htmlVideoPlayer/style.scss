@@ -32,6 +32,10 @@ video[controls]::-webkit-media-controls {
     height: 100%;
 }
 
+.htmlvideoplayer.clientHDRToneMappingPostProcessing {
+    filter: saturate(var(--client-hdr-tone-mapping-saturation, 1));
+}
+
 .htmlvideoplayer::cue {
     background-color: transparent;
     text-shadow: 0.14em 0.14em 0.14em rgba(0, 0, 0, 1);

@@ -9,6 +9,7 @@ import { PluginType } from 'constants/pluginType';
 import { MILLISECONDS_PER_MINUTE } from 'constants/time';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { ID as STILL_WATCHING_ID, StillWatchingConfiguration, StillWatchingOptions } from 'plugins/stillWatching/constants';
+import { isClientHDRToneMappingRuntimeAvailable } from 'plugins/htmlVideoPlayer/clientHDRToneMapping/runtime';
 
 import appSettings from '../../scripts/settings/appSettings';
 import { appHost } from '../apphost';
@@ -23,6 +24,7 @@ import template from './playbackSettings.template.html';
 
 import '../../elements/emby-select/emby-select';
 import '../../elements/emby-checkbox/emby-checkbox';
+import '../../elements/emby-input/emby-input';
 
 function fillSkipLengths(select) {
     const options = [5, 10, 15, 20, 25, 30];
@@ -163,6 +165,29 @@ function setMaxBitrateFromField(select, isInNetwork, mediatype) {
     }
 }
 
+function updateClientHDRToneMappingPresetState(context) {
+    const enabled = context.querySelector('.chkEnableClientHDRToneMapping').checked;
+    const presetSelect = context.querySelector('#selectClientHDRToneMappingPreset');
+    const bt2390Fields = context.querySelector('.clientHDRToneMappingBT2390Fields');
+    const desaturationFields = context.querySelector(
+        '.clientHDRToneMappingDesaturationFields'
+    );
+    const showBT2390Fields = enabled && presetSelect.value === 'bt2390';
+    const showDesaturationFields = enabled && presetSelect.value !== 'control';
+    const bt2390Inputs = bt2390Fields.querySelectorAll('input');
+    const desaturationInputs = desaturationFields.querySelectorAll('input');
+
+    presetSelect.disabled = !enabled;
+    bt2390Fields.classList.toggle('hide', !showBT2390Fields);
+    desaturationFields.classList.toggle('hide', !showDesaturationFields);
+    for (const bt2390Input of bt2390Inputs) {
+        bt2390Input.disabled = !showBT2390Fields;
+    }
+    for (const desaturationInput of desaturationInputs) {
+        desaturationInput.disabled = !showDesaturationFields;
+    }
+}
+
 function showHideQualityFields(context, user, apiClient) {
     if (user.Policy.EnableVideoPlaybackTranscoding) {
         context.querySelector('.videoQualitySection').classList.remove('hide');
@@ -218,6 +243,11 @@ function loadForm(context, user, userSettings, systemInfo, apiClient) {
         context.querySelector('.fldLimitSegmentLength').classList.remove('hide');
     }
 
+    context.querySelector('.fldClientHDRToneMapping').classList.toggle(
+        'hide',
+        !isClientHDRToneMappingRuntimeAvailable()
+    );
+
     context.querySelector('#selectAllowedAudioChannels').value = userSettings.allowedAudioChannels();
 
     apiClient.getCultures().then(allCultures => {
@@ -254,6 +284,17 @@ function loadForm(context, user, userSettings, systemInfo, apiClient) {
     context.querySelector('.chkPlayDefaultAudioTrack').checked = user.Configuration.PlayDefaultAudioTrack || false;
     context.querySelector('.chkPreferFmp4HlsContainer').checked = userSettings.preferFmp4HlsContainer();
     context.querySelector('.chkLimitSegmentLength').checked = userSettings.limitSegmentLength();
+    context.querySelector('.chkEnableClientHDRToneMapping').checked = userSettings.enableClientHDRToneMapping();
+    context.querySelector('#selectClientHDRToneMappingPreset').value = userSettings.clientHDRToneMappingPreset();
+    context.querySelector('#txtClientHDRToneMappingBT2390SourcePeakNits').value =
+        userSettings.clientHDRToneMappingBT2390SourcePeakNits();
+    context.querySelector('#txtClientHDRToneMappingBT2390TargetPeakNits').value =
+        userSettings.clientHDRToneMappingBT2390TargetPeakNits();
+    context.querySelector('#txtClientHDRToneMappingBT2390KneeOffset').value =
+        userSettings.clientHDRToneMappingBT2390KneeOffset();
+    context.querySelector('#txtClientHDRToneMappingDesaturationStrength').value =
+        userSettings.clientHDRToneMappingDesaturationStrength();
+    updateClientHDRToneMappingPresetState(context);
     context.querySelector('.chkEnableDts').checked = appSettings.enableDts();
     context.querySelector('.chkEnableTrueHd').checked = appSettings.enableTrueHd();
     context.querySelector('.chkEnableHi10p').checked = appSettings.enableHi10p();
@@ -330,6 +371,36 @@ function saveUser(context, user, userSettingsInstance, apiClient) {
     userSettingsInstance.stillWatchingPrompt(context.querySelector('.selectStillWatchingOption').value);
     userSettingsInstance.preferFmp4HlsContainer(context.querySelector('.chkPreferFmp4HlsContainer').checked);
     userSettingsInstance.limitSegmentLength(context.querySelector('.chkLimitSegmentLength').checked);
+    userSettingsInstance.enableClientHDRToneMapping(context.querySelector('.chkEnableClientHDRToneMapping').checked);
+    userSettingsInstance.clientHDRToneMappingPreset(context.querySelector('#selectClientHDRToneMappingPreset').value);
+    userSettingsInstance.clientHDRToneMappingBT2390SourcePeakNits(
+        Number(
+            context.querySelector(
+                '#txtClientHDRToneMappingBT2390SourcePeakNits'
+            ).value
+        )
+    );
+    userSettingsInstance.clientHDRToneMappingBT2390TargetPeakNits(
+        Number(
+            context.querySelector(
+                '#txtClientHDRToneMappingBT2390TargetPeakNits'
+            ).value
+        )
+    );
+    userSettingsInstance.clientHDRToneMappingBT2390KneeOffset(
+        Number(
+            context.querySelector(
+                '#txtClientHDRToneMappingBT2390KneeOffset'
+            ).value
+        )
+    );
+    userSettingsInstance.clientHDRToneMappingDesaturationStrength(
+        Number(
+            context.querySelector(
+                '#txtClientHDRToneMappingDesaturationStrength'
+            ).value
+        )
+    );
     userSettingsInstance.enableCinemaMode(context.querySelector('.chkEnableCinemaMode').checked);
     userSettingsInstance.selectAudioNormalization(context.querySelector('#selectAudioNormalization').value);
     userSettingsInstance.enableNextVideoInfoOverlay(context.querySelector('.chkEnableNextVideoOverlay').checked);
@@ -386,6 +457,14 @@ function embed(options, self) {
     options.element.innerHTML = globalize.translateHtml(template, 'core');
 
     options.element.querySelector('form').addEventListener('submit', onSubmit.bind(self));
+    options.element.querySelector('.chkEnableClientHDRToneMapping').addEventListener(
+        'change',
+        () => updateClientHDRToneMappingPresetState(options.element)
+    );
+    options.element.querySelector('#selectClientHDRToneMappingPreset').addEventListener(
+        'change',
+        () => updateClientHDRToneMappingPresetState(options.element)
+    );
 
     if (options.enableSaveButton) {
         options.element.querySelector('.btnSave').classList.remove('hide');
