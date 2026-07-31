@@ -62,6 +62,8 @@ const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS =
 const CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY =
     '--client-hdr-tone-mapping-saturation';
 
+const HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS = 20000;
+
 /**
  * Returns resolved URL.
  * @param {string} url - URL.
