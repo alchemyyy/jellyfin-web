@@ -13,6 +13,57 @@ import appSettings from './appSettings';
 const DISPLAY_PREFERENCES_ID = 'usersettings';
 // TODO: We should really update the client ID at some point
 const CLIENT_ID = 'emby';
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET = 'balanced';
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 1000;
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 203;
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 1;
+const DEFAULT_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 100;
+const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 500;
+const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS = 6400;
+const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 100;
+const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS = 400;
+const MIN_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 0.5;
+const MAX_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET = 2;
+const MIN_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 0;
+const MAX_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH = 100;
+
+function normalizeClientHDRToneMappingPreset(preset) {
+    switch (preset) {
+        case 'control':
+        case 'mild':
+        case DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET:
+        case 'bright':
+        case 'bt2390':
+            return preset;
+        default:
+            return DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET;
+    }
+}
+
+function normalizeClientHDRToneMappingNumber(
+    value,
+    fallback,
+    minimum,
+    maximum
+) {
+    if (
+        value === null
+        || value === undefined
+        || (
+            typeof value === 'string'
+            && value.trim() === ''
+        )
+    ) {
+        return fallback;
+    }
+
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+        return fallback;
+    }
+
+    return Math.min(Math.max(numericValue, minimum), maximum);
+}
 
 function onSaveTimeout() {
     const self = this;
@@ -182,6 +233,145 @@ export class UserSettings {
 
         // Enable it by default only for the platforms that play fMP4 for sure.
         return toBoolean(this.get('preferFmp4HlsContainer', false), browser.safari || browser.firefox || browser.chrome || browser.edgeChromium);
+    }
+
+    /**
+     * Get or set experimental client-side HDR tone mapping.
+     * @param {boolean|undefined} val - Flag to enable client-side HDR tone mapping or undefined.
+     * @return {boolean} Client-side HDR tone-mapping state.
+     */
+    enableClientHDRToneMapping(val) {
+        if (val !== undefined) {
+            return this.set('enableClientHDRToneMapping', val.toString(), false);
+        }
+
+        return toBoolean(this.get('enableClientHDRToneMapping', false), false);
+    }
+
+    /**
+     * Get or set the client-side HDR tone-mapping preset.
+     * @param {string|undefined} val - Tone-mapping preset or undefined.
+     * @return {string} Validated tone-mapping preset.
+     */
+    clientHDRToneMappingPreset(val) {
+        if (val !== undefined) {
+            return this.set(
+                'clientHDRToneMappingPreset',
+                normalizeClientHDRToneMappingPreset(val),
+                false
+            );
+        }
+
+        return normalizeClientHDRToneMappingPreset(
+            this.get('clientHDRToneMappingPreset', false)
+        );
+    }
+
+    /**
+     * Get or set the BT.2390 HDR source peak.
+     * @param {number|string|undefined} value - Source peak in nits or undefined.
+     * @return {number|undefined} Validated source peak or setter result.
+     */
+    clientHDRToneMappingBT2390SourcePeakNits(value) {
+        const normalizedValue = normalizeClientHDRToneMappingNumber(
+            value === undefined ?
+                this.get('clientHDRToneMappingBT2390SourcePeakNits', false) :
+                value,
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS,
+            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS,
+            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_SOURCE_PEAK_NITS
+        );
+
+        if (value !== undefined) {
+            return this.set(
+                'clientHDRToneMappingBT2390SourcePeakNits',
+                normalizedValue.toString(),
+                false
+            );
+        }
+
+        return normalizedValue;
+    }
+
+    /**
+     * Get or set the BT.2390 SDR target peak.
+     * @param {number|string|undefined} value - Target peak in nits or undefined.
+     * @return {number|undefined} Validated target peak or setter result.
+     */
+    clientHDRToneMappingBT2390TargetPeakNits(value) {
+        const normalizedValue = normalizeClientHDRToneMappingNumber(
+            value === undefined ?
+                this.get('clientHDRToneMappingBT2390TargetPeakNits', false) :
+                value,
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS,
+            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS,
+            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_TARGET_PEAK_NITS
+        );
+
+        if (value !== undefined) {
+            return this.set(
+                'clientHDRToneMappingBT2390TargetPeakNits',
+                normalizedValue.toString(),
+                false
+            );
+        }
+
+        return normalizedValue;
+    }
+
+    /**
+     * Get or set the BT.2390 knee offset.
+     * @param {number|string|undefined} value - Knee offset or undefined.
+     * @return {number|undefined} Validated knee offset or setter result.
+     */
+    clientHDRToneMappingBT2390KneeOffset(value) {
+        const normalizedValue = normalizeClientHDRToneMappingNumber(
+            value === undefined ?
+                this.get('clientHDRToneMappingBT2390KneeOffset', false) :
+                value,
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET,
+            MIN_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET,
+            MAX_CLIENT_HDR_TONE_MAPPING_BT2390_KNEE_OFFSET
+        );
+
+        if (value !== undefined) {
+            return this.set(
+                'clientHDRToneMappingBT2390KneeOffset',
+                normalizedValue.toString(),
+                false
+            );
+        }
+
+        return normalizedValue;
+    }
+
+    /**
+     * Get or set the CSS desaturation strength applied after HDR tone mapping.
+     * @param {number|string|undefined} value - Desaturation strength or undefined.
+     * @return {number|undefined} Validated strength or setter result.
+     */
+    clientHDRToneMappingDesaturationStrength(value) {
+        const normalizedValue = normalizeClientHDRToneMappingNumber(
+            value === undefined ?
+                this.get(
+                    'clientHDRToneMappingDesaturationStrength',
+                    false
+                ) :
+                value,
+            DEFAULT_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH,
+            MIN_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH,
+            MAX_CLIENT_HDR_TONE_MAPPING_DESATURATION_STRENGTH
+        );
+
+        if (value !== undefined) {
+            return this.set(
+                'clientHDRToneMappingDesaturationStrength',
+                normalizedValue.toString(),
+                false
+            );
+        }
+
+        return normalizedValue;
     }
 
     /**
@@ -727,6 +917,12 @@ export const get = currentSettings.get.bind(currentSettings);
 export const serverConfig = currentSettings.serverConfig.bind(currentSettings);
 export const allowedAudioChannels = currentSettings.allowedAudioChannels.bind(currentSettings);
 export const preferFmp4HlsContainer = currentSettings.preferFmp4HlsContainer.bind(currentSettings);
+export const enableClientHDRToneMapping = currentSettings.enableClientHDRToneMapping.bind(currentSettings);
+export const clientHDRToneMappingPreset = currentSettings.clientHDRToneMappingPreset.bind(currentSettings);
+export const clientHDRToneMappingBT2390SourcePeakNits = currentSettings.clientHDRToneMappingBT2390SourcePeakNits.bind(currentSettings);
+export const clientHDRToneMappingBT2390TargetPeakNits = currentSettings.clientHDRToneMappingBT2390TargetPeakNits.bind(currentSettings);
+export const clientHDRToneMappingBT2390KneeOffset = currentSettings.clientHDRToneMappingBT2390KneeOffset.bind(currentSettings);
+export const clientHDRToneMappingDesaturationStrength = currentSettings.clientHDRToneMappingDesaturationStrength.bind(currentSettings);
 export const limitSegmentLength = currentSettings.limitSegmentLength.bind(currentSettings);
 export const enableCinemaMode = currentSettings.enableCinemaMode.bind(currentSettings);
 export const selectAudioNormalization = currentSettings.selectAudioNormalization.bind(currentSettings);

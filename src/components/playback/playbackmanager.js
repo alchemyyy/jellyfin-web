@@ -36,8 +36,22 @@ import { MediaError } from 'types/mediaError';
 import { getMediaError } from 'utils/mediaError';
 import { bindSkipSegment } from './skipsegment.ts';
 import * as bitrateTest from 'utils/bitrateTest';
+import {
+    configureClientHDRToneMappingPlaybackOptions,
+    isClientHDRToneMappingRuntimeAvailable
+} from 'plugins/htmlVideoPlayer/clientHDRToneMapping';
 
 const UNLIMITED_ITEMS = -1;
+
+function configureClientHDRToneMappingPlayback(player, options, mediaSource) {
+    return configureClientHDRToneMappingPlaybackOptions(
+        options,
+        player?.isLocalPlayer === true,
+        userSettings.enableClientHDRToneMapping(),
+        isClientHDRToneMappingRuntimeAvailable(),
+        mediaSource
+    );
+}
 
 function enableLocalPlaylistManagement(player) {
     if (player.getPlaylist) {
@@ -1754,6 +1768,12 @@ export class PlaybackManager {
                     allowAudioStreamCopy: params.AllowAudioStreamCopy
                 };
 
+                configureClientHDRToneMappingPlayback(
+                    player,
+                    options,
+                    currentMediaSource
+                );
+
                 getPlaybackInfo(player, apiClient, currentItem, deviceProfile, currentMediaSource.Id, liveStreamId, options).then(function (result) {
                     if (validatePlaybackInfoResult(self, result)) {
                         // Changing streams requests only the active source; keep the version availability flag.
@@ -3011,43 +3031,79 @@ export class PlaybackManager {
         function getPlaybackMediaSource(player, apiClient, deviceProfile, item, mediaSourceId, options) {
             options.isPlayback = true;
 
-            return getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSourceId, null, options).then(function (playbackInfoResult) {
-                if (validatePlaybackInfoResult(self, playbackInfoResult)) {
-                    return getOptimalMediaSource(apiClient, item, playbackInfoResult.MediaSources).then(function (mediaSource) {
-                        if (mediaSource) {
-                            // Remember whether alternate versions exists
-                            mediaSource.hasAlternateVersions = playbackInfoResult.MediaSources.length > 1
-                                || item.MediaSources?.length > 1
-                                || (!!mediaSourceId && mediaSourceId !== item.Id);
+            function resolvePlaybackMediaSource(playbackInfoResult, allowClientHDRToneMappingRetry, knownAlternateVersions) {
+                return getOptimalMediaSource(apiClient, item, playbackInfoResult.MediaSources).then(function (mediaSource) {
+                    if (!mediaSource) {
+                        showPlaybackInfoErrorMessage(self, `PlaybackError.${MediaError.NO_MEDIA_ERROR}`);
+                        return Promise.reject();
+                    }
 
-                            if (mediaSource.RequiresOpening && !mediaSource.LiveStreamId) {
-                                options.audioStreamIndex = null;
-                                options.subtitleStreamIndex = null;
+                    // Remember whether alternate versions exists
+                    mediaSource.hasAlternateVersions = knownAlternateVersions
+                        ?? (playbackInfoResult.MediaSources.length > 1
+                            || item.MediaSources?.length > 1
+                            || (!!mediaSourceId && mediaSourceId !== item.Id));
 
-                                return getLiveStream(player, apiClient, item, playbackInfoResult.PlaySessionId, deviceProfile, mediaSource, options).then(function (openLiveStreamResult) {
-                                    return supportsDirectPlay(apiClient, item, openLiveStreamResult.MediaSource).then(function (result) {
-                                        openLiveStreamResult.MediaSource.enableDirectPlay = result;
-                                        openLiveStreamResult.MediaSource.hasAlternateVersions = mediaSource.hasAlternateVersions;
-                                        return openLiveStreamResult.MediaSource;
-                                    });
-                                });
-                            } else {
-                                if (item.AlbumId != null) {
-                                    return apiClient.getItem(apiClient.getCurrentUserId(), item.AlbumId).then(function(result) {
-                                        mediaSource.albumNormalizationGain = result.NormalizationGain;
-                                        return mediaSource;
-                                    });
-                                }
-                                return mediaSource;
+                    if (
+                        allowClientHDRToneMappingRetry
+                        && configureClientHDRToneMappingPlayback(
+                            player,
+                            options,
+                            mediaSource
+                        )
+                    ) {
+                        return getPlaybackInfo(
+                            player,
+                            apiClient,
+                            item,
+                            deviceProfile,
+                            mediaSource.Id,
+                            null,
+                            options
+                        ).then(function (clientHDRPlaybackInfoResult) {
+                            if (!validatePlaybackInfoResult(self, clientHDRPlaybackInfoResult)) {
+                                return Promise.reject();
                             }
-                        } else {
-                            showPlaybackInfoErrorMessage(self, `PlaybackError.${MediaError.NO_MEDIA_ERROR}`);
-                            return Promise.reject();
-                        }
-                    });
-                } else {
+
+                            // The retry returns only the selected source
+                            return resolvePlaybackMediaSource(
+                                clientHDRPlaybackInfoResult,
+                                false,
+                                mediaSource.hasAlternateVersions
+                            );
+                        });
+                    }
+
+                    if (mediaSource.RequiresOpening && !mediaSource.LiveStreamId) {
+                        options.audioStreamIndex = null;
+                        options.subtitleStreamIndex = null;
+
+                        return getLiveStream(player, apiClient, item, playbackInfoResult.PlaySessionId, deviceProfile, mediaSource, options).then(function (openLiveStreamResult) {
+                            return supportsDirectPlay(apiClient, item, openLiveStreamResult.MediaSource).then(function (result) {
+                                openLiveStreamResult.MediaSource.enableDirectPlay = result;
+                                openLiveStreamResult.MediaSource.hasAlternateVersions = mediaSource.hasAlternateVersions;
+                                return openLiveStreamResult.MediaSource;
+                            });
+                        });
+                    }
+
+                    if (item.AlbumId != null) {
+                        return apiClient.getItem(apiClient.getCurrentUserId(), item.AlbumId).then(function(result) {
+                            mediaSource.albumNormalizationGain = result.NormalizationGain;
+                            return mediaSource;
+                        });
+                    }
+
+                    return mediaSource;
+                });
+            }
+
+            return getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSourceId, null, options).then(function (playbackInfoResult) {
+                if (!validatePlaybackInfoResult(self, playbackInfoResult)) {
                     return Promise.reject();
                 }
+
+                return resolvePlaybackMediaSource(playbackInfoResult, true);
             });
         }
 
