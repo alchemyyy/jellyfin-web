@@ -1,7 +1,23 @@
 import DefaultConfig from '../../config.json';
 import fetchLocal from '../../utils/fetchLocal.ts';
 
+const HTML_VIDEO_PLAYER_PLUGIN = 'htmlVideoPlayer/plugin';
+const WEBGPU_VIDEO_PLAYER_PLUGIN = 'webGPUVideoPlayer/plugin';
+
 let data;
+
+function applyPlayerFeatureFlags(config, configuredPlugins) {
+    const plugins = configuredPlugins.filter(plugin => plugin !== WEBGPU_VIDEO_PLAYER_PLUGIN);
+
+    if (!config.enableWebGPUVideoPlayer) {
+        return plugins;
+    }
+
+    const htmlPlayerIndex = plugins.indexOf(HTML_VIDEO_PLAYER_PLUGIN);
+    const insertionIndex = htmlPlayerIndex < 0 ? plugins.length : htmlPlayerIndex;
+    plugins.splice(insertionIndex, 0, WEBGPU_VIDEO_PLAYER_PLUGIN);
+    return plugins;
+}
 
 async function getConfig() {
     if (data) return Promise.resolve(data);
@@ -111,9 +127,9 @@ export function getPlugins() {
         if (!config.plugins) {
             console.error('web config is invalid, missing plugins:', config);
         }
-        return config.plugins || DefaultConfig.plugins;
+        return applyPlayerFeatureFlags(config, config.plugins || DefaultConfig.plugins);
     }).catch(error => {
         console.log('cannot get web config:', error);
-        return DefaultConfig.plugins;
+        return applyPlayerFeatureFlags(DefaultConfig, DefaultConfig.plugins);
     });
 }

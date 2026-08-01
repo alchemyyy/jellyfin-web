@@ -1,6 +1,7 @@
 {
   "includeCorsCredentials": false,
   "multiserver": false,
+  "enableWebGPUVideoPlayer": false,
   "themes": [
     {
       "name": "Apple TV",

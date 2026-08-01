@@ -1,0 +1,17 @@
+.webgpuVideoPlayerCanvas {
+    position: absolute;
+    display: block;
+    z-index: 1;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.webgpuVideoPlayerCanvas-visible {
+    opacity: 1;
+}
+
+.videoPlayerContainer .libassjs-canvas-parent,
+.videoPlayerContainer > canvas:not(.webgpuVideoPlayerCanvas),
+.videoPlayerContainer .videoSubtitles {
+    z-index: 2;
+}

@@ -96,7 +96,7 @@ class PluginManager {
                 console.debug(`Loading plugin (via dynamic import): ${pluginSpec}`);
                 const pluginResult = await import(
                     /* webpackChunkName: "[request]" */
-                    /* webpackExclude: /\.test\.[cm]?[jt]sx?$/ */
+                    /* webpackExclude: /\.(?:test|spec)\.[jt]sx?$/ */
                     `../plugins/${pluginSpec}`
                 );
                 plugin = new pluginResult.default;
