@@ -33,6 +33,7 @@ import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { OutboundWebSocketMessageType } from '@jellyfin/sdk/lib/websocket';
 import { MediaError } from 'types/mediaError';
 import { getMediaError } from 'utils/mediaError';
+import { getTranscodingOffsetTicks } from 'utils/mediaSource';
 import { bindSkipSegment } from './skipsegment.ts';
 import * as bitrateTest from 'utils/bitrateTest';
 import {
@@ -2898,11 +2899,13 @@ export class PlaybackManager {
                         contentType = 'application/x-mpegURL';
                     } else {
                         contentType = getMimeType(type.toLowerCase(), mediaSource.TranscodingContainer);
-
-                        if (mediaUrl.toLowerCase().indexOf('copytimestamps=true') === -1) {
-                            transcodingOffsetTicks = startPosition || 0;
-                        }
                     }
+
+                    transcodingOffsetTicks = getTranscodingOffsetTicks(
+                        mediaSource,
+                        mediaUrl,
+                        startPosition
+                    );
                 }
             } else {
                 // All other media types
