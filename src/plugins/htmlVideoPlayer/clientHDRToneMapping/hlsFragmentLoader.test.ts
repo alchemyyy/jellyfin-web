@@ -91,9 +91,11 @@ describe('client HDR tone-mapping fragment loader', () => {
 
     it('shares one transformer and selects the transformation from the fragment SN', () => {
         const transformer = new RecordingTransformer();
+        const onInitializationSegmentTransformState = vi.fn();
         const LoaderClass = createTransformingFragmentLoader(
             FakeDefaultLoader,
-            transformer
+            transformer,
+            onInitializationSegmentTransformState
         );
         const initializationLoader = new LoaderClass(TEST_HLS_CONFIG);
         const mediaLoader = new LoaderClass(TEST_HLS_CONFIG);
@@ -128,6 +130,8 @@ describe('client HDR tone-mapping fragment loader', () => {
             .toEqual([ 0x01, 0x02, 0xA1 ]);
         expect(getSuccessfulResponseBytes(mediaSuccess))
             .toEqual([ 0x03, 0x04, 0xB2 ]);
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ true ]]);
     });
 
     it('preserves the response, stats, context, network details, and other callbacks', () => {
@@ -164,13 +168,15 @@ describe('client HDR tone-mapping fragment loader', () => {
     });
 
     it('does not let audio initialization or media overwrite main-track state', () => {
+        const onInitializationSegmentTransformState = vi.fn();
         const unchangedTransformer: FMP4SegmentTransformer = {
             transformInitializationSegment: vi.fn(payload => payload),
             transformMediaSegment: vi.fn(payload => payload)
         };
         const LoaderClass = createTransformingFragmentLoader(
             FakeDefaultLoader,
-            unchangedTransformer
+            unchangedTransformer,
+            onInitializationSegmentTransformState
         );
         const mainInitializationLoader = new LoaderClass(TEST_HLS_CONFIG);
         const audioInitializationLoader = new LoaderClass(TEST_HLS_CONFIG);
@@ -220,6 +226,8 @@ describe('client HDR tone-mapping fragment loader', () => {
             .toEqual([ 0x47, 0x00, 0x10 ]);
         expect(unchangedTransformer.transformInitializationSegment)
             .toHaveBeenCalledWith(expect.any(Uint8Array));
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ false ]]);
     });
 
     it('fails open when transformation rejects a fragment', () => {
@@ -232,9 +240,11 @@ describe('client HDR tone-mapping fragment loader', () => {
                 throw error;
             })
         };
+        const onInitializationSegmentTransformState = vi.fn();
         const LoaderClass = createTransformingFragmentLoader(
             FakeDefaultLoader,
-            transformer
+            transformer,
+            onInitializationSegmentTransformState
         );
         const loader = new LoaderClass(TEST_HLS_CONFIG);
         const response = createResponse([ 0x99 ]);
@@ -245,7 +255,7 @@ describe('client HDR tone-mapping fragment loader', () => {
         });
 
         loader.load(
-            createFragmentContext(3),
+            createFragmentContext('initSegment'),
             TEST_LOADER_CONFIGURATION,
             createCallbacks(onSuccess)
         );
@@ -257,6 +267,157 @@ describe('client HDR tone-mapping fragment loader', () => {
             'Client-side HDR tone mapping skipped an unsupported fragment',
             error
         );
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ false ]]);
+    });
+
+    it('fails open when the transform-state callback throws', () => {
+        const callbackError = new Error('State listener failed');
+        const onInitializationSegmentTransformState = vi.fn(() => {
+            throw callbackError;
+        });
+        const LoaderClass = createTransformingFragmentLoader(
+            FakeDefaultLoader,
+            new RecordingTransformer(),
+            onInitializationSegmentTransformState
+        );
+        const loader = new LoaderClass(TEST_HLS_CONFIG);
+        const onSuccess = vi.fn();
+        const consoleWarning = vi.spyOn(console, 'warn').mockImplementation(() => {
+            // Expected fail-open warning
+        });
+
+        loader.load(
+            createFragmentContext('initSegment'),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(onSuccess)
+        );
+        FakeDefaultLoader.instances[0].succeed(
+            createResponse([ 0x41 ]),
+            {}
+        );
+
+        expect(onInitializationSegmentTransformState).toHaveBeenCalledWith(true);
+        expect(getSuccessfulResponseBytes(onSuccess)).toEqual([ 0x41, 0xA1 ]);
+        expect(consoleWarning).toHaveBeenCalledWith(
+            'Client-side HDR tone-mapping state callback failed',
+            callbackError
+        );
+    });
+
+    it('reports every main initialization state change in load order', () => {
+        let initializationCount = 0;
+        const transformer: FMP4SegmentTransformer = {
+            transformInitializationSegment: vi.fn(payload => {
+                initializationCount++;
+                return initializationCount === 2 ?
+                    payload : appendByte(payload, initializationCount);
+            }),
+            transformMediaSegment: vi.fn(payload => payload)
+        };
+        const onInitializationSegmentTransformState = vi.fn();
+        const LoaderClass = createTransformingFragmentLoader(
+            FakeDefaultLoader,
+            transformer,
+            onInitializationSegmentTransformState
+        );
+
+        for (let initializationIndex = 0; initializationIndex < 3;
+            initializationIndex++
+        ) {
+            const loader = new LoaderClass(TEST_HLS_CONFIG);
+            loader.load(
+                createFragmentContext('initSegment'),
+                TEST_LOADER_CONFIGURATION,
+                createCallbacks(vi.fn())
+            );
+            FakeDefaultLoader.instances[initializationIndex].succeed(
+                createResponse([ initializationIndex ]),
+                {}
+            );
+        }
+
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ true ], [ false ], [ true ]]);
+    });
+
+    it('deactivates after a main media segment fails open', () => {
+        let mediaSegmentCount = 0;
+        const transformer: FMP4SegmentTransformer = {
+            transformInitializationSegment: vi.fn(payload =>
+                appendByte(payload, 0xA1)
+            ),
+            transformMediaSegment: vi.fn(payload => {
+                mediaSegmentCount++;
+                return mediaSegmentCount === 1 ?
+                    payload : appendByte(payload, 0xB2);
+            })
+        };
+        const onInitializationSegmentTransformState = vi.fn();
+        const LoaderClass = createTransformingFragmentLoader(
+            FakeDefaultLoader,
+            transformer,
+            onInitializationSegmentTransformState
+        );
+        const initializationLoader = new LoaderClass(TEST_HLS_CONFIG);
+        const failedMediaLoader = new LoaderClass(TEST_HLS_CONFIG);
+        const recoveredMediaLoader = new LoaderClass(TEST_HLS_CONFIG);
+        const replacementInitializationLoader = new LoaderClass(TEST_HLS_CONFIG);
+
+        initializationLoader.load(
+            createFragmentContext('initSegment'),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(vi.fn())
+        );
+        failedMediaLoader.load(
+            createFragmentContext(1),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(vi.fn())
+        );
+        recoveredMediaLoader.load(
+            createFragmentContext(2),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(vi.fn())
+        );
+        replacementInitializationLoader.load(
+            createFragmentContext('initSegment'),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(vi.fn())
+        );
+
+        FakeDefaultLoader.instances[0].succeed(createResponse([ 0x01 ]), {});
+        FakeDefaultLoader.instances[1].succeed(createResponse([ 0x02 ]), {});
+        FakeDefaultLoader.instances[2].succeed(createResponse([ 0x03 ]), {});
+        FakeDefaultLoader.instances[3].succeed(createResponse([ 0x04 ]), {});
+
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ true ], [ false ], [ true ]]);
+    });
+
+    it('reports an unusable main initialization response as unchanged', () => {
+        const onInitializationSegmentTransformState = vi.fn();
+        const LoaderClass = createTransformingFragmentLoader(
+            FakeDefaultLoader,
+            new RecordingTransformer(),
+            onInitializationSegmentTransformState
+        );
+        const loader = new LoaderClass(TEST_HLS_CONFIG);
+        const response: LoaderResponse = {
+            url: 'https://example.test/fragment.m4s',
+            data: 'not an array buffer',
+            code: 200,
+            text: 'OK'
+        };
+
+        loader.load(
+            createFragmentContext('initSegment'),
+            TEST_LOADER_CONFIGURATION,
+            createCallbacks(vi.fn())
+        );
+        FakeDefaultLoader.instances[0].succeed(response, {});
+
+        expect(onInitializationSegmentTransformState.mock.calls)
+            .toEqual([[ false ]]);
     });
 
     it('delegates loader lifecycle and response metadata methods', () => {
