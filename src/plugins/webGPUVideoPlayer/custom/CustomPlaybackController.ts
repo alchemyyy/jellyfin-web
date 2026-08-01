@@ -13,6 +13,7 @@ import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolic
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeAudioBridgeFactory,
+    type CustomDecodeNativeAudioBridgeFactory,
     type CustomDecodeSessionEvent
 } from './CustomDecodeSession';
 import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
@@ -82,14 +83,26 @@ type DrainedAudioTail = {
     outputTelemetry: AudioWorkletTelemetry
 };
 
+type DrainedAudioState = {
+    drained: boolean
+    endMediaTimeMicroseconds: Microseconds | null
+};
+
 const MAXIMUM_CONTROLLER_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(60_000);
 const ZERO_MICROSECONDS = millisecondsToMicroseconds(0);
 
 function createVideoDecodeSession(
     eventHandler: (event: CustomDecodeSessionEvent) => void,
-    audioBridgeFactory: CustomDecodeAudioBridgeFactory | null
+    audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
 ): CustomVideoDecodeSession {
-    return new CustomDecodeSession(eventHandler, undefined, null, audioBridgeFactory);
+    return new CustomDecodeSession(
+        eventHandler,
+        undefined,
+        null,
+        audioBridgeFactory,
+        nativeAudioBridgeFactory
+    );
 }
 
 function createNoopEventHandler(): CustomPlaybackControllerEventHandler {
@@ -128,6 +141,19 @@ function validateCodedDimension(
     }
 }
 
+function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
+    if (options.audioTrackIndex !== null) {
+        validateTrackIndex(options.audioTrackIndex, 'Audio track index');
+    }
+    const audioOutputMode = options.audioOutputMode ?? 'decoded-pcm';
+    if (audioOutputMode !== 'decoded-pcm' && audioOutputMode !== 'native-media') {
+        throw new TypeError('Custom playback audio output mode is invalid');
+    }
+    if (options.audioTrackIndex === null && options.audioOutputMode !== undefined) {
+        throw new TypeError('Custom playback cannot select an audio output mode without audio');
+    }
+}
+
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
     if (options.durationMicroseconds !== null) {
@@ -156,9 +182,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
         'Maximum coded height'
     );
     validateTrackIndex(options.videoTrackIndex, 'Video track index');
-    if (options.audioTrackIndex !== null) {
-        validateTrackIndex(options.audioTrackIndex, 'Audio track index');
-    }
+    validateAudioPlayOptions(options);
     switch (options.videoOutputMode) {
         case 'raw-planes':
             if (
@@ -180,6 +204,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
 
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
+        audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         durationMicroseconds: options.durationMicroseconds,
         maximumCodedHeight: options.maximumCodedHeight,
@@ -281,6 +306,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private readonly monotonicTimeSource: () => Microseconds;
     private readonly maximumVideoDecodeLagMicroseconds: Microseconds;
     private muted = false;
+    private readonly nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null;
+    private nativeAudioClockGeneration: number | null = null;
+    private nativeAudioClockTimeMicroseconds: Microseconds | null = null;
     private pendingEndedGeneration: number | null = null;
     private lastDrainedVideoFrameEndTimeMicroseconds: Microseconds | null = null;
     private readonly pendingPresentationFrames = new Set<DecodedPresentationFrame>();
@@ -336,15 +364,37 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             'Time update interval'
         );
         this.audioOutputFactory = createDefaultAudioOutputFactory(options);
+        this.nativeAudioBridgeFactory = options.nativeAudioBridgeFactory ?? null;
         const videoDecodeSessionFactory: CustomVideoDecodeSessionFactory =
             options.videoDecodeSessionFactory ?? createVideoDecodeSession;
         this.videoDecodeSession = videoDecodeSessionFactory(
             this.handleVideoDecodeEvent,
-            this.audioOutputFactory ? this.createAudioBridge : null
+            this.audioOutputFactory ? this.createAudioBridge : null,
+            this.nativeAudioBridgeFactory
         );
     }
 
     public get currentTimeMicroseconds(): Microseconds {
+        const generation = this.activeGeneration;
+        if (generation === null
+            || this.currentSource?.audioOutputMode !== 'native-media'
+            || !this.videoDecodeSession.getNativeAudioTimeMicroseconds) {
+            return this.clock.mediaTimeMicroseconds;
+        }
+
+        const nativeAudioTimeMicroseconds =
+            this.videoDecodeSession.getNativeAudioTimeMicroseconds();
+        if (nativeAudioTimeMicroseconds !== null) {
+            requireMicroseconds(nativeAudioTimeMicroseconds, 'Native audio clock time');
+            this.nativeAudioClockGeneration = generation;
+            this.nativeAudioClockTimeMicroseconds = nativeAudioTimeMicroseconds;
+            this.clock.synchronize(nativeAudioTimeMicroseconds);
+            return nativeAudioTimeMicroseconds;
+        }
+        if (this.nativeAudioClockGeneration === generation
+            && this.nativeAudioClockTimeMicroseconds !== null) {
+            return this.nativeAudioClockTimeMicroseconds;
+        }
         return this.clock.mediaTimeMicroseconds;
     }
 
@@ -477,18 +527,24 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
         this.volume = volume;
         this.audioOutput?.setVolume(volume);
+        this.videoDecodeSession.setNativeAudioVolume?.(volume);
     }
 
     public setMuted(muted: boolean): void {
         this.requireUsable();
         this.muted = muted;
         this.audioOutput?.setMuted(muted);
+        this.videoDecodeSession.setNativeAudioMuted?.(muted);
     }
 
     /** Reports whether client-side audio switching can avoid server renegotiation. */
     public canSetAudioStreamIndex(): boolean {
-        return !this.destroyed
-            && this.audioOutputFactory !== null;
+        if (this.destroyed) {
+            return false;
+        }
+        return this.currentSource?.audioOutputMode === 'native-media' ?
+            this.nativeAudioBridgeFactory !== null :
+            this.audioOutputFactory !== null;
     }
 
     /** Restarts decode generations and flushes PCM at the current audio-master time. */
@@ -646,13 +702,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
     /** Returns bounded decoder, audio, clock, and fallback diagnostics. */
     public getTelemetry(): CustomPlaybackTelemetry {
+        const currentTimeMicroseconds = this.currentTimeMicroseconds;
         return {
             activeGeneration: this.activeGeneration,
             audioBridge: this.audioBinding?.bridge.getTelemetry() ?? null,
             audioOutput: this.audioOutput?.getTelemetry() ?? null,
             audioPath: this.audioPath,
             clock: this.clock.snapshot(),
-            currentTimeMicroseconds: this.currentTimeMicroseconds,
+            currentTimeMicroseconds,
             durationMicroseconds: this.durationMicroseconds,
             fallbackCount: this.fallbackCount,
             fallbackReason: this.fallbackReason,
@@ -695,6 +752,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.supersedePendingStartup();
         this.activeGeneration = generation;
         this.currentSource = copyPlayOptions(options);
+        this.nativeAudioClockGeneration = null;
+        this.nativeAudioClockTimeMicroseconds = null;
         this.fallbackGeneration = null;
         this.fallbackReason = null;
         this.lastErrorMessage = null;
@@ -775,13 +834,27 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             }
 
             if (options.audioTrackIndex !== null) {
-                if (!this.audioOutputFactory) {
-                    this.activateFallback(
-                        generation,
-                        'audio-output-unavailable',
-                        'No custom PCM output is configured'
-                    );
-                    return;
+                switch (options.audioOutputMode ?? 'decoded-pcm') {
+                    case 'decoded-pcm':
+                        if (!this.audioOutputFactory) {
+                            this.activateFallback(
+                                generation,
+                                'audio-output-unavailable',
+                                'No custom PCM output is configured'
+                            );
+                            return;
+                        }
+                        break;
+                    case 'native-media':
+                        if (!this.nativeAudioBridgeFactory) {
+                            this.activateFallback(
+                                generation,
+                                'audio-output-unavailable',
+                                'No owned native media audio output is configured'
+                            );
+                            return;
+                        }
+                        break;
                 }
             }
 
@@ -789,7 +862,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
                 return;
             }
             this.videoDecodeSession.start({
+                audioOutputMode: options.audioOutputMode,
                 audioTrackIndex: options.audioTrackIndex,
+                durationMicroseconds: options.durationMicroseconds,
                 generation,
                 maximumCodedHeight: options.maximumCodedHeight,
                 maximumCodedWidth: options.maximumCodedWidth,
@@ -867,6 +942,10 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
 
         this.audioPath = event.audio ? 'ready' : 'disabled';
+        if (this.currentSource?.audioOutputMode === 'native-media') {
+            this.videoDecodeSession.setNativeAudioVolume?.(this.volume);
+            this.videoDecodeSession.setNativeAudioMuted?.(this.muted);
+        }
         this.pendingStartup.mediaReady = true;
         void this.completeStartupIfReady(event.generation);
     }
@@ -968,17 +1047,11 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
-        let audioEndTimeMicroseconds: Microseconds | null = null;
-        if (typeof this.currentSource?.audioTrackIndex === 'number') {
-            const drainedAudioTail = this.getDrainedAudioTail(generation);
-            if (!drainedAudioTail) {
-                return;
-            }
-            audioEndTimeMicroseconds = drainedAudioTail.endMediaTimeMicroseconds;
-            if (!this.updateTerminalAudioDrain(generation, drainedAudioTail)) {
-                return;
-            }
+        const drainedAudioState = this.getDrainedAudioState(generation);
+        if (!drainedAudioState.drained) {
+            return;
         }
+        const audioEndTimeMicroseconds = drainedAudioState.endMediaTimeMicroseconds;
 
         const queuedFrameCount = this.videoDecodeSession.getTelemetry().queuedFrameCount;
         if (queuedFrameCount !== 0) {
@@ -1004,6 +1077,27 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
         this.finishEndedPlayback(generation);
+    }
+
+    private getDrainedAudioState(generation: number): DrainedAudioState {
+        if (typeof this.currentSource?.audioTrackIndex !== 'number') {
+            return { drained: true, endMediaTimeMicroseconds: null };
+        }
+        if (this.currentSource.audioOutputMode === 'native-media') {
+            return {
+                drained: true,
+                endMediaTimeMicroseconds: this.currentTimeMicroseconds
+            };
+        }
+
+        const drainedAudioTail = this.getDrainedAudioTail(generation);
+        if (!drainedAudioTail || !this.updateTerminalAudioDrain(generation, drainedAudioTail)) {
+            return { drained: false, endMediaTimeMicroseconds: null };
+        }
+        return {
+            drained: true,
+            endMediaTimeMicroseconds: drainedAudioTail.endMediaTimeMicroseconds
+        };
     }
 
     private getDrainedAudioTail(generation: number): DrainedAudioTail | null {
@@ -1233,6 +1327,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.settlePendingStartup({ fallbackReason: reason, generation, status: 'fallback' });
         this.advanceGeneration();
         this.activeGeneration = null;
+        this.nativeAudioClockGeneration = null;
+        this.nativeAudioClockTimeMicroseconds = null;
         this.setState('fallback', generation);
 
         const fallbackRequest: CustomPlaybackFallbackRequest = {
@@ -1433,16 +1529,28 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     };
 
     private setAudioPlaying(playing: boolean): Promise<void> {
+        const operations: Promise<void>[] = [];
         const audioOutput = this.audioOutput;
-        if (!audioOutput) {
-            return Promise.resolve();
+        if (audioOutput) {
+            try {
+                operations.push(Promise.resolve(audioOutput.setPlaying(playing)));
+            } catch (error) {
+                operations.push(Promise.reject(error));
+            }
         }
 
-        try {
-            return Promise.resolve(audioOutput.setPlaying(playing));
-        } catch (error) {
-            return Promise.reject(error);
+        const setNativeAudioPlaying = this.videoDecodeSession.setNativeAudioPlaying;
+        if (setNativeAudioPlaying) {
+            try {
+                operations.push(Promise.resolve(setNativeAudioPlaying.call(
+                    this.videoDecodeSession,
+                    playing
+                )));
+            } catch (error) {
+                operations.push(Promise.reject(error));
+            }
         }
+        return Promise.all(operations).then((): void => undefined);
     }
 
     private handleActiveAudioTelemetry(
@@ -1712,6 +1820,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         const stoppedGeneration = this.activeGeneration;
         const controlGeneration = this.advanceGeneration();
         this.activeGeneration = null;
+        this.nativeAudioClockGeneration = null;
+        this.nativeAudioClockTimeMicroseconds = null;
         this.resetDrainAndStarvationState();
         if (stoppedGeneration !== null) {
             this.settlePendingStartup({

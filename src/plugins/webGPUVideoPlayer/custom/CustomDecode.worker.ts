@@ -2,10 +2,12 @@
 import {
     ALL_FORMATS,
     AudioSampleSink,
+    EncodedPacketSink,
     Input,
     UrlSource,
     VideoSampleSink,
     type AudioSample,
+    type EncodedPacket,
     type InputAudioTrack,
     type InputVideoTrack,
     type VideoSample
@@ -23,11 +25,14 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    type CustomDecodeAudioOutputMode,
     type CustomDecodeFailureKind,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
     type DecodeWorkerAudioConfiguration,
+    type DecodeWorkerNativeMediaAudioConfiguration,
+    type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse
 } from './DecodeWorkerProtocol';
@@ -57,6 +62,10 @@ import {
     type RawVideoFrameGeometry
 } from './RawVideoFrameCopy';
 import { requireMicroseconds } from './TimeMath';
+import NativeMediaAudioFMP4Remuxer, {
+    type NativeMediaAudioFMP4Codec,
+    type NativeMediaAudioFMP4RemuxOutput
+} from './NativeMediaAudioFMP4Remuxer';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -69,7 +78,7 @@ type MediaSampleIterator<Sample> = {
 };
 
 type DecodeRun = {
-    audioIterator: MediaSampleIterator<AudioSample> | null
+    audioIterator: MediaSampleIterator<AudioSample> | MediaSampleIterator<EncodedPacket> | null
     audioSampleCredits: number
     cancelled: boolean
     decodedVideoGeometry: RawVideoFrameGeometry | null
@@ -96,8 +105,10 @@ type PreparedVideoTrack = {
 };
 
 type PreparedAudioTrack = {
-    audioConfiguration: DecodeWorkerAudioConfiguration
+    audioConfiguration: DecodeWorkerReadyAudioConfiguration
     audioTrack: InputAudioTrack
+    decoderConfig: AudioDecoderConfig
+    outputMode: CustomDecodeAudioOutputMode
 };
 
 type WorkerScope = {
@@ -222,7 +233,9 @@ async function waitForAudioSampleCredit(run: DecodeRun): Promise<boolean> {
     return true;
 }
 
-async function retireIterator<Sample>(iterator: MediaSampleIterator<Sample> | null): Promise<void> {
+async function retireIterator(
+    iterator: { return?: () => Promise<unknown> } | null
+): Promise<void> {
     try {
         await iterator?.return?.();
     } catch {
@@ -342,7 +355,8 @@ async function prepareVideoTrack(
 async function prepareAudioTrack(
     input: Input,
     run: DecodeRun,
-    audioTrackOrdinal: number
+    audioTrackOrdinal: number,
+    outputMode: CustomDecodeAudioOutputMode
 ): Promise<PreparedAudioTrack> {
     const audioTracks = await input.getAudioTracks();
     if (run.cancelled) {
@@ -365,6 +379,34 @@ async function prepareAudioTrack(
     if (!codec || !decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
     }
+    if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
+        throw new UnsupportedCustomDecodeSourceError('The selected audio channel count is unsupported');
+    }
+    if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
+        throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
+    }
+
+    if (outputMode === 'native-media') {
+        const codecMatchesDecoderConfiguration =
+            (codec === 'ac3' && decoderConfig.codec === 'ac-3')
+            || (codec === 'eac3' && decoderConfig.codec === 'ec-3');
+        if (!codecMatchesDecoderConfiguration
+            || (channelCount !== 2 && channelCount !== 6)
+            || sampleRate !== 48_000) {
+            throw new UnsupportedCustomDecodeSourceError(
+                'The selected audio track does not match the qualified native media route'
+            );
+        }
+        const audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration = {
+            channelCount,
+            codec: decoderConfig.codec,
+            mimeType: `audio/mp4; codecs="${decoderConfig.codec}"`,
+            outputMode: 'native-media',
+            sampleRate
+        };
+        return { audioConfiguration, audioTrack, decoderConfig, outputMode };
+    }
+
     await registerRequiredCustomAudioDecoder(codec);
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -375,12 +417,6 @@ async function prepareAudioTrack(
             `The browser cannot decode the selected ${codec} audio configuration`
         );
     }
-    if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
-        throw new UnsupportedCustomDecodeSourceError('The selected audio channel count is unsupported');
-    }
-    if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
-        throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
-    }
 
     return {
         audioConfiguration: {
@@ -388,7 +424,9 @@ async function prepareAudioTrack(
             codec: decoderConfig.codec,
             sampleRate
         },
-        audioTrack
+        audioTrack,
+        decoderConfig,
+        outputMode
     };
 }
 
@@ -698,6 +736,128 @@ async function streamAudioSamples(
     }
 }
 
+function takeOwnedArrayBuffer(data: Uint8Array): ArrayBuffer {
+    if (data.buffer instanceof ArrayBuffer
+        && data.byteOffset === 0
+        && data.byteLength === data.buffer.byteLength) {
+        return data.buffer;
+    }
+    return data.slice().buffer;
+}
+
+async function postNativeAudioOutput(
+    run: DecodeRun,
+    output: NativeMediaAudioFMP4RemuxOutput
+): Promise<boolean> {
+    let initializationSegment = output.initializationSegment;
+    for (const segment of output.mediaSegments) {
+        if (!await waitForAudioSampleCredit(run)) {
+            return false;
+        }
+        if (initializationSegment) {
+            const initializationData = takeOwnedArrayBuffer(initializationSegment);
+            postResponse({
+                data: initializationData,
+                generation: run.generation,
+                type: 'native-audio-init'
+            }, [ initializationData ]);
+            initializationSegment = null;
+        }
+        const data = takeOwnedArrayBuffer(segment.data);
+        postResponse({
+            data,
+            endTimeMicroseconds: segment.endTimeMicroseconds,
+            generation: run.generation,
+            startTimeMicroseconds: segment.startTimeMicroseconds,
+            type: 'native-audio-media'
+        }, [ data ]);
+    }
+    if (initializationSegment) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'Native audio initialization was emitted without a media fragment'
+        );
+    }
+    return true;
+}
+
+async function streamNativeAudioPackets(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    const audioConfiguration = preparedAudioTrack.audioConfiguration;
+    if (!('outputMode' in audioConfiguration)
+        || audioConfiguration.outputMode !== 'native-media') {
+        throw new UnsupportedCustomDecodeSourceError('Native audio configuration is unavailable');
+    }
+    const codec: NativeMediaAudioFMP4Codec = audioConfiguration.codec === 'ac-3' ?
+        'ac3' :
+        'eac3';
+    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const startPacket = await packetSink.getPacket(
+        microsecondsToSeconds(request.startTimeMicroseconds)
+    );
+    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
+        MediaSampleIterator<EncodedPacket>;
+    run.audioIterator = iterator;
+    const remuxer = new NativeMediaAudioFMP4Remuxer({
+        channelCount: audioConfiguration.channelCount as 2 | 6,
+        codec,
+        decoderConfig: preparedAudioTrack.decoderConfig,
+        sampleRate: 48_000
+    });
+
+    try {
+        await remuxer.start();
+        while (!run.cancelled) {
+            const iteratorResult = await iterator.next();
+            if (run.cancelled) {
+                return;
+            }
+            if (iteratorResult.done) {
+                break;
+            }
+            const packet = iteratorResult.value;
+            await remuxer.addPacket({
+                data: packet.data,
+                durationMicroseconds: requireMicroseconds(
+                    packet.microsecondDuration,
+                    'Encoded audio packet duration'
+                ),
+                sequenceNumber: packet.sequenceNumber,
+                timestampMicroseconds: requireMicroseconds(
+                    packet.microsecondTimestamp,
+                    'Encoded audio packet timestamp'
+                ),
+                type: packet.type
+            });
+            if (!await postNativeAudioOutput(run, remuxer.takeOutput())) {
+                return;
+            }
+        }
+        if (run.cancelled) {
+            return;
+        }
+        await remuxer.finalize();
+        await postNativeAudioOutput(run, remuxer.takeOutput());
+    } finally {
+        await remuxer.cancel();
+    }
+}
+
+function streamPreparedAudio(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    switch (preparedAudioTrack.outputMode) {
+        case 'decoded-pcm':
+            return streamAudioSamples(run, request, preparedAudioTrack);
+        case 'native-media':
+            return streamNativeAudioPackets(run, request, preparedAudioTrack);
+    }
+}
+
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
     try {
         const input = new Input({
@@ -717,7 +877,12 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             prepareVideoTrack(input, run, request),
             request.audioTrackIndex === null ?
                 Promise.resolve(null) :
-                prepareAudioTrack(input, run, request.audioTrackIndex)
+                prepareAudioTrack(
+                    input,
+                    run,
+                    request.audioTrackIndex,
+                    request.audioOutputMode ?? 'decoded-pcm'
+                )
         ];
         const [ preparedVideoTrack, preparedAudioTrack ] = await Promise.all(preparedTrackPromises);
         if (run.cancelled) {
@@ -728,7 +893,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         const streamPromises: Array<Promise<void>> = [];
         streamPromises.push(streamVideoFrames(run, request, preparedVideoTrack));
         if (preparedAudioTrack) {
-            streamPromises.push(streamAudioSamples(run, request, preparedAudioTrack));
+            streamPromises.push(streamPreparedAudio(run, request, preparedAudioTrack));
         }
         await settleConcurrentDecodeStreams(streamPromises, (): void => stopRun(run));
         if (!run.cancelled) {

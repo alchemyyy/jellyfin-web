@@ -186,6 +186,9 @@ function readTargetProperty(target, propertyName) {
 
 function normalizeTarget(target) {
     return {
+        browserContextID: readTargetProperty(target, 'browserContextId'),
+        openerID: readTargetProperty(target, 'openerId'),
+        targetID: readTargetProperty(target, 'targetId'),
         title: readTargetProperty(target, 'title'),
         type: readTargetProperty(target, 'type'),
         url: readTargetProperty(target, 'url')
@@ -199,14 +202,48 @@ function getTargetList(targetData) {
     return Array.isArray(targetData?.targetInfos) ? targetData.targetInfos : [];
 }
 
+function normalizeWorkerTargetScope(targetScope) {
+    if (targetScope === null || targetScope === undefined) {
+        return null;
+    }
+    if (!targetScope || typeof targetScope !== 'object' || Array.isArray(targetScope)) {
+        throw new TypeError('Worker target scope must be an object');
+    }
+    const browserContextID = targetScope.browserContextID;
+    const pageTargetID = targetScope.pageTargetID;
+    if (browserContextID !== undefined
+        && (typeof browserContextID !== 'string' || browserContextID.length === 0)) {
+        throw new TypeError('Worker browser context ID must be a nonempty string');
+    }
+    if (typeof pageTargetID !== 'string' || pageTargetID.length === 0) {
+        throw new TypeError('Worker page target ID must be a nonempty string');
+    }
+    return { browserContextID, pageTargetID };
+}
+
+function isTargetInScope(target, targetScope) {
+    if (!targetScope) {
+        return true;
+    }
+    return target.openerID === targetScope.pageTargetID
+        && (targetScope.browserContextID === undefined
+            || target.browserContextID === targetScope.browserContextID);
+}
+
 /** Counts active dedicated workers running the custom decode bundle */
-export function countCustomDecodeWorkerTargets(targetData, customMatcher = null) {
+export function countCustomDecodeWorkerTargets(
+    targetData,
+    customMatcher = null,
+    targetScope = null
+) {
     const targets = getTargetList(targetData);
+    const normalizedTargetScope = normalizeWorkerTargetScope(targetScope);
     let customDecodeWorkerTargetCount = 0;
     let workerTargetCount = 0;
     for (const target of targets) {
         const normalizedTarget = normalizeTarget(target);
-        if (normalizedTarget.type !== 'worker') {
+        if (normalizedTarget.type !== 'worker'
+            || !isTargetInScope(normalizedTarget, normalizedTargetScope)) {
             continue;
         }
         workerTargetCount += 1;
@@ -239,7 +276,11 @@ async function resolveWorkerTargetCounts(options) {
             workerTargetCount: null
         };
     }
-    return countCustomDecodeWorkerTargets(targetData, options.customDecodeWorkerMatcher);
+    return countCustomDecodeWorkerTargets(
+        targetData,
+        options.customDecodeWorkerMatcher,
+        options.workerTargetScope
+    );
 }
 
 function normalizeHeapUsage(heapUsage) {

@@ -445,16 +445,16 @@ test('requires the reusable AudioWorkletNode count to match its expected bound',
     };
 
     const stableResult = validateDOMAndObjectCountSeries(stableSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletNodeCount: 1
     });
     const growingResult = validateDOMAndObjectCountSeries(growingSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletNodeCount: 1
     });
     const overAllocatedResult = validateDOMAndObjectCountSeries(overAllocatedSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletNodeCount: 1
     });
     const disabledResult = validateDOMAndObjectCountSeries(disabledSeries, {
-        expectedAudioWorkletCount: 0
+        expectedAudioWorkletNodeCount: 0
     });
 
     assert.equal(stableResult.passed, true);
@@ -466,6 +466,28 @@ test('requires the reusable AudioWorkletNode count to match its expected bound',
         'live-object-audio-worklet-node-expected-count-mismatch'
     ]);
     assert.equal(disabledResult.passed, true);
+});
+
+test('requires one AudioContext when custom audio is active', () => {
+    const stableSeries = createPassingDOMSeries();
+    stableSeries.liveObjectCounts.AudioContext = createObservations([ 1, 1, 1, 1 ]);
+    const overAllocatedSeries = createPassingDOMSeries();
+    overAllocatedSeries.liveObjectCounts.AudioContext = createObservations([ 2, 2, 2, 2 ]);
+    const unavailableSeries = createPassingDOMSeries();
+
+    assert.equal(validateDOMAndObjectCountSeries(stableSeries, {
+        expectedAudioContextCount: 1
+    }).passed, true);
+    assert.deepEqual(validateDOMAndObjectCountSeries(overAllocatedSeries, {
+        expectedAudioContextCount: 1
+    }).failures, [
+        'live-object-audio-context-expected-count-mismatch'
+    ]);
+    assert.deepEqual(validateDOMAndObjectCountSeries(unavailableSeries, {
+        expectedAudioContextCount: 1
+    }).failures, [
+        'live-object-audio-context-unavailable'
+    ]);
 });
 
 test('requires AudioWorkletProcessor count to match the expected audio path', () => {
@@ -492,26 +514,27 @@ test('requires AudioWorkletProcessor count to match the expected audio path', ()
     };
 
     assert.equal(validateDOMAndObjectCountSeries(customAudioSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletProcessorCount: 1
     }).passed, true);
     assert.deepEqual(validateDOMAndObjectCountSeries(overAllocatedSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletProcessorCount: 1
     }).failures, [
         'performance-count-audio-worklet-processors-expected-count-mismatch'
     ]);
     assert.equal(validateDOMAndObjectCountSeries(disabledAudioSeries, {
-        expectedAudioWorkletCount: 0
+        expectedAudioWorkletProcessorCount: 0
     }).passed, true);
     assert.throws(
         () => validateDOMAndObjectCountSeries(disabledAudioSeries, {
-            expectedAudioWorkletCount: -1
+            expectedAudioWorkletProcessorCount: -1
         }),
         /nonnegative safe integer/u
     );
 
     const unavailableSeries = createPassingDOMSeries();
     const unavailableResult = validateDOMAndObjectCountSeries(unavailableSeries, {
-        expectedAudioWorkletCount: 1
+        expectedAudioWorkletNodeCount: 1,
+        expectedAudioWorkletProcessorCount: 1
     });
     assert.deepEqual(unavailableResult.failures, [
         'live-object-audio-worklet-node-unavailable',

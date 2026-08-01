@@ -327,6 +327,16 @@ test('opens or uses the add-server form after isolated startup', () => {
         addServerButtonAvailable: false,
         serverHostInputAvailable: false
     }), null);
+    assert.equal(resolveServerConnectionLandingAction({
+        addServerButtonAvailable: false,
+        loginPageAvailable: true,
+        serverHostInputAvailable: false
+    }), 'use-selected-server');
+    assert.equal(resolveServerConnectionLandingAction({
+        addServerButtonAvailable: false,
+        loginPageAvailable: false,
+        serverHostInputAvailable: false
+    }), null);
     assert.equal(resolveServerConnectionLandingAction(null), null);
 });
 

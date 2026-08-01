@@ -5,6 +5,7 @@ import type {
     DecodedPresentationFrame
 } from '../WebGPUPresenter';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
+import type CustomDecodeNativeAudioBridge from './CustomDecodeNativeAudioBridge';
 import {
     DecodedVideoGeometryError,
     requireConsistentDecodedVideoGeometry
@@ -15,6 +16,7 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
+    type CustomDecodeAudioOutputMode,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
@@ -22,6 +24,10 @@ import {
     type DecodeWorkerAudioResponse,
     type DecodeWorkerFrameResponse,
     type DecodeWorkerReadyResponse,
+    type DecodeWorkerNativeAudioInitializationResponse,
+    type DecodeWorkerNativeAudioMediaResponse,
+    type DecodeWorkerNativeMediaAudioConfiguration,
+    type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest
 } from './DecodeWorkerProtocol';
 import {
@@ -33,7 +39,9 @@ import {
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 
 export type CustomDecodeSessionStartOptions = {
+    audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
+    durationMicroseconds?: Microseconds | null
     generation: number
     maximumCodedHeight: number
     maximumCodedWidth: number
@@ -47,13 +55,13 @@ export type CustomDecodeSessionStartOptions = {
 
 export type CustomDecodeSessionEvent =
     | {
-        audio: DecodeWorkerAudioConfiguration | null
+        audio: DecodeWorkerReadyAudioConfiguration | null
         codec: string
         generation: number
         type: 'configured'
     }
     | {
-        audio: DecodeWorkerAudioConfiguration | null
+        audio: DecodeWorkerReadyAudioConfiguration | null
         codec: string
         generation: number
         type: 'ready'
@@ -78,11 +86,13 @@ export type CustomDecodeSessionTelemetry = {
     firstFrameMediaTimeMicroseconds: Microseconds | null
     lastAudioMediaTimeMicroseconds: Microseconds | null
     lastFrameMediaTimeMicroseconds: Microseconds | null
+    nativeAudioClockReady: boolean
     peakFrameCount: number
     pendingFrameCount: number
     queuedFrameCount: number
     receivedAudioFrameCount: number
     receivedAudioSampleCount: number
+    receivedNativeAudioSegmentCount: number
     receivedFrameCount: number
     recycledRawFrameCount: number
     staleAudioSampleCount: number
@@ -98,6 +108,7 @@ export type CustomDecodeWorkerFactory = () => Worker;
 export type CustomDecodeAudioBridgeFactory = (
     audioConfiguration: DecodeWorkerAudioConfiguration
 ) => CustomDecodeAudioBridge | Promise<CustomDecodeAudioBridge>;
+export type CustomDecodeNativeAudioBridgeFactory = () => CustomDecodeNativeAudioBridge;
 
 type QueuedFrame = {
     presentationFrame: DecodedPresentationFrame
@@ -105,8 +116,9 @@ type QueuedFrame = {
 };
 
 type WorkerRecord = {
-    audioConfiguration: DecodeWorkerAudioConfiguration | null
+    audioConfiguration: DecodeWorkerReadyAudioConfiguration | null
     audioMediaReady: boolean
+    audioOutputMode: CustomDecodeAudioOutputMode
     audioRequested: boolean
     configurationReceived: boolean
     decodedVideoGeometry: RawVideoFrameGeometry | null
@@ -115,10 +127,13 @@ type WorkerRecord = {
     maximumCodedHeight: number
     maximumCodedWidth: number
     messageHandler: (event: MessageEvent<unknown>) => void
+    nativeAudioElementEnded: boolean
+    nativeAudioEndOfStreamAccepted: boolean
     resolveRetirement: (() => void) | null
     retirementPromise: Promise<void> | null
     retirementTimer: ReturnType<typeof globalThis.setTimeout> | null
     startTimeMicroseconds: Microseconds
+    durationMicroseconds: Microseconds | null
     videoGeometry: RawVideoFrameGeometry | null
     videoCodec: string | null
     videoMediaReady: boolean
@@ -136,11 +151,13 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         firstFrameMediaTimeMicroseconds: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
+        nativeAudioClockReady: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
+        receivedNativeAudioSegmentCount: 0,
         receivedFrameCount: 0,
         recycledRawFrameCount: 0,
         staleAudioSampleCount: 0,
@@ -180,6 +197,13 @@ function isValidVideoDecoderBackend(value: string): value is CustomDecodeVideoDe
     return value === 'bundled-hevc' || value === 'native';
 }
 
+function isNativeMediaAudioConfiguration(
+    configuration: DecodeWorkerReadyAudioConfiguration
+): configuration is DecodeWorkerNativeMediaAudioConfiguration {
+    return 'outputMode' in configuration
+        && configuration.outputMode === 'native-media';
+}
+
 function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): boolean {
     switch (options.videoOutputMode) {
         case 'raw-planes':
@@ -213,12 +237,51 @@ function closePresentationFrame(presentationFrame: DecodedPresentationFrame): vo
     }
 }
 
+function validateAudioStartOptions(
+    options: CustomDecodeSessionStartOptions,
+    decodedAudioAvailable: boolean,
+    nativeAudioAvailable: boolean
+): void {
+    if (!isValidOptionalTrackIndex(options.audioTrackIndex)) {
+        throw new RangeError('Custom decode audio track index must be a non-negative safe integer');
+    }
+    const audioOutputMode = options.audioOutputMode ?? 'decoded-pcm';
+    if (audioOutputMode !== 'decoded-pcm' && audioOutputMode !== 'native-media') {
+        throw new TypeError('Custom decode audio output mode is invalid');
+    }
+    if (options.durationMicroseconds != null) {
+        requireMicroseconds(options.durationMicroseconds, 'Custom decode duration');
+        if (options.durationMicroseconds <= 0) {
+            throw new RangeError('Custom decode duration must be positive');
+        }
+    }
+    if (options.audioTrackIndex == null && options.audioOutputMode !== undefined) {
+        throw new TypeError('Custom decode cannot select an audio output mode without audio');
+    }
+    if (options.audioTrackIndex == null) {
+        return;
+    }
+    if (audioOutputMode === 'decoded-pcm' && !decodedAudioAvailable) {
+        throw new Error('Custom audio decode requires an AudioWorklet bridge');
+    }
+    if (audioOutputMode === 'native-media'
+        && (!nativeAudioAvailable || options.durationMicroseconds == null)) {
+        throw new Error(
+            'Native media audio requires an owned backend factory and a finite duration'
+        );
+    }
+}
+
 /** Owns one bounded, generation-safe custom video decode worker session. */
 export default class CustomDecodeSession implements DecodedFrameProvider {
     private activeAudioBridge: CustomDecodeAudioBridge | null = null;
+    private activeNativeAudioBridge: CustomDecodeNativeAudioBridge | null = null;
     private readonly audioBridgeFactory: CustomDecodeAudioBridgeFactory | null;
     private readonly configuredAudioBridge: CustomDecodeAudioBridge | null;
     private readonly eventHandler: CustomDecodeSessionEventHandler;
+    private readonly nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null;
+    private nativeAudioStopScheduled = false;
+    private nativeAudioStopTail: Promise<void> = Promise.resolve();
     private readonly retiringWorkers = new Set<WorkerRecord>();
     private readonly workerFactory: CustomDecodeWorkerFactory;
     private readonly queuedFrames: QueuedFrame[] = [];
@@ -231,7 +294,8 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         eventHandler: CustomDecodeSessionEventHandler = () => undefined,
         workerFactory: CustomDecodeWorkerFactory = createDefaultWorker,
         audioBridge: CustomDecodeAudioBridge | null = null,
-        audioBridgeFactory: CustomDecodeAudioBridgeFactory | null = null
+        audioBridgeFactory: CustomDecodeAudioBridgeFactory | null = null,
+        nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null = null
     ) {
         if (audioBridge && audioBridgeFactory) {
             throw new TypeError('Provide either a decoded audio bridge or a bridge factory, not both');
@@ -239,6 +303,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         this.audioBridgeFactory = audioBridgeFactory;
         this.configuredAudioBridge = audioBridge;
         this.eventHandler = eventHandler;
+        this.nativeAudioBridgeFactory = nativeAudioBridgeFactory;
         this.workerFactory = workerFactory;
     }
 
@@ -248,8 +313,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         const previousWorker = this.activeWorker;
         this.activeWorker = null;
-        this.activeAudioBridge?.stop(previousWorker?.generation ?? null);
-        this.activeAudioBridge = null;
+        this.stopActiveAudioPaths(previousWorker?.generation ?? null);
         if (previousWorker) {
             void this.beginWorkerRetirement(previousWorker);
         }
@@ -268,21 +332,13 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return;
         }
 
-        const workerRecord = this.createWorkerRecord(
-            worker,
-            options.generation,
-            options.startTimeMicroseconds,
-            options.audioTrackIndex != null,
-            options.videoOutputMode,
-            options.maximumCodedWidth,
-            options.maximumCodedHeight
-        );
+        const workerRecord = this.createWorkerRecord(worker, options);
         this.activeWorker = workerRecord;
         worker.addEventListener('message', workerRecord.messageHandler);
         worker.addEventListener('error', workerRecord.errorHandler);
 
         try {
-            this.postRequest(workerRecord, {
+            const startRequest: DecodeWorkerRequest = {
                 audioSampleCredits: 0,
                 audioTrackIndex: options.audioTrackIndex ?? null,
                 frameCredits: options.videoOutputMode === 'raw-planes' ?
@@ -298,7 +354,11 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 videoDecoderBackend: options.videoDecoderBackend,
                 videoOutputMode: options.videoOutputMode,
                 videoTrackIndex: options.videoTrackIndex
-            });
+            };
+            if (workerRecord.audioOutputMode === 'native-media') {
+                startRequest.audioOutputMode = 'native-media';
+            }
+            this.postRequest(workerRecord, startRequest);
         } catch {
             this.activeWorker = null;
             this.finishWorker(workerRecord);
@@ -310,8 +370,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
     public stop(): Promise<void> {
         const workerRecord = this.activeWorker;
         this.activeWorker = null;
-        this.activeAudioBridge?.stop(workerRecord?.generation ?? null);
-        this.activeAudioBridge = null;
+        this.stopActiveAudioPaths(workerRecord?.generation ?? null);
         this.closeQueuedFrames();
         this.clearPendingFrames();
         this.telemetry.activeGeneration = null;
@@ -322,13 +381,20 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         const retirementPromises: Promise<void>[] = [];
+        if (this.nativeAudioStopScheduled) {
+            retirementPromises.push(this.nativeAudioStopTail);
+        }
         for (const retiringWorker of this.retiringWorkers) {
             retirementPromises.push(this.beginWorkerRetirement(retiringWorker));
         }
-        if (retirementPromises.length === 1) {
-            return retirementPromises[0];
+        switch (retirementPromises.length) {
+            case 0:
+                return Promise.resolve();
+            case 1:
+                return retirementPromises[0];
+            default:
+                return Promise.all(retirementPromises).then((): void => undefined);
         }
-        return Promise.all(retirementPromises).then((): void => undefined);
     }
 
     /** Returns a snapshot of custom decode state and queue accounting. */
@@ -337,6 +403,30 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             ...this.telemetry,
             queuedFrameCount: this.queuedFrames.length
         };
+    }
+
+    /** Returns native audio time only after decoded element progress qualified it. */
+    public getNativeAudioTimeMicroseconds(): Microseconds | null {
+        return this.activeNativeAudioBridge?.getAuthoritativeTimeMicroseconds() ?? null;
+    }
+
+    /** Starts or pauses the optional owned native audio element. */
+    public async setNativeAudioPlaying(playing: boolean): Promise<void> {
+        const nativeAudioBridge = this.activeNativeAudioBridge;
+        if (!nativeAudioBridge) {
+            return;
+        }
+        if (!await nativeAudioBridge.setPlaying(playing)) {
+            throw new Error('Native media audio generation became stale');
+        }
+    }
+
+    public setNativeAudioVolume(volume: number): void {
+        this.activeNativeAudioBridge?.setVolume(volume);
+    }
+
+    public setNativeAudioMuted(muted: boolean): void {
+        this.activeNativeAudioBridge?.setMuted(muted);
     }
 
     /** Transfers the newest decoded frame at or before the HTML clock time. */
@@ -437,16 +527,11 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         if (!isValidTrackIndex(options.videoTrackIndex)) {
             throw new RangeError('Custom decode video track index must be a non-negative safe integer');
         }
-        if (!isValidOptionalTrackIndex(options.audioTrackIndex)) {
-            throw new RangeError('Custom decode audio track index must be a non-negative safe integer');
-        }
-        if (
-            options.audioTrackIndex != null
-            && !this.configuredAudioBridge
-            && !this.audioBridgeFactory
-        ) {
-            throw new Error('Custom audio decode requires an AudioWorklet bridge');
-        }
+        validateAudioStartOptions(
+            options,
+            Boolean(this.configuredAudioBridge || this.audioBridgeFactory),
+            this.nativeAudioBridgeFactory !== null
+        );
         if (!isValidVideoOutputMode(options.videoOutputMode)) {
             throw new TypeError('Custom decode video output mode is invalid');
         }
@@ -463,32 +548,31 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
     private createWorkerRecord(
         worker: Worker,
-        generation: number,
-        startTimeMicroseconds: Microseconds,
-        audioRequested: boolean,
-        videoOutputMode: CustomDecodeVideoOutputMode,
-        maximumCodedWidth: number,
-        maximumCodedHeight: number
+        options: CustomDecodeSessionStartOptions
     ): WorkerRecord {
         const workerRecord: WorkerRecord = {
             audioConfiguration: null,
             audioMediaReady: false,
-            audioRequested,
+            audioOutputMode: options.audioOutputMode ?? 'decoded-pcm',
+            audioRequested: options.audioTrackIndex != null,
             configurationReceived: false,
             decodedVideoGeometry: null,
             errorHandler: (): void => undefined,
-            generation,
-            maximumCodedHeight,
-            maximumCodedWidth,
+            generation: options.generation,
+            maximumCodedHeight: options.maximumCodedHeight,
+            maximumCodedWidth: options.maximumCodedWidth,
             messageHandler: (): void => undefined,
+            nativeAudioElementEnded: false,
+            nativeAudioEndOfStreamAccepted: false,
             resolveRetirement: null,
             retirementPromise: null,
             retirementTimer: null,
-            startTimeMicroseconds,
+            startTimeMicroseconds: options.startTimeMicroseconds,
+            durationMicroseconds: options.durationMicroseconds ?? null,
             videoCodec: null,
             videoGeometry: null,
             videoMediaReady: false,
-            videoOutputMode,
+            videoOutputMode: options.videoOutputMode,
             worker
         };
 
@@ -507,8 +591,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             closeFrameFromUnknownMessage(messageValue);
             if (this.activeWorker === workerRecord) {
                 this.activeWorker = null;
-                this.activeAudioBridge?.stop(workerRecord.generation);
-                this.activeAudioBridge = null;
+                this.stopActiveAudioPaths(workerRecord.generation);
                 this.closeQueuedFrames();
                 this.clearPendingFrames();
                 void this.beginWorkerRetirement(workerRecord);
@@ -534,7 +617,9 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                     this.telemetry.abandonedRawFrameCount += 1;
                 }
                 this.telemetry.staleFrameCount += 1;
-            } else if (messageValue.type === 'audio') {
+            } else if (messageValue.type === 'audio'
+                || messageValue.type === 'native-audio-init'
+                || messageValue.type === 'native-audio-media') {
                 this.telemetry.staleAudioSampleCount += 1;
             }
             return;
@@ -550,14 +635,18 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             case 'audio':
                 this.enqueueAudioSample(workerRecord, messageValue);
                 break;
+            case 'native-audio-init':
+                this.enqueueNativeAudioInitialization(workerRecord, messageValue);
+                break;
+            case 'native-audio-media':
+                this.enqueueNativeAudioMedia(workerRecord, messageValue);
+                break;
             case 'ended':
-                this.telemetry.state = 'ended';
-                this.emitEvent({ generation: messageValue.generation, type: 'ended' });
+                this.handleWorkerEnded(workerRecord);
                 break;
             case 'error':
                 this.activeWorker = null;
-                this.activeAudioBridge?.stop(workerRecord.generation);
-                this.activeAudioBridge = null;
+                this.stopActiveAudioPaths(workerRecord.generation);
                 this.closeQueuedFrames();
                 this.clearPendingFrames();
                 void this.beginWorkerRetirement(workerRecord);
@@ -602,6 +691,18 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             this.handleAudioOutputFailure(workerRecord, 'Decoded audio configuration did not match the request');
             return;
         }
+        if (audioConfiguration) {
+            const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ?
+                'native-media' :
+                'decoded-pcm';
+            if (responseOutputMode !== workerRecord.audioOutputMode) {
+                this.handleAudioOutputFailure(
+                    workerRecord,
+                    'Decoded audio output mode did not match the request'
+                );
+                return;
+            }
+        }
 
         workerRecord.videoCodec = videoCodec;
         workerRecord.audioMediaReady = audioConfiguration === null;
@@ -615,6 +716,11 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         if (!audioConfiguration) {
             this.completeReady(workerRecord, videoCodec, null, null);
+            return;
+        }
+
+        if (isNativeMediaAudioConfiguration(audioConfiguration)) {
+            this.completeNativeAudioReady(workerRecord, audioConfiguration);
             return;
         }
 
@@ -654,6 +760,98 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 }
             }
         );
+    }
+
+    private completeNativeAudioReady(
+        workerRecord: WorkerRecord,
+        audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration
+    ): void {
+        void this.startNativeAudioBridge(workerRecord, audioConfiguration);
+    }
+
+    private async startNativeAudioBridge(
+        workerRecord: WorkerRecord,
+        audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration
+    ): Promise<void> {
+        const bridgeFactory = this.nativeAudioBridgeFactory;
+        const durationMicroseconds = workerRecord.durationMicroseconds;
+        if (!bridgeFactory || durationMicroseconds === null) {
+            this.handleAudioOutputFailure(workerRecord, 'Native media audio has no configured output');
+            return;
+        }
+
+        try {
+            await this.nativeAudioStopTail;
+        } catch {
+            if (this.isWorkerCurrent(workerRecord)) {
+                this.handleAudioOutputFailure(
+                    workerRecord,
+                    'Unable to retire the previous native media audio output'
+                );
+            }
+            return;
+        }
+        if (!this.isWorkerCurrent(workerRecord)) {
+            return;
+        }
+
+        let nativeAudioBridge: CustomDecodeNativeAudioBridge;
+        try {
+            nativeAudioBridge = bridgeFactory();
+        } catch {
+            this.handleAudioOutputFailure(workerRecord, 'Unable to create native media audio output');
+            return;
+        }
+        this.activeNativeAudioBridge = nativeAudioBridge;
+        try {
+            const started = await nativeAudioBridge.start({
+                audioConfiguration,
+                callbacks: {
+                    onClockReady: generation => {
+                        if (this.isWorkerCurrent(workerRecord)
+                            && this.activeNativeAudioBridge === nativeAudioBridge
+                            && generation === workerRecord.generation) {
+                            this.telemetry.nativeAudioClockReady = true;
+                        }
+                    },
+                    onCreditsReleased: audioSegmentCredits => {
+                        this.requestReplacementAudioSamples(workerRecord, audioSegmentCredits);
+                    },
+                    onFailure: message => {
+                        this.handleAudioOutputFailure(workerRecord, message);
+                    },
+                    onEvent: event => {
+                        if (event.type === 'ended'
+                            && this.isWorkerCurrent(workerRecord)
+                            && this.activeNativeAudioBridge === nativeAudioBridge
+                            && event.generation === workerRecord.generation) {
+                            workerRecord.nativeAudioElementEnded = true;
+                            this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+                        }
+                    }
+                },
+                durationMicroseconds,
+                generation: workerRecord.generation,
+                startTimeMicroseconds: workerRecord.startTimeMicroseconds
+            });
+            if (!started
+                || !this.isWorkerCurrent(workerRecord)
+                || this.activeNativeAudioBridge !== nativeAudioBridge) {
+                return;
+            }
+            this.requestReplacementAudioSamples(
+                workerRecord,
+                nativeAudioBridge.initialAudioSegmentCredits
+            );
+        } catch {
+            if (this.isWorkerCurrent(workerRecord)
+                && this.activeNativeAudioBridge === nativeAudioBridge) {
+                this.handleAudioOutputFailure(
+                    workerRecord,
+                    'Unable to initialize native media audio output'
+                );
+            }
+        }
     }
 
     private completeReady(
@@ -728,14 +926,31 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             && this.telemetry.activeGeneration === workerRecord.generation;
     }
 
+    private stopActiveAudioPaths(generation: number | null): void {
+        this.activeAudioBridge?.stop(generation);
+        this.activeAudioBridge = null;
+        if (this.activeNativeAudioBridge) {
+            const nativeAudioBridge = this.activeNativeAudioBridge;
+            const stopPromise = generation === null ?
+                nativeAudioBridge.stop() :
+                nativeAudioBridge.stop(generation);
+            this.nativeAudioStopScheduled = true;
+            this.nativeAudioStopTail = Promise.all([
+                this.nativeAudioStopTail,
+                stopPromise
+            ]).then((): void => undefined);
+            void this.nativeAudioStopTail.catch((): void => undefined);
+            this.activeNativeAudioBridge = null;
+        }
+    }
+
     private handleDecodeProtocolFailure(workerRecord: WorkerRecord, message: string): void {
         if (!this.isWorkerCurrent(workerRecord)) {
             return;
         }
 
         this.activeWorker = null;
-        this.activeAudioBridge?.stop(workerRecord.generation);
-        this.activeAudioBridge = null;
+        this.stopActiveAudioPaths(workerRecord.generation);
         this.closeQueuedFrames();
         this.clearPendingFrames();
         void this.beginWorkerRetirement(workerRecord);
@@ -762,8 +977,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 this.telemetry.abandonedRawFrameCount += 1;
             }
             this.activeWorker = null;
-            this.activeAudioBridge?.stop(workerRecord.generation);
-            this.activeAudioBridge = null;
+            this.stopActiveAudioPaths(workerRecord.generation);
             this.closeQueuedFrames();
             this.clearPendingFrames();
             void this.beginWorkerRetirement(workerRecord);
@@ -887,6 +1101,88 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
     }
 
+    private enqueueNativeAudioInitialization(
+        workerRecord: WorkerRecord,
+        message: DecodeWorkerNativeAudioInitializationResponse
+    ): void {
+        const nativeAudioBridge = this.activeNativeAudioBridge;
+        if (workerRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
+            this.handleDecodeProtocolFailure(
+                workerRecord,
+                'The custom decode worker returned unexpected native audio initialization'
+            );
+            return;
+        }
+        void nativeAudioBridge.enqueueInitialization(message);
+    }
+
+    private enqueueNativeAudioMedia(
+        workerRecord: WorkerRecord,
+        message: DecodeWorkerNativeAudioMediaResponse
+    ): void {
+        const nativeAudioBridge = this.activeNativeAudioBridge;
+        if (workerRecord.audioOutputMode !== 'native-media' || !nativeAudioBridge) {
+            this.handleDecodeProtocolFailure(
+                workerRecord,
+                'The custom decode worker returned unexpected native audio media'
+            );
+            return;
+        }
+        this.telemetry.lastAudioMediaTimeMicroseconds = message.startTimeMicroseconds;
+        this.telemetry.receivedAudioSampleCount += 1;
+        this.telemetry.receivedNativeAudioSegmentCount += 1;
+        void nativeAudioBridge.enqueueMedia(message).then(appended => {
+            if (appended
+                && this.isWorkerCurrent(workerRecord)
+                && this.activeNativeAudioBridge === nativeAudioBridge) {
+                workerRecord.audioMediaReady = true;
+                this.emitReadyEventIfMediaReady(workerRecord);
+            }
+        });
+    }
+
+    private handleWorkerEnded(workerRecord: WorkerRecord): void {
+        const nativeAudioBridge = this.activeNativeAudioBridge;
+        if (workerRecord.audioOutputMode !== 'native-media' || !workerRecord.audioRequested) {
+            this.completeWorkerEnded(workerRecord);
+            return;
+        }
+        if (!nativeAudioBridge) {
+            this.handleAudioOutputFailure(
+                workerRecord,
+                'Native audio output ended without an active backend'
+            );
+            return;
+        }
+        void nativeAudioBridge.endOfStream(workerRecord.generation).then(ended => {
+            if (ended && this.isWorkerCurrent(workerRecord)) {
+                workerRecord.nativeAudioEndOfStreamAccepted = true;
+                this.completeNativeAudioWorkerEndedIfReady(workerRecord);
+            } else if (this.isWorkerCurrent(workerRecord)) {
+                this.handleAudioOutputFailure(
+                    workerRecord,
+                    'Native audio output rejected end of stream'
+                );
+            }
+        });
+    }
+
+    private completeNativeAudioWorkerEndedIfReady(workerRecord: WorkerRecord): void {
+        if (!workerRecord.nativeAudioElementEnded
+            || !workerRecord.nativeAudioEndOfStreamAccepted) {
+            return;
+        }
+        this.completeWorkerEnded(workerRecord);
+    }
+
+    private completeWorkerEnded(workerRecord: WorkerRecord): void {
+        if (!this.isWorkerCurrent(workerRecord) || this.telemetry.state === 'ended') {
+            return;
+        }
+        this.telemetry.state = 'ended';
+        this.emitEvent({ generation: workerRecord.generation, type: 'ended' });
+    }
+
     private requestReplacementFrames(
         workerRecord: WorkerRecord,
         frameCredits: number
@@ -903,8 +1199,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             });
         } catch {
             this.activeWorker = null;
-            this.activeAudioBridge?.stop(workerRecord.generation);
-            this.activeAudioBridge = null;
+            this.stopActiveAudioPaths(workerRecord.generation);
             this.closeQueuedFrames();
             this.clearPendingFrames();
             this.failSession(workerRecord.generation, 'decode-failed', 'Unable to request more decoded frames');
@@ -941,8 +1236,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         this.activeWorker = null;
-        this.activeAudioBridge?.stop(workerRecord.generation);
-        this.activeAudioBridge = null;
+        this.stopActiveAudioPaths(workerRecord.generation);
         this.closeQueuedFrames();
         this.clearPendingFrames();
         void this.beginWorkerRetirement(workerRecord);
@@ -952,8 +1246,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
     private handleWorkerCrash(workerRecord: WorkerRecord): void {
         if (this.activeWorker === workerRecord) {
             this.activeWorker = null;
-            this.activeAudioBridge?.stop(workerRecord.generation);
-            this.activeAudioBridge = null;
+            this.stopActiveAudioPaths(workerRecord.generation);
             this.closeQueuedFrames();
             this.clearPendingFrames();
             this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode worker crashed');
@@ -1046,8 +1339,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return true;
         } catch {
             this.activeWorker = null;
-            this.activeAudioBridge?.stop(workerRecord.generation);
-            this.activeAudioBridge = null;
+            this.stopActiveAudioPaths(workerRecord.generation);
             this.closeQueuedFrames();
             this.clearPendingFrames();
             this.failSession(

@@ -13,6 +13,7 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS
 } from './DecodeWorkerProtocol';
+import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
 import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
 
 function createRawFrame(): TransferableRawVideoFrame {
@@ -413,6 +414,93 @@ describe('DecodeWorkerProtocol', () => {
             displayWidth: 1_920,
             generation: 2,
             type: 'ready'
+        })).toBe(false);
+    });
+
+    it('validates exact native-media routes and transferred fMP4 segments', () => {
+        const nativeStartRequest = {
+            audioOutputMode: 'native-media',
+            audioSampleCredits: 2,
+            audioTrackIndex: 1,
+            frameCredits: 1,
+            generation: 4,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        };
+        expect(isDecodeWorkerRequest(nativeStartRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...nativeStartRequest,
+            audioTrackIndex: null
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeStartRequest,
+            audioOutputMode: 'unknown'
+        })).toBe(false);
+
+        expect(isDecodeWorkerResponse({
+            audio: {
+                channelCount: 6,
+                codec: 'ec-3',
+                mimeType: 'audio/mp4; codecs="ec-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000
+            },
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 4,
+            type: 'ready'
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            audio: {
+                channelCount: 8,
+                codec: 'ec-3',
+                mimeType: 'audio/mp4; codecs="ec-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000
+            },
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 4,
+            type: 'ready'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            data: new ArrayBuffer(128),
+            generation: 4,
+            type: 'native-audio-init'
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            data: new ArrayBuffer(128),
+            endTimeMicroseconds: 1_500_000,
+            generation: 4,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            data: new ArrayBuffer(MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH + 1),
+            endTimeMicroseconds: 1_500_000,
+            generation: 4,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            data: new ArrayBuffer(128),
+            endTimeMicroseconds: 3_500_000,
+            generation: 4,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
         })).toBe(false);
     });
 });

@@ -11,9 +11,11 @@ class MockProcessorPort {
     public closeCount = 0;
     public onmessage: ((event: WorkletMessageEvent) => void) | null = null;
     public readonly postedMessages: unknown[] = [];
+    public readonly postedTransfers: Transferable[][] = [];
 
-    public postMessage(message: unknown): void {
+    public postMessage(message: unknown, transfer: Transferable[] = []): void {
         this.postedMessages.push(message);
+        this.postedTransfers.push([ ...transfer ]);
     }
 
     public close(): void {
@@ -118,8 +120,12 @@ describe('AudioWorkletProcessorSource', () => {
                 telemetryIntervalFrames: 4
             }
         } ]) as ProcessorHarness;
+        const acceptedChannelData = [
+            new Float32Array([ 1, 2, 3, 4 ]),
+            new Float32Array([ 5, 6, 7, 8 ])
+        ];
         processor.port.deliver({
-            channelData: [ new Float32Array([ 1, 2, 3, 4 ]), new Float32Array([ 5, 6, 7, 8 ]) ],
+            channelData: acceptedChannelData,
             generation: 1,
             sequence: 1,
             timestampMicroseconds: -1_000_000,
@@ -138,6 +144,13 @@ describe('AudioWorkletProcessorSource', () => {
         expect(processor.process([], [ firstOutput ])).toBe(true);
         expect(Array.from(firstOutput[0])).toEqual([ 1, 2, 3, 4 ]);
         expect(Array.from(firstOutput[1])).toEqual([ 5, 6, 7, 8 ]);
+        expect(processor.port.postedMessages).toContainEqual({
+            channelBuffers: acceptedChannelData.map(channel => channel.buffer),
+            type: 'recycle'
+        });
+        expect(processor.port.postedTransfers).toContainEqual(
+            acceptedChannelData.map(channel => channel.buffer)
+        );
         expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
             hasPhysicalOutputTimeCorrelation: false,
             mediaTimeContextTimeMicroseconds: null,
@@ -291,6 +304,9 @@ describe('AudioWorkletProcessorSource', () => {
             volume: 1
         });
         expect(processor.chunks.every((chunk): boolean => chunk === undefined)).toBe(true);
+        expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            type: 'recycle'
+        }));
         const idleOutput = [ new Float32Array(4).fill(12) ];
         expect(processor.process([], [ idleOutput ])).toBe(true);
         expect(Array.from(idleOutput[0])).toEqual([ 0, 0, 0, 0 ]);

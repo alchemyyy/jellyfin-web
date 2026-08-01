@@ -6,6 +6,9 @@ import {
     type Microseconds
 } from '../MediaTime';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
+import CustomDecodeNativeAudioBridge, {
+    type OwnedNativeMediaAudioBackendPort
+} from './CustomDecodeNativeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeSessionEvent
 } from './CustomDecodeSession';
@@ -13,6 +16,10 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS
 } from './DecodeWorkerProtocol';
+import type {
+    OwnedNativeMediaAudioEventHandler,
+    OwnedNativeMediaAudioTelemetry
+} from './OwnedNativeMediaAudioBackend';
 import type {
     RawVideoFrameGeometry,
     TransferableRawVideoFrame
@@ -965,6 +972,166 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 9, type: 'stop' });
         expect(audioBridge.stop).toHaveBeenCalledWith(9);
         worker.emitMessage({ generation: 9, type: 'stopped' });
+    });
+
+    it('feeds native fMP4 audio through one owned backend before clock handoff', async () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        let activeBackendGeneration: number | null = null;
+        let backendEventHandler: OwnedNativeMediaAudioEventHandler = event => {
+            if (event.type === 'error') {
+                throw new Error(event.message);
+            }
+        };
+        const appendInitializationSegment = vi.fn(async (): Promise<boolean> => true);
+        const appendMediaSegment = vi.fn(async (): Promise<boolean> => true);
+        const endOfStream = vi.fn(async (): Promise<boolean> => true);
+        const stopBackend = vi.fn(async (generation: number): Promise<boolean> => {
+            if (activeBackendGeneration !== generation) {
+                return false;
+            }
+            activeBackendGeneration = null;
+            return true;
+        });
+        const backend: OwnedNativeMediaAudioBackendPort = {
+            appendInitializationSegment,
+            appendMediaSegment,
+            destroy: vi.fn(async (): Promise<void> => undefined),
+            endOfStream,
+            getAuthoritativeTimeMicroseconds: (): Microseconds | null => null,
+            getTelemetry: (): OwnedNativeMediaAudioTelemetry => ({
+                activeGeneration: activeBackendGeneration,
+                appendedByteLength: 0,
+                appendedSegmentCount: 0,
+                clockQualified: false,
+                currentTimeMicroseconds: null,
+                pendingAppendByteLength: 0,
+                pendingAppendCount: 0,
+                removedRangeCount: 0,
+                staleOperationCount: 0,
+                state: activeBackendGeneration === null ? 'idle' : 'open'
+            }),
+            seek: (): boolean => true,
+            setMuted: (): void => undefined,
+            setPlaybackRate: (): void => undefined,
+            setPlaying: async (): Promise<boolean> => true,
+            setVolume: (): void => undefined,
+            start: async options => {
+                activeBackendGeneration = options.generation;
+            },
+            stop: stopBackend
+        };
+        const nativeAudioBridge = new CustomDecodeNativeAudioBridge(eventHandler => {
+            backendEventHandler = eventHandler;
+            return backend;
+        });
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => worker as unknown as Worker,
+            null,
+            null,
+            () => nativeAudioBridge
+        );
+        session.start({
+            audioOutputMode: 'native-media',
+            audioTrackIndex: 0,
+            durationMicroseconds: secondsToMicroseconds(10),
+            generation: 30,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mp4?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+        expect(worker.postedMessages[0]).toMatchObject({
+            audioOutputMode: 'native-media',
+            audioSampleCredits: 0,
+            audioTrackIndex: 0,
+            generation: 30,
+            type: 'start'
+        });
+
+        const audioConfiguration = {
+            channelCount: 6,
+            codec: 'ec-3',
+            mimeType: 'audio/mp4; codecs="ec-3"',
+            outputMode: 'native-media' as const,
+            sampleRate: 48_000
+        };
+        worker.emitMessage({
+            audio: audioConfiguration,
+            codec: 'hev1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 30,
+            type: 'ready'
+        });
+        await vi.waitFor(() => expect(worker.postedMessages.at(-1)).toEqual({
+            audioSampleCredits: 2,
+            generation: 30,
+            type: 'pull-audio'
+        }));
+        emitFrame(worker, 30, 1_000_000);
+        expect(session.getTelemetry().state).toBe('configured');
+
+        worker.emitMessage({
+            data: new Uint8Array([ 1, 2 ]).buffer,
+            generation: 30,
+            type: 'native-audio-init'
+        });
+        worker.emitMessage({
+            data: new Uint8Array([ 3, 4 ]).buffer,
+            endTimeMicroseconds: 1_500_000,
+            generation: 30,
+            startTimeMicroseconds: 1_000_000,
+            type: 'native-audio-media'
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(appendInitializationSegment).toHaveBeenCalledOnce();
+        expect(appendMediaSegment).toHaveBeenCalledOnce();
+        expect(worker.postedMessages.at(-1)).toEqual({
+            audioSampleCredits: 1,
+            generation: 30,
+            type: 'pull-audio'
+        });
+        expect(session.getTelemetry().state).toBe('ready');
+        expect(events.at(-1)).toEqual({
+            audio: audioConfiguration,
+            codec: 'hev1.2.4.L153.B0',
+            generation: 30,
+            type: 'ready'
+        });
+        const readyEventCount = events.filter(event => event.type === 'ready').length;
+
+        backendEventHandler({ generation: 30, type: 'clock-ready' });
+        expect(session.getTelemetry()).toMatchObject({
+            nativeAudioClockReady: true,
+            state: 'ready'
+        });
+        expect(events.filter(event => event.type === 'ready')).toHaveLength(readyEventCount);
+
+        worker.emitMessage({ generation: 30, type: 'ended' });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(endOfStream).toHaveBeenCalledWith(30);
+        expect(session.getTelemetry().state).toBe('ready');
+
+        backendEventHandler({ generation: 30, type: 'ended' });
+        expect(events.at(-1)).toEqual({ generation: 30, type: 'ended' });
+        expect(session.getTelemetry().state).toBe('ended');
+
+        const stopPromise = session.stop();
+        worker.emitMessage({ generation: 30, type: 'stopped' });
+        await stopPromise;
+        expect(stopBackend).toHaveBeenCalledWith(30);
     });
 
     it('discards a bridge factory result after its decode generation stops', async () => {

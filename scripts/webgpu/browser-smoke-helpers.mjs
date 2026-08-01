@@ -616,6 +616,9 @@ export function resolveServerConnectionLandingAction(state) {
     if (state?.addServerButtonAvailable === true) {
         return 'open-add-server';
     }
+    if (state?.loginPageAvailable === true) {
+        return 'use-selected-server';
+    }
     return null;
 }
 

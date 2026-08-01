@@ -100,6 +100,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             const staleFrameCount = this.getFrameCount(message.channelData);
             this.staleChunks += 1;
             this.droppedFrames += staleFrameCount;
+            this.releaseChannelData(message.channelData);
             this.postTelemetry('stale-generation', message.sequence);
             return;
         }
@@ -107,6 +108,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         const frameCount = this.getFrameCount(message.channelData);
         if (frameCount <= 0 || message.channelData.length !== this.channelCount) {
             this.droppedFrames += Math.max(0, frameCount);
+            this.releaseChannelData(message.channelData);
             this.postTelemetry('overflow', message.sequence);
             return;
         }
@@ -115,6 +117,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             const channel = message.channelData[channelIndex];
             if (!(channel instanceof Float32Array) || channel.length !== frameCount) {
                 this.droppedFrames += frameCount;
+                this.releaseChannelData(message.channelData);
                 this.postTelemetry('overflow', message.sequence);
                 return;
             }
@@ -124,6 +127,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.droppedFrames += frameCount;
             this.overflowFrames += frameCount;
             this.overflowEvents += 1;
+            this.releaseChannelData(message.channelData);
             this.postTelemetry('overflow', message.sequence);
             return;
         }
@@ -165,9 +169,11 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
 
     clearQueue() {
         while (this.chunkCount > 0) {
+            const chunk = this.chunks[this.headChunkIndex];
             this.chunks[this.headChunkIndex] = undefined;
             this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
             this.chunkCount -= 1;
+            this.releaseChannelData(chunk.channelData);
         }
         this.headChunkIndex = 0;
         this.tailChunkIndex = 0;
@@ -233,6 +239,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 this.chunks[this.headChunkIndex] = undefined;
                 this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
                 this.chunkCount -= 1;
+                this.releaseChannelData(chunk.channelData);
             }
         }
 
@@ -263,6 +270,30 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         const remainingFrames = frameCount - wholeSeconds * sampleRate;
         return wholeSeconds * MICROSECONDS_PER_SECOND
             + Math.round((remainingFrames * MICROSECONDS_PER_SECOND) / sampleRate);
+    }
+
+    releaseChannelData(channelData) {
+        if (!Array.isArray(channelData)) {
+            return;
+        }
+        const channelBuffers = [];
+        for (const channel of channelData) {
+            if (channel instanceof Float32Array
+                && channel.buffer instanceof ArrayBuffer
+                && !channelBuffers.includes(channel.buffer)) {
+                channelBuffers.push(channel.buffer);
+            }
+        }
+        if (channelBuffers.length === 0) {
+            return;
+        }
+        try {
+            // Move consumed PCM backing stores out of the persistent worklet
+            // realm so page garbage collection can reclaim them after receipt.
+            this.port.postMessage({channelBuffers, type: 'recycle'}, channelBuffers);
+        } catch {
+            // Audio output must continue if the diagnostic recycling path fails.
+        }
     }
 
     postTelemetry(reason, sequence) {

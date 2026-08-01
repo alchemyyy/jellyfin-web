@@ -744,17 +744,49 @@ function validateExactBaselineSeries(
     });
 }
 
-function getExpectedAudioWorkletCount(options) {
-    const expectedCount = options.expectedAudioWorkletCount;
+function getExpectedCount(options, propertyName, label) {
+    const expectedCount = options[propertyName];
     if (expectedCount === undefined) {
         return null;
     }
     if (!Number.isSafeInteger(expectedCount) || expectedCount < 0) {
-        throw new TypeError(
-            'Expected AudioWorklet count must be a nonnegative safe integer'
-        );
+        throw new TypeError(`${label} must be a nonnegative safe integer`);
     }
     return expectedCount;
+}
+
+function validateLiveObjectCountSeries(
+    name,
+    observations,
+    failureCodePrefix,
+    requiredSessionCount,
+    expectedAudioContextCount,
+    expectedAudioWorkletNodeCount
+) {
+    let expectedValue = null;
+    switch (name) {
+        case 'AudioContext':
+            expectedValue = expectedAudioContextCount;
+            break;
+        case 'AudioWorkletNode':
+            expectedValue = expectedAudioWorkletNodeCount;
+            break;
+        default:
+            break;
+    }
+    return expectedValue === null ?
+        validateNamedSoakSeries(
+            observations,
+            RELEASE_DOM_SOAK_THRESHOLDS.liveObjects,
+            failureCodePrefix,
+            { requiredSessionCount }
+        ) :
+        validateExactBaselineSeries(
+            observations,
+            failureCodePrefix,
+            requiredSessionCount,
+            expectedValue
+        );
 }
 
 function recordUnavailableExpectedCount(
@@ -796,11 +828,25 @@ function validateZeroSeries(observations, failureCodePrefix, requiredSessionCoun
  * Applies the fixed release limits for DOM and resource object counts.
  * Worker counts are stopped-session custom decode worker targets, not all browser workers.
  * Performance resource counts must not trend above their warmed session-one baseline.
- * When an expected AudioWorklet count is supplied, both CDP probes are mandatory and exact.
+ * Expected AudioContext and AudioWorklet counts make their CDP probes mandatory and exact.
  */
 export function validateDOMAndObjectCountSeries(series, options = {}) {
     const requiredSessionCount = requireSoakSessionCount(options);
-    const expectedAudioWorkletCount = getExpectedAudioWorkletCount(options);
+    const expectedAudioContextCount = getExpectedCount(
+        options,
+        'expectedAudioContextCount',
+        'Expected AudioContext count'
+    );
+    const expectedAudioWorkletNodeCount = getExpectedCount(
+        options,
+        'expectedAudioWorkletNodeCount',
+        'Expected AudioWorkletNode count'
+    );
+    const expectedAudioWorkletProcessorCount = getExpectedCount(
+        options,
+        'expectedAudioWorkletProcessorCount',
+        'Expected AudioWorkletProcessor count'
+    );
     const inputSeries = requireObject(series, 'DOM and object-count series');
     const liveObjectCounts = requireObject(
         inputSeries.liveObjectCounts,
@@ -847,26 +893,29 @@ export function validateDOMAndObjectCountSeries(series, options = {}) {
         }
         normalizedNames.add(normalizedName);
         const failureCodePrefix = `live-object-${normalizedName}`;
-        const result = name === 'AudioWorkletNode' ?
-            validateExactBaselineSeries(
-                observations,
-                failureCodePrefix,
-                requiredSessionCount,
-                expectedAudioWorkletCount
-            ) :
-            validateNamedSoakSeries(
-                observations,
-                RELEASE_DOM_SOAK_THRESHOLDS.liveObjects,
-                failureCodePrefix,
-                { requiredSessionCount }
-            );
+        const result = validateLiveObjectCountSeries(
+            name,
+            observations,
+            failureCodePrefix,
+            requiredSessionCount,
+            expectedAudioContextCount,
+            expectedAudioWorkletNodeCount
+        );
         liveObjectFailures.push(...result.failures);
         liveObjectMetrics[name] = result.metrics;
     }
     recordUnavailableExpectedCount(
         liveObjectCounts,
+        'AudioContext',
+        expectedAudioContextCount,
+        'live-object-audio-context-unavailable',
+        liveObjectFailures,
+        liveObjectMetrics
+    );
+    recordUnavailableExpectedCount(
+        liveObjectCounts,
         'AudioWorkletNode',
-        expectedAudioWorkletCount,
+        expectedAudioWorkletNodeCount,
         'live-object-audio-worklet-node-unavailable',
         liveObjectFailures,
         liveObjectMetrics
@@ -891,12 +940,12 @@ export function validateDOMAndObjectCountSeries(series, options = {}) {
             RELEASE_PERFORMANCE_OBJECT_SOAK_THRESHOLDS.retainedResources;
         const failureCodePrefix = `performance-count-${normalizedName}`;
         const result = name === 'AudioWorkletProcessors'
-            && expectedAudioWorkletCount !== null ?
+            && expectedAudioWorkletProcessorCount !== null ?
             validateExactBaselineSeries(
                 observations,
                 failureCodePrefix,
                 requiredSessionCount,
-                expectedAudioWorkletCount
+                expectedAudioWorkletProcessorCount
             ) :
             validateNamedSoakSeries(
                 observations,
@@ -910,7 +959,7 @@ export function validateDOMAndObjectCountSeries(series, options = {}) {
     recordUnavailableExpectedCount(
         performanceObjectCounts,
         'AudioWorkletProcessors',
-        expectedAudioWorkletCount,
+        expectedAudioWorkletProcessorCount,
         'performance-count-audio-worklet-processors-unavailable',
         performanceObjectFailures,
         performanceObjectMetrics

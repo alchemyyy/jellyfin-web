@@ -297,6 +297,53 @@ test('filters custom decode workers from direct data and a target-query callback
     });
 });
 
+test('counts only workers opened by the controlled page and browser context', () => {
+    const targetData = {
+        targetInfos: [
+            {
+                browserContextId: 'controlled-context',
+                openerId: 'controlled-page',
+                targetId: 'controlled-custom-worker',
+                type: 'worker',
+                url: 'https://frontend.test/CustomDecode.worker.bundle.js'
+            },
+            {
+                browserContextId: 'controlled-context',
+                openerId: 'controlled-page',
+                targetId: 'controlled-other-worker',
+                type: 'worker',
+                url: 'https://frontend.test/other.worker.js'
+            },
+            {
+                browserContextId: 'controlled-context',
+                openerId: 'unrelated-page',
+                targetId: 'unrelated-same-context-worker',
+                type: 'worker',
+                url: 'https://frontend.test/CustomDecode.worker.bundle.js'
+            },
+            {
+                browserContextId: 'unrelated-context',
+                openerId: 'controlled-page',
+                targetId: 'unrelated-context-worker',
+                type: 'worker',
+                url: 'https://frontend.test/CustomDecode.worker.bundle.js'
+            }
+        ]
+    };
+
+    assert.deepEqual(countCustomDecodeWorkerTargets(targetData, null, {
+        browserContextID: 'controlled-context',
+        pageTargetID: 'controlled-page'
+    }), {
+        customDecodeWorkerTargetCount: 1,
+        workerTargetCount: 2
+    });
+    assert.throws(
+        () => countCustomDecodeWorkerTargets(targetData, null, {}),
+        /page target ID/u
+    );
+});
+
 test('forces garbage collection only through the explicit option', async () => {
     const commandMock = createCommandMock([
         { method: 'HeapProfiler.collectGarbage', result: {} },

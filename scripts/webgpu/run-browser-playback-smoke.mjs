@@ -275,6 +275,36 @@ async function getBrowserPageTarget(configuration) {
     return pageTarget;
 }
 
+async function getRetentionWorkerTargetScope(client, pageTarget, configuration) {
+    if (configuration.soakSessionCount === 0) {
+        return null;
+    }
+    const pageTargetID = pageTarget.id ?? pageTarget.targetId;
+    if (typeof pageTargetID !== 'string' || pageTargetID.length === 0) {
+        throw new SmokeHarnessError(
+            'debug-page-id-missing',
+            'The controlled Chromium page target has no target identifier'
+        );
+    }
+    const targetInformationResponse = await client.send('Target.getTargetInfo', {
+        targetId: pageTargetID
+    });
+    const targetInformation = targetInformationResponse?.targetInfo;
+    if (targetInformation?.targetId !== pageTargetID) {
+        throw new SmokeHarnessError(
+            'debug-page-info-missing',
+            'Chromium did not return target information for the controlled page'
+        );
+    }
+    const browserContextID = targetInformation.browserContextId;
+    return {
+        ...(typeof browserContextID === 'string' && browserContextID.length > 0 ?
+            { browserContextID } :
+            {}),
+        pageTargetID
+    };
+}
+
 async function getBrowserWebSocketDebuggerURL(configuration) {
     let response;
     try {
@@ -558,13 +588,18 @@ async function connectToConfiguredServer(client, configuration) {
             };
             return {
                 addServerButtonAvailable: isVisible(document.querySelector('.btnAddServer')),
+                loginPageAvailable: isVisible(document.querySelector('#loginPage')),
                 locationHash: location.hash,
                 serverHostInputAvailable: isVisible(document.querySelector('#txtServerHost'))
             };
         })()`),
         timeoutMilliseconds: configuration.timeoutMilliseconds
     });
-    if (resolveServerConnectionLandingAction(landingState) === 'open-add-server') {
+    const landingAction = resolveServerConnectionLandingAction(landingState);
+    if (landingAction === 'use-selected-server') {
+        return;
+    }
+    if (landingAction === 'open-add-server') {
         await trustedClickSelector(
             client,
             [ '.btnAddServer' ],
@@ -2663,12 +2698,13 @@ async function runStartupComparison(configuration) {
     return comparisonResult;
 }
 
-async function collectPostStopRetentionSnapshot(client, sessionNumber) {
+async function collectPostStopRetentionSnapshot(client, sessionNumber, workerTargetScope) {
     await sleep(RETENTION_SETTLE_MILLISECONDS);
     await client.send('HeapProfiler.collectGarbage');
     return collectCDPRetentionSnapshot(client, sessionNumber, {
         forceGarbageCollection: true,
-        queryWorkerTargets: () => client.send('Target.getTargets')
+        queryWorkerTargets: () => client.send('Target.getTargets'),
+        workerTargetScope
     });
 }
 
@@ -2798,10 +2834,34 @@ function createAvailablePerformanceObjectSeries(sessionObservations, failures) {
     return performanceObjectCounts;
 }
 
+function requireRetentionBaselineCount(value, failureCode, failures) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        failures.push(failureCode);
+        return null;
+    }
+    return value;
+}
+
+function addExpectedRetentionCount(baselineCount, additionalCount) {
+    if (baselineCount === null) {
+        return null;
+    }
+    const expectedCount = baselineCount + additionalCount;
+    if (!Number.isSafeInteger(expectedCount)) {
+        throw new SmokeHarnessError(
+            'retention-baseline-count-overflow',
+            'A retention baseline resource count cannot be incremented safely'
+        );
+    }
+    return expectedCount;
+}
+
 function validateRetentionSoakObservations(
     sessionObservations,
     requiredSessionCount,
-    expectedAudioPath
+    expectedAudioContextCount,
+    expectedAudioWorkletNodeCount,
+    expectedAudioWorkletProcessorCount
 ) {
     const failures = [];
     const memorySeries = {
@@ -2872,7 +2932,10 @@ function validateRetentionSoakObservations(
     ];
     if (requiredDOMSeries.every(series => series !== null)) {
         DOMValidation = validateDOMAndObjectCountSeries(DOMSeries, {
-            expectedAudioWorkletCount: expectedAudioPath === 'ready' ? 1 : 0,
+            expectedAudioContextCount: expectedAudioContextCount ?? undefined,
+            expectedAudioWorkletNodeCount: expectedAudioWorkletNodeCount ?? undefined,
+            expectedAudioWorkletProcessorCount:
+                expectedAudioWorkletProcessorCount ?? undefined,
             requiredSessionCount
         });
         appendFailures(failures, 'retention-dom', DOMValidation.failures);
@@ -2891,6 +2954,46 @@ async function runRetentionSoak(options) {
     const sessionObservations = [];
     let latestSessionGeneration = null;
     let latestStopSnapshot = null;
+    const prePlaybackRetentionSnapshot = await collectPostStopRetentionSnapshot(
+        options.client,
+        0,
+        options.workerTargetScope
+    );
+    const baselineCustomWorkerCount =
+        prePlaybackRetentionSnapshot.workerTargets.customDecodeWorkerTargetCount;
+    if (baselineCustomWorkerCount === null) {
+        failures.push('retention-baseline:worker-target-count-unavailable');
+    } else if (baselineCustomWorkerCount !== 0) {
+        failures.push('retention-baseline:custom-decode-worker-active');
+    }
+    const baselineAudioContextCount = requireRetentionBaselineCount(
+        prePlaybackRetentionSnapshot.liveObjects.AudioContext?.count,
+        'retention-baseline:audio-context-count-unavailable',
+        failures
+    );
+    const baselineAudioWorkletNodeCount = requireRetentionBaselineCount(
+        prePlaybackRetentionSnapshot.liveObjects.AudioWorkletNode?.count,
+        'retention-baseline:audio-worklet-node-count-unavailable',
+        failures
+    );
+    const baselineAudioWorkletProcessorCount = requireRetentionBaselineCount(
+        prePlaybackRetentionSnapshot.performanceMetrics.counts.AudioWorkletProcessors,
+        'retention-baseline:audio-worklet-processor-count-unavailable',
+        failures
+    );
+    const expectedCustomAudioResourceIncrement =
+        options.configuration.expectedAudioPath === 'ready' ? 1 : 0;
+    const expectedAudioContextCount = options.configuration.expectedAudioPath === 'ready' ?
+        addExpectedRetentionCount(baselineAudioContextCount, 1) :
+        null;
+    const expectedAudioWorkletNodeCount = addExpectedRetentionCount(
+        baselineAudioWorkletNodeCount,
+        expectedCustomAudioResourceIncrement
+    );
+    const expectedAudioWorkletProcessorCount = addExpectedRetentionCount(
+        baselineAudioWorkletProcessorCount,
+        expectedCustomAudioResourceIncrement
+    );
     for (
         let sessionNumber = 1;
         sessionNumber <= options.configuration.soakSessionCount;
@@ -2965,7 +3068,8 @@ async function runRetentionSoak(options) {
 
         const retentionSnapshot = await collectPostStopRetentionSnapshot(
             options.client,
-            sessionNumber
+            sessionNumber,
+            options.workerTargetScope
         );
         const customWorkerCount =
             retentionSnapshot.workerTargets.customDecodeWorkerTargetCount;
@@ -2991,7 +3095,9 @@ async function runRetentionSoak(options) {
     const retentionValidation = validateRetentionSoakObservations(
         sessionObservations,
         options.configuration.soakSessionCount,
-        options.configuration.expectedAudioPath
+        expectedAudioContextCount,
+        expectedAudioWorkletNodeCount,
+        expectedAudioWorkletProcessorCount
     );
     failures.push(...retentionValidation.failures);
     if (options.browserErrorMonitor.counts.videoSampleOwnershipWarnings > 0) {
@@ -3007,6 +3113,7 @@ async function runRetentionSoak(options) {
         failures,
         observations: {
             retentionSoak: {
+                baseline: prePlaybackRetentionSnapshot,
                 metrics: retentionValidation.metrics,
                 sessionCount: sessionObservations.length,
                 sessions: sessionObservations
@@ -3490,7 +3597,12 @@ async function runConfiguredFailureInjection(options) {
     }
 }
 
-async function runPlaybackExercise(client, configuration, browserErrorMonitor) {
+async function runPlaybackExercise(
+    client,
+    configuration,
+    browserErrorMonitor,
+    workerTargetScope
+) {
     const serverID = await waitForValue({
         accept: value => typeof value === 'string' && value.length > 0,
         description: 'the active Jellyfin server identifier',
@@ -3549,7 +3661,8 @@ async function runPlaybackExercise(client, configuration, browserErrorMonitor) {
                 cleanupState,
                 client,
                 configuration,
-                initialPlayButton: playButton
+                initialPlayButton: playButton,
+                workerTargetScope
             });
             return retentionSoakResult;
         }
@@ -3860,6 +3973,11 @@ async function runSmoke(configuration) {
             client.send('Network.setBypassServiceWorker', { bypass: true }),
             client.send('Network.setCacheDisabled', { cacheDisabled: true })
         ]);
+        const workerTargetScope = await getRetentionWorkerTargetScope(
+            client,
+            pageTarget,
+            configuration
+        );
         await client.send('Page.bringToFront');
         await clearFrontendRuntimeCaches(client);
         await reloadFreshFrontend(client, configuration);
@@ -3882,7 +4000,8 @@ async function runSmoke(configuration) {
                 await runPlaybackExercise(
                     client,
                     configuration,
-                    browserErrorMonitor
+                    browserErrorMonitor,
+                    workerTargetScope
                 );
         } catch (error) {
             attachBrowserDiagnostics(error, browserErrorMonitor);

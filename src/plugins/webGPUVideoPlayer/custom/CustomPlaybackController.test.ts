@@ -14,6 +14,7 @@ import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
     CustomDecodeAudioBridgeFactory,
+    CustomDecodeNativeAudioBridgeFactory,
     CustomDecodeSessionEvent,
     CustomDecodeSessionStartOptions,
     CustomDecodeSessionTelemetry
@@ -45,12 +46,14 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         firstFrameMediaTimeMicroseconds: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
+        nativeAudioClockReady: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
         receivedFrameCount: 0,
+        receivedNativeAudioSegmentCount: 0,
         recycledRawFrameCount: 0,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
@@ -62,11 +65,15 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
 }
 
 class FakeVideoDecodeSession implements CustomVideoDecodeSession {
+    private nativeAudioTimeMicroseconds: Microseconds | null = null;
     private pendingFrameCount = 0;
     private readonly queuedFrames: DecodedPresentationFrame[] = [];
     public readonly starts: CustomDecodeSessionStartOptions[] = [];
     public readonly acknowledgeFrame = vi.fn((): boolean => true);
     public readonly discardFrame = vi.fn((): boolean => true);
+    public readonly setNativeAudioMuted = vi.fn();
+    public readonly setNativeAudioPlaying = vi.fn(async (): Promise<void> => undefined);
+    public readonly setNativeAudioVolume = vi.fn();
     public readonly stop = vi.fn((): Promise<void> => {
         for (const queuedFrame of this.queuedFrames) {
             if (queuedFrame.outputMode === 'video-frame') {
@@ -119,12 +126,22 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
         };
     }
 
+    public getNativeAudioTimeMicroseconds(): Microseconds | null {
+        return this.nativeAudioTimeMicroseconds;
+    }
+
     public queueFrame(frame: DecodedPresentationFrame): void {
         this.queuedFrames.push(frame);
     }
 
     public setPendingFrameCount(pendingFrameCount: number): void {
         this.pendingFrameCount = pendingFrameCount;
+    }
+
+    public setNativeAudioTimeMicroseconds(
+        nativeAudioTimeMicroseconds: Microseconds | null
+    ): void {
+        this.nativeAudioTimeMicroseconds = nativeAudioTimeMicroseconds;
     }
 
     public async prepareAudio(
@@ -465,6 +482,131 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
         await harness.controller.destroy();
         expect(harness.audioOutput?.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('owns native media audio controls and hands clock authority over once', async () => {
+        const nativeAudioBridgeFactory = (
+            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
+        );
+        const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
+        const playOptions: CustomPlaybackPlayOptions = {
+            ...createPlayOptions(0),
+            audioOutputMode: 'native-media'
+        };
+        const startPromise = harness.controller.play(playOptions);
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!generation) {
+            throw new Error('Native media audio decode did not start');
+        }
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            audioOutputMode: 'native-media',
+            audioTrackIndex: 0,
+            durationMicroseconds: secondsToMicroseconds(120),
+            generation
+        });
+        harness.videoDecodeSession.emit({
+            audio: {
+                channelCount: 6,
+                codec: 'ec-3',
+                mimeType: 'audio/mp4; codecs="ec-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000
+            },
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+        await expect(startPromise).resolves.toEqual({
+            fallbackReason: null,
+            generation,
+            status: 'started'
+        });
+        expect(harness.videoDecodeSession.setNativeAudioVolume)
+            .toHaveBeenLastCalledWith(1);
+        expect(harness.videoDecodeSession.setNativeAudioMuted)
+            .toHaveBeenLastCalledWith(false);
+        expect(harness.videoDecodeSession.setNativeAudioPlaying)
+            .toHaveBeenLastCalledWith(true);
+        expect(harness.controller.canSetAudioStreamIndex()).toBe(true);
+
+        harness.setMonotonicTime(secondsToMicroseconds(10.25));
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
+        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(secondsToMicroseconds(6));
+        expect(harness.controller.currentTimeMicroseconds).toBe(6_000_000);
+        expect(harness.controller.getTelemetry().clock.mediaTimeMicroseconds)
+            .toBe(6_000_000);
+
+        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(null);
+        harness.setMonotonicTime(secondsToMicroseconds(10.5));
+        expect(harness.controller.currentTimeMicroseconds).toBe(6_000_000);
+
+        harness.controller.setVolume(0.4);
+        harness.controller.setMuted(true);
+        expect(harness.videoDecodeSession.setNativeAudioVolume)
+            .toHaveBeenLastCalledWith(0.4);
+        expect(harness.videoDecodeSession.setNativeAudioMuted)
+            .toHaveBeenLastCalledWith(true);
+
+        harness.controller.pause();
+        expect(harness.videoDecodeSession.setNativeAudioPlaying)
+            .toHaveBeenLastCalledWith(false);
+        harness.controller.resume();
+        expect(harness.videoDecodeSession.setNativeAudioPlaying)
+            .toHaveBeenLastCalledWith(true);
+
+        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(
+            secondsToMicroseconds(120)
+        );
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.events.filter(event => event.type === 'ended')).toHaveLength(1);
+        await harness.controller.destroy();
+    });
+
+    it('falls back in the same session when owned native audio play is rejected', async () => {
+        const nativeAudioBridgeFactory = (
+            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
+        );
+        const harness = createControllerHarness(false, { nativeAudioBridgeFactory });
+        const startPromise = harness.controller.play({
+            ...createPlayOptions(0),
+            audioOutputMode: 'native-media'
+        });
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!generation) {
+            throw new Error('Native media audio decode did not start');
+        }
+        harness.videoDecodeSession.setNativeAudioPlaying.mockRejectedValueOnce(
+            new Error('Native audio playback was blocked')
+        );
+        harness.videoDecodeSession.emit({
+            audio: {
+                channelCount: 2,
+                codec: 'ac-3',
+                mimeType: 'audio/mp4; codecs="ac-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000
+            },
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+
+        await expect(startPromise).resolves.toEqual({
+            fallbackReason: 'audio-output-failed',
+            generation,
+            status: 'fallback'
+        });
+        expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+            disposition: 'same-session-native',
+            generation,
+            reason: 'audio-output-failed'
+        }) ]);
+        expect(harness.controller.playbackState).toBe('fallback');
+        await harness.controller.destroy();
     });
 
     it('does not pin the audio-master clock to repeated uncorrelated telemetry', async () => {

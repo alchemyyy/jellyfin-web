@@ -9,6 +9,7 @@ import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
     CustomDecodeAudioBridgeFactory,
+    CustomDecodeNativeAudioBridgeFactory,
     CustomDecodeSessionEvent,
     CustomDecodeSessionEventHandler,
     CustomDecodeSessionStartOptions,
@@ -16,6 +17,7 @@ import type {
 } from './CustomDecodeSession';
 import type {
     CustomDecodeFailureKind,
+    CustomDecodeAudioOutputMode,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode,
@@ -48,6 +50,7 @@ export type CustomPlaybackFallbackDisposition =
     | 'same-session-native';
 
 export type CustomPlaybackPlayOptions = {
+    audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds | null
     maximumCodedHeight: number
@@ -103,6 +106,10 @@ export type CustomVideoDecodeSession = {
     acknowledgeFrame: (presentationFrame: DecodedPresentationFrame) => boolean
     discardFrame: (presentationFrame: DecodedPresentationFrame) => boolean
     getTelemetry: () => CustomDecodeSessionTelemetry
+    getNativeAudioTimeMicroseconds?: () => Microseconds | null
+    setNativeAudioMuted?: (muted: boolean) => void
+    setNativeAudioPlaying?: (playing: boolean) => Promise<void>
+    setNativeAudioVolume?: (volume: number) => void
     start: (options: CustomDecodeSessionStartOptions) => void
     stop: () => Promise<void>
     takeFrame: (targetTimeMicroseconds: Microseconds) => DecodedPresentationFrame | null
@@ -110,7 +117,8 @@ export type CustomVideoDecodeSession = {
 
 export type CustomVideoDecodeSessionFactory = (
     eventHandler: CustomDecodeSessionEventHandler,
-    audioBridgeFactory: CustomDecodeAudioBridgeFactory | null
+    audioBridgeFactory: CustomDecodeAudioBridgeFactory | null,
+    nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null
 ) => CustomVideoDecodeSession;
 
 export type CustomPlaybackClock = {
@@ -206,6 +214,7 @@ export type CustomPlaybackControllerOptions = {
     eventHandler?: CustomPlaybackControllerEventHandler
     fallbackHook?: CustomPlaybackHTMLFallbackHook
     monotonicTimeSource?: MonotonicTimeSource
+    nativeAudioBridgeFactory?: CustomDecodeNativeAudioBridgeFactory
     maximumVideoDecodeLagMicroseconds?: Microseconds
     pipelineStopTimeoutMicroseconds?: Microseconds
     playbackStallTimeoutMicroseconds?: Microseconds

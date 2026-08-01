@@ -1,5 +1,9 @@
 import type { Microseconds } from '../MediaTime';
 import {
+    MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
+    MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
+} from './NativeMediaAudioLimits';
+import {
     MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
     MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
     MAXIMUM_RAW_VIDEO_CODED_WIDTH,
@@ -19,6 +23,7 @@ export const MAX_DECODED_AUDIO_SAMPLE_RATE = 192_000;
 export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
 export type CustomDecodeVideoDecoderBackend = 'bundled-hevc' | 'native';
+export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
 
 /** Matches a qualified decoder backend to its measured acceleration preference. */
 export function getCustomDecodeHardwareAcceleration(
@@ -44,6 +49,8 @@ export type CustomDecodeFailureKind =
     | 'source-unsupported';
 
 export type DecodeWorkerStartRequest = {
+    /** Defaults to decoded-pcm for compatibility with existing session callers. */
+    audioOutputMode?: CustomDecodeAudioOutputMode
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
@@ -97,8 +104,17 @@ export type DecodeWorkerAudioConfiguration = {
     sampleRate: number
 };
 
+export type DecodeWorkerNativeMediaAudioConfiguration = DecodeWorkerAudioConfiguration & {
+    mimeType: string
+    outputMode: 'native-media'
+};
+
+export type DecodeWorkerReadyAudioConfiguration =
+    | DecodeWorkerAudioConfiguration
+    | DecodeWorkerNativeMediaAudioConfiguration;
+
 export type DecodeWorkerReadyResponse = {
-    audio: DecodeWorkerAudioConfiguration | null
+    audio: DecodeWorkerReadyAudioConfiguration | null
     codec: string
     codedHeight: number
     codedWidth: number
@@ -140,6 +156,20 @@ export type DecodeWorkerAudioResponse = {
     type: 'audio'
 };
 
+export type DecodeWorkerNativeAudioInitializationResponse = {
+    data: ArrayBuffer
+    generation: number
+    type: 'native-audio-init'
+};
+
+export type DecodeWorkerNativeAudioMediaResponse = {
+    data: ArrayBuffer
+    endTimeMicroseconds: Microseconds
+    generation: number
+    startTimeMicroseconds: Microseconds
+    type: 'native-audio-media'
+};
+
 export type DecodeWorkerEndedResponse = {
     generation: number
     type: 'ended'
@@ -162,6 +192,8 @@ export type DecodeWorkerResponse =
     | DecodeWorkerEndedResponse
     | DecodeWorkerErrorResponse
     | DecodeWorkerFrameResponse
+    | DecodeWorkerNativeAudioInitializationResponse
+    | DecodeWorkerNativeAudioMediaResponse
     | DecodeWorkerReadyResponse
     | DecodeWorkerStoppedResponse;
 
@@ -210,6 +242,10 @@ function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode
 
 function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
     return value === 'bundled-hevc' || value === 'native';
+}
+
+function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode {
+    return value === 'decoded-pcm' || value === 'native-media';
 }
 
 function isRawVideoFrameFormat(value: unknown): value is CustomDecodeRawVideoFrameFormat {
@@ -375,17 +411,29 @@ function isFailureKind(value: unknown): value is CustomDecodeFailureKind {
     }
 }
 
-function isAudioConfiguration(value: unknown): value is DecodeWorkerAudioConfiguration {
+function isAudioConfiguration(value: unknown): value is DecodeWorkerReadyAudioConfiguration {
     if (!isRecord(value)) {
         return false;
     }
 
-    return typeof value.codec === 'string'
+    const commonFieldsValid = typeof value.codec === 'string'
         && value.codec.length > 0
         && isPositiveInteger(value.channelCount)
         && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS
         && isPositiveInteger(value.sampleRate)
         && Number(value.sampleRate) <= MAX_DECODED_AUDIO_SAMPLE_RATE;
+    if (!commonFieldsValid) {
+        return false;
+    }
+    if (value.outputMode === undefined) {
+        return true;
+    }
+    return value.outputMode === 'native-media'
+        && (value.codec === 'ac-3' || value.codec === 'ec-3')
+        && (value.channelCount === 2 || value.channelCount === 6)
+        && value.sampleRate === 48_000
+        && typeof value.mimeType === 'string'
+        && value.mimeType.length > 0;
 }
 
 function isChannelData(
@@ -416,6 +464,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             const hasAudioTrack = isTrackIndex(value.audioTrackIndex);
             const hasNoAudioTrack = value.audioTrackIndex === null;
             const hasValidAudioCredits = isAudioSampleCredit(value.audioSampleCredits, true);
+            const audioOutputMode = value.audioOutputMode ?? 'decoded-pcm';
             const hasValidVideoOutput = value.videoOutputMode === 'raw-planes' ?
                 isRawVideoFrameFormat(value.rawVideoFrameFormat) :
                 value.videoOutputMode === 'video-frame'
@@ -439,6 +488,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && (value.videoOutputMode !== 'raw-planes'
                     || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)
                 && (hasAudioTrack || hasNoAudioTrack)
+                && isAudioOutputMode(audioOutputMode)
+                && (hasAudioTrack || value.audioOutputMode === undefined)
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);
         }
@@ -507,6 +558,23 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && isPositiveInteger(value.sampleRate)
                 && Number(value.sampleRate) <= MAX_DECODED_AUDIO_SAMPLE_RATE
                 && isChannelData(value.channelData, channelCount, frameCount);
+        }
+        case 'native-audio-init':
+            return value.data instanceof ArrayBuffer
+                && value.data.byteLength > 0
+                && value.data.byteLength <= MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH;
+        case 'native-audio-media': {
+            if (!(value.data instanceof ArrayBuffer)
+                || value.data.byteLength <= 0
+                || value.data.byteLength > MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH
+                || !isMicroseconds(value.startTimeMicroseconds)
+                || !isMicroseconds(value.endTimeMicroseconds)) {
+                return false;
+            }
+            const durationMicroseconds = Number(value.endTimeMicroseconds)
+                - Number(value.startTimeMicroseconds);
+            return durationMicroseconds > 0
+                && durationMicroseconds <= MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS;
         }
         case 'ended':
         case 'stopped':

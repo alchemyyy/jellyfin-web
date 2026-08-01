@@ -243,15 +243,36 @@ Prerequisites:
   responses and does not require or modify those served flag values.
 - Serve the frontend and Jellyfin backend on `localhost`.
 - Start Chrome or Edge with a remote-debugging port and leave one page open.
+  Automated hidden-window runs must disable occlusion and renderer background
+  throttling; otherwise Chromium can suspend custom setup or frame delivery.
 - Choose a direct-play video whose exact video and audio WebCodecs
   configurations are supported by that browser.
+
+The following isolated Chrome launch keeps hidden automated playback active.
+Use a dedicated profile because the harness navigates and controls the attached
+page:
+
+```powershell
+$chromePath = Join-Path ${env:ProgramFiles} 'Google\Chrome\Application\chrome.exe'
+$profilePath = Join-Path $env:TEMP 'jellyfin-webgpu-validation-profile'
+Start-Process -FilePath $chromePath -WindowStyle Hidden -ArgumentList @(
+    '--remote-debugging-port=9224',
+    "--user-data-dir=$profilePath",
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
+    '--disable-features=CalculateNativeWinOcclusion',
+    '--autoplay-policy=no-user-gesture-required',
+    'http://localhost:8096/web/'
+)
+```
 
 Keep credentials out of scripts and shell history by using environment
 variables:
 
 ```powershell
 $env:WEBGPU_SMOKE_DEBUG_URL = 'http://localhost:9224'
-$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8080'
+$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_ITEM_ID = '<video-item-id>'
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'video-frame' # or raw-planes
@@ -271,12 +292,13 @@ node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
 
 Equivalent CLI flags are available through `--help`, but the username and
-password flags expose those values to the local process list. URL arguments
-default to the three localhost values shown above; item ID and credentials
-remain required. The expected video output and audio path are also required so
-the harness tests the intended pipeline rather than inferring intent from the
-observed telemetry. Use `video-frame` with `disabled` for a video-only SDR item,
-or `raw-planes` with `ready` for an HDR item with custom-decoded audio.
+password flags expose those values to the local process list. The frontend URL
+may instead point to a separately served development build such as
+`http://localhost:8080`; item ID and credentials remain required. The expected
+video output and audio path are also required so the harness tests the intended
+pipeline rather than inferring intent from the observed telemetry. Use
+`video-frame` with `disabled` for a video-only SDR item, or `raw-planes` with
+`ready` for an HDR item with custom-decoded audio.
 
 A `raw-planes` result is accepted only when
 `getRawHDRAuthorizationTelemetry()` reports `status: 'authorized'` on the
@@ -424,11 +446,15 @@ After every stop it waits 250 milliseconds, performs two explicit V8 garbage
 collections, and records heap, embedder heap, backing storage, DOM counters,
 performance metrics, live media/WebGPU wrapper counts, and browser worker
 targets. Each stop must complete within 900 milliseconds and no custom decode
-worker target may remain.
+worker opened by the controlled page in its browser context may remain.
 
 Session one is the post-GC steady-state baseline because the player may retain
 one warmed presenter device and pipeline. Sessions two onward must stay within
 these release gates:
+
+The harness also records a pre-playback resource snapshot. Audio-resource
+counts are measured relative to that snapshot so an unrelated page-owned audio
+object cannot hide an extra player allocation or cause a false failure.
 
 - JavaScript and embedder heap: at most 16 MiB growth and a 256 KiB/session
   Theil-Sen slope.
@@ -436,22 +462,26 @@ these release gates:
 - Documents: no change; DOM nodes: at most 32 growth and a 0.5/session slope;
   event listeners: at most 16 growth and a 0.25/session slope.
 - Every available queried media/WebGPU object type: at most baseline plus one
-  and a 0.1 object/session slope, except the reusable `AudioWorkletNode` count
-  must remain exactly at its warmed post-stop baseline.
-- Available `AudioHandlers`, `AudioWorkletProcessors`, and
-  `WorkerGlobalScopes` Performance counts: no positive final,
-  last-three-median, or Theil-Sen slope from the warmed session-one baseline.
-  `ArrayBufferContents` may grow by at most 32 with a 0.1/session slope to
-  tolerate bounded global-page noise without accepting per-session growth.
+  and a 0.1 object/session slope. A custom-audio run additionally requires
+  exactly one more `AudioContext`, `AudioWorkletNode`, and
+  `AudioWorkletProcessors` Performance object than the pre-playback snapshot
+  after every stop. An audio-disabled run requires no worklet node or processor
+  increase; its unused prewarm may leave one suspended `AudioContext`.
+- Available `AudioHandlers` and `WorkerGlobalScopes` Performance counts: no
+  positive final, last-three-median, or Theil-Sen slope from the warmed
+  session-one baseline. `ArrayBufferContents` may grow by at most 32 with a
+  0.1/session slope to tolerate bounded global-page noise without accepting
+  per-session growth. Missing mandatory audio-object probes fail the gate.
 - No stopped-session custom decode worker and no unclosed `VideoSample`
   finalizer warning.
 
 Custom audio sessions share one exact-rate page-lifetime `AudioContext` and
 one physical worklet output. Each session receives an exclusive guarded lease.
 Lease release clears queued PCM and timing state through an acknowledged
-processor deactivation before the idle context is suspended. A failed
-deactivation, resume, or suspension poisons that shared runtime and forces a
-fresh context and node on the next session.
+processor deactivation before the idle context is suspended. Failed setup,
+deactivation, or idle suspension poisons that shared runtime and forces a fresh
+context and node on the next session. An active-session resume rejection is
+surfaced to the controller and handled by normal session fallback and teardown.
 
 The report includes every raw sample plus the final, last-three-median, and
 slope calculations. An unavailable browser constructor is reported but not

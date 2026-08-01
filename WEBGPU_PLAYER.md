@@ -16,6 +16,11 @@ building:
 - `enableWebGPUHDRToneMapping` for raw HDR presentation
 - `enableWebGPUValidationHarness` for diagnostic color validation
 
+Dolby Vision support, mpv/libplacebo parity targets, profile-specific fallback
+rules, and the required RPU/EL ownership changes are specified in
+[`WEBGPU_DOLBY_VISION.md`](WEBGPU_DOLBY_VISION.md). Dolby Vision is not
+advertised until those profile-specific routes pass their production probes.
+
 Failure during capability probing, demux, decode, audio output, WebGPU setup,
 presentation, or device recovery falls back to the owned HTML player. The
 custom path does not recursively request another player.
