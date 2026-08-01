@@ -33,6 +33,7 @@ import { ServerConnections } from 'lib/jellyfin-apiclient';
 import LibraryMenu from 'scripts/libraryMenu';
 import { setBackdropTransparency, TRANSPARENCY_LEVEL } from 'components/backdrop/backdrop';
 import { pluginManager } from 'components/pluginManager';
+import { bindOSDEventHandlers } from '../../../features/playback/utils/osdEventBindings';
 
 function getOpenedDialog() {
     return document.querySelector('.dialogContainer .dialog.opened');
@@ -584,21 +585,24 @@ export default function (view) {
             currentPlayer = player;
             if (!player) return;
         }
+        releaseCurrentPlayerEvents();
         const state = playbackManager.getPlayerState(player);
         onStateChanged.call(player, {
             type: 'init'
         }, state);
-        Events.on(player, 'playbackstart', onPlaybackStart);
-        Events.on(player, 'playbackstop', onPlaybackStopped);
-        Events.on(player, PlayerEvent.PromptSkip, onPromptSkip);
-        Events.on(player, 'volumechange', onVolumeChanged);
-        Events.on(player, 'pause', onPlayPauseStateChanged);
-        Events.on(player, 'unpause', onPlayPauseStateChanged);
-        Events.on(player, 'timeupdate', onTimeUpdate);
-        Events.on(player, 'fullscreenchange', onFullscreenChanged);
-        Events.on(player, 'mediastreamschange', onMediaStreamsChanged);
-        Events.on(player, 'beginFetch', onBeginFetch);
-        Events.on(player, 'endFetch', onEndFetch);
+        releaseCurrentPlayerEvents = bindOSDEventHandlers(player, [
+            [ 'playbackstart', onPlaybackStart ],
+            [ 'playbackstop', onPlaybackStopped ],
+            [ PlayerEvent.PromptSkip, onPromptSkip ],
+            [ 'volumechange', onVolumeChanged ],
+            [ 'pause', onPlayPauseStateChanged ],
+            [ 'unpause', onPlayPauseStateChanged ],
+            [ 'timeupdate', onTimeUpdate ],
+            [ 'fullscreenchange', onFullscreenChanged ],
+            [ 'mediastreamschange', onMediaStreamsChanged ],
+            [ 'beginFetch', onBeginFetch ],
+            [ 'endFetch', onEndFetch ]
+        ]);
         resetUpNextDialog();
 
         if (player.isFetching) {
@@ -613,17 +617,8 @@ export default function (view) {
         const player = currentPlayer;
 
         if (player) {
-            Events.off(player, 'playbackstart', onPlaybackStart);
-            Events.off(player, 'playbackstop', onPlaybackStopped);
-            Events.off(player, PlayerEvent.PromptSkip, onPromptSkip);
-            Events.off(player, 'volumechange', onVolumeChanged);
-            Events.off(player, 'pause', onPlayPauseStateChanged);
-            Events.off(player, 'unpause', onPlayPauseStateChanged);
-            Events.off(player, 'timeupdate', onTimeUpdate);
-            Events.off(player, 'fullscreenchange', onFullscreenChanged);
-            Events.off(player, 'mediastreamschange', onMediaStreamsChanged);
-            Events.off(player, 'beginFetch', onBeginFetch);
-            Events.off(player, 'endFetch', onEndFetch);
+            releaseCurrentPlayerEvents();
+            releaseCurrentPlayerEvents = () => undefined;
             currentPlayer = null;
         }
     }
@@ -1636,6 +1631,8 @@ export default function (view) {
     let playbackStartTimeTicks = 0;
     let subtitleSyncOverlay;
     let trickplayResolution = null;
+    let releaseCurrentPlayerEvents = () => undefined;
+    let releaseSyncPlayEvents = () => undefined;
     const nowPlayingVolumeSlider = view.querySelector('.osdVolumeSlider');
     const nowPlayingVolumeSliderContainer = view.querySelector('.osdVolumeSliderContainer');
     const nowPlayingPositionSlider = view.querySelector('.osdPositionSlider');
@@ -1775,6 +1772,11 @@ export default function (view) {
         headerElement.classList.remove('hide');
     });
     view.addEventListener('viewdestroy', function () {
+        releaseCurrentPlayerEvents();
+        releaseCurrentPlayerEvents = () => undefined;
+        releaseSyncPlayEvents();
+        releaseSyncPlayEvents = () => undefined;
+
         if (self.touchHelper) {
             self.touchHelper.destroy();
             self.touchHelper = null;
@@ -2033,21 +2035,19 @@ export default function (view) {
 
     const SyncPlay = pluginManager.firstOfType(PluginType.SyncPlay)?.instance;
     if (SyncPlay) {
-        Events.on(SyncPlay.Manager, 'enabled', (_event, enabled) => {
-            if (!enabled) {
-                const syncPlayIcon = view.querySelector('#syncPlayIcon');
-                syncPlayIcon.style.visibility = 'hidden';
+        const onSyncPlayEnabled = (_event, enabled) => {
+            if (enabled) {
+                return;
             }
-        });
 
-        Events.on(SyncPlay.Manager, 'notify-osd', (_event, action) => {
+            const syncPlayIcon = view.querySelector('#syncPlayIcon');
+            syncPlayIcon.style.visibility = 'hidden';
+        };
+        const onSyncPlayNotification = (_event, action) => {
             showIcon(action);
-        });
-
-        Events.on(SyncPlay.Manager, 'group-state-update', (_event, state, reason) => {
-            if (state === 'Playing' && reason === 'Unpause') {
-                showIcon('schedule-play');
-            } else if (state === 'Playing' && reason === 'Ready') {
+        };
+        const onSyncPlayGroupStateUpdate = (_event, state, reason) => {
+            if (state === 'Playing' && (reason === 'Unpause' || reason === 'Ready')) {
                 showIcon('schedule-play');
             } else if (state === 'Paused' && reason === 'Pause') {
                 showIcon('pause');
@@ -2062,6 +2062,12 @@ export default function (view) {
             } else if (state === 'Waiting' && reason === 'Unpause') {
                 showIcon('wait-unpause');
             }
-        });
+        };
+
+        releaseSyncPlayEvents = bindOSDEventHandlers(SyncPlay.Manager, [
+            [ 'enabled', onSyncPlayEnabled ],
+            [ 'notify-osd', onSyncPlayNotification ],
+            [ 'group-state-update', onSyncPlayGroupStateUpdate ]
+        ]);
     }
 }

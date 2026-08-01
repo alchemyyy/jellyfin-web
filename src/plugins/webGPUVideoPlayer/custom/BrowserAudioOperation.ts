@@ -7,6 +7,10 @@ import { requireMicroseconds } from './TimeMath';
 
 export const DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(5_000);
+export const AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS =
+    millisecondsToMicroseconds(500);
+export const SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS =
+    millisecondsToMicroseconds(250);
 
 const MAXIMUM_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(60_000);

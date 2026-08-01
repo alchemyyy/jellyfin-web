@@ -4,11 +4,18 @@ import test from 'node:test';
 /* eslint-disable sonarjs/no-hardcoded-passwords -- Test-only sentinel values */
 
 import {
+    areEquivalentServerURLs,
     createPrimarySeekTargetMicroseconds,
     createSeekStormTargetsMicroseconds,
+    createStartupSampleModeOrder,
     createFrontendRouteURL,
     deriveRawHDRPlaybackRouteKey,
+    getStartupModeFeatureFlags,
+    hasConsumedCustomAudio,
+    isFrontendInitializationReady,
+    isVideoSampleOwnershipWarning,
     parseSmokeConfiguration,
+    resolveServerConnectionLandingAction,
     sanitizeReport,
     SMOKE_USAGE,
     validateActivePlaybackSnapshot,
@@ -166,6 +173,8 @@ test('parses CLI values before environment values', () => {
         repeatSessionCount: 3,
         seekStormCount: 4,
         serverURL: 'http://localhost:9096',
+        soakSessionCount: 0,
+        startupSampleCount: 0,
         timeoutMilliseconds: 45_000,
         username: 'cli-user'
     });
@@ -185,6 +194,8 @@ test('documents the required output expectations in CLI and environment usage', 
         /--inject-failure <none\|presentation\|device-loss\|paused-device-loss>/u
     );
     assert.match(SMOKE_USAGE, /--seek-storm-count <0-5>/u);
+    assert.match(SMOKE_USAGE, /--soak-sessions <0\|10-100>/u);
+    assert.match(SMOKE_USAGE, /--startup-samples <0\|10-30>/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
@@ -193,6 +204,8 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_COMPLETION_MODE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SEEK_STORM_COUNT/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SOAK_SESSIONS/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_STARTUP_SAMPLES/u);
 });
 
 test('uses local URL defaults without inventing credentials', () => {
@@ -212,6 +225,8 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.repeatSessionCount, 1);
     assert.equal(configuration.seekStormCount, 3);
     assert.equal(configuration.failureInjection, 'none');
+    assert.equal(configuration.soakSessionCount, 0);
+    assert.equal(configuration.startupSampleCount, 0);
     assert.equal(configuration.audioStreamIndex, null);
     assert.equal(configuration.expectedAudioCodec, null);
     assert.equal(configuration.expectedAudioPath, 'disabled');
@@ -225,6 +240,228 @@ test('uses local URL defaults without inventing credentials', () => {
         }),
         /--item-id/u
     );
+});
+
+test('requires submitted and consumed decoded PCM for custom audio startup', () => {
+    const snapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioBridge: {
+                submittedFrameCount: 1_024,
+                submittedSampleCount: 1
+            },
+            audioOutput: {
+                consumedFrames: 1,
+                outputFrames: 128,
+                playing: true
+            }
+        }
+    });
+    const silentUnderflow = {
+        ...snapshot,
+        customPlayback: {
+            ...snapshot.customPlayback,
+            audioOutput: {
+                consumedFrames: 0,
+                outputFrames: 4_096,
+                playing: true
+            }
+        }
+    };
+
+    assert.equal(hasConsumedCustomAudio(snapshot), true);
+    assert.equal(hasConsumedCustomAudio(silentUnderflow), false);
+    assert.equal(hasConsumedCustomAudio({
+        ...snapshot,
+        customPlayback: {
+            ...snapshot.customPlayback,
+            audioBridge: {
+                submittedFrameCount: 0,
+                submittedSampleCount: 0
+            }
+        }
+    }), false);
+});
+
+test('recognizes each initialized frontend landing state', () => {
+    assert.equal(isFrontendInitializationReady({
+        apiClientAvailable: true,
+        apiClientLandingAvailable: true,
+        serverHostInputAvailable: false,
+        serverSelectionPageAvailable: false
+    }), true);
+    assert.equal(isFrontendInitializationReady({
+        apiClientAvailable: false,
+        serverHostInputAvailable: true,
+        serverSelectionPageAvailable: false
+    }), true);
+    assert.equal(isFrontendInitializationReady({
+        apiClientAvailable: false,
+        serverHostInputAvailable: false,
+        serverSelectionPageAvailable: true
+    }), true);
+    assert.equal(isFrontendInitializationReady({
+        apiClientAvailable: false,
+        serverHostInputAvailable: false,
+        serverSelectionPageAvailable: false
+    }), false);
+    assert.equal(isFrontendInitializationReady({
+        apiClientAvailable: true,
+        apiClientLandingAvailable: false,
+        serverHostInputAvailable: false,
+        serverSelectionPageAvailable: false
+    }), false);
+    assert.equal(isFrontendInitializationReady(null), false);
+});
+
+test('opens or uses the add-server form after isolated startup', () => {
+    assert.equal(resolveServerConnectionLandingAction({
+        addServerButtonAvailable: false,
+        serverHostInputAvailable: true
+    }), 'enter-server');
+    assert.equal(resolveServerConnectionLandingAction({
+        addServerButtonAvailable: true,
+        serverHostInputAvailable: false
+    }), 'open-add-server');
+    assert.equal(resolveServerConnectionLandingAction({
+        addServerButtonAvailable: false,
+        serverHostInputAvailable: false
+    }), null);
+    assert.equal(resolveServerConnectionLandingAction(null), null);
+});
+
+test('configures an isolated paired startup comparison', () => {
+    const environment = {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'startup-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    };
+    const configuration = parseSmokeConfiguration([
+        '--startup-samples', '10'
+    ], environment);
+
+    assert.equal(configuration.startupSampleCount, 10);
+    assert.equal(configuration.seekStormCount, 0);
+    assert.throws(
+        () => parseSmokeConfiguration([ '--startup-samples', '9' ], environment),
+        /startup samples/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--startup-samples', '10',
+            '--soak-sessions', '10'
+        ], environment),
+        /startup mode requires --soak-sessions 0/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--startup-samples', '10',
+            '--repeat-sessions', '2'
+        ], environment),
+        /startup mode requires --repeat-sessions 1/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--startup-samples', '10',
+            '--seek-storm-count', '1'
+        ], environment),
+        /startup mode requires --seek-storm-count 0/u
+    );
+});
+
+test('alternates native and custom startup order around presentation', () => {
+    assert.deepEqual(
+        createStartupSampleModeOrder(1),
+        [ 'html', 'presentation', 'custom' ]
+    );
+    assert.deepEqual(
+        createStartupSampleModeOrder(2),
+        [ 'custom', 'presentation', 'html' ]
+    );
+    assert.throws(() => createStartupSampleModeOrder(0), /positive safe integer/u);
+});
+
+test('defines isolated feature overlays for every startup mode', () => {
+    assert.deepEqual(getStartupModeFeatureFlags('html'), {
+        enableWebGPUCustomDecode: false,
+        enableWebGPUHDRToneMapping: false,
+        enableWebGPUValidationHarness: false,
+        enableWebGPUVideoPlayer: false
+    });
+    assert.deepEqual(getStartupModeFeatureFlags('presentation'), {
+        enableWebGPUCustomDecode: false,
+        enableWebGPUHDRToneMapping: false,
+        enableWebGPUValidationHarness: false,
+        enableWebGPUVideoPlayer: true
+    });
+    assert.deepEqual(getStartupModeFeatureFlags('custom'), {
+        enableWebGPUCustomDecode: true,
+        enableWebGPUHDRToneMapping: true,
+        enableWebGPUValidationHarness: true,
+        enableWebGPUVideoPlayer: true
+    });
+    assert.throws(() => getStartupModeFeatureFlags('invalid'), /Unknown startup/u);
+});
+
+test('configures an isolated post-stop retention soak', () => {
+    const environment = {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'soak-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    };
+    const configuration = parseSmokeConfiguration([
+        '--soak-sessions', '30'
+    ], environment);
+
+    assert.equal(configuration.soakSessionCount, 30);
+    assert.equal(configuration.seekStormCount, 0);
+    assert.throws(
+        () => parseSmokeConfiguration([ '--soak-sessions', '9' ], environment),
+        /soak sessions/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--soak-sessions', '30',
+            '--repeat-sessions', '2'
+        ], environment),
+        /soak mode requires --repeat-sessions 1/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--soak-sessions', '30',
+            '--inject-failure', 'device-loss'
+        ], environment),
+        /soak mode requires --inject-failure none/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--soak-sessions', '30',
+            '--seek-storm-count', '1'
+        ], environment),
+        /soak mode requires --seek-storm-count 0/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--soak-sessions', '30',
+            '--expected-frame-evidence', 'testsrc2-motion'
+        ], environment),
+        /soak mode requires --expected-frame-evidence none/u
+    );
+});
+
+test('identifies only the VideoSample ownership finalizer warning', () => {
+    assert.equal(isVideoSampleOwnershipWarning(
+        'A VideoSample was garbage collected without being closed.'
+    ), true);
+    assert.equal(isVideoSampleOwnershipWarning(
+        'VideoSample decode completed and the sample was closed'
+    ), false);
+    assert.equal(isVideoSampleOwnershipWarning('Unrelated browser warning'), false);
+    assert.equal(isVideoSampleOwnershipWarning(null), false);
 });
 
 test('configures an isolated natural-end lifecycle exercise', () => {
@@ -439,6 +676,26 @@ test('builds a hash route on the configured frontend', () => {
         createFrontendRouteURL('http://localhost:8080/web/', '/details?id=abc'),
         'http://localhost:8080/web/#/details?id=abc'
     );
+});
+
+test('matches only equivalent configured server URLs and loopback spellings', () => {
+    assert.equal(
+        areEquivalentServerURLs('http://localhost:8096/', 'http://127.0.0.1:8096'),
+        true
+    );
+    assert.equal(
+        areEquivalentServerURLs('https://[::1]:8096/base/', 'https://localhost:8096/base'),
+        true
+    );
+    assert.equal(
+        areEquivalentServerURLs('http://localhost:8096', 'http://localhost:9096'),
+        false
+    );
+    assert.equal(
+        areEquivalentServerURLs('http://media.example:8096', 'http://127.0.0.1:8096'),
+        false
+    );
+    assert.equal(areEquivalentServerURLs('not-a-url', 'http://localhost:8096'), false);
 });
 
 test('derives only exact measured raw HDR authorization routes', () => {
@@ -1310,6 +1567,15 @@ test('validates pause, resume, seek, and stop observations', () => {
 
 test('sanitizes URLs and authentication material recursively', () => {
     const report = {
+        browserMessages: [
+            '{"Authorization":"Bearer quoted-json-token","status":401}',
+            'Authorization: Bearer unquoted-header-token',
+            'X-Emby-Authorization: MediaBrowser Client=Jellyfin Web, Token=emby-prefixed-secret',
+            'X-MediaBrowser-Authorization: MediaBrowser Client=Jellyfin, Token=mediabrowser-prefixed-secret',
+            'X-Emby-Token: emby-token-header-secret',
+            'Token=bare-token-secret',
+            'cookie=session-cookie; request failed'
+        ],
         message: 'Request http://localhost:8096/Videos/x?api_key=abc failed for sample-user',
         nested: {
             authorization: 'MediaBrowser Token=abc',
@@ -1329,7 +1595,7 @@ test('sanitizes URLs and authentication material recursively', () => {
 
     assert.doesNotMatch(
         serialized,
-        /sample-(?:secret|user)|localhost|https?:|wss?:|api_key=abc/iu
+        /sample-(?:secret|user)|localhost|https?:|wss?:|api_key=abc|quoted-json-token|unquoted-header-token|emby-prefixed-secret|mediabrowser-prefixed-secret|emby-token-header-secret|bare-token-secret|session-cookie/iu
     );
     assert.match(serialized, /\[redacted\]/u);
     assert.match(serialized, /\[redacted-url\]/u);

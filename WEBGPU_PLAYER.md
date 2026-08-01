@@ -77,6 +77,25 @@ runtime. They are a conservative startup gate, not a guarantee that every
 feature-length stream will sustain real-time software decode under all thermal
 or system loads.
 
+## Fused linear HDR working pass
+
+Production raw HDR presentation keeps YUV normalization, matrix conversion,
+PQ or HLG decoding, gamut conversion, tone mapping, SDR encoding, display
+controls, and dithering as `f32` values within one fragment invocation. Only
+the final encoded and dithered SDR result is written to the preferred 8-bit
+canvas format. There is therefore no 8-bit storage boundary before tone
+mapping.
+
+This fused pass intentionally replaces the plan's earlier proposal for a
+persisted `rgba16float` intermediate. Storing the current per-pixel pipeline in
+such a texture would add binary16 rounding, a full-frame allocation, another
+render pass, and read/write bandwidth without preserving any value that the
+current shader does not already retain at higher `f32` precision. The
+production pixel-readback authorization executes this exact fused renderer on
+the active device and target format. Add a reusable float working texture only
+if a future spatial, compositing, or multi-pass stage needs linear pixels to
+survive between passes.
+
 ## Bundled codec licensing and distribution
 
 ### HEVC
@@ -169,6 +188,8 @@ npm run build:check
 npm test -- src/plugins/webGPUVideoPlayer
 npm run lint -- src/plugins/webGPUVideoPlayer scripts/webgpu
 node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
+node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
+node --test scripts/webgpu/release-validation-metrics.node-test.mjs
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 npm run build:development
 node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
@@ -353,6 +374,62 @@ $env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '5'
 $env:WEBGPU_SMOKE_INJECT_FAILURE = 'presentation' # or device-loss
 node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
+
+Run the paired release startup gate separately:
+
+```powershell
+$env:WEBGPU_SMOKE_STARTUP_SAMPLES = '10'
+$env:WEBGPU_SMOKE_SOAK_SESSIONS = '0'
+$env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '0'
+$env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1'
+$env:WEBGPU_SMOKE_INJECT_FAILURE = 'none'
+$env:WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE = 'none'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
+This mode keeps one isolated browser context and one temporary page alive for
+each of direct HTML, HTML decode with WebGPU presentation, and custom decode.
+The isolated contexts prevent Jellyfin's shared authentication state from
+causing the three modes to redirect or replace one another. After one
+unmeasured warmup per page it collects 10 matched samples per mode without
+document reloads, alternating HTML-first and custom-first rounds. It records play,
+audio, decoded, and exact presenter-frame milestones and gates the median and
+nearest-rank p95 of per-round threshold excess. Custom audio requires decoded
+PCM submission and render-thread consumption rather than silent output quanta;
+video-only evidence marks audio not applicable. Per-page CDP response overlays
+change only the in-memory WebGPU feature flags. They neither edit
+`dist/config.json` nor alter the user's original browser page, and every
+temporary target and browser context is destroyed after its interceptor
+drains. See the harness documentation for exact thresholds and observation
+bias.
+
+Run a release post-stop retention gate separately with a representative native
+route and the worst qualified software route:
+
+```powershell
+$env:WEBGPU_SMOKE_SOAK_SESSIONS = '30'
+$env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '0'
+$env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1'
+$env:WEBGPU_SMOKE_INJECT_FAILURE = 'none'
+$env:WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE = 'none'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
+The soak forces two garbage collections after each clean stop, requires custom
+worker retirement before the one-second watchdog, and gates heap, backing
+storage, DOM, listener, and available media/WebGPU object-count growth from the
+post-GC first-session baseline. An unclosed `VideoSample` finalizer warning is a
+soak failure even while the known ownership defect remains deferred. Available
+Performance counts for audio handlers, AudioWorklet processors, and worker
+global scopes must have no positive terminal or Theil-Sen growth from their
+warmed session-one values. Array-buffer-content counts retain a small bounded
+noise allowance but may not grow once per session. The queried post-stop
+`AudioWorkletNode` count must remain exactly at its warmed baseline. Custom
+audio sessions share one exact-rate page-lifetime `AudioContext` and one
+physical worklet output. Each session receives an exclusive guarded lease;
+release clears processor state through an acknowledged deactivation before
+the idle context is suspended. Failed deactivation, resume, or suspension
+invalidates the shared runtime rather than caching a poisoned output.
 
 The device-loss run destroys the actual active `GPUDevice` and requires one
 replacement-device recovery without restarting custom decode. A raw HDR run

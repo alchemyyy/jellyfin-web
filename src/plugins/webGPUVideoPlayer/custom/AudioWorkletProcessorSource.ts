@@ -45,6 +45,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         switch (message.type) {
+            case 'deactivate':
+                this.deactivate(message.leaseId, message.generation);
+                break;
             case 'enqueue':
                 this.enqueue(message);
                 break;
@@ -64,6 +67,32 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             default:
                 break;
         }
+    }
+
+    deactivate(leaseId, generation) {
+        if (!Number.isSafeInteger(leaseId) || leaseId <= 0
+            || !Number.isSafeInteger(generation) || generation <= this.generation) {
+            return;
+        }
+
+        this.playing = false;
+        this.clearQueue();
+        this.generation = generation;
+        this.volume = 1;
+        this.muted = false;
+        this.consumedFrames = 0;
+        this.outputFrames = 0;
+        this.droppedFrames = 0;
+        this.overflowEvents = 0;
+        this.overflowFrames = 0;
+        this.staleChunks = 0;
+        this.underflowEvents = 0;
+        this.underflowFrames = 0;
+        this.framesSinceTelemetry = 0;
+        this.mediaTimeContextTimeMicroseconds = null;
+        this.mediaTimeMicroseconds = 0;
+        this.underflowActive = false;
+        this.port.postMessage({leaseId, type: 'deactivated'});
     }
 
     enqueue(message) {
@@ -147,6 +176,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
 
     process(inputs, outputs) {
         if (this.destroyed) {
+            // Match Chromium's processor-GC handshake ordering
+            this.port.postMessage({type: 'retired'});
+            this.port.close();
             return false;
         }
 

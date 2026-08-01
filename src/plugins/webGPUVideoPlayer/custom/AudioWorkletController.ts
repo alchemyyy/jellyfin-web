@@ -1,7 +1,9 @@
 import type { Microseconds } from '../MediaTime';
 import {
+    type AudioWorkletDeactivatedMessage,
     type AudioWorkletTelemetryReason,
     type AudioWorkletTelemetry,
+    type AudioWorkletRetiredMessage,
     type CustomAudioWorkletMessage,
     type TransferablePlanarPCM
 } from './AudioWorkletProtocol';
@@ -9,7 +11,10 @@ import {
     createCustomAudioWorkletModuleURL,
     CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME
 } from './AudioWorkletProcessorSource';
-import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
+import {
+    AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS,
+    waitForBrowserAudioOperation
+} from './BrowserAudioOperation';
 import { CUSTOM_AUDIO_OUTPUT_CHANNEL_INTERPRETATION } from './CustomAudioOutputPolicy';
 import { requireMicroseconds } from './TimeMath';
 
@@ -17,7 +22,6 @@ export const DEFAULT_AUDIO_TELEMETRY_INTERVAL_FRAMES = 4_096;
 export const DEFAULT_MAX_WORKLET_CHUNKS = 1_024;
 export const MAX_AUDIO_CHANNEL_COUNT = 32;
 export const MAX_AUDIO_WORKLET_CHUNKS = 65_536;
-
 export type AudioWorkletControllerOptions = {
     channelCount: number
     maxBufferedFrames: number
@@ -36,6 +40,21 @@ export type AudioEnqueueSubmission = {
 };
 
 export type AudioTelemetryListener = (telemetry: AudioWorkletTelemetry) => void;
+
+/** Structural session-facing contract for decoded PCM output control. */
+export interface AudioWorkletOutputController {
+    readonly configuration: AudioWorkletControllerConfiguration
+    readonly generation: number
+    readonly isPlaying: boolean
+    enqueue: (chunk: TransferablePlanarPCM, generation: number) => AudioEnqueueSubmission
+    flush: (mediaTimeMicroseconds: Microseconds) => number
+    getTelemetry: () => AudioWorkletTelemetry | null
+    onTelemetry: (listener: AudioTelemetryListener) => () => void
+    seek: (mediaTimeMicroseconds: Microseconds) => number
+    setMuted: (muted: boolean) => void
+    setPlaying: (playing: boolean) => void
+    setVolume: (volume: number) => void
+}
 
 const INITIAL_GENERATION = 1;
 const moduleLoadPromises = new WeakMap<AudioContext, Promise<void>>();
@@ -112,15 +131,22 @@ async function loadAudioWorkletModule(audioContext: AudioContext): Promise<void>
 }
 
 /** Owns a message-based AudioWorklet output without requiring SharedArrayBuffer. */
-export default class AudioWorkletController {
+export default class AudioWorkletController implements AudioWorkletOutputController {
     public readonly configuration: AudioWorkletControllerConfiguration;
 
     private currentGeneration = INITIAL_GENERATION;
+    private deactivationFailed = false;
+    private deactivationLeaseId: number | null = null;
+    private deactivationPromise: Promise<void> | null = null;
+    private deactivationRejecter: ((error: Error) => void) | null = null;
+    private deactivationResolver: (() => void) | null = null;
+    private destroyPromise: Promise<void> | null = null;
     private destroyed = false;
     private muted = false;
     private nextSequence = 1;
     private playing = false;
     private readonly node: AudioWorkletNode;
+    private retirementResolver: (() => void) | null = null;
     private lastTelemetry: AudioWorkletTelemetry | null = null;
     private readonly telemetryListeners = new Set<AudioTelemetryListener>();
     private volume = 1;
@@ -274,22 +300,127 @@ export default class AudioWorkletController {
         return () => this.telemetryListeners.delete(listener);
     }
 
-    /** Releases the node and makes all subsequent controller operations invalid. */
-    public destroy(): void {
-        if (this.destroyed) {
-            return;
+    /** Resets one completed lease without retiring the reusable processor. */
+    public deactivate(leaseId: number): Promise<void> {
+        const validatedLeaseId = requirePositiveInteger(leaseId, 'Audio worklet lease ID');
+        if (this.deactivationPromise) {
+            if (this.deactivationLeaseId === validatedLeaseId) {
+                return this.deactivationPromise;
+            }
+            return Promise.reject(new Error('Audio worklet deactivation is already pending'));
         }
-        const message: CustomAudioWorkletMessage = { type: 'destroy' };
-        this.node.port.postMessage(message);
-        this.node.port.removeEventListener('message', this.handleMessage);
-        this.node.port.close();
-        this.node.disconnect();
-        this.telemetryListeners.clear();
-        this.destroyed = true;
+        this.requireActive();
+
+        this.playing = false;
         this.currentGeneration = this.advanceGeneration();
+        this.deactivationLeaseId = validatedLeaseId;
+        const acknowledgmentPromise = new Promise<void>((resolve, reject): void => {
+            this.deactivationResolver = resolve;
+            this.deactivationRejecter = reject;
+        });
+        const message: CustomAudioWorkletMessage = {
+            generation: this.currentGeneration,
+            leaseId: validatedLeaseId,
+            type: 'deactivate'
+        };
+        try {
+            this.node.port.postMessage(message);
+        } catch (error) {
+            this.deactivationFailed = true;
+            this.deactivationLeaseId = null;
+            this.deactivationRejecter = null;
+            this.deactivationResolver = null;
+            return Promise.reject(error);
+        }
+
+        const deactivationPromise = waitForBrowserAudioOperation(
+            acknowledgmentPromise,
+            'AudioWorklet lease deactivation',
+            AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS
+        ).then(
+            (): void => {
+                this.lastTelemetry = null;
+                this.muted = false;
+                this.nextSequence = 1;
+                this.volume = 1;
+            },
+            (error: unknown): never => {
+                this.deactivationFailed = true;
+                throw error;
+            }
+        ).finally((): void => {
+            if (this.deactivationPromise === deactivationPromise) {
+                this.deactivationLeaseId = null;
+                this.deactivationPromise = null;
+                this.deactivationRejecter = null;
+                this.deactivationResolver = null;
+            }
+        });
+        this.deactivationPromise = deactivationPromise;
+        return deactivationPromise;
+    }
+
+    /** Retires the processor on its render thread before releasing the node. */
+    public destroy(): Promise<void> {
+        if (this.destroyPromise) {
+            return this.destroyPromise;
+        }
+        this.deactivationRejecter?.(
+            new Error('Audio worklet controller was destroyed during deactivation')
+        );
+        this.deactivationRejecter = null;
+        const message: CustomAudioWorkletMessage = { type: 'destroy' };
+        this.destroyed = true;
+        this.playing = false;
+        this.currentGeneration = this.advanceGeneration();
+        this.telemetryListeners.clear();
+
+        const retirementPromise = new Promise<void>((resolve): void => {
+            this.retirementResolver = resolve;
+        });
+        try {
+            this.node.port.postMessage(message);
+        } catch (error) {
+            try {
+                this.finishDestroy();
+            } catch {
+                // Preserve the message-delivery failure
+            }
+            this.destroyPromise = Promise.reject(error);
+            return this.destroyPromise;
+        }
+
+        const destroyPromise = waitForBrowserAudioOperation(
+            retirementPromise,
+            'AudioWorklet processor retirement',
+            AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS
+        ).then((): void => {
+            this.finishDestroy();
+        }, (error: unknown): never => {
+            try {
+                this.finishDestroy();
+            } catch {
+                // Preserve the processor retirement failure
+            }
+            throw error;
+        });
+        this.destroyPromise = destroyPromise;
+        return destroyPromise;
     }
 
     private readonly handleMessage = (event: MessageEvent<unknown>): void => {
+        if (this.isDeactivatedMessage(event.data)) {
+            if (event.data.leaseId === this.deactivationLeaseId) {
+                this.deactivationResolver?.();
+                this.deactivationResolver = null;
+            }
+            return;
+        }
+        if (this.isRetiredMessage(event.data)) {
+            this.retirementResolver?.();
+            this.retirementResolver = null;
+            return;
+        }
         if (this.destroyed || !this.isTelemetry(event.data)) {
             return;
         }
@@ -299,6 +430,57 @@ export default class AudioWorkletController {
             listener(this.lastTelemetry);
         }
     };
+
+    private finishDestroy(): void {
+        let cleanupError: unknown;
+        let cleanupFailed = false;
+        this.deactivationLeaseId = null;
+        this.deactivationRejecter = null;
+        this.deactivationResolver = null;
+        this.retirementResolver = null;
+        try {
+            this.node.port.removeEventListener('message', this.handleMessage);
+        } catch (error) {
+            cleanupError = error;
+            cleanupFailed = true;
+        }
+        try {
+            this.node.port.close();
+        } catch (error) {
+            if (!cleanupFailed) {
+                cleanupError = error;
+                cleanupFailed = true;
+            }
+        }
+        try {
+            this.node.disconnect();
+        } catch (error) {
+            if (!cleanupFailed) {
+                cleanupError = error;
+                cleanupFailed = true;
+            }
+        }
+        if (cleanupFailed) {
+            throw cleanupError;
+        }
+    }
+
+    private isDeactivatedMessage(value: unknown): value is AudioWorkletDeactivatedMessage {
+        if (!value || typeof value !== 'object') {
+            return false;
+        }
+        const message = value as Partial<AudioWorkletDeactivatedMessage>;
+        return message.type === 'deactivated'
+            && typeof message.leaseId === 'number'
+            && Number.isSafeInteger(message.leaseId)
+            && message.leaseId > 0;
+    }
+
+    private isRetiredMessage(value: unknown): value is AudioWorkletRetiredMessage {
+        return Boolean(value)
+            && typeof value === 'object'
+            && (value as Partial<AudioWorkletRetiredMessage>).type === 'retired';
+    }
 
     private isTelemetry(value: unknown): value is AudioWorkletTelemetry {
         if (!value || typeof value !== 'object') {
@@ -368,6 +550,12 @@ export default class AudioWorkletController {
     private requireActive(): void {
         if (this.destroyed) {
             throw new Error('Audio worklet controller is destroyed');
+        }
+        if (this.deactivationFailed) {
+            throw new Error('Audio worklet controller deactivation failed');
+        }
+        if (this.deactivationPromise) {
+            throw new Error('Audio worklet controller is deactivating');
         }
     }
 

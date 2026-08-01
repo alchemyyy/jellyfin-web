@@ -34,7 +34,23 @@ export type AudioWorkletDestroyMessage = {
     type: 'destroy'
 };
 
+export type AudioWorkletDeactivateMessage = {
+    generation: number
+    leaseId: number
+    type: 'deactivate'
+};
+
+export type AudioWorkletDeactivatedMessage = {
+    leaseId: number
+    type: 'deactivated'
+};
+
+export type AudioWorkletRetiredMessage = {
+    type: 'retired'
+};
+
 export type CustomAudioWorkletMessage =
+    | AudioWorkletDeactivateMessage
     | AudioWorkletDestroyMessage
     | AudioWorkletEnqueueMessage
     | AudioWorkletFlushMessage

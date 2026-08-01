@@ -1,5 +1,8 @@
 import type { Microseconds } from '../MediaTime';
-import type AudioWorkletController from './AudioWorkletController';
+import type {
+    AudioEnqueueSubmission,
+    AudioWorkletOutputController
+} from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
@@ -82,7 +85,7 @@ export default class CustomDecodeAudioBridge {
     private unsubscribeTelemetry: (() => void) | null = null;
     private workletGeneration: number | null = null;
 
-    public constructor(private readonly controller: AudioWorkletController) {
+    public constructor(private readonly controller: AudioWorkletOutputController) {
         this.maximumPendingSampleCount = Math.min(
             MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             controller.configuration.maxChunks
@@ -150,7 +153,7 @@ export default class CustomDecodeAudioBridge {
             return { frameCount: message.frameCount, status: 'controller-rejected' };
         }
 
-        let submission: ReturnType<AudioWorkletController['enqueue']>;
+        let submission: AudioEnqueueSubmission;
         try {
             submission = this.controller.enqueue({
                 channelData: message.channelData,

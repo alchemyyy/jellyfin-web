@@ -1,11 +1,18 @@
 /* eslint-disable compat/compat -- This local harness targets Node 24 and a current Chromium browser */
 
 import {
+    areEquivalentServerURLs,
     createPrimarySeekTargetMicroseconds,
     createSeekStormTargetsMicroseconds,
     createFrontendRouteURL,
+    createStartupSampleModeOrder,
     deriveRawHDRPlaybackRouteKey,
+    getStartupModeFeatureFlags,
+    hasConsumedCustomAudio,
+    isFrontendInitializationReady,
+    isVideoSampleOwnershipWarning,
     parseSmokeConfiguration,
+    resolveServerConnectionLandingAction,
     sanitizeReport,
     SMOKE_USAGE,
     validateActivePlaybackSnapshot,
@@ -24,6 +31,13 @@ import {
     validateSeekSnapshot,
     validateStopSnapshot
 } from './browser-smoke-helpers.mjs';
+import { collectCDPRetentionSnapshot } from './cdp-retention-snapshot.mjs';
+import {
+    validateDOMAndObjectCountSeries,
+    validateHTMLVersusCustomStartupSamples,
+    validateHTMLVersusPresentationStartupSamples,
+    validateReleaseMemorySoakSeries
+} from './release-validation-metrics.mjs';
 
 const COMMAND_TIMEOUT_MILLISECONDS = 15_000;
 const INPUT_CONTROL_MODIFIER = 2;
@@ -42,6 +56,17 @@ const FULLSCREEN_OBSERVATION_MILLISECONDS = 500;
 const MAXIMUM_CAPTURED_CONTROL_EVENTS = 128;
 const NATURAL_END_STABILITY_OBSERVATION_MILLISECONDS = 750;
 const RESIZE_OBSERVATION_MILLISECONDS = 500;
+const RETENTION_SETTLE_MILLISECONDS = 250;
+const RETENTION_FINALIZER_DRAIN_MILLISECONDS = 100;
+const MAXIMUM_CLEAN_STOP_DURATION_MICROSECONDS = 900_000;
+const STARTUP_MILESTONE_POLL_MILLISECONDS = 10;
+const STARTUP_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
+const RETENTION_PERFORMANCE_RESOURCE_METRICS = Object.freeze([
+    Object.freeze({ code: 'array-buffer-contents', name: 'ArrayBufferContents' }),
+    Object.freeze({ code: 'audio-handlers', name: 'AudioHandlers' }),
+    Object.freeze({ code: 'audio-worklet-processors', name: 'AudioWorkletProcessors' }),
+    Object.freeze({ code: 'worker-global-scopes', name: 'WorkerGlobalScopes' })
+]);
 const PLAY_BUTTON_SELECTORS = Object.freeze([
     '.itemDetailPage .btnReplay:not(.hide)',
     '.itemDetailPage .btnPlay:not(.hide)'
@@ -188,7 +213,7 @@ function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
-async function getBrowserPageTarget(configuration) {
+async function readBrowserTargets(configuration) {
     let response;
     try {
         const targetListURL = new URL('/json/list', `${configuration.debugURL}/`);
@@ -224,6 +249,11 @@ async function getBrowserPageTarget(configuration) {
         );
     }
 
+    return targets;
+}
+
+async function getBrowserPageTarget(configuration) {
+    const targets = await readBrowserTargets(configuration);
     const frontendOrigin = new URL(configuration.frontendURL).origin;
     const matchingTarget = targets.find(target => {
         if (target?.type !== 'page' || typeof target.url !== 'string') {
@@ -243,6 +273,48 @@ async function getBrowserPageTarget(configuration) {
         );
     }
     return pageTarget;
+}
+
+async function getBrowserWebSocketDebuggerURL(configuration) {
+    let response;
+    try {
+        const versionURL = new URL('/json/version', `${configuration.debugURL}/`);
+        response = await fetch(versionURL, {
+            signal: AbortSignal.timeout(configuration.timeoutMilliseconds)
+        });
+    } catch {
+        throw new SmokeHarnessError(
+            'debug-browser-target-failed',
+            'Unable to read the browser remote-debugging endpoint'
+        );
+    }
+    if (!response.ok) {
+        throw new SmokeHarnessError(
+            'debug-browser-target-failed',
+            'Browser remote-debugging endpoint returned an error'
+        );
+    }
+    const browserVersion = await response.json();
+    if (typeof browserVersion?.webSocketDebuggerUrl !== 'string') {
+        throw new SmokeHarnessError(
+            'debug-browser-target-missing',
+            'No browser-level Chromium debugging target is available'
+        );
+    }
+    return browserVersion.webSocketDebuggerUrl;
+}
+
+async function waitForBrowserTargetByID(configuration, targetID) {
+    return waitForValue({
+        accept: target => typeof target?.webSocketDebuggerUrl === 'string',
+        description: `browser target ${targetID}`,
+        errorCode: 'debug-created-target-timeout',
+        read: async () => {
+            const targets = await readBrowserTargets(configuration);
+            return targets.find(target => target?.id === targetID) ?? null;
+        },
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
 }
 
 async function evaluateValue(
@@ -274,7 +346,7 @@ async function waitForValue(options) {
         if (options.accept(lastValue)) {
             return lastValue;
         }
-        await sleep(PAGE_POLL_INTERVAL_MILLISECONDS);
+        await sleep(options.pollIntervalMilliseconds ?? PAGE_POLL_INTERVAL_MILLISECONDS);
     }
     throw new SmokeHarnessError(
         options.errorCode,
@@ -295,6 +367,28 @@ function createVisibilityExpression(selectors) {
                 && style.visibility !== 'hidden'
                 && !element.classList.contains('hide');
         };
+        const createDiagnostics = () => {
+            const visiblePage = Array.from(document.querySelectorAll(
+                '.mainAnimatedPage, [data-role="page"]'
+            )).find(isVisible);
+            const visibleButtons = Array.from(document.querySelectorAll(
+                'button, a[href], [role="button"]'
+            )).filter(isVisible).slice(0, 20);
+            return {
+                locationHash: location.hash,
+                matchedElementCount: selectors.reduce(
+                    (count, selector) => count + document.querySelectorAll(selector).length,
+                    0
+                ),
+                visibleButtonSummaries: visibleButtons.map(element => ({
+                    className: String(element.className).slice(0, 160),
+                    text: String(element.textContent).trim().slice(0, 80)
+                })),
+                visiblePageClassName: visiblePage ?
+                    String(visiblePage.className).slice(0, 200) : null,
+                visiblePageIdentifier: visiblePage?.id || null
+            };
+        };
         for (const selector of selectors) {
             const elements = document.querySelectorAll(selector);
             for (const element of elements) {
@@ -310,6 +404,7 @@ function createVisibilityExpression(selectors) {
                         continue;
                     }
                     return {
+                        ...createDiagnostics(),
                         found: true,
                         x: horizontalCoordinate,
                         y: verticalCoordinate
@@ -317,7 +412,7 @@ function createVisibilityExpression(selectors) {
                 }
             }
         }
-        return { found: false, x: 0, y: 0 };
+        return { ...createDiagnostics(), found: false, x: 0, y: 0 };
     })()`;
 }
 
@@ -357,6 +452,35 @@ async function trustedClick(client, descriptor) {
             'Unable to activate the selected UI element'
         );
     }
+}
+
+async function trustedStartupClick(client, descriptor, accessKey) {
+    const result = await evaluateValue(client, `(() => {
+        const hitTarget = document.elementFromPoint(
+            ${JSON.stringify(descriptor.x)},
+            ${JSON.stringify(descriptor.y)}
+        );
+        const interactiveTarget = hitTarget?.closest?.(
+            'button, input, select, textarea, a[href], [role="button"]'
+        ) ?? hitTarget;
+        if (!interactiveTarget) {
+            return { activated: false, invokedAtMilliseconds: null };
+        }
+        const invokedAtMilliseconds = performance.now();
+        window[${JSON.stringify(accessKey)}]?.({
+            playInvokedAtMilliseconds: invokedAtMilliseconds
+        });
+        interactiveTarget.focus?.({ preventScroll: true });
+        interactiveTarget.click?.();
+        return { activated: true, invokedAtMilliseconds };
+    })()`, true, true);
+    if (result?.activated !== true || !Number.isFinite(result.invokedAtMilliseconds)) {
+        throw new SmokeHarnessError(
+            'startup-ui-activation-failed',
+            'Unable to activate the startup comparison play button'
+        );
+    }
+    return result.invokedAtMilliseconds;
 }
 
 async function trustedClickSelector(client, selectors, configuration, description) {
@@ -416,6 +540,38 @@ async function navigate(client, navigationURL, configuration) {
 async function connectToConfiguredServer(client, configuration) {
     const addServerURL = createFrontendRouteURL(configuration.frontendURL, '/addserver');
     await navigate(client, addServerURL, configuration);
+    const landingState = await waitForValue({
+        accept: state => resolveServerConnectionLandingAction(state) !== null,
+        description: 'the configured server connection page',
+        errorCode: 'server-connection-page-timeout',
+        read: () => evaluateValue(client, `(() => {
+            const isVisible = element => {
+                if (!element) {
+                    return false;
+                }
+                const rectangle = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rectangle.width > 0
+                    && rectangle.height > 0
+                    && style.display !== 'none'
+                    && style.visibility !== 'hidden';
+            };
+            return {
+                addServerButtonAvailable: isVisible(document.querySelector('.btnAddServer')),
+                locationHash: location.hash,
+                serverHostInputAvailable: isVisible(document.querySelector('#txtServerHost'))
+            };
+        })()`),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+    if (resolveServerConnectionLandingAction(landingState) === 'open-add-server') {
+        await trustedClickSelector(
+            client,
+            [ '.btnAddServer' ],
+            configuration,
+            'the add server button'
+        );
+    }
     await fillInput(
         client,
         '#txtServerHost',
@@ -488,13 +644,24 @@ async function signInIfRequired(client, configuration) {
         return false;
     }
 
-    const manualName = await getVisibleElement(client, [ '#txtManualName' ]);
-    if (!manualName?.found) {
-        await trustedClickSelector(
+    const loginEntry = await waitForValue({
+        accept: entry => entry?.manualName?.found === true
+            || entry?.manualButton?.found === true,
+        description: 'the manual login form or user-selection button',
+        errorCode: 'login-entry-timeout',
+        read: async () => ({
+            manualButton: await getVisibleElement(client, [ '#loginPage .btnManual' ]),
+            manualName: await getVisibleElement(client, [ '#txtManualName' ])
+        }),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+    if (loginEntry.manualName.found !== true) {
+        await trustedClick(client, loginEntry.manualButton);
+        await waitForVisibleElement(
             client,
-            [ '#loginPage .btnManual' ],
+            [ '#txtManualName' ],
             configuration,
-            'the manual login button'
+            'the username input after selecting manual login'
         );
     }
     await fillInput(
@@ -554,16 +721,25 @@ async function hasMatchingAuthenticatedServer(client, configuration) {
         return false;
     }
 
-    return activeServer.address.replace(/\/$/u, '') === configuration.serverURL;
+    return areEquivalentServerURLs(activeServer.address, configuration.serverURL);
 }
 
-function createPlayerCaptureHookExpression(accessKey, restoreKey) {
+function createPlayerCaptureHookExpression(
+    accessKey,
+    restoreKey,
+    captureStartupMilestones = false,
+    expectedPlayerID = 'webgpuvideoplayer'
+) {
     return `(() => {
         const events = window.Events;
         if (!events || typeof events.trigger !== 'function') {
             return false;
         }
         const originalTrigger = events.trigger;
+        const captureStateKey = ${JSON.stringify(accessKey)};
+        const restoreStateKey = ${JSON.stringify(restoreKey)};
+        const captureStartupMilestones = ${JSON.stringify(captureStartupMilestones)};
+        const supportedPlayerIDs = new Set([ ${JSON.stringify(expectedPlayerID)} ]);
         let capturedPlayer = null;
         const eventCounts = {
             ended: 0,
@@ -579,6 +755,75 @@ function createPlayerCaptureHookExpression(accessKey, restoreKey) {
             waiting: 0
         };
         const controlEventSequence = [];
+        const milestones = {
+            canvasAttachedAtMilliseconds: null,
+            nativeMediaPlayingAtMilliseconds: null,
+            nativeVideoFrameAtMilliseconds: null,
+            playInvokedAtMilliseconds: null,
+            playbackStartAtMilliseconds: null,
+            playerPlayingAtMilliseconds: null
+        };
+        const cleanupCallbacks = [];
+        const observedVideos = new Set();
+        const originalAppendChild = Node.prototype.appendChild;
+        const appendChildWrapper = function(child) {
+            if (captureStartupMilestones
+                && milestones.canvasAttachedAtMilliseconds === null
+                && child instanceof Element
+                && child.matches('.webgpuVideoPlayerCanvas')) {
+                milestones.canvasAttachedAtMilliseconds = performance.now();
+            }
+            return Reflect.apply(originalAppendChild, this, [ child ]);
+        };
+        if (captureStartupMilestones) {
+            Node.prototype.appendChild = appendChildWrapper;
+            cleanupCallbacks.push(() => {
+                if (Node.prototype.appendChild === appendChildWrapper) {
+                    Node.prototype.appendChild = originalAppendChild;
+                }
+            });
+        }
+        const recordVideo = video => {
+            if (!captureStartupMilestones || observedVideos.has(video)) {
+                return;
+            }
+            observedVideos.add(video);
+            const handlePlaying = () => {
+                milestones.nativeMediaPlayingAtMilliseconds ??= performance.now();
+            };
+            video.addEventListener('playing', handlePlaying);
+            cleanupCallbacks.push(() => video.removeEventListener('playing', handlePlaying));
+            if (typeof video.requestVideoFrameCallback === 'function') {
+                const callbackIdentifier = video.requestVideoFrameCallback(callbackTime => {
+                    milestones.nativeVideoFrameAtMilliseconds ??= callbackTime;
+                });
+                cleanupCallbacks.push(() => {
+                    if (typeof video.cancelVideoFrameCallback === 'function') {
+                        video.cancelVideoFrameCallback(callbackIdentifier);
+                    }
+                });
+            }
+        };
+        const inspectPresentationElements = () => {
+            for (const video of document.querySelectorAll('.videoPlayerContainer video')) {
+                recordVideo(video);
+            }
+            if (milestones.canvasAttachedAtMilliseconds === null
+                && document.querySelector(
+                    '.videoPlayerContainer .webgpuVideoPlayerCanvas'
+                )) {
+                milestones.canvasAttachedAtMilliseconds = performance.now();
+            }
+        };
+        let presentationObserver = null;
+        if (captureStartupMilestones) {
+            inspectPresentationElements();
+            presentationObserver = new MutationObserver(inspectPresentationElements);
+            presentationObserver.observe(document.documentElement, {
+                childList: true,
+                subtree: true
+            });
+        }
         const sequencedEventTypes = new Set([
             'ended',
             'error',
@@ -591,29 +836,19 @@ function createPlayerCaptureHookExpression(accessKey, restoreKey) {
             'waiting'
         ]);
         const wrapper = function(target, type, args) {
-            if (target === wrapper && type === ${JSON.stringify(accessKey)}) {
-                return {
-                    eventCounts: { ...eventCounts },
-                    eventSequence: [ ...controlEventSequence ],
-                    player: capturedPlayer
-                };
-            }
-            if (target === wrapper && type === ${JSON.stringify(restoreKey)}) {
-                capturedPlayer = null;
-                events.trigger = originalTrigger;
-                return true;
-            }
             const argumentPlayer = type === 'playbackstart'
                 && Array.isArray(args)
-                && args[0]?.id === 'webgpuvideoplayer'
+                && supportedPlayerIDs.has(args[0]?.id)
                 ? args[0]
                 : null;
-            if (target?.id === 'webgpuvideoplayer') {
+            if (supportedPlayerIDs.has(target?.id)) {
                 capturedPlayer = target;
             } else if (argumentPlayer) {
                 capturedPlayer = argumentPlayer;
             }
-            if (capturedPlayer && target === capturedPlayer
+            const belongsToCapturedPlayer = capturedPlayer
+                && (target === capturedPlayer || argumentPlayer === capturedPlayer);
+            if (belongsToCapturedPlayer
                 && Object.hasOwn(eventCounts, type)) {
                 eventCounts[type] += 1;
                 if (sequencedEventTypes.has(type)
@@ -621,8 +856,40 @@ function createPlayerCaptureHookExpression(accessKey, restoreKey) {
                         < ${MAXIMUM_CAPTURED_CONTROL_EVENTS}) {
                     controlEventSequence.push(type);
                 }
+                if (captureStartupMilestones) {
+                    if (type === 'playbackstart') {
+                        milestones.playbackStartAtMilliseconds ??= performance.now();
+                    } else if (type === 'playing') {
+                        milestones.playerPlayingAtMilliseconds ??= performance.now();
+                    }
+                }
             }
             return Reflect.apply(originalTrigger, this, [ target, type, args ]);
+        };
+        window[captureStateKey] = command => {
+            if (captureStartupMilestones
+                && Number.isFinite(command?.playInvokedAtMilliseconds)
+                && milestones.playInvokedAtMilliseconds === null) {
+                milestones.playInvokedAtMilliseconds = command.playInvokedAtMilliseconds;
+            }
+            return {
+                eventCounts: { ...eventCounts },
+                eventSequence: [ ...controlEventSequence ],
+                hookActive: events.trigger === wrapper,
+                milestones: { ...milestones },
+                player: capturedPlayer
+            };
+        };
+        window[restoreStateKey] = () => {
+            capturedPlayer = null;
+            presentationObserver?.disconnect();
+            while (cleanupCallbacks.length > 0) {
+                cleanupCallbacks.pop()();
+            }
+            if (events.trigger === wrapper) {
+                events.trigger = originalTrigger;
+            }
+            return true;
         };
         events.trigger = wrapper;
         return true;
@@ -631,19 +898,20 @@ function createPlayerCaptureHookExpression(accessKey, restoreKey) {
 
 function createPlayerSnapshotExpression(accessKey) {
     return `(() => {
-        if (!window.Events || typeof window.Events.trigger !== 'function') {
+        const readCapture = window[${JSON.stringify(accessKey)}];
+        if (typeof readCapture !== 'function') {
             return { captured: false };
         }
-        const capture = window.Events.trigger(
-            window.Events.trigger,
-            ${JSON.stringify(accessKey)}
-        );
+        const capture = readCapture();
         const player = capture?.player;
         if (!player) {
             return {
                 captured: false,
                 eventCounts: { ...(capture?.eventCounts ?? {}) },
                 eventSequence: [ ...(capture?.eventSequence ?? []) ],
+                hookActive: capture?.hookActive === true,
+                milestones: { ...(capture?.milestones ?? {}) },
+                performanceNowMilliseconds: performance.now(),
                 stoppedEventCount: capture?.eventCounts?.stopped ?? 0,
                 terminalErrorCount: capture?.eventCounts?.error ?? 0
             };
@@ -796,6 +1064,8 @@ function createPlayerSnapshotExpression(accessKey) {
                 ? currentSource.length > 0
                 : currentSource != null,
             isFetching: Boolean(fetchingValue),
+            milestones: { ...(capture.milestones ?? {}) },
+            performanceNowMilliseconds: performance.now(),
             playerID: String(player.id || ''),
             sessionGeneration: Number.isSafeInteger(player.backendSessionGeneration)
                 ? player.backendSessionGeneration
@@ -805,6 +1075,7 @@ function createPlayerSnapshotExpression(accessKey) {
                 deviceRecoveryCount: presentation.deviceRecoveryCount,
                 fallbackReason: presentation.fallbackReason,
                 firstFrameLatencyMicroseconds: presentation.firstFrameLatencyMicroseconds,
+                sessionStartedMicroseconds: presentation.sessionStartedMicroseconds,
                 mode: presentation.mode,
                 nativeFrameCount: presentation.nativeFrameCount,
                 presentationSource: presentation.presentationSource,
@@ -830,10 +1101,7 @@ function createPlayerSnapshotExpression(accessKey) {
 
 function createPlayerOperationExpression(accessKey, operation) {
     return `(async () => {
-        const capture = window.Events?.trigger?.(
-            window.Events.trigger,
-            ${JSON.stringify(accessKey)}
-        );
+        const capture = window[${JSON.stringify(accessKey)}]?.();
         const player = capture?.player;
         if (!player) {
             return false;
@@ -1043,10 +1311,14 @@ function createBrowserErrorMonitor(client) {
         consoleErrors: 0,
         ignoredUnattributedScriptErrors: 0,
         logErrors: 0,
-        runtimeExceptions: 0
+        runtimeExceptions: 0,
+        videoSampleOwnershipWarnings: 0
     };
     const messages = [];
     const addMessage = message => {
+        if (isVideoSampleOwnershipWarning(message)) {
+            counts.videoSampleOwnershipWarnings += 1;
+        }
         if (typeof message === 'string'
             && message.length > 0
             && messages.length < MAXIMUM_DIAGNOSTIC_MESSAGES) {
@@ -1097,9 +1369,28 @@ function createBrowserErrorMonitor(client) {
             counts.ignoredUnattributedScriptErrors = 0;
             counts.logErrors = 0;
             counts.runtimeExceptions = 0;
+            counts.videoSampleOwnershipWarnings = 0;
             messages.length = 0;
         }
     };
+}
+
+function summarizeBrowserErrorMonitors(browserErrorMonitors) {
+    const counts = {
+        consoleErrors: 0,
+        ignoredUnattributedScriptErrors: 0,
+        logErrors: 0,
+        runtimeExceptions: 0,
+        videoSampleOwnershipWarnings: 0
+    };
+    const messages = [];
+    for (const browserErrorMonitor of browserErrorMonitors) {
+        for (const countName of Object.keys(counts)) {
+            counts[countName] += browserErrorMonitor.counts[countName];
+        }
+        messages.push(...browserErrorMonitor.messages);
+    }
+    return { counts, messages };
 }
 
 function attachBrowserDiagnostics(error, browserErrorMonitor) {
@@ -1114,18 +1405,43 @@ function attachBrowserDiagnostics(error, browserErrorMonitor) {
     };
 }
 
-async function reloadFreshFrontend(client, configuration) {
+async function reloadFreshFrontend(client, configuration, searchParameters = {}) {
     const frontendURL = new URL(configuration.frontendURL);
     frontendURL.searchParams.set('webgpuSmokeRun', String(Date.now()));
+    for (const [ name, value ] of Object.entries(searchParameters)) {
+        frontendURL.searchParams.set(name, value);
+    }
     await navigate(client, frontendURL.toString(), configuration);
     await waitForValue({
-        accept: state => state?.ready === true,
+        accept: isFrontendInitializationReady,
         description: 'fresh frontend initialization',
         errorCode: 'frontend-initialization-timeout',
-        read: () => evaluateValue(client, `({
-            ready: typeof ApiClient === 'object'
-                || Boolean(document.querySelector('#txtServerHost'))
-        })`),
+        read: () => evaluateValue(client, `(() => {
+            const isVisible = element => {
+                if (!element) {
+                    return false;
+                }
+                const rectangle = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rectangle.width > 0
+                    && rectangle.height > 0
+                    && style.display !== 'none'
+                    && style.visibility !== 'hidden';
+            };
+            const apiClientAvailable = typeof ApiClient === 'object';
+            return {
+                apiClientAvailable,
+                apiClientLandingAvailable: apiClientAvailable && (
+                    isVisible(document.querySelector('#indexPage'))
+                    || isVisible(document.querySelector('#loginPage'))
+                ),
+                documentReadyState: document.readyState,
+                locationHash: location.hash,
+                serverHostInputAvailable: isVisible(document.querySelector('#txtServerHost')),
+                serverSelectionPageAvailable:
+                    isVisible(document.querySelector('#selectServerPage'))
+            };
+        })()`),
         timeoutMilliseconds: configuration.timeoutMilliseconds
     });
 }
@@ -1142,6 +1458,162 @@ async function clearFrontendRuntimeCaches(client) {
         await Promise.all(cacheNames.map(cacheName => globalThis.caches.delete(cacheName)));
         return true;
     })()`);
+}
+
+async function readFrontendConfiguration(configuration) {
+    const configurationURL = new URL('config.json', `${configuration.frontendURL}/`);
+    let response;
+    try {
+        response = await fetch(configurationURL, {
+            cache: 'no-store',
+            signal: AbortSignal.timeout(configuration.timeoutMilliseconds)
+        });
+    } catch {
+        throw new SmokeHarnessError(
+            'startup-config-fetch-failed',
+            'Unable to read the frontend configuration for startup comparison'
+        );
+    }
+    if (!response.ok) {
+        throw new SmokeHarnessError(
+            'startup-config-fetch-failed',
+            'The frontend configuration request failed for startup comparison'
+        );
+    }
+    let frontendConfiguration;
+    try {
+        frontendConfiguration = await response.json();
+    } catch {
+        throw new SmokeHarnessError(
+            'startup-config-invalid',
+            'The frontend configuration was not valid JSON'
+        );
+    }
+    if (!frontendConfiguration
+        || typeof frontendConfiguration !== 'object'
+        || Array.isArray(frontendConfiguration)) {
+        throw new SmokeHarnessError(
+            'startup-config-invalid',
+            'The frontend configuration was not an object'
+        );
+    }
+    return {
+        configuration: frontendConfiguration,
+        url: configurationURL.toString()
+    };
+}
+
+async function createStartupConfigurationInterceptor(client, configuration) {
+    const frontendConfiguration = await readFrontendConfiguration(configuration);
+    let activeMode = null;
+    let closePromise = null;
+    let closed = false;
+    let fetchEnabled = false;
+    let interceptionFailure = null;
+    const pendingOperations = new Set();
+    const removeListener = client.on('Fetch.requestPaused', parameters => {
+        const operation = (async () => {
+            if (parameters.request?.url !== frontendConfiguration.url || activeMode === null) {
+                await client.send('Fetch.continueRequest', {
+                    requestId: parameters.requestId
+                });
+                return;
+            }
+            const featureFlags = getStartupModeFeatureFlags(activeMode);
+            const responseBody = Buffer.from(JSON.stringify({
+                ...frontendConfiguration.configuration,
+                ...featureFlags
+            }), 'utf8').toString('base64');
+            await client.send('Fetch.fulfillRequest', {
+                body: responseBody,
+                responseCode: 200,
+                responseHeaders: [
+                    { name: 'Cache-Control', value: 'no-store' },
+                    { name: 'Content-Type', value: 'application/json; charset=utf-8' }
+                ],
+                requestId: parameters.requestId
+            });
+        })().catch(async error => {
+            interceptionFailure ??= new SmokeHarnessError(
+                'startup-config-interception-failed',
+                'Unable to apply the startup comparison configuration overlay',
+                {
+                    causeName: typeof error?.name === 'string' ? error.name : 'Error'
+                }
+            );
+            try {
+                await client.send('Fetch.continueRequest', {
+                    requestId: parameters.requestId
+                });
+            } catch {
+                // The request may already have completed before the interception failed
+            }
+        }).finally(() => {
+            pendingOperations.delete(operation);
+        });
+        pendingOperations.add(operation);
+    });
+    try {
+        await client.send('Fetch.enable', {
+            patterns: [ {
+                requestStage: 'Request',
+                urlPattern: frontendConfiguration.url
+            } ]
+        });
+        fetchEnabled = true;
+    } catch (error) {
+        removeListener();
+        throw error;
+    }
+    return {
+        async close() {
+            if (closePromise) {
+                return closePromise;
+            }
+            activeMode = null;
+            closed = true;
+            removeListener();
+            closePromise = (async () => {
+                // No operation can be added after listener removal, so this
+                // snapshot is a complete drain before interception is disabled
+                await Promise.allSettled([ ...pendingOperations ]);
+                let disableFailure = null;
+                if (fetchEnabled) {
+                    try {
+                        await client.send('Fetch.disable');
+                    } catch (error) {
+                        disableFailure = error;
+                    }
+                    fetchEnabled = false;
+                }
+                if (interceptionFailure !== null) {
+                    throw interceptionFailure;
+                }
+                if (disableFailure !== null) {
+                    throw disableFailure;
+                }
+            })();
+            return closePromise;
+        },
+        requireHealthy() {
+            if (interceptionFailure !== null) {
+                throw interceptionFailure;
+            }
+        },
+        setMode(mode) {
+            getStartupModeFeatureFlags(mode);
+            if (closed) {
+                throw new SmokeHarnessError(
+                    'startup-config-interceptor-closed',
+                    'The startup comparison configuration interceptor is closed'
+                );
+            }
+            if (interceptionFailure !== null) {
+                throw interceptionFailure;
+            }
+            activeMode = mode;
+        }
+    };
 }
 
 function hasAuthorizedRawHDRPlaybackRoute(snapshot) {
@@ -1577,6 +2049,971 @@ async function stopCapturedPlayback(
         errorCode: `${failureCode.replace(/-failed$/u, '')}-cleanup-timeout`,
         timeoutMilliseconds: configuration.timeoutMilliseconds
     });
+}
+
+function isExpectedStartupModeActive(snapshot, mode, configuration) {
+    const commonActive = snapshot?.captured === true
+        && snapshot.terminalErrorCount === 0
+        && Number.isFinite(snapshot.milestones?.playInvokedAtMilliseconds)
+        && Number.isFinite(snapshot.milestones?.playbackStartAtMilliseconds)
+        && Number.isFinite(snapshot.milestones?.playerPlayingAtMilliseconds);
+    if (!commonActive) {
+        return false;
+    }
+    switch (mode) {
+        case 'html':
+            return snapshot.playerID === 'htmlvideoplayer'
+                && Number.isFinite(snapshot.milestones.nativeVideoFrameAtMilliseconds)
+                && (configuration.expectedAudioPath !== 'ready'
+                    || Number.isFinite(
+                        snapshot.milestones.nativeMediaPlayingAtMilliseconds
+                    ));
+        case 'presentation':
+            return snapshot.playerID === 'webgpuvideoplayer'
+                && snapshot.customPlayback === null
+                && snapshot.presentation?.state === 'presenting'
+                && snapshot.presentation.fallbackReason === null
+                && snapshot.presentation.presentationSource === 'native'
+                && snapshot.presentation.presentedFrameCount > 0
+                && Number.isSafeInteger(
+                    snapshot.presentation.firstFrameLatencyMicroseconds
+                )
+                && Number.isSafeInteger(
+                    snapshot.presentation.sessionStartedMicroseconds
+                )
+                && Number.isFinite(snapshot.milestones.canvasAttachedAtMilliseconds)
+                && Number.isFinite(snapshot.milestones.nativeVideoFrameAtMilliseconds)
+                && (configuration.expectedAudioPath !== 'ready'
+                    || Number.isFinite(
+                        snapshot.milestones.nativeMediaPlayingAtMilliseconds
+                    ));
+        case 'custom':
+            return snapshot.playerID === 'webgpuvideoplayer'
+                && snapshot.customPlayback?.state === 'playing'
+                && snapshot.customPlayback.audioPath === configuration.expectedAudioPath
+                && snapshot.customPlayback.fallbackReason === null
+                && snapshot.customPlayback.videoDecode?.receivedFrameCount > 0
+                && snapshot.customPlaybackEligibility?.eligible === true
+                && snapshot.customPlaybackEligibility.videoOutputMode
+                    === configuration.expectedVideoOutputMode
+                && (configuration.expectedVideoDecoderBackend === null
+                    || snapshot.customPlaybackEligibility.videoDecoderBackend
+                        === configuration.expectedVideoDecoderBackend)
+                && snapshot.presentation?.state === 'presenting'
+                && snapshot.presentation.fallbackReason === null
+                && snapshot.presentation.presentationSource === 'decoded'
+                && snapshot.presentation.presentedFrameCount > 0
+                && Number.isSafeInteger(
+                    snapshot.presentation.firstFrameLatencyMicroseconds
+                )
+                && Number.isSafeInteger(
+                    snapshot.presentation.sessionStartedMicroseconds
+                )
+                && Number.isFinite(snapshot.milestones.canvasAttachedAtMilliseconds)
+                && (configuration.expectedAudioPath !== 'ready'
+                    || hasConsumedCustomAudio(snapshot))
+                && (configuration.expectedVideoOutputMode !== 'raw-planes'
+                    || hasAuthorizedRawHDRPlaybackRoute(snapshot));
+        default:
+            return false;
+    }
+}
+
+function requireStartupElapsedMilliseconds(startedAtMilliseconds, endedAtMilliseconds, label) {
+    if (!Number.isFinite(startedAtMilliseconds)
+        || !Number.isFinite(endedAtMilliseconds)
+        || endedAtMilliseconds < startedAtMilliseconds) {
+        throw new SmokeHarnessError(
+            'startup-milestone-invalid',
+            `The ${label} startup milestone was missing or out of order`
+        );
+    }
+    return endedAtMilliseconds - startedAtMilliseconds;
+}
+
+function summarizeStartupSample(
+    snapshot,
+    mode,
+    sampleNumber,
+    orderPosition,
+    measured,
+    audioExpected
+) {
+    const milestones = snapshot.milestones;
+    const playInvokedAtMilliseconds = milestones.playInvokedAtMilliseconds;
+    const firstPresentedAtMilliseconds = mode === 'html' ?
+        milestones.nativeVideoFrameAtMilliseconds :
+        (snapshot.presentation.sessionStartedMicroseconds
+            + snapshot.presentation.firstFrameLatencyMicroseconds)
+            / MICROSECONDS_PER_MILLISECOND;
+    const firstVisibleFrameAtMilliseconds = firstPresentedAtMilliseconds;
+    let firstAudioAtMilliseconds = null;
+    if (audioExpected) {
+        firstAudioAtMilliseconds = mode === 'custom' ?
+            snapshot.observedMilestones.firstCustomAudioAtMilliseconds :
+            milestones.nativeMediaPlayingAtMilliseconds;
+    }
+    const firstDecodedFrameAtMilliseconds = mode === 'custom' ?
+        snapshot.observedMilestones.firstCustomDecodedFrameAtMilliseconds :
+        milestones.nativeVideoFrameAtMilliseconds;
+    return {
+        measured,
+        milestones: {
+            firstAudioMilliseconds: Number.isFinite(firstAudioAtMilliseconds) ?
+                requireStartupElapsedMilliseconds(
+                    playInvokedAtMilliseconds,
+                    firstAudioAtMilliseconds,
+                    'first audio'
+                ) :
+                null,
+            firstDecodedFrameMilliseconds: Number.isFinite(firstDecodedFrameAtMilliseconds) ?
+                requireStartupElapsedMilliseconds(
+                    playInvokedAtMilliseconds,
+                    firstDecodedFrameAtMilliseconds,
+                    'first decoded frame'
+                ) :
+                null,
+            firstVisibleFrameMilliseconds: requireStartupElapsedMilliseconds(
+                playInvokedAtMilliseconds,
+                firstVisibleFrameAtMilliseconds,
+                'first visible frame'
+            ),
+            playInvocationToPlaybackStartMilliseconds:
+                requireStartupElapsedMilliseconds(
+                    playInvokedAtMilliseconds,
+                    milestones.playbackStartAtMilliseconds,
+                    'playback start'
+                ),
+            playInvocationToPlayingMilliseconds: requireStartupElapsedMilliseconds(
+                playInvokedAtMilliseconds,
+                milestones.playerPlayingAtMilliseconds,
+                'playing'
+            ),
+            presentationAttachToFrameMilliseconds: mode === 'html' ?
+                null :
+                requireStartupElapsedMilliseconds(
+                    milestones.canvasAttachedAtMilliseconds,
+                    firstVisibleFrameAtMilliseconds,
+                    'presentation attach-to-frame'
+                )
+        },
+        mode,
+        orderPosition,
+        route: {
+            audioPath: snapshot.customPlayback?.audioPath ?? (
+                snapshot.milestones.nativeMediaPlayingAtMilliseconds === null ?
+                    'unobserved' :
+                    'native-media'
+            ),
+            decoderBackend:
+                snapshot.customPlaybackEligibility?.videoDecoderBackend ?? 'native-html',
+            outputMode:
+                snapshot.customPlaybackEligibility?.videoOutputMode ?? 'native-html',
+            playerID: snapshot.playerID,
+            presentationSource: snapshot.presentation?.presentationSource ?? 'native-video'
+        },
+        sampleNumber
+    };
+}
+
+async function stopStartupSample(client, accessKey, configuration) {
+    const stopResult = await evaluateValue(
+        client,
+        createPlayerOperationExpression(
+            accessKey,
+            'await Promise.resolve(player.stop(false));'
+        )
+    );
+    if (!stopResult) {
+        throw new SmokeHarnessError(
+            'startup-stop-failed',
+            'Unable to stop a startup comparison sample'
+        );
+    }
+    return waitForPlayerSnapshot({
+        accept: snapshot => snapshot?.stoppedEventCount === 1
+            && snapshot.dom?.canvasCount === 0
+            && snapshot.dom?.sourcedVideoCount === 0,
+        accessKey,
+        client,
+        description: 'startup comparison sample cleanup',
+        errorCode: 'startup-stop-timeout',
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+}
+
+async function navigateToStartupItem(client, configuration) {
+    const serverID = await waitForValue({
+        accept: value => typeof value === 'string' && value.length > 0,
+        description: 'the startup comparison server identifier',
+        errorCode: 'startup-server-identifier-timeout',
+        read: () => evaluateValue(
+            client,
+            "typeof ApiClient === 'object' ? ApiClient.serverId() : null"
+        ),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+    const detailsURL = createFrontendRouteURL(
+        configuration.frontendURL,
+        `/details?id=${encodeURIComponent(configuration.itemID)}`
+            + `&serverId=${encodeURIComponent(serverID)}`
+    );
+    await navigate(client, detailsURL, configuration);
+    return waitForVisibleElement(
+        client,
+        PLAY_BUTTON_SELECTORS,
+        configuration,
+        'the startup comparison play button'
+    );
+}
+
+async function closeStartupModeRuntime(browserClient, runtime) {
+    let cleanupFailure = null;
+    if (runtime.configurationInterceptor) {
+        try {
+            await runtime.configurationInterceptor.close();
+        } catch (error) {
+            cleanupFailure = error;
+        }
+    }
+    runtime.client?.close();
+    if (runtime.targetID) {
+        try {
+            await browserClient.send('Target.closeTarget', { targetId: runtime.targetID });
+        } catch (error) {
+            cleanupFailure ??= error;
+        }
+    }
+    if (runtime.browserContextID) {
+        try {
+            await browserClient.send('Target.disposeBrowserContext', {
+                browserContextId: runtime.browserContextID
+            });
+        } catch (error) {
+            cleanupFailure ??= error;
+        }
+    }
+    if (cleanupFailure !== null) {
+        throw cleanupFailure;
+    }
+}
+
+async function createStartupModeRuntime(browserClient, mode, configuration) {
+    const runtime = {
+        browserContextID: null,
+        browserErrorMonitor: null,
+        client: null,
+        configurationInterceptor: null,
+        mode,
+        targetID: null
+    };
+    try {
+        const createdBrowserContext = await browserClient.send('Target.createBrowserContext');
+        if (typeof createdBrowserContext?.browserContextId !== 'string') {
+            throw new SmokeHarnessError(
+                'startup-browser-context-creation-failed',
+                `Chromium did not return a browser context for ${mode} startup measurements`
+            );
+        }
+        runtime.browserContextID = createdBrowserContext.browserContextId;
+        const createdTarget = await browserClient.send('Target.createTarget', {
+            background: true,
+            browserContextId: runtime.browserContextID,
+            url: 'about:blank'
+        });
+        if (typeof createdTarget?.targetId !== 'string') {
+            throw new SmokeHarnessError(
+                'startup-target-creation-failed',
+                `Chromium did not return a target for ${mode} startup measurements`
+            );
+        }
+        runtime.targetID = createdTarget.targetId;
+        const pageTarget = await waitForBrowserTargetByID(configuration, runtime.targetID);
+        runtime.client = await RawCDPClient.connect(
+            pageTarget.webSocketDebuggerUrl,
+            configuration.timeoutMilliseconds
+        );
+        await Promise.all([
+            runtime.client.send('Log.enable'),
+            runtime.client.send('Network.enable'),
+            runtime.client.send('Page.enable'),
+            runtime.client.send('Performance.enable'),
+            runtime.client.send('Runtime.enable')
+        ]);
+        await Promise.all([
+            runtime.client.send('Network.setBypassServiceWorker', { bypass: true }),
+            runtime.client.send('Network.setCacheDisabled', { cacheDisabled: false })
+        ]);
+        runtime.configurationInterceptor = await createStartupConfigurationInterceptor(
+            runtime.client,
+            configuration
+        );
+        runtime.configurationInterceptor.setMode(mode);
+        await reloadFreshFrontend(runtime.client, configuration, {
+            webgpuStartupMode: mode
+        });
+        runtime.configurationInterceptor.requireHealthy();
+        const alreadyAuthenticated = await hasMatchingAuthenticatedServer(
+            runtime.client,
+            configuration
+        );
+        if (!alreadyAuthenticated) {
+            await connectToConfiguredServer(runtime.client, configuration);
+            await signInIfRequired(runtime.client, configuration);
+        }
+        await waitForValue({
+            accept: authenticated => authenticated === true,
+            description: `${mode} startup comparison authentication`,
+            errorCode: 'startup-authentication-timeout',
+            read: () => hasMatchingAuthenticatedServer(runtime.client, configuration),
+            timeoutMilliseconds: configuration.timeoutMilliseconds
+        });
+        return runtime;
+    } catch (error) {
+        await closeStartupModeRuntime(browserClient, runtime).catch(() => undefined);
+        throw error;
+    }
+}
+
+async function prepareStartupModeRuntime(runtime, configuration) {
+    await reloadFreshFrontend(runtime.client, configuration, {
+        webgpuStartupMode: runtime.mode
+    });
+    runtime.configurationInterceptor.requireHealthy();
+    await waitForValue({
+        accept: authenticated => authenticated === true,
+        description: `${runtime.mode} synchronized startup authentication`,
+        errorCode: 'startup-authentication-timeout',
+        read: () => hasMatchingAuthenticatedServer(runtime.client, configuration),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+    await navigateToStartupItem(runtime.client, configuration);
+    runtime.browserErrorMonitor = createBrowserErrorMonitor(runtime.client);
+}
+
+async function runStartupModeSample(options) {
+    await options.client.send('Page.bringToFront');
+    const playButton = await waitForVisibleElement(
+        options.client,
+        PLAY_BUTTON_SELECTORS,
+        options.configuration,
+        `the ${options.mode} startup comparison play button`
+    );
+    const accessKey = `webgpu-startup-access-${crypto.randomUUID()}`;
+    const restoreKey = `webgpu-startup-restore-${crypto.randomUUID()}`;
+    let hookInstalled = false;
+    let playbackStarted = false;
+    try {
+        hookInstalled = await evaluateValue(
+            options.client,
+            createPlayerCaptureHookExpression(
+                accessKey,
+                restoreKey,
+                true,
+                options.mode === 'html' ? 'htmlvideoplayer' : 'webgpuvideoplayer'
+            )
+        );
+        if (!hookInstalled) {
+            throw new SmokeHarnessError(
+                'startup-events-hook-failed',
+                'window.Events.trigger was unavailable before a startup sample'
+            );
+        }
+        await trustedStartupClick(options.client, playButton, accessKey);
+        playbackStarted = true;
+        const observedMilestones = {
+            firstCustomAudioAtMilliseconds: null,
+            firstCustomDecodedFrameAtMilliseconds: null
+        };
+        const activeSnapshot = await waitForValue({
+            accept: snapshot => isExpectedStartupModeActive(
+                snapshot,
+                options.mode,
+                options.configuration
+            ),
+            description: `${options.mode} startup milestones`,
+            errorCode: 'startup-sample-timeout',
+            pollIntervalMilliseconds: STARTUP_MILESTONE_POLL_MILLISECONDS,
+            read: async () => {
+                const snapshot = await getPlayerSnapshot(options.client, accessKey);
+                if (snapshot.customPlayback?.videoDecode?.receivedFrameCount > 0) {
+                    observedMilestones.firstCustomDecodedFrameAtMilliseconds
+                        ??= snapshot.performanceNowMilliseconds;
+                }
+                if (hasConsumedCustomAudio(snapshot)) {
+                    observedMilestones.firstCustomAudioAtMilliseconds
+                        ??= snapshot.performanceNowMilliseconds;
+                }
+                snapshot.observedMilestones = { ...observedMilestones };
+                return snapshot;
+            },
+            timeoutMilliseconds: options.configuration.timeoutMilliseconds
+        });
+        const sample = summarizeStartupSample(
+            activeSnapshot,
+            options.mode,
+            options.sampleNumber,
+            options.orderPosition,
+            options.measured,
+            options.configuration.expectedAudioPath === 'ready'
+        );
+        await stopStartupSample(options.client, accessKey, options.configuration);
+        playbackStarted = false;
+        return sample;
+    } finally {
+        if (hookInstalled && playbackStarted) {
+            try {
+                await evaluateValue(
+                    options.client,
+                    createPlayerOperationExpression(
+                        accessKey,
+                        'await Promise.resolve(player.stop(false));'
+                    )
+                );
+            } catch {
+                // Preserve the first startup measurement or route failure
+            }
+        }
+        if (hookInstalled) {
+            try {
+                await evaluateValue(options.client, `(() => {
+                    const result = window[${JSON.stringify(restoreKey)}]?.();
+                    delete window[${JSON.stringify(accessKey)}];
+                    delete window[${JSON.stringify(restoreKey)}];
+                    return result;
+                })()`);
+            } catch {
+                // A failed sample may have navigated away before hook cleanup
+            }
+        }
+    }
+}
+
+function createStartupValidationSamples(samples) {
+    const samplesByMode = Object.fromEntries(STARTUP_MODES.map(mode => [
+        mode,
+        samples.filter(sample => sample.mode === mode)
+    ]));
+    const readMilestone = (mode, name) => samplesByMode[mode].map(sample => ({
+        sampleNumber: sample.sampleNumber,
+        value: sample.milestones[name]
+    }));
+    return {
+        custom: {
+            customFirstAudioMilliseconds:
+                readMilestone('custom', 'firstAudioMilliseconds'),
+            customFirstVisibleFrameMilliseconds:
+                readMilestone('custom', 'firstVisibleFrameMilliseconds'),
+            htmlFirstAudioMilliseconds:
+                readMilestone('html', 'firstAudioMilliseconds'),
+            customPlayingMilliseconds:
+                readMilestone('custom', 'playInvocationToPlayingMilliseconds'),
+            htmlFirstVisibleFrameMilliseconds:
+                readMilestone('html', 'firstVisibleFrameMilliseconds'),
+            htmlPlayingMilliseconds:
+                readMilestone('html', 'playInvocationToPlayingMilliseconds')
+        },
+        presentation: {
+            htmlFirstAudioMilliseconds:
+                readMilestone('html', 'firstAudioMilliseconds'),
+            htmlFirstVisibleFrameMilliseconds:
+                readMilestone('html', 'firstVisibleFrameMilliseconds'),
+            htmlPlayingMilliseconds:
+                readMilestone('html', 'playInvocationToPlayingMilliseconds'),
+            presentationAttachToFrameMilliseconds:
+                readMilestone('presentation', 'presentationAttachToFrameMilliseconds'),
+            presentationFirstAudioMilliseconds:
+                readMilestone('presentation', 'firstAudioMilliseconds'),
+            presentationFirstVisibleFrameMilliseconds:
+                readMilestone('presentation', 'firstVisibleFrameMilliseconds'),
+            presentationPlayingMilliseconds:
+                readMilestone('presentation', 'playInvocationToPlayingMilliseconds')
+        }
+    };
+}
+
+async function runStartupComparison(configuration) {
+    const browserWebSocketDebuggerURL = await getBrowserWebSocketDebuggerURL(configuration);
+    const browserClient = await RawCDPClient.connect(
+        browserWebSocketDebuggerURL,
+        configuration.timeoutMilliseconds
+    );
+    const measuredSamples = [];
+    const modeRuntimes = [];
+    const warmupSamples = [];
+    let comparisonFailure = null;
+    let comparisonResult = null;
+    try {
+        for (const mode of STARTUP_MODES) {
+            modeRuntimes.push(await createStartupModeRuntime(
+                browserClient,
+                mode,
+                configuration
+            ));
+        }
+        for (const runtime of modeRuntimes) {
+            await prepareStartupModeRuntime(runtime, configuration);
+        }
+        const runtimeByMode = Object.fromEntries(modeRuntimes.map(runtime => [
+            runtime.mode,
+            runtime
+        ]));
+        for (let modeIndex = 0; modeIndex < STARTUP_MODES.length; modeIndex++) {
+            const mode = STARTUP_MODES[modeIndex];
+            const runtime = runtimeByMode[mode];
+            warmupSamples.push(await runStartupModeSample({
+                client: runtime.client,
+                configuration,
+                measured: false,
+                mode,
+                orderPosition: modeIndex + 1,
+                sampleNumber: 0
+            }));
+        }
+        for (
+            let sampleNumber = 1;
+            sampleNumber <= configuration.startupSampleCount;
+            sampleNumber++
+        ) {
+            const modeOrder = createStartupSampleModeOrder(sampleNumber);
+            for (let modeIndex = 0; modeIndex < modeOrder.length; modeIndex++) {
+                const mode = modeOrder[modeIndex];
+                const runtime = runtimeByMode[mode];
+                measuredSamples.push(await runStartupModeSample({
+                    client: runtime.client,
+                    configuration,
+                    measured: true,
+                    mode,
+                    orderPosition: modeIndex + 1,
+                    sampleNumber
+                }));
+            }
+        }
+        const validationSamples = createStartupValidationSamples(measuredSamples);
+        const presentationValidation = validateHTMLVersusPresentationStartupSamples(
+            validationSamples.presentation,
+            {
+                requiredSampleCount: configuration.startupSampleCount,
+                validateFirstAudio: configuration.expectedAudioPath === 'ready'
+            }
+        );
+        const customValidation = validateHTMLVersusCustomStartupSamples(
+            validationSamples.custom,
+            {
+                requiredSampleCount: configuration.startupSampleCount,
+                validateFirstAudio: configuration.expectedAudioPath === 'ready'
+            }
+        );
+        const failures = [];
+        const browserDiagnostics = summarizeBrowserErrorMonitors(
+            modeRuntimes.map(runtime => runtime.browserErrorMonitor)
+        );
+        appendFailures(failures, 'startup-presentation', presentationValidation.failures);
+        appendFailures(failures, 'startup-custom', customValidation.failures);
+        appendBrowserErrorFailures(failures, browserDiagnostics.counts);
+        comparisonResult = {
+            diagnostics: {
+                browserErrors: { ...browserDiagnostics.counts },
+                browserMessages: [ ...browserDiagnostics.messages ]
+            },
+            failures,
+            observations: {
+                startupComparison: {
+                    customValidation: customValidation.metrics,
+                    measuredSamples,
+                    presentationValidation: presentationValidation.metrics,
+                    sampleCountPerMode: configuration.startupSampleCount,
+                    warmupSamples
+                }
+            }
+        };
+    } catch (error) {
+        comparisonFailure = error;
+        const browserDiagnostics = summarizeBrowserErrorMonitors(
+            modeRuntimes
+                .filter(runtime => runtime.browserErrorMonitor !== null)
+                .map(runtime => runtime.browserErrorMonitor)
+        );
+        if (error instanceof SmokeHarnessError) {
+            error.diagnostics = {
+                browserErrors: { ...browserDiagnostics.counts },
+                browserMessages: [ ...browserDiagnostics.messages ],
+                lastObservation: error.diagnostics
+            };
+        }
+    }
+
+    let cleanupFailure = null;
+    for (let runtimeIndex = modeRuntimes.length - 1; runtimeIndex >= 0; runtimeIndex--) {
+        try {
+            await closeStartupModeRuntime(browserClient, modeRuntimes[runtimeIndex]);
+        } catch (error) {
+            cleanupFailure ??= error;
+        }
+    }
+    if (comparisonFailure !== null) {
+        browserClient.close();
+        throw comparisonFailure;
+    }
+    if (cleanupFailure !== null) {
+        browserClient.close();
+        throw cleanupFailure;
+    }
+    browserClient.close();
+    return comparisonResult;
+}
+
+async function collectPostStopRetentionSnapshot(client, sessionNumber) {
+    await sleep(RETENTION_SETTLE_MILLISECONDS);
+    await client.send('HeapProfiler.collectGarbage');
+    return collectCDPRetentionSnapshot(client, sessionNumber, {
+        forceGarbageCollection: true,
+        queryWorkerTargets: () => client.send('Target.getTargets')
+    });
+}
+
+async function drainPostRetentionBrowserEvents(client) {
+    await client.send('HeapProfiler.collectGarbage');
+    await evaluateValue(
+        client,
+        `new Promise(resolve => setTimeout(resolve, ${RETENTION_FINALIZER_DRAIN_MILLISECONDS}))`
+    );
+    // Let console/log protocol notifications cross the CDP socket before counts are copied
+    await sleep(RETENTION_FINALIZER_DRAIN_MILLISECONDS);
+}
+
+function summarizeSoakPlaybackSnapshot(snapshot) {
+    return {
+        audioPath: snapshot.customPlayback?.audioPath ?? null,
+        currentTimeMicroseconds: snapshot.customPlayback?.currentTimeMicroseconds ?? null,
+        decoderBackend: snapshot.customPlaybackEligibility?.videoDecoderBackend ?? null,
+        outputMode: snapshot.customPlaybackEligibility?.videoOutputMode ?? null,
+        presentedFrameCount: snapshot.presentation?.presentedFrameCount ?? null,
+        receivedFrameCount: snapshot.customPlayback?.videoDecode?.receivedFrameCount ?? null,
+        sessionGeneration: snapshot.sessionGeneration ?? null
+    };
+}
+
+function summarizeSoakStopSnapshot(snapshot) {
+    return {
+        canvasCount: snapshot.dom?.canvasCount ?? null,
+        customPlaybackState: snapshot.customPlayback?.state ?? null,
+        hasCurrentSource: snapshot.hasCurrentSource ?? null,
+        presenterState: snapshot.presentation?.state ?? null,
+        stoppedEventCount: snapshot.stoppedEventCount ?? null
+    };
+}
+
+function createRequiredRetentionSeries(sessionObservations, readValue, failureCode, failures) {
+    const observations = [];
+    for (const sessionObservation of sessionObservations) {
+        const value = readValue(sessionObservation.retention);
+        if (!Number.isSafeInteger(value) || value < 0) {
+            failures.push(failureCode);
+            return null;
+        }
+        observations.push({
+            session: sessionObservation.sessionNumber,
+            value
+        });
+    }
+    return observations;
+}
+
+function collectLiveObjectObservations(sessionObservations, liveObjectName) {
+    const observations = [];
+    for (const sessionObservation of sessionObservations) {
+        const liveObject = sessionObservation.retention.liveObjects[liveObjectName];
+        if (liveObject?.available !== true) {
+            continue;
+        }
+        if (!Number.isSafeInteger(liveObject.count) || liveObject.count < 0) {
+            return { invalid: true, observations };
+        }
+        observations.push({
+            session: sessionObservation.sessionNumber,
+            value: liveObject.count
+        });
+    }
+    return { invalid: false, observations };
+}
+
+function createAvailableLiveObjectSeries(sessionObservations, failures) {
+    const liveObjectCounts = {};
+    const firstLiveObjects = sessionObservations[0]?.retention?.liveObjects ?? {};
+    for (const liveObjectName of Object.keys(firstLiveObjects)) {
+        const result = collectLiveObjectObservations(sessionObservations, liveObjectName);
+        if (result.invalid) {
+            failures.push('retention:live-object-count-invalid');
+            continue;
+        }
+        if (result.observations.length === 0) {
+            continue;
+        }
+        if (result.observations.length !== sessionObservations.length) {
+            failures.push('retention:live-object-availability-changed');
+            continue;
+        }
+        liveObjectCounts[liveObjectName] = result.observations;
+    }
+    return liveObjectCounts;
+}
+
+function createAvailablePerformanceObjectSeries(sessionObservations, failures) {
+    const performanceObjectCounts = {};
+    for (const metric of RETENTION_PERFORMANCE_RESOURCE_METRICS) {
+        const observations = [];
+        let availableCount = 0;
+        let invalid = false;
+        for (const sessionObservation of sessionObservations) {
+            const value = sessionObservation.retention.performanceMetrics.counts[metric.name];
+            if (value === undefined) {
+                continue;
+            }
+            availableCount += 1;
+            if (!Number.isSafeInteger(value) || value < 0) {
+                invalid = true;
+                break;
+            }
+            observations.push({
+                session: sessionObservation.sessionNumber,
+                value
+            });
+        }
+        if (invalid) {
+            failures.push(`retention:performance-count-${metric.code}-invalid`);
+            continue;
+        }
+        if (availableCount === 0) {
+            continue;
+        }
+        if (availableCount !== sessionObservations.length) {
+            failures.push(
+                `retention:performance-count-${metric.code}-availability-changed`
+            );
+            continue;
+        }
+        performanceObjectCounts[metric.name] = observations;
+    }
+    return performanceObjectCounts;
+}
+
+function validateRetentionSoakObservations(
+    sessionObservations,
+    requiredSessionCount,
+    expectedAudioPath
+) {
+    const failures = [];
+    const memorySeries = {
+        backingStorageBytes: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.heapUsage.backingStorageSizeBytes,
+            'retention:backing-storage-unavailable',
+            failures
+        ),
+        embedderHeapBytes: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.heapUsage.embedderHeapUsedSizeBytes,
+            'retention:embedder-heap-unavailable',
+            failures
+        ),
+        jsUsedHeapBytes: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.heapUsage.usedSizeBytes,
+            'retention:js-used-heap-unavailable',
+            failures
+        )
+    };
+    let memoryValidation = null;
+    if (Object.values(memorySeries).every(series => series !== null)) {
+        memoryValidation = validateReleaseMemorySoakSeries(memorySeries, {
+            requiredSessionCount
+        });
+        appendFailures(failures, 'retention-memory', memoryValidation.failures);
+    }
+
+    const DOMSeries = {
+        documentCount: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.DOMCounters.documents,
+            'retention:document-count-unavailable',
+            failures
+        ),
+        listenerCount: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.DOMCounters.eventListeners,
+            'retention:listener-count-unavailable',
+            failures
+        ),
+        liveObjectCounts: createAvailableLiveObjectSeries(sessionObservations, failures),
+        nodeCount: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.DOMCounters.nodes,
+            'retention:node-count-unavailable',
+            failures
+        ),
+        performanceObjectCounts: createAvailablePerformanceObjectSeries(
+            sessionObservations,
+            failures
+        ),
+        workerCount: createRequiredRetentionSeries(
+            sessionObservations,
+            retention => retention.workerTargets.customDecodeWorkerTargetCount,
+            'retention:worker-count-unavailable',
+            failures
+        )
+    };
+    let DOMValidation = null;
+    const requiredDOMSeries = [
+        DOMSeries.documentCount,
+        DOMSeries.listenerCount,
+        DOMSeries.nodeCount,
+        DOMSeries.workerCount
+    ];
+    if (requiredDOMSeries.every(series => series !== null)) {
+        DOMValidation = validateDOMAndObjectCountSeries(DOMSeries, {
+            expectedAudioWorkletCount: expectedAudioPath === 'ready' ? 1 : 0,
+            requiredSessionCount
+        });
+        appendFailures(failures, 'retention-dom', DOMValidation.failures);
+    }
+    return {
+        failures,
+        metrics: {
+            DOM: DOMValidation?.metrics ?? null,
+            memory: memoryValidation?.metrics ?? null
+        }
+    };
+}
+
+async function runRetentionSoak(options) {
+    const failures = [];
+    const sessionObservations = [];
+    let latestSessionGeneration = null;
+    let latestStopSnapshot = null;
+    for (
+        let sessionNumber = 1;
+        sessionNumber <= options.configuration.soakSessionCount;
+        sessionNumber += 1
+    ) {
+        const playButton = sessionNumber === 1 ?
+            options.initialPlayButton :
+            await waitForVisibleElement(
+                options.client,
+                PLAY_BUTTON_SELECTORS,
+                options.configuration,
+                `the retention soak session ${sessionNumber} play button`
+            );
+        await trustedClick(options.client, playButton);
+        const hookStateAvailable = await evaluateValue(
+            options.client,
+            `typeof window[${JSON.stringify(options.accessKey)}] === 'function'`
+        );
+        if (!hookStateAvailable) {
+            throw new SmokeHarnessError(
+                'events-hook-state-lost',
+                `The player event hook state was lost while starting soak session ${sessionNumber}`
+            );
+        }
+        options.cleanupState.required = true;
+        const activeInitial = await waitForPlayerSnapshot({
+            accept: snapshot => isExpectedCustomPlaybackActive(
+                snapshot,
+                options.configuration,
+                latestSessionGeneration
+            ),
+            accessKey: options.accessKey,
+            client: options.client,
+            description: `active retention soak session ${sessionNumber}`,
+            errorCode: 'soak-session-timeout',
+            timeoutMilliseconds: options.configuration.timeoutMilliseconds
+        });
+        await sleep(PLAYBACK_OBSERVATION_MILLISECONDS);
+        const activeLater = await getPlayerSnapshot(options.client, options.accessKey);
+        appendFailures(
+            failures,
+            `soak-${sessionNumber}-playback`,
+            validateActivePlaybackSnapshot(activeInitial, activeLater, {
+                expectedAudioPath: options.configuration.expectedAudioPath,
+                expectedVideoDecoderBackend:
+                    options.configuration.expectedVideoDecoderBackend,
+                expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
+            })
+        );
+
+        const stopStartedAtNanoseconds = process.hrtime.bigint();
+        const stopSnapshot = await stopCapturedPlayback(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            sessionNumber,
+            `retention soak session ${sessionNumber}`,
+            'soak-stop-failed'
+        );
+        const stopDurationMicroseconds = Number(
+            (process.hrtime.bigint() - stopStartedAtNanoseconds) / 1_000n
+        );
+        options.cleanupState.required = false;
+        appendFailures(
+            failures,
+            `soak-${sessionNumber}-stop`,
+            validateStopSnapshot(stopSnapshot, sessionNumber)
+        );
+        if (stopDurationMicroseconds > MAXIMUM_CLEAN_STOP_DURATION_MICROSECONDS) {
+            failures.push(`soak-${sessionNumber}:stop-acknowledgement-timeout`);
+        }
+
+        const retentionSnapshot = await collectPostStopRetentionSnapshot(
+            options.client,
+            sessionNumber
+        );
+        const customWorkerCount =
+            retentionSnapshot.workerTargets.customDecodeWorkerTargetCount;
+        if (customWorkerCount === null) {
+            failures.push(`soak-${sessionNumber}:worker-target-count-unavailable`);
+        } else if (customWorkerCount !== 0) {
+            failures.push(`soak-${sessionNumber}:custom-decode-worker-retained`);
+        }
+
+        sessionObservations.push({
+            playback: summarizeSoakPlaybackSnapshot(activeLater),
+            retention: retentionSnapshot,
+            sessionNumber,
+            stop: summarizeSoakStopSnapshot(stopSnapshot),
+            stopDurationMicroseconds
+        });
+        latestSessionGeneration = activeLater.sessionGeneration;
+        latestStopSnapshot = stopSnapshot;
+    }
+
+    await drainPostRetentionBrowserEvents(options.client);
+
+    const retentionValidation = validateRetentionSoakObservations(
+        sessionObservations,
+        options.configuration.soakSessionCount,
+        options.configuration.expectedAudioPath
+    );
+    failures.push(...retentionValidation.failures);
+    if (options.browserErrorMonitor.counts.videoSampleOwnershipWarnings > 0) {
+        failures.push('retention:videosample-ownership-warning');
+    }
+    appendBrowserErrorFailures(failures, options.browserErrorMonitor.counts);
+    return {
+        diagnostics: {
+            browserErrors: { ...options.browserErrorMonitor.counts },
+            browserMessages: [ ...options.browserErrorMonitor.messages ],
+            eventCounts: latestStopSnapshot.eventCounts
+        },
+        failures,
+        observations: {
+            retentionSoak: {
+                metrics: retentionValidation.metrics,
+                sessionCount: sessionObservations.length,
+                sessions: sessionObservations
+            },
+            stop: summarizeSoakStopSnapshot(latestStopSnapshot)
+        }
+    };
 }
 
 async function finishNaturalEndExercise(options) {
@@ -2092,8 +3529,30 @@ async function runPlaybackExercise(client, configuration, browserErrorMonitor) {
                 'window.Events.trigger was unavailable before playback'
             );
         }
+        const hookStateInstalled = await evaluateValue(
+            client,
+            `typeof window[${JSON.stringify(accessKey)}] === 'function'`
+        );
+        if (!hookStateInstalled) {
+            throw new SmokeHarnessError(
+                'events-hook-state-missing',
+                'The player event hook state was unavailable immediately after installation'
+            );
+        }
 
         browserErrorMonitor.reset();
+        if (configuration.soakSessionCount > 0) {
+            // Await here so the finally block keeps the capture hook for the complete soak
+            const retentionSoakResult = await runRetentionSoak({
+                accessKey,
+                browserErrorMonitor,
+                cleanupState,
+                client,
+                configuration,
+                initialPlayButton: playButton
+            });
+            return retentionSoakResult;
+        }
         await trustedClick(client, playButton);
         cleanupState.required = true;
         const activeInitial = await waitForPlayerSnapshot({
@@ -2369,10 +3828,12 @@ async function runPlaybackExercise(client, configuration, browserErrorMonitor) {
             try {
                 await evaluateValue(
                     client,
-                    `window.Events?.trigger?.(
-                        window.Events.trigger,
-                        ${JSON.stringify(restoreKey)}
-                    )`
+                    `(() => {
+                        const result = window[${JSON.stringify(restoreKey)}]?.();
+                        delete window[${JSON.stringify(accessKey)}];
+                        delete window[${JSON.stringify(restoreKey)}];
+                        return result;
+                    })()`
                 );
             } catch {
                 // The page may have navigated or closed after the primary result
@@ -2392,6 +3853,7 @@ async function runSmoke(configuration) {
             client.send('Log.enable'),
             client.send('Network.enable'),
             client.send('Page.enable'),
+            client.send('Performance.enable'),
             client.send('Runtime.enable')
         ]);
         await Promise.all([
@@ -2415,11 +3877,13 @@ async function runSmoke(configuration) {
         const browserVersion = await client.send('Browser.getVersion');
         let playbackResult;
         try {
-            playbackResult = await runPlaybackExercise(
-                client,
-                configuration,
-                browserErrorMonitor
-            );
+            playbackResult = configuration.startupSampleCount > 0 ?
+                await runStartupComparison(configuration) :
+                await runPlaybackExercise(
+                    client,
+                    configuration,
+                    browserErrorMonitor
+                );
         } catch (error) {
             attachBrowserDiagnostics(error, browserErrorMonitor);
             throw error;
@@ -2438,6 +3902,8 @@ async function runSmoke(configuration) {
                 failureInjection: configuration.failureInjection,
                 repeatSessionCount: configuration.repeatSessionCount,
                 seekStormCount: configuration.seekStormCount,
+                soakSessionCount: configuration.soakSessionCount,
+                startupSampleCount: configuration.startupSampleCount,
                 videoDecoderBackend: configuration.expectedVideoDecoderBackend,
                 videoOutputMode: configuration.expectedVideoOutputMode
             },

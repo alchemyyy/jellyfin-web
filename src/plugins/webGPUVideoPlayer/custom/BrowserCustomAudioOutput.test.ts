@@ -1,17 +1,24 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { microsecondsToMilliseconds, secondsToMicroseconds } from '../MediaTime';
+import {
+    microsecondsToMilliseconds,
+    secondsToMicroseconds
+} from '../MediaTime';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 
 const audioWorkletMockState = vi.hoisted(() => ({
     create: vi.fn()
 }));
 
-vi.mock('./AudioWorkletController', () => ({
-    default: class MockAudioWorkletController {
-        static readonly create = audioWorkletMockState.create;
-    }
-}));
+vi.mock('./AudioWorkletController', async importOriginal => {
+    const originalModule = await importOriginal<typeof import('./AudioWorkletController')>();
+    return {
+        ...originalModule,
+        default: class MockAudioWorkletController {
+            static readonly create = audioWorkletMockState.create;
+        }
+    };
+});
 
 vi.mock('./CustomDecodeAudioBridge', () => ({
     default: class MockCustomDecodeAudioBridge {
@@ -21,26 +28,16 @@ vi.mock('./CustomDecodeAudioBridge', () => ({
 
 import { createBrowserCustomAudioOutputFactory } from './BrowserCustomAudioOutput';
 import { prewarmBrowserAudioContext } from './BrowserAudioContextPrewarm';
-import { DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS } from './BrowserAudioOperation';
-
-function createDeferred(): {
-    promise: Promise<void>
-    resolve: () => void
-} {
-    let promiseResolver: (() => void) | undefined;
-    const promise = new Promise<void>(resolve => {
-        promiseResolver = resolve;
-    });
-    return {
-        promise,
-        resolve: (): void => {
-            if (!promiseResolver) {
-                throw new Error('Deferred promise was not initialized');
-            }
-            promiseResolver();
-        }
-    };
-}
+import {
+    acquireSharedBrowserAudioContext,
+    closeIdleSharedBrowserAudioContexts
+} from './BrowserAudioContextPool';
+import {
+    AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS,
+    DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS,
+    SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS,
+    waitForBrowserAudioOperation
+} from './BrowserAudioOperation';
 
 class FakeAudioContext {
     public static readonly instances: FakeAudioContext[] = [];
@@ -59,6 +56,10 @@ class FakeAudioContext {
     public currentTime = 10;
     public outputLatency = 0.04;
     public state: AudioContextState = 'suspended';
+    public readonly suspend = vi.fn((): Promise<void> => {
+        this.state = 'suspended';
+        return Promise.resolve();
+    });
 
     public constructor(public readonly options?: AudioContextOptions) {
         this.sampleRate = options?.sampleRate ?? 48_000;
@@ -67,22 +68,81 @@ class FakeAudioContext {
 }
 
 type WorkletControllerHarness = {
-    configuration: { maxChunks: number }
+    configuration: {
+        channelCount: number
+        maxBufferedFrames: number
+        maxChunks: number
+        sampleRate: number
+        telemetryIntervalFrames: number
+    }
+    deactivate: ReturnType<typeof vi.fn>
     destroy: ReturnType<typeof vi.fn>
     emitTelemetry: (telemetry: AudioWorkletTelemetry) => void
+    enqueue: ReturnType<typeof vi.fn>
+    flush: ReturnType<typeof vi.fn>
     generation: number
     getTelemetry: ReturnType<typeof vi.fn>
     onTelemetry: ReturnType<typeof vi.fn>
+    seek: ReturnType<typeof vi.fn>
     setMuted: ReturnType<typeof vi.fn>
     setPlaying: ReturnType<typeof vi.fn>
     setVolume: ReturnType<typeof vi.fn>
 };
 
+type Deferred = {
+    promise: Promise<void>
+    resolve: () => void
+};
+
+type WorkletControllerDeferred = {
+    promise: Promise<WorkletControllerHarness>
+    resolve: (controller: WorkletControllerHarness) => void
+};
+
+function createDeferred(): Deferred {
+    let resolver: (() => void) | null = null;
+    const promise = new Promise<void>((resolve): void => {
+        resolver = resolve;
+    });
+    return {
+        promise,
+        resolve: (): void => {
+            if (!resolver) {
+                throw new Error('Deferred resolver is unavailable');
+            }
+            resolver();
+        }
+    };
+}
+
+function createWorkletControllerDeferred(): WorkletControllerDeferred {
+    let resolver: ((controller: WorkletControllerHarness) => void) | null = null;
+    const promise = new Promise<WorkletControllerHarness>((resolve): void => {
+        resolver = resolve;
+    });
+    return {
+        promise,
+        resolve: (controller: WorkletControllerHarness): void => {
+            if (!resolver) {
+                throw new Error('Worklet controller deferred resolver is unavailable');
+            }
+            resolver(controller);
+        }
+    };
+}
+
 function createWorkletController(): WorkletControllerHarness {
     const telemetryListeners = new Set<(telemetry: AudioWorkletTelemetry) => void>();
     return {
-        configuration: { maxChunks: 16 },
-        destroy: vi.fn(),
+        configuration: {
+            channelCount: 2,
+            maxBufferedFrames: 96_000,
+            maxChunks: 1_024,
+            sampleRate: 48_000,
+            telemetryIntervalFrames: 4_096
+        },
+        deactivate: vi.fn((): Promise<void> => Promise.resolve()),
+        destroy: vi.fn((): Promise<void> => Promise.resolve()),
         emitTelemetry: (telemetry: AudioWorkletTelemetry): void => {
             for (const listener of telemetryListeners) {
                 listener(telemetry);
@@ -90,12 +150,15 @@ function createWorkletController(): WorkletControllerHarness {
         },
         generation: 1,
         getTelemetry: vi.fn((): AudioWorkletTelemetry | null => null),
+        enqueue: vi.fn(),
+        flush: vi.fn((): number => 2),
         onTelemetry: vi.fn((listener: (telemetry: AudioWorkletTelemetry) => void): (() => void) => {
             telemetryListeners.add(listener);
             return (): void => {
                 telemetryListeners.delete(listener);
             };
         }),
+        seek: vi.fn((): number => 2),
         setMuted: vi.fn(),
         setPlaying: vi.fn(),
         setVolume: vi.fn()
@@ -136,7 +199,11 @@ describe('BrowserCustomAudioOutput', () => {
         vi.stubGlobal('AudioContext', FakeAudioContext);
     });
 
-    it('creates, resumes, and owns an exact-rate bounded worklet output', async () => {
+    afterEach(async () => {
+        await closeIdleSharedBrowserAudioContexts().catch((): void => undefined);
+    });
+
+    it('creates an exact-rate bounded worklet output on the shared context', async () => {
         const workletController = createWorkletController();
         audioWorkletMockState.create.mockResolvedValue(workletController);
         const factory = createBrowserCustomAudioOutputFactory();
@@ -154,7 +221,9 @@ describe('BrowserCustomAudioOutput', () => {
         });
         expect(audioWorkletMockState.create).toHaveBeenCalledWith(audioContext, {
             channelCount: 2,
-            maxBufferedFrames: 96_000
+            maxBufferedFrames: 96_000,
+            maxChunks: 1_024,
+            telemetryIntervalFrames: 4_096
         });
         expect(audioContext.resume).toHaveBeenCalledOnce();
         expect(binding.configuration).toEqual({
@@ -173,8 +242,37 @@ describe('BrowserCustomAudioOutput', () => {
         expect(workletController.setVolume).toHaveBeenCalledWith(0.5);
         expect(workletController.setMuted).toHaveBeenCalledWith(true);
         expect(workletController.setPlaying).toHaveBeenCalledWith(true);
-        expect(workletController.destroy).toHaveBeenCalledOnce();
-        expect(audioContext.close).toHaveBeenCalledOnce();
+        expect(workletController.deactivate).toHaveBeenCalledOnce();
+        expect(workletController.destroy).not.toHaveBeenCalled();
+        expect(audioContext.close).not.toHaveBeenCalled();
+        expect(audioContext.suspend).toHaveBeenCalledOnce();
+    });
+
+    it('keeps repeated output creation and destruction bounded to one context', async () => {
+        const workletControllers: WorkletControllerHarness[] = [];
+        audioWorkletMockState.create.mockImplementation((): WorkletControllerHarness => {
+            const workletController = createWorkletController();
+            workletControllers.push(workletController);
+            return workletController;
+        });
+
+        for (let sessionIndex = 0; sessionIndex < 10; sessionIndex += 1) {
+            const prewarm = prewarmBrowserAudioContext(48_000);
+            const binding = await createBrowserCustomAudioOutputFactory(prewarm)({
+                channelCount: 2,
+                codec: 'aac',
+                sampleRate: 48_000
+            });
+            await binding.output.destroy();
+        }
+
+        expect(FakeAudioContext.instances).toHaveLength(1);
+        expect(FakeAudioContext.instances[0].resume).toHaveBeenCalledTimes(10);
+        expect(FakeAudioContext.instances[0].suspend).toHaveBeenCalledTimes(10);
+        expect(FakeAudioContext.instances[0].close).not.toHaveBeenCalled();
+        expect(workletControllers).toHaveLength(1);
+        expect(workletControllers[0].deactivate).toHaveBeenCalledTimes(10);
+        expect(workletControllers[0].destroy).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -201,7 +299,7 @@ describe('BrowserCustomAudioOutput', () => {
             sampleRate: 48_000
         })).rejects.toThrow('Custom audio output requires 2 channels at 48000 Hz');
 
-        expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
+        expect(FakeAudioContext.instances[0].close).not.toHaveBeenCalled();
         expect(audioWorkletMockState.create).not.toHaveBeenCalled();
     });
 
@@ -447,7 +545,31 @@ describe('BrowserCustomAudioOutput', () => {
         expect(audioContext.close).not.toHaveBeenCalled();
 
         await binding.output.destroy();
-        expect(audioContext.close).toHaveBeenCalledOnce();
+        expect(audioContext.close).not.toHaveBeenCalled();
+    });
+
+    it('rejects a prewarmed context invalidated while its resume is pending', async () => {
+        const resume = createDeferred();
+        class PendingResumeAudioContext extends FakeAudioContext {
+            public override readonly resume = vi.fn((): Promise<void> => resume.promise);
+        }
+        vi.stubGlobal('AudioContext', PendingResumeAudioContext);
+        const prewarm = prewarmBrowserAudioContext(48_000);
+        const factoryResult = createBrowserCustomAudioOutputFactory(prewarm)({
+            channelCount: 2,
+            codec: 'opus',
+            sampleRate: 48_000
+        });
+        const invalidatingReference = acquireSharedBrowserAudioContext(48_000);
+
+        await invalidatingReference.invalidate();
+        resume.resolve();
+
+        await expect(factoryResult).rejects.toThrow(
+            'AudioContext was invalidated while preparing custom audio output'
+        );
+        expect(audioWorkletMockState.create).not.toHaveBeenCalled();
+        expect(FakeAudioContext.instances[0].close).toHaveBeenCalledOnce();
     });
 
     it('closes a mismatched prewarm before creating the decoded exact rate', async () => {
@@ -465,7 +587,7 @@ describe('BrowserCustomAudioOutput', () => {
         expect(FakeAudioContext.instances[1].sampleRate).toBe(48_000);
 
         await binding.output.destroy();
-        expect(FakeAudioContext.instances[1].close).toHaveBeenCalledOnce();
+        expect(FakeAudioContext.instances[1].close).not.toHaveBeenCalled();
     });
 
     it('reports a suspended context resume failure to the playback owner', async () => {
@@ -487,9 +609,8 @@ describe('BrowserCustomAudioOutput', () => {
         await binding.output.destroy();
     });
 
-    it('does not finish destruction until AudioContext close completes', async () => {
+    it('makes output destruction idempotent while leaving the shared context warm', async () => {
         const workletController = createWorkletController();
-        const deferredClose = createDeferred();
         audioWorkletMockState.create.mockResolvedValue(workletController);
         const binding = await createBrowserCustomAudioOutputFactory()({
             channelCount: 2,
@@ -497,31 +618,21 @@ describe('BrowserCustomAudioOutput', () => {
             sampleRate: 48_000
         });
         const audioContext = FakeAudioContext.instances[0];
-        audioContext.close.mockReturnValueOnce(deferredClose.promise);
         const asynchronousOutput = binding.output as unknown as {
             destroy: () => Promise<void>
         };
 
         const firstDestroyPromise = asynchronousOutput.destroy();
         const secondDestroyPromise = asynchronousOutput.destroy();
-        let destroySettled = false;
-        const observedDestroyPromise = firstDestroyPromise.then((): void => {
-            destroySettled = true;
-        });
-        await Promise.resolve();
 
         expect(secondDestroyPromise).toBe(firstDestroyPromise);
-        expect(destroySettled).toBe(false);
-        expect(workletController.destroy).toHaveBeenCalledOnce();
-        expect(audioContext.close).toHaveBeenCalledOnce();
-
-        deferredClose.resolve();
         await firstDestroyPromise;
-        await observedDestroyPromise;
-        expect(destroySettled).toBe(true);
+        expect(workletController.deactivate).toHaveBeenCalledOnce();
+        expect(workletController.destroy).not.toHaveBeenCalled();
+        expect(audioContext.close).not.toHaveBeenCalled();
     });
 
-    it('reports an AudioContext close failure to the playback owner', async () => {
+    it('reports an explicit shared context teardown failure', async () => {
         const workletController = createWorkletController();
         audioWorkletMockState.create.mockResolvedValue(workletController);
         const binding = await createBrowserCustomAudioOutputFactory()({
@@ -531,14 +642,98 @@ describe('BrowserCustomAudioOutput', () => {
         });
         const audioContext = FakeAudioContext.instances[0];
         audioContext.close.mockRejectedValueOnce(new Error('Context close failed'));
-        const asynchronousOutput = binding.output as unknown as {
-            destroy: () => Promise<void>
-        };
 
-        await expect(asynchronousOutput.destroy()).rejects.toThrow('Context close failed');
+        await binding.output.destroy();
+        await expect(closeIdleSharedBrowserAudioContexts()).rejects.toThrow(
+            'Context close failed'
+        );
+
+        expect(workletController.deactivate).toHaveBeenCalledOnce();
+        expect(workletController.destroy).not.toHaveBeenCalled();
+        expect(audioContext.close).toHaveBeenCalledOnce();
+    });
+
+    it('invalidates the shared context when processor deactivation fails', async () => {
+        const workletController = createWorkletController();
+        workletController.deactivate.mockRejectedValueOnce(
+            new Error('Processor deactivation failed')
+        );
+        audioWorkletMockState.create.mockResolvedValue(workletController);
+        const binding = await createBrowserCustomAudioOutputFactory()({
+            channelCount: 2,
+            codec: 'opus',
+            sampleRate: 48_000
+        });
+        const audioContext = FakeAudioContext.instances[0];
+
+        await expect(binding.output.destroy()).rejects.toThrow(
+            'Processor deactivation failed'
+        );
 
         expect(workletController.destroy).toHaveBeenCalledOnce();
         expect(audioContext.close).toHaveBeenCalledOnce();
+    });
+
+    it('overlaps failed processor retirement with bounded context close', async () => {
+        vi.useFakeTimers();
+        try {
+            const workletController = createWorkletController();
+            workletController.deactivate.mockImplementationOnce((): Promise<void> => (
+                waitForBrowserAudioOperation(
+                    new Promise<void>(() => undefined),
+                    'AudioWorklet lease deactivation',
+                    AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS
+                )
+            ));
+            workletController.destroy.mockImplementationOnce((): Promise<void> => (
+                waitForBrowserAudioOperation(
+                    new Promise<void>(() => undefined),
+                    'AudioWorklet processor retirement',
+                    AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS
+                )
+            ));
+            audioWorkletMockState.create.mockResolvedValue(workletController);
+            const binding = await createBrowserCustomAudioOutputFactory()({
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: 48_000
+            });
+            const audioContext = FakeAudioContext.instances[0];
+            audioContext.close.mockReturnValueOnce(new Promise(() => undefined));
+
+            const destroyResult = Promise.resolve(binding.output.destroy());
+            const observedResult = destroyResult.catch((error: unknown): unknown => error);
+            let destroySettled = false;
+            const settleObservationPromise = observedResult.then((): void => {
+                destroySettled = true;
+            });
+            const sequentialTimeoutMilliseconds = microsecondsToMilliseconds(
+                AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS
+            ) + microsecondsToMilliseconds(
+                SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS
+            );
+            expect(sequentialTimeoutMilliseconds).toBeLessThan(900);
+
+            await vi.advanceTimersByTimeAsync(
+                sequentialTimeoutMilliseconds - 1
+            );
+            expect(destroySettled).toBe(false);
+            expect(audioContext.close).toHaveBeenCalledOnce();
+            expect(workletController.destroy).toHaveBeenCalledOnce();
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(await observedResult).toEqual(
+                new Error('AudioWorklet lease deactivation exceeded its bounded timeout')
+            );
+            await settleObservationPromise;
+            expect(destroySettled).toBe(true);
+            await vi.advanceTimersByTimeAsync(
+                microsecondsToMilliseconds(AUDIO_WORKLET_RETIREMENT_TIMEOUT_MICROSECONDS)
+                    - microsecondsToMilliseconds(SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS)
+            );
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('rejects a browser context that cannot honor the decoded sample rate', async () => {
@@ -584,6 +779,92 @@ describe('BrowserCustomAudioOutput', () => {
         }
     });
 
+    it('invalidates a worklet lease that resolves after creation times out', async () => {
+        vi.useFakeTimers();
+        try {
+            const deferredCreation = createWorkletControllerDeferred();
+            audioWorkletMockState.create.mockReturnValueOnce(deferredCreation.promise);
+            const factoryResult = Promise.resolve(createBrowserCustomAudioOutputFactory()({
+                channelCount: 2,
+                codec: 'aac',
+                sampleRate: 48_000
+            }));
+            const observedResult = factoryResult.catch((error: unknown): unknown => error);
+
+            await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(
+                DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS
+            ));
+
+            expect(await observedResult).toEqual(
+                new Error('AudioWorklet output creation exceeded its bounded timeout')
+            );
+            const timedOutContext = FakeAudioContext.instances[0];
+            expect(timedOutContext.close).toHaveBeenCalledOnce();
+
+            const lateWorkletController = createWorkletController();
+            deferredCreation.resolve(lateWorkletController);
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(lateWorkletController.destroy).toHaveBeenCalledOnce();
+            expect(lateWorkletController.deactivate).not.toHaveBeenCalled();
+
+            const replacementWorkletController = createWorkletController();
+            audioWorkletMockState.create.mockResolvedValueOnce(replacementWorkletController);
+            const replacementBinding = await createBrowserCustomAudioOutputFactory()({
+                channelCount: 2,
+                codec: 'aac',
+                sampleRate: 48_000
+            });
+            expect(FakeAudioContext.instances[1]).not.toBe(timedOutContext);
+            await replacementBinding.output.destroy();
+            expect(replacementWorkletController.deactivate).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('invalidates a context whose initial resume times out', async () => {
+        vi.useFakeTimers();
+        try {
+            class StalledResumeAudioContext extends FakeAudioContext {
+                public override readonly resume = vi.fn(
+                    (): Promise<void> => new Promise(() => undefined)
+                );
+            }
+            vi.stubGlobal('AudioContext', StalledResumeAudioContext);
+            const factoryResult = Promise.resolve(createBrowserCustomAudioOutputFactory()({
+                channelCount: 2,
+                codec: 'aac',
+                sampleRate: 48_000
+            }));
+            const observedResult = factoryResult.catch((error: unknown): unknown => error);
+
+            await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(
+                DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS
+            ));
+
+            expect(await observedResult).toEqual(
+                new Error('AudioContext resume exceeded its bounded timeout')
+            );
+            const poisonedContext = FakeAudioContext.instances[0];
+            expect(poisonedContext.close).toHaveBeenCalledOnce();
+            expect(audioWorkletMockState.create).not.toHaveBeenCalled();
+
+            vi.stubGlobal('AudioContext', FakeAudioContext);
+            const workletController = createWorkletController();
+            audioWorkletMockState.create.mockResolvedValue(workletController);
+            const replacementBinding = await createBrowserCustomAudioOutputFactory()({
+                channelCount: 2,
+                codec: 'aac',
+                sampleRate: 48_000
+            });
+            expect(FakeAudioContext.instances[1]).not.toBe(poisonedContext);
+            await replacementBinding.output.destroy();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('bounds a stalled context resume during playback', async () => {
         vi.useFakeTimers();
         try {
@@ -613,7 +894,7 @@ describe('BrowserCustomAudioOutput', () => {
         }
     });
 
-    it('bounds a stalled context close during destruction', async () => {
+    it('bounds a stalled explicit shared context close', async () => {
         vi.useFakeTimers();
         try {
             const workletController = createWorkletController();
@@ -626,17 +907,19 @@ describe('BrowserCustomAudioOutput', () => {
             FakeAudioContext.instances[0].close.mockReturnValueOnce(
                 new Promise(() => undefined)
             );
-            const destroyResult = Promise.resolve(binding.output.destroy());
-            const observedResult = destroyResult.catch((error: unknown): unknown => error);
+            await binding.output.destroy();
+            const closeResult = closeIdleSharedBrowserAudioContexts();
+            const observedResult = closeResult.catch((error: unknown): unknown => error);
 
             await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(
-                DEFAULT_BROWSER_AUDIO_OPERATION_TIMEOUT_MICROSECONDS
+                SHARED_AUDIO_CONTEXT_RELEASE_TIMEOUT_MICROSECONDS
             ));
 
             expect(await observedResult).toEqual(
-                new Error('AudioContext close exceeded its bounded timeout')
+                new Error('Shared AudioContext close exceeded its bounded timeout')
             );
-            expect(workletController.destroy).toHaveBeenCalledOnce();
+            expect(workletController.deactivate).toHaveBeenCalledOnce();
+            expect(workletController.destroy).not.toHaveBeenCalled();
         } finally {
             vi.useRealTimers();
         }

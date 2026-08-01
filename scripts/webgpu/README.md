@@ -239,6 +239,8 @@ Prerequisites:
 - Build Jellyfin Web with `enableWebGPUVideoPlayer` and
   `enableWebGPUCustomDecode` enabled in the served `dist/config.json`. Enable
   `multiserver` when the static frontend and Jellyfin API use different ports.
+  The isolated startup comparison overlays only the four WebGPU flags in CDP
+  responses and does not require or modify those served flag values.
 - Serve the frontend and Jellyfin backend on `localhost`.
 - Start Chrome or Edge with a remote-debugging port and leave one page open.
 - Choose a direct-play video whose exact video and audio WebCodecs
@@ -260,6 +262,8 @@ $env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '3' # optional Jellyfin stream index
 $env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ac-3' # required with stream index
 $env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1' # optional, 1 through 5
 $env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '3' # optional, 0 through 5
+$env:WEBGPU_SMOKE_SOAK_SESSIONS = '0' # optional, 0 or 10 through 100
+$env:WEBGPU_SMOKE_STARTUP_SAMPLES = '0' # optional, 0 or 10 through 30
 $env:WEBGPU_SMOKE_INJECT_FAILURE = 'none' # presentation, device-loss, paused-device-loss
 $env:WEBGPU_SMOKE_USERNAME = '<username>'
 $env:WEBGPU_SMOKE_PASSWORD = '<password>'
@@ -295,8 +299,9 @@ The harness connects through the add-server form, signs in when the selected
 server does not already have a valid saved session, opens the details page, and
 uses a CDP user-gesture activation on Play. Before that activation it
 temporarily wraps `window.Events.trigger` and captures the priority-0 player
-from its event target. No player reference or diagnostic global is added to
-production code.
+from its event target. Randomized page-side capture functions exist only for
+the invocation and are removed during cleanup. No player reference or
+diagnostic global is added to production code.
 
 The checks require:
 
@@ -351,6 +356,109 @@ same item repeatedly. Each additional session must use a newer player session,
 advance decoded presentation, report no stale custom events, and clean up with
 exactly one additional stop event.
 
+Set `WEBGPU_SMOKE_STARTUP_SAMPLES=10` for the isolated release startup gate.
+The harness creates one isolated browser context with one temporary, long-lived
+page for each mode. Context isolation prevents Jellyfin's same-origin
+authentication and server-selection state from making the three modes replace
+or redirect one another. It runs one unmeasured warmup in each page, then
+measures the same item once per mode in every round without reloading those
+pages. Odd rounds use HTML, presentation, custom order; even rounds reverse
+native and custom around presentation. This balances run-order drift while
+keeping every round matched by sample number on the same browser, server,
+account, and item.
+
+Each temporary page first loads through a CDP `Fetch` response overlay for
+`config.json` to establish authentication, then receives one synchronized
+measurement-document load before warmup and sampling. HTML disables the WebGPU
+plugin, presentation enables the wrapper but disables custom decode, and custom
+enables the player, custom decode, HDR tone mapping, and diagnostic
+authorization. The served `dist/config.json` is never edited. HTTP caching
+remains enabled so the warmup can populate normal bundle and artifact caches,
+while service workers remain bypassed. The interceptors are drained and
+disabled and all three temporary targets and browser contexts are destroyed
+before the command exits; the user's original page is not repurposed for a
+comparison mode.
+
+```powershell
+$env:WEBGPU_SMOKE_STARTUP_SAMPLES = '10'
+$env:WEBGPU_SMOKE_SOAK_SESSIONS = '0'
+$env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1'
+$env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '0'
+$env:WEBGPU_SMOKE_INJECT_FAILURE = 'none'
+$env:WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE = 'none'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
+Each sample records browser `performance.now()` milestones for the play
+invocation, Jellyfin playback start and playing events, first native media
+playing or consumed custom PCM when audio is expected, first native
+`requestVideoFrameCallback()` or custom decoded frame, first visible frame,
+and canvas-attach-to-presented-frame interval. Presented-frame timing comes
+from the presenter's exact monotonic session-start plus first-frame latency.
+Custom decode/audio readiness is observed through 10-millisecond CDP polling;
+its positive bias also includes CDP scheduling and, for audio, the worklet
+telemetry cadence. The report retains warmup and measured samples, matched
+sample numbers, summaries, paired regressions, threshold excesses, and limits.
+
+For every matched round, presentation playing, first-audio when expected, and
+first-visible-frame regression is compared with the greater of 50 milliseconds
+or 10 percent of that round's HTML value for the median gate, and the greater
+of 100 milliseconds or 15 percent for the p95 gate. Its local
+canvas-attach-to-frame median must be at most 100 milliseconds and p95 at most
+250 milliseconds. Custom comparisons use the greater of 250 milliseconds or
+20 percent of paired HTML for the median gate and 500 milliseconds or 30
+percent for p95. A gate fails when the median or nearest-rank p95 of matched
+threshold excess is positive. Native audio uses the media element's first
+`playing` boundary; custom audio requires both submitted decoded PCM and a
+positive AudioWorklet consumed-frame count, so underflow silence cannot pass. A video-only run reports
+the audio gate as not applicable rather than inventing samples. All requested
+measured samples are mandatory. Startup mode requires controlled stop, repeat
+count one, no soak, fault injection, audio switch, seek storm, or
+generated-frame evidence.
+
+Set `WEBGPU_SMOKE_SOAK_SESSIONS` to `10` through `100` for a lean repeated
+play/observe/stop retention gate; use `30` for a release run. Soak mode selects
+a zero seek count by default and requires controlled stop, repeat count one, no
+failure injection, no in-session audio switch, and no generated-frame evidence.
+After every stop it waits 250 milliseconds, performs two explicit V8 garbage
+collections, and records heap, embedder heap, backing storage, DOM counters,
+performance metrics, live media/WebGPU wrapper counts, and browser worker
+targets. Each stop must complete within 900 milliseconds and no custom decode
+worker target may remain.
+
+Session one is the post-GC steady-state baseline because the player may retain
+one warmed presenter device and pipeline. Sessions two onward must stay within
+these release gates:
+
+- JavaScript and embedder heap: at most 16 MiB growth and a 256 KiB/session
+  Theil-Sen slope.
+- Backing storage: at most 8 MiB growth and a 128 KiB/session slope.
+- Documents: no change; DOM nodes: at most 32 growth and a 0.5/session slope;
+  event listeners: at most 16 growth and a 0.25/session slope.
+- Every available queried media/WebGPU object type: at most baseline plus one
+  and a 0.1 object/session slope, except the reusable `AudioWorkletNode` count
+  must remain exactly at its warmed post-stop baseline.
+- Available `AudioHandlers`, `AudioWorkletProcessors`, and
+  `WorkerGlobalScopes` Performance counts: no positive final,
+  last-three-median, or Theil-Sen slope from the warmed session-one baseline.
+  `ArrayBufferContents` may grow by at most 32 with a 0.1/session slope to
+  tolerate bounded global-page noise without accepting per-session growth.
+- No stopped-session custom decode worker and no unclosed `VideoSample`
+  finalizer warning.
+
+Custom audio sessions share one exact-rate page-lifetime `AudioContext` and
+one physical worklet output. Each session receives an exclusive guarded lease.
+Lease release clears queued PCM and timing state through an acknowledged
+processor deactivation before the idle context is suspended. A failed
+deactivation, resume, or suspension poisons that shared runtime and forces a
+fresh context and node on the next session.
+
+The report includes every raw sample plus the final, last-three-median, and
+slope calculations. An unavailable browser constructor is reported but not
+invented as a zero count. CDP does not expose reliable live GPU allocation
+bytes, so GPU wrapper counts, backing storage, and player cleanup invariants are
+the bounded evidence used here.
+
 Set `WEBGPU_SMOKE_INJECT_FAILURE=presentation` to invoke the presenter's
 session-scoped fallback seam after a separate successful custom start. This
 requires a test item that the HTML backend can play after fallback. The harness
@@ -398,4 +506,6 @@ Run the pure helper tests without opening or navigating a browser:
 
 ```powershell
 node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
+node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
+node --test scripts/webgpu/release-validation-metrics.node-test.mjs
 ```

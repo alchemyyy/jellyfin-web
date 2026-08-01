@@ -9,6 +9,10 @@ const MAXIMUM_RAW_OUTSTANDING_FRAMES = 2;
 const MAXIMUM_VIDEO_FRAME_PENDING_FRAMES = 4;
 const MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO = 4_800;
 const MAXIMUM_REPEAT_SESSION_COUNT = 5;
+const MINIMUM_SOAK_SESSION_COUNT = 10;
+const MAXIMUM_SOAK_SESSION_COUNT = 100;
+const MINIMUM_STARTUP_SAMPLE_COUNT = 10;
+const MAXIMUM_STARTUP_SAMPLE_COUNT = 30;
 const DEFAULT_SEEK_STORM_COUNT = 3;
 const MAXIMUM_SEEK_STORM_COUNT = 5;
 const MICROSECONDS_PER_SECOND = 1_000_000;
@@ -16,6 +20,7 @@ const NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS = 20_000;
 const SEEK_END_GUARD_MICROSECONDS = 2 * MICROSECONDS_PER_SECOND;
 const SEEK_START_GUARD_MICROSECONDS = MICROSECONDS_PER_SECOND;
 const SEEK_STORM_FRACTIONS = Object.freeze([ 0.2, 0.7, 0.35, 0.8, 0.5 ]);
+const LOOPBACK_HOSTNAMES = new Set([ '127.0.0.1', '[::1]', 'localhost' ]);
 
 const OPTION_DEFINITIONS = Object.freeze({
     '--audio-stream-index': {
@@ -78,6 +83,14 @@ const OPTION_DEFINITIONS = Object.freeze({
         environmentName: 'WEBGPU_SMOKE_SERVER_URL',
         name: 'serverURL'
     },
+    '--soak-sessions': {
+        environmentName: 'WEBGPU_SMOKE_SOAK_SESSIONS',
+        name: 'soakSessionCount'
+    },
+    '--startup-samples': {
+        environmentName: 'WEBGPU_SMOKE_STARTUP_SAMPLES',
+        name: 'startupSampleCount'
+    },
     '--timeout-ms': {
         environmentName: 'WEBGPU_SMOKE_TIMEOUT_MS',
         name: 'timeoutMilliseconds'
@@ -89,8 +102,12 @@ const OPTION_DEFINITIONS = Object.freeze({
 });
 
 const URL_PATTERN = /\b(?:https?|wss?):\/\/[^\s"'<>]+/giu;
-const SENSITIVE_ASSIGNMENT_PATTERN = /\b(?:access[_ -]?token|api[_ -]?key|authorization|cookie|password|username)\s*[:=]\s*[^\s,;]+/giu;
+const SENSITIVE_ASSIGNMENT_PATTERN = new RegExp(
+    String.raw`(?<![\p{L}\p{N}_-])["']?(?:(?:x[-_ ]?(?:emby|media[_ -]?browser)[-_ ]?)?(?:authorization|token)|access[_ -]?token|api[_ -]?key|cookie|password|username)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;]+)`,
+    'giu'
+);
 const QUERY_SECRET_PATTERN = /([?&](?:api_key|token|access_token)=)[^&#\s]+/giu;
+const VIDEO_SAMPLE_OWNERSHIP_WARNING_PATTERN = /\bVideoSample\b.*\bgarbage collected\b.*\bclosed\b/iu;
 
 export const SMOKE_USAGE = `Usage:
   node scripts/webgpu/run-browser-playback-smoke.mjs [options]
@@ -121,6 +138,10 @@ Options:
                          Device loss validates route-specific recovery
   --seek-storm-count <0-5>
                          Rapid in-session seeks to issue; defaults to 3
+  --soak-sessions <0|10-100>
+                          Lean post-stop retention soak; 0 disables it
+  --startup-samples <0|10-30>
+                         Paired HTML, presentation, and custom startup gate
   --username <name>      Jellyfin username
   --password <password>  Jellyfin password
   --timeout-ms <number>  Per-phase timeout in milliseconds
@@ -134,7 +155,8 @@ Environment equivalents:
   WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
   WEBGPU_SMOKE_COMPLETION_MODE,
   WEBGPU_SMOKE_REPEAT_SESSIONS, WEBGPU_SMOKE_INJECT_FAILURE,
-  WEBGPU_SMOKE_SEEK_STORM_COUNT,
+  WEBGPU_SMOKE_SEEK_STORM_COUNT, WEBGPU_SMOKE_SOAK_SESSIONS,
+  WEBGPU_SMOKE_STARTUP_SAMPLES,
   WEBGPU_SMOKE_USERNAME, WEBGPU_SMOKE_PASSWORD,
   WEBGPU_SMOKE_TIMEOUT_MS`;
 
@@ -206,6 +228,32 @@ function parseRepeatSessionCount(value) {
     return parsedValue;
 }
 
+function parseSoakSessionCount(value) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || (parsedValue !== 0
+            && (parsedValue < MINIMUM_SOAK_SESSION_COUNT
+                || parsedValue > MAXIMUM_SOAK_SESSION_COUNT))) {
+        throw new RangeError(
+            'Browser smoke soak sessions must be 0 or an integer from 10 through 100'
+        );
+    }
+    return parsedValue;
+}
+
+function parseStartupSampleCount(value) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || (parsedValue !== 0
+            && (parsedValue < MINIMUM_STARTUP_SAMPLE_COUNT
+                || parsedValue > MAXIMUM_STARTUP_SAMPLE_COUNT))) {
+        throw new RangeError(
+            'Browser smoke startup samples must be 0 or an integer from 10 through 30'
+        );
+    }
+    return parsedValue;
+}
+
 function parseSeekStormCount(value) {
     const parsedValue = Number(value);
     if (!Number.isSafeInteger(parsedValue)
@@ -242,11 +290,20 @@ function parseExpectedValue(value, optionName, acceptedValues) {
     return expectedValue;
 }
 
-function resolveSeekStormCount(configuredValue, completionMode) {
+function resolveSeekStormCount(
+    configuredValue,
+    completionMode,
+    soakSessionCount,
+    startupSampleCount
+) {
     if (configuredValue !== undefined) {
         return parseSeekStormCount(configuredValue);
     }
-    return completionMode === 'natural-end' ? 0 : DEFAULT_SEEK_STORM_COUNT;
+    return completionMode === 'natural-end'
+        || soakSessionCount > 0
+        || startupSampleCount > 0 ?
+        0 :
+        DEFAULT_SEEK_STORM_COUNT;
 }
 
 function validateNaturalEndConfiguration(options) {
@@ -275,6 +332,83 @@ function validateNaturalEndConfiguration(options) {
     }
 }
 
+function validateSoakConfiguration(options) {
+    if (options.soakSessionCount === 0) {
+        return;
+    }
+    if (options.completionMode !== 'controlled-stop') {
+        throw new TypeError(
+            'Browser smoke soak mode requires --completion-mode controlled-stop'
+        );
+    }
+    if (options.audioStreamIndex !== null) {
+        throw new TypeError(
+            'Browser smoke soak mode does not support an in-session audio stream change'
+        );
+    }
+    if (options.repeatSessionCount !== 1) {
+        throw new TypeError(
+            'Browser smoke soak mode requires --repeat-sessions 1'
+        );
+    }
+    if (options.failureInjection !== 'none') {
+        throw new TypeError(
+            'Browser smoke soak mode requires --inject-failure none'
+        );
+    }
+    if (options.seekStormCount !== 0) {
+        throw new TypeError(
+            'Browser smoke soak mode requires --seek-storm-count 0'
+        );
+    }
+    if (options.expectedFrameEvidence !== 'none') {
+        throw new TypeError(
+            'Browser smoke soak mode requires --expected-frame-evidence none'
+        );
+    }
+}
+
+function validateStartupConfiguration(options) {
+    if (options.startupSampleCount === 0) {
+        return;
+    }
+    if (options.soakSessionCount !== 0) {
+        throw new TypeError(
+            'Browser smoke startup mode requires --soak-sessions 0'
+        );
+    }
+    if (options.completionMode !== 'controlled-stop') {
+        throw new TypeError(
+            'Browser smoke startup mode requires --completion-mode controlled-stop'
+        );
+    }
+    if (options.audioStreamIndex !== null) {
+        throw new TypeError(
+            'Browser smoke startup mode does not support an in-session audio stream change'
+        );
+    }
+    if (options.repeatSessionCount !== 1) {
+        throw new TypeError(
+            'Browser smoke startup mode requires --repeat-sessions 1'
+        );
+    }
+    if (options.failureInjection !== 'none') {
+        throw new TypeError(
+            'Browser smoke startup mode requires --inject-failure none'
+        );
+    }
+    if (options.seekStormCount !== 0) {
+        throw new TypeError(
+            'Browser smoke startup mode requires --seek-storm-count 0'
+        );
+    }
+    if (options.expectedFrameEvidence !== 'none') {
+        throw new TypeError(
+            'Browser smoke startup mode requires --expected-frame-evidence none'
+        );
+    }
+}
+
 /** Parses CLI flags first, then environment variables, without supplying credentials. */
 export function parseSmokeConfiguration(argumentList, environment) {
     const optionValues = readOptionValues(argumentList);
@@ -294,6 +428,8 @@ export function parseSmokeConfiguration(argumentList, environment) {
 
     const timeoutValue = configuredValue('timeoutMilliseconds');
     const repeatSessionValue = configuredValue('repeatSessionCount');
+    const soakSessionValue = configuredValue('soakSessionCount');
+    const startupSampleValue = configuredValue('startupSampleCount');
     const seekStormValue = configuredValue('seekStormCount');
     const audioStreamIndexValue = configuredValue('audioStreamIndex');
     const expectedAudioCodecValue = configuredValue('expectedAudioCodec');
@@ -354,13 +490,43 @@ export function parseSmokeConfiguration(argumentList, environment) {
     const repeatSessionCount = repeatSessionValue ?
         parseRepeatSessionCount(repeatSessionValue) :
         1;
-    const seekStormCount = resolveSeekStormCount(seekStormValue, completionMode);
+    const soakSessionCount = soakSessionValue === undefined ?
+        0 :
+        parseSoakSessionCount(soakSessionValue);
+    const startupSampleCount = startupSampleValue === undefined ?
+        0 :
+        parseStartupSampleCount(startupSampleValue);
+    const seekStormCount = resolveSeekStormCount(
+        seekStormValue,
+        completionMode,
+        soakSessionCount,
+        startupSampleCount
+    );
     validateNaturalEndConfiguration({
         audioStreamIndex,
         completionMode,
         failureInjection,
         repeatSessionCount,
         seekStormCount
+    });
+    validateSoakConfiguration({
+        audioStreamIndex,
+        completionMode,
+        expectedFrameEvidence,
+        failureInjection,
+        repeatSessionCount,
+        seekStormCount,
+        soakSessionCount
+    });
+    validateStartupConfiguration({
+        audioStreamIndex,
+        completionMode,
+        expectedFrameEvidence,
+        failureInjection,
+        repeatSessionCount,
+        seekStormCount,
+        soakSessionCount,
+        startupSampleCount
     });
     return {
         audioStreamIndex,
@@ -387,6 +553,8 @@ export function parseSmokeConfiguration(argumentList, environment) {
             configuredValue('serverURL') || DEFAULT_SERVER_URL,
             '--server-url'
         ),
+        soakSessionCount,
+        startupSampleCount,
         timeoutMilliseconds: timeoutValue ?
             parseTimeoutMilliseconds(timeoutValue) :
             DEFAULT_TIMEOUT_MILLISECONDS,
@@ -394,11 +562,114 @@ export function parseSmokeConfiguration(argumentList, environment) {
     };
 }
 
+/** Returns a balanced native/custom order for one one-based measured startup round. */
+export function createStartupSampleModeOrder(sampleNumber) {
+    if (!Number.isSafeInteger(sampleNumber) || sampleNumber <= 0) {
+        throw new TypeError('Startup sample number must be a positive safe integer');
+    }
+    return sampleNumber % 2 === 1 ?
+        [ 'html', 'presentation', 'custom' ] :
+        [ 'custom', 'presentation', 'html' ];
+}
+
+/** Returns the runtime config overlay for one startup comparison mode. */
+export function getStartupModeFeatureFlags(mode) {
+    switch (mode) {
+        case 'html':
+            return {
+                enableWebGPUCustomDecode: false,
+                enableWebGPUHDRToneMapping: false,
+                enableWebGPUValidationHarness: false,
+                enableWebGPUVideoPlayer: false
+            };
+        case 'presentation':
+            return {
+                enableWebGPUCustomDecode: false,
+                enableWebGPUHDRToneMapping: false,
+                enableWebGPUValidationHarness: false,
+                enableWebGPUVideoPlayer: true
+            };
+        case 'custom':
+            return {
+                enableWebGPUCustomDecode: true,
+                enableWebGPUHDRToneMapping: true,
+                enableWebGPUValidationHarness: true,
+                enableWebGPUVideoPlayer: true
+            };
+        default:
+            throw new TypeError('Unknown startup comparison mode');
+    }
+}
+
+/** Accepts the authenticated shell, add-server form, or server-selection page. */
+export function isFrontendInitializationReady(state) {
+    return state?.apiClientLandingAvailable === true
+        || state?.serverHostInputAvailable === true
+        || state?.serverSelectionPageAvailable === true;
+}
+
+/** Selects the next connection step after the unauthenticated shell settles. */
+export function resolveServerConnectionLandingAction(state) {
+    if (state?.serverHostInputAvailable === true) {
+        return 'enter-server';
+    }
+    if (state?.addServerButtonAvailable === true) {
+        return 'open-add-server';
+    }
+    return null;
+}
+
+/** Requires decoded PCM submission and render-thread consumption, not output silence. */
+export function hasConsumedCustomAudio(snapshot) {
+    const audioBridge = snapshot?.customPlayback?.audioBridge;
+    const audioOutput = snapshot?.customPlayback?.audioOutput;
+    return audioOutput?.playing === true
+        && Number.isSafeInteger(audioOutput.consumedFrames)
+        && audioOutput.consumedFrames > 0
+        && Number.isSafeInteger(audioBridge?.submittedFrameCount)
+        && audioBridge.submittedFrameCount > 0
+        && Number.isSafeInteger(audioBridge?.submittedSampleCount)
+        && audioBridge.submittedSampleCount > 0;
+}
+
+/** Identifies the Mediabunny finalizer warning that invalidates a retention soak. */
+export function isVideoSampleOwnershipWarning(value) {
+    return typeof value === 'string'
+        && VIDEO_SAMPLE_OWNERSHIP_WARNING_PATTERN.test(value);
+}
+
 /** Builds a same-frontend hash route without carrying an existing fragment. */
 export function createFrontendRouteURL(frontendURL, route) {
     const routeURL = new URL(frontendURL);
     routeURL.hash = route.startsWith('/') ? route : `/${route}`;
     return routeURL.toString();
+}
+
+/** Treats equivalent loopback spellings as the same local test server. */
+export function areEquivalentServerURLs(firstURL, secondURL) {
+    let firstServerURL;
+    let secondServerURL;
+    try {
+        firstServerURL = new URL(firstURL);
+        secondServerURL = new URL(secondURL);
+    } catch {
+        return false;
+    }
+    const firstPort = firstServerURL.port || (
+        firstServerURL.protocol === 'https:' ? '443' : '80'
+    );
+    const secondPort = secondServerURL.port || (
+        secondServerURL.protocol === 'https:' ? '443' : '80'
+    );
+    const firstPath = firstServerURL.pathname.replace(/\/$/u, '');
+    const secondPath = secondServerURL.pathname.replace(/\/$/u, '');
+    const hostnamesMatch = firstServerURL.hostname === secondServerURL.hostname
+        || (LOOPBACK_HOSTNAMES.has(firstServerURL.hostname)
+            && LOOPBACK_HOSTNAMES.has(secondServerURL.hostname));
+    return hostnamesMatch
+        && firstServerURL.protocol === secondServerURL.protocol
+        && firstPort === secondPort
+        && firstPath === secondPath;
 }
 
 /** Derives the bounded authorization key for an active raw presentation route. */

@@ -8,11 +8,16 @@ import {
 type WorkletMessageEvent = { data: unknown };
 
 class MockProcessorPort {
+    public closeCount = 0;
     public onmessage: ((event: WorkletMessageEvent) => void) | null = null;
     public readonly postedMessages: unknown[] = [];
 
     public postMessage(message: unknown): void {
         this.postedMessages.push(message);
+    }
+
+    public close(): void {
+        this.closeCount += 1;
     }
 
     public deliver(message: unknown): void {
@@ -26,6 +31,30 @@ class MockAudioWorkletProcessor {
 
 type ProcessorHarness = MockAudioWorkletProcessor & {
     process: (inputs: readonly unknown[], outputs: readonly Float32Array[][]) => boolean
+};
+
+type ProcessorStateHarness = ProcessorHarness & {
+    chunkCount: number
+    chunks: readonly unknown[]
+    consumedFrames: number
+    droppedFrames: number
+    framesSinceTelemetry: number
+    generation: number
+    headChunkIndex: number
+    mediaTimeContextTimeMicroseconds: number | null
+    mediaTimeMicroseconds: number
+    muted: boolean
+    outputFrames: number
+    overflowEvents: number
+    overflowFrames: number
+    playing: boolean
+    queuedFrames: number
+    staleChunks: number
+    tailChunkIndex: number
+    underflowActive: boolean
+    underflowEvents: number
+    underflowFrames: number
+    volume: number
 };
 
 type ProcessorConstructor = new (options: {
@@ -192,5 +221,127 @@ describe('AudioWorkletProcessorSource', () => {
             reason: 'underflow',
             underflowFrames: 2
         }));
+    });
+
+    it('deactivates one lease while keeping a reset processor alive', () => {
+        let Processor: ProcessorConstructor | null = null;
+        evaluateWorkletModule((_name, constructor): void => {
+            Processor = constructor;
+        }, 1_000, 30_000);
+        const ProcessorConstructor = requireProcessorConstructor(Processor);
+        const processor = Reflect.construct(ProcessorConstructor, [ {
+            processorOptions: {
+                channelCount: 1,
+                maxBufferedFrames: 8,
+                maxChunks: 2,
+                telemetryIntervalFrames: 4
+            }
+        } ]) as ProcessorStateHarness;
+        processor.port.deliver({
+            channelData: [ new Float32Array([ 1, 2, 3, 4 ]) ],
+            generation: 1,
+            sequence: 1,
+            timestampMicroseconds: 1_000_000,
+            type: 'enqueue'
+        });
+        processor.port.deliver({ muted: true, type: 'gain', volume: 0.25 });
+        processor.port.deliver({ playing: true, type: 'playback' });
+        processor.process([], [ [ new Float32Array(4) ] ]);
+        processor.port.deliver({
+            channelData: [ new Float32Array([ 9, 10 ]) ],
+            generation: 1,
+            sequence: 99,
+            timestampMicroseconds: 1_004_000,
+            type: 'enqueue'
+        });
+
+        processor.port.deliver({ generation: 2, leaseId: 0, type: 'deactivate' });
+        processor.port.deliver({ generation: 1, leaseId: 18, type: 'deactivate' });
+        expect(processor.chunkCount).toBe(1);
+        expect(processor.playing).toBe(true);
+        expect(processor.port.postedMessages).not.toContainEqual(expect.objectContaining({
+            type: 'deactivated'
+        }));
+
+        processor.port.deliver({ generation: 2, leaseId: 17, type: 'deactivate' });
+        expect(processor.port.postedMessages).toContainEqual({
+            leaseId: 17,
+            type: 'deactivated'
+        });
+        expect(processor).toMatchObject({
+            chunkCount: 0,
+            consumedFrames: 0,
+            droppedFrames: 0,
+            framesSinceTelemetry: 0,
+            generation: 2,
+            headChunkIndex: 0,
+            mediaTimeContextTimeMicroseconds: null,
+            mediaTimeMicroseconds: 0,
+            muted: false,
+            outputFrames: 0,
+            overflowEvents: 0,
+            overflowFrames: 0,
+            playing: false,
+            queuedFrames: 0,
+            staleChunks: 0,
+            tailChunkIndex: 0,
+            underflowActive: false,
+            underflowEvents: 0,
+            underflowFrames: 0,
+            volume: 1
+        });
+        expect(processor.chunks.every((chunk): boolean => chunk === undefined)).toBe(true);
+        const idleOutput = [ new Float32Array(4).fill(12) ];
+        expect(processor.process([], [ idleOutput ])).toBe(true);
+        expect(Array.from(idleOutput[0])).toEqual([ 0, 0, 0, 0 ]);
+
+        processor.port.deliver({
+            channelData: [ new Float32Array([ 5, 6, 7, 8 ]) ],
+            generation: 2,
+            sequence: 2,
+            timestampMicroseconds: 2_000_000,
+            type: 'enqueue'
+        });
+        processor.port.deliver({ playing: true, type: 'playback' });
+        const resumedOutput = [ new Float32Array(4) ];
+        expect(processor.process([], [ resumedOutput ])).toBe(true);
+        expect(Array.from(resumedOutput[0])).toEqual([ 5, 6, 7, 8 ]);
+        expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            consumedFrames: 4,
+            droppedFrames: 0,
+            mediaTimeMicroseconds: 2_004_000,
+            muted: false,
+            outputFrames: 4,
+            overflowEvents: 0,
+            reason: 'periodic',
+            staleChunks: 0,
+            underflowEvents: 0,
+            volume: 1
+        }));
+    });
+
+    it('acknowledges retirement from the final render quantum', () => {
+        let Processor: ProcessorConstructor | null = null;
+        evaluateWorkletModule((_name, constructor): void => {
+            Processor = constructor;
+        }, 48_000, 0);
+        const ProcessorConstructor = requireProcessorConstructor(Processor);
+        const processor = Reflect.construct(ProcessorConstructor, [ {
+            processorOptions: {
+                channelCount: 2,
+                maxBufferedFrames: 8,
+                maxChunks: 2,
+                telemetryIntervalFrames: 4
+            }
+        } ]) as ProcessorHarness;
+
+        processor.port.deliver({ type: 'destroy' });
+        expect(processor.port.postedMessages).not.toContainEqual({ type: 'retired' });
+
+        expect(processor.process([], [
+            [ new Float32Array(4), new Float32Array(4) ]
+        ])).toBe(false);
+        expect(processor.port.postedMessages).toContainEqual({ type: 'retired' });
+        expect(processor.port.closeCount).toBe(1);
     });
 });

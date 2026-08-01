@@ -2,14 +2,23 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from '../MediaTime';
-import AudioWorkletController, {
-    type AudioTelemetryListener
+import type {
+    AudioTelemetryListener,
+    AudioWorkletOutputController
 } from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import {
     type BrowserAudioContextPrewarmLease,
     takePrewarmedBrowserAudioContext
 } from './BrowserAudioContextPrewarm';
+import {
+    acquireSharedBrowserAudioContext,
+    type SharedBrowserAudioContextReference
+} from './BrowserAudioContextPool';
+import {
+    acquireSharedBrowserAudioWorklet,
+    type SharedBrowserAudioWorkletLease
+} from './BrowserAudioWorkletPool';
 import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
 import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolicy';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
@@ -26,14 +35,9 @@ const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(
     MAX_BUFFERED_AUDIO_SECONDS
 );
 
-type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
-
-type AudioContextRuntime = typeof globalThis & {
-    webkitAudioContext?: AudioContextConstructor
-};
-
-/** Couples one worklet output with the exact-rate AudioContext that owns it. */
+/** Couples one session worklet output with a reference to the shared exact-rate context. */
 class BrowserCustomAudioOutput implements CustomAudioOutput {
+    private readonly audioContext: AudioContext;
     private destroyed = false;
     private destroyPromise: Promise<void> | null = null;
     private mediaFloorGeneration: number | null = null;
@@ -44,11 +48,15 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     private readonly telemetryListeners = new Set<AudioTelemetryListener>();
 
     public constructor(
-        private readonly audioContext: AudioContext,
-        private readonly output: AudioWorkletController
+        private readonly audioContextReference: SharedBrowserAudioContextReference,
+        private readonly workletLease: SharedBrowserAudioWorkletLease
     ) {
-        this.outputTelemetryUnsubscribe = output.onTelemetry(this.handleOutputTelemetry);
+        this.audioContext = audioContextReference.audioContext;
+        this.output = workletLease.output;
+        this.outputTelemetryUnsubscribe = this.output.onTelemetry(this.handleOutputTelemetry);
     }
+
+    private readonly output: AudioWorkletOutputController;
 
     public get generation(): number {
         return this.output.generation;
@@ -282,41 +290,31 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     }
 
     private async destroyResources(): Promise<void> {
-        let outputDestroyError: unknown;
-        let outputDestroyFailed = false;
+        let outputReleaseError: unknown;
+        let outputReleaseFailed = false;
         try {
-            this.output.destroy();
+            await this.workletLease.release();
         } catch (error) {
-            outputDestroyError = error;
-            outputDestroyFailed = true;
+            outputReleaseError = error;
+            outputReleaseFailed = true;
         }
 
         try {
-            if (this.audioContext.state !== 'closed') {
-                await waitForBrowserAudioOperation(
-                    this.audioContext.close(),
-                    'AudioContext close'
-                );
+            if (outputReleaseFailed) {
+                await this.audioContextReference.invalidate();
+            } else {
+                await this.audioContextReference.release();
             }
         } catch (error) {
-            if (!outputDestroyFailed) {
+            if (!outputReleaseFailed) {
                 throw error;
             }
         }
 
-        if (outputDestroyFailed) {
-            throw outputDestroyError;
+        if (outputReleaseFailed) {
+            throw outputReleaseError;
         }
     }
-}
-
-function getAudioContextConstructor(): AudioContextConstructor {
-    const runtime = globalThis as AudioContextRuntime;
-    const constructor = runtime.AudioContext ?? runtime.webkitAudioContext;
-    if (!constructor) {
-        throw new Error('AudioContext is unavailable');
-    }
-    return constructor;
 }
 
 async function createOutput(
@@ -338,51 +336,44 @@ async function createOutput(
     if (prewarmedAudioContext && !consumedPrewarm) {
         await prewarmedAudioContext.close();
     }
-    let audioContext: AudioContext;
-    if (consumedPrewarm) {
-        audioContext = consumedPrewarm.audioContext;
-    } else {
-        const AudioContextClass = getAudioContextConstructor();
-        audioContext = new AudioContextClass({
-            latencyHint: 'playback',
-            sampleRate: configuration.sampleRate
-        });
-    }
-    let output: AudioWorkletController | null = null;
+    const audioContextReference = consumedPrewarm
+        ?? acquireSharedBrowserAudioContext(configuration.sampleRate);
+    const audioContext = audioContextReference.audioContext;
+    let workletLease: SharedBrowserAudioWorkletLease | null = null;
+    let workletLeasePromise: Promise<SharedBrowserAudioWorkletLease> | null = null;
     try {
         if (audioContext.sampleRate !== configuration.sampleRate) {
             throw new RangeError('The browser did not create the requested audio sample rate');
         }
-        if (consumedPrewarm) {
-            await waitForBrowserAudioOperation(
-                consumedPrewarm.resumePromise,
-                'Prewarmed AudioContext resume'
-            );
-        } else {
-            await waitForBrowserAudioOperation(
-                audioContext.resume(),
-                'AudioContext resume'
-            );
+        await waitForBrowserAudioOperation(
+            audioContextReference.resumePromise,
+            consumedPrewarm ? 'Prewarmed AudioContext resume' : 'AudioContext resume'
+        );
+        if (!audioContextReference.isValid()) {
+            throw new Error('AudioContext was invalidated while preparing custom audio output');
         }
-        output = await waitForBrowserAudioOperation(
-            AudioWorkletController.create(audioContext, {
-                channelCount: configuration.channelCount,
-                maxBufferedFrames: configuration.sampleRate * MAX_BUFFERED_AUDIO_SECONDS
-            }),
+        workletLeasePromise = acquireSharedBrowserAudioWorklet(audioContext, {
+            channelCount: configuration.channelCount,
+            maxBufferedFrames: configuration.sampleRate * MAX_BUFFERED_AUDIO_SECONDS
+        });
+        workletLease = await waitForBrowserAudioOperation(
+            workletLeasePromise,
             'AudioWorklet output creation'
         );
-        const managedOutput = new BrowserCustomAudioOutput(audioContext, output);
+        const managedOutput = new BrowserCustomAudioOutput(audioContextReference, workletLease);
         return {
-            bridge: new CustomDecodeAudioBridge(output),
+            bridge: new CustomDecodeAudioBridge(workletLease.output),
             configuration: { ...configuration },
             output: managedOutput
         };
     } catch (error) {
-        output?.destroy();
-        await waitForBrowserAudioOperation(
-            audioContext.close(),
-            'AudioContext close after setup failure'
-        ).catch(() => undefined);
+        if (!workletLease && workletLeasePromise) {
+            void workletLeasePromise.then(
+                (lateWorkletLease): Promise<void> => lateWorkletLease.invalidate()
+            ).catch((): void => undefined);
+        }
+        await workletLease?.invalidate().catch((): void => undefined);
+        await audioContextReference.invalidate().catch((): void => undefined);
         throw error;
     }
 }
