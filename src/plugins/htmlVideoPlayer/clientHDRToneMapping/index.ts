@@ -9,10 +9,29 @@ import {
 import { isClientHDRToneMappingMediaSource } from './compatibility';
 import {
     createClientHDRToneMappingFragmentLoader,
-    type HlsConstructorWithDefaultConfig
+    type HlsConstructorWithDefaultConfig,
+    type InitializationSegmentTransformStateCallback
 } from './hlsFragmentLoader';
 
 const DEFAULT_CLIENT_HDR_TONE_MAPPING_PRESET: ClientHDRToneMappingPreset = 'bt2390';
+
+/**
+ * Returns whether the selected subtitle is rendered into the video stream.
+ */
+function hasSelectedEncodedSubtitle(
+    mediaSource: MediaSourceInfo | null | undefined
+): boolean {
+    const selectedSubtitleStreamIndex = mediaSource?.DefaultSubtitleStreamIndex;
+    if (selectedSubtitleStreamIndex == null || selectedSubtitleStreamIndex < 0) {
+        return false;
+    }
+
+    return mediaSource?.MediaStreams?.some(stream =>
+        stream.Type === 'Subtitle'
+        && stream.Index === selectedSubtitleStreamIndex
+        && stream.DeliveryMethod === 'Encode'
+    ) === true;
+}
 
 /**
  * Resolves browser-local setting data to a supported preset.
@@ -35,9 +54,15 @@ export function createClientHDRToneMappingHlsConfig(
     mediaSource: MediaSourceInfo | null | undefined,
     enabled: boolean,
     preset: unknown,
-    bt2390Parameters?: unknown
+    bt2390Parameters?: unknown,
+    onInitializationSegmentTransformState?:
+    InitializationSegmentTransformStateCallback
 ): Partial<HlsConfig> {
-    if (!enabled || !isClientHDRToneMappingMediaSource(mediaSource)) {
+    if (
+        !enabled
+        || !isClientHDRToneMappingMediaSource(mediaSource)
+        || hasSelectedEncodedSubtitle(mediaSource)
+    ) {
         return {};
     }
 
@@ -50,7 +75,8 @@ export function createClientHDRToneMappingHlsConfig(
     return {
         fLoader: createClientHDRToneMappingFragmentLoader(
             hlsConstructor,
-            agtmPayload
+            agtmPayload,
+            onInitializationSegmentTransformState
         ),
         progressive: false
     };
