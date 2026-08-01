@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLAYBACK_SUPERSEDED } from 'constants/playbackResult';
 import Events from 'utils/events';
 
+import { secondsToMicroseconds } from './MediaTime';
+
 const htmlPlayerMockState = vi.hoisted(() => ({
     instances: [] as object[],
     owners: [] as object[]
@@ -10,6 +12,308 @@ const htmlPlayerMockState = vi.hoisted(() => ({
 const presenterMockState = vi.hoisted(() => ({
     instances: [] as object[]
 }));
+const webSettingsMockState = vi.hoisted(() => ({
+    customDecodeEnabled: false
+}));
+const customDecodeMockState = vi.hoisted(() => ({
+    audioTrackIndex: null as number | null,
+    eligible: false,
+    instances: [] as object[],
+    startupFallback: false
+}));
+const customProfileMockState = vi.hoisted(() => ({
+    augmentationCalls: [] as Array<{ options: unknown, profile: unknown }>,
+    runtimeAvailable: true
+}));
+const animationFrameMockState = vi.hoisted(() => ({
+    callbacks: new Map<number, FrameRequestCallback>(),
+    nextIdentifier: 1
+}));
+const colorValidationMockState = vi.hoisted(() => ({
+    decision: null as object | null,
+    error: null as Error | null,
+    requests: [] as object[]
+}));
+const colorValidationMediaMockState = vi.hoisted(() => ({
+    options: [] as object[],
+    providers: [] as Array<{
+        destroy: ReturnType<typeof vi.fn>
+        getFrame: ReturnType<typeof vi.fn>
+    }>
+}));
+const audioPrewarmMockState = vi.hoisted(() => ({
+    factoryLeases: [] as unknown[],
+    leases: [] as Array<{
+        audioContext: { sampleRate: number }
+        close: ReturnType<typeof vi.fn>
+        resumePromise: Promise<void>
+    }>,
+    nextClosePromise: null as Promise<void> | null,
+    sampleRates: [] as number[]
+}));
+
+vi.mock('scripts/settings/webSettings', () => ({
+    getWebGPUCustomDecodeEnabled: vi.fn(() => Promise.resolve(
+        webSettingsMockState.customDecodeEnabled
+    )),
+    isWebGPUCustomDecodeEnabled: vi.fn(() => webSettingsMockState.customDecodeEnabled)
+}));
+
+vi.mock('./custom/CustomPlaybackEligibility', () => ({
+    getCustomPlaybackEligibility: vi.fn(() => customDecodeMockState.eligible ? {
+        audioTrackIndex: customDecodeMockState.audioTrackIndex,
+        durationMicroseconds: 60_000_000,
+        eligible: true,
+        hdr: false,
+        startTimeMicroseconds: 1_000_000,
+        url: 'http://localhost/video.mp4',
+        videoTrackIndex: 0
+    } : {
+        eligible: false,
+        reason: 'invalid-options'
+    })
+}));
+
+vi.mock('./custom/BrowserAudioContextPrewarm', () => ({
+    prewarmBrowserAudioContext: vi.fn((sampleRate: number) => {
+        const lease = {
+            audioContext: { sampleRate },
+            close: vi.fn(() => (
+                audioPrewarmMockState.nextClosePromise ?? Promise.resolve()
+            )),
+            resumePromise: Promise.resolve()
+        };
+        audioPrewarmMockState.sampleRates.push(sampleRate);
+        audioPrewarmMockState.leases.push(lease);
+        return lease;
+    })
+}));
+
+vi.mock('./custom/CustomDecodeCapabilities', () => ({
+    probeCustomDecodeCapabilities: vi.fn(() => Promise.resolve({
+        audio: {},
+        telemetry: { reason: 'complete' },
+        video: {}
+    }))
+}));
+
+vi.mock('./custom/CustomDeviceProfile', () => ({
+    augmentDeviceProfileForCustomDecode: vi.fn((profile: object, _capabilities: object, options: unknown) => {
+        customProfileMockState.augmentationCalls.push({ options, profile });
+        return {
+            profile: { ...profile, CustomDecode: true },
+            telemetry: {
+                addedAudioProfileCount: 0,
+                addedProfileCount: 1,
+                addedVideoProfileCount: 1,
+                reason: 'augmented',
+                supportedAudioCodecs: [ 'aac' ],
+                supportedVideoCodecs: [ 'h264' ]
+            }
+        };
+    })
+}));
+
+vi.mock('./custom/CustomPlaybackRuntime', () => ({
+    getCustomPlaybackRuntimeAvailability: vi.fn(() => ({
+        available: customProfileMockState.runtimeAvailable,
+        environment: {},
+        reason: customProfileMockState.runtimeAvailable ? null : 'webgpu-unavailable'
+    }))
+}));
+
+vi.mock('./custom/BrowserCustomAudioOutput', () => ({
+    createBrowserCustomAudioOutputFactory: vi.fn((audioPrewarm: unknown) => {
+        audioPrewarmMockState.factoryLeases.push(audioPrewarm);
+        return vi.fn();
+    })
+}));
+
+vi.mock('./validation/WebGPUExternalTextureValidationRunner', () => ({
+    WebGPUExternalTextureValidationRunner: class MockColorValidationRunner {
+        validate = vi.fn((request: object): Promise<object | null> => {
+            colorValidationMockState.requests.push(request);
+            if (colorValidationMockState.error) {
+                return Promise.reject(colorValidationMockState.error);
+            }
+            return Promise.resolve(colorValidationMockState.decision);
+        });
+    }
+}));
+
+vi.mock('./validation/MediabunnyReferenceFrameProvider', () => ({
+    createMediabunnyReferenceFrameProvider: vi.fn((options: object) => {
+        const provider = {
+            destroy: vi.fn(() => Promise.resolve()),
+            getFrame: vi.fn(() => Promise.reject(new Error('not invoked by mock')))
+        };
+        colorValidationMediaMockState.options.push(options);
+        colorValidationMediaMockState.providers.push(provider);
+        return Promise.resolve(provider);
+    })
+}));
+
+vi.mock('./custom/CustomPlaybackController', () => {
+    class MockCustomPlaybackController {
+        readonly eventHandler: (event: object) => void;
+        readonly fallbackHook: (request: object) => Promise<void>;
+        currentTimeMicroseconds = 1_000_000;
+        durationMicroseconds: number | null = 60_000_000;
+        playbackRate = 1;
+        playbackState = 'idle';
+        playbackVolume = 1;
+        isMuted = false;
+
+        constructor(options: {
+            eventHandler: (event: object) => void
+            fallbackHook: (request: object) => Promise<void>
+        }) {
+            this.eventHandler = options.eventHandler;
+            this.fallbackHook = options.fallbackHook;
+            customDecodeMockState.instances.push(this);
+        }
+
+        play = vi.fn((options: { startTimeMicroseconds: number }) => {
+            this.currentTimeMicroseconds = options.startTimeMicroseconds;
+            if (customDecodeMockState.startupFallback) {
+                this.playbackState = 'fallback';
+                void this.fallbackHook({
+                    generation: 1,
+                    mediaTimeMicroseconds: this.currentTimeMicroseconds,
+                    preserveHTMLSession: true,
+                    reason: 'decode-failed'
+                }).catch(() => undefined);
+                return Promise.resolve({
+                    fallbackReason: 'decode-failed',
+                    generation: 1,
+                    status: 'fallback'
+                });
+            }
+            this.playbackState = 'playing';
+            this.eventHandler({
+                generation: 1,
+                previousState: 'starting',
+                state: 'playing',
+                type: 'statechange'
+            });
+            this.eventHandler({
+                durationMicroseconds: this.durationMicroseconds,
+                generation: 1,
+                startupDurationMicroseconds: 10_000,
+                type: 'ready'
+            });
+            this.eventHandler({ generation: 1, type: 'playing' });
+            return Promise.resolve({
+                fallbackReason: null,
+                generation: 1,
+                status: 'started'
+            });
+        });
+        seek = vi.fn((mediaTimeMicroseconds: number) => {
+            this.currentTimeMicroseconds = mediaTimeMicroseconds;
+            const previousState = this.playbackState;
+            this.playbackState = 'seeking';
+            this.eventHandler({
+                generation: 2,
+                previousState,
+                state: 'seeking',
+                type: 'statechange'
+            });
+            return Promise.resolve().then(() => {
+                this.playbackState = 'playing';
+                this.eventHandler({
+                    generation: 2,
+                    previousState: 'seeking',
+                    state: 'playing',
+                    type: 'statechange'
+                });
+                this.eventHandler({ generation: 2, type: 'playing' });
+                return {
+                    fallbackReason: null,
+                    generation: 2,
+                    status: 'started'
+                };
+            });
+        });
+        pause = vi.fn(() => {
+            this.playbackState = 'paused';
+            this.eventHandler({
+                generation: 1,
+                previousState: 'playing',
+                state: 'paused',
+                type: 'statechange'
+            });
+        });
+        resume = vi.fn(() => {
+            this.playbackState = 'playing';
+            this.eventHandler({
+                generation: 1,
+                previousState: 'paused',
+                state: 'playing',
+                type: 'statechange'
+            });
+            this.eventHandler({ generation: 1, type: 'playing' });
+        });
+        destroy = vi.fn(() => Promise.resolve());
+        takeCurrentFrame = vi.fn(() => null);
+        notifyFramePresented = vi.fn(() => true);
+        canSetAudioStreamIndex = vi.fn(() => true);
+        setAudioStreamIndex = vi.fn(() => Promise.resolve({
+            fallbackReason: null,
+            generation: 2,
+            status: 'started'
+        }));
+        setVolume = vi.fn((volume: number) => {
+            this.playbackVolume = volume;
+        });
+        setMuted = vi.fn((muted: boolean) => {
+            this.isMuted = muted;
+        });
+        setPlaybackRate = vi.fn((playbackRate: number) => {
+            this.playbackRate = playbackRate;
+            return true;
+        });
+        getTelemetry = vi.fn(() => ({
+            activeGeneration: null,
+            audioBridge: null,
+            audioOutput: null,
+            audioPath: 'disabled',
+            clock: {},
+            currentTimeMicroseconds: this.currentTimeMicroseconds,
+            durationMicroseconds: this.durationMicroseconds,
+            fallbackCount: 0,
+            fallbackReason: null,
+            lastErrorMessage: null,
+            muted: this.isMuted,
+            playCount: 1,
+            staleEventCount: 0,
+            startupDurationMicroseconds: 10_000,
+            state: 'idle',
+            videoDecode: {
+                activeGeneration: null,
+                audioCodec: null,
+                droppedFrameCount: 0,
+                failureKind: null,
+                firstFrameMediaTimeMicroseconds: null,
+                lastAudioMediaTimeMicroseconds: null,
+                lastFrameMediaTimeMicroseconds: null,
+                queuedFrameCount: 0,
+                receivedAudioFrameCount: 0,
+                receivedAudioSampleCount: 0,
+                receivedFrameCount: 0,
+                staleAudioSampleCount: 0,
+                staleFrameCount: 0,
+                state: 'idle',
+                submittedAudioFrameCount: 0,
+                submittedAudioSampleCount: 0,
+                takenFrameCount: 0
+            },
+            volume: this.playbackVolume
+        }));
+    }
+
+    return { default: MockCustomPlaybackController };
+});
 
 const EXPECTED_HTML_PLAYER_EVENTS = [
     'beginFetch',
@@ -30,6 +334,7 @@ const EXPECTED_HTML_PLAYER_EVENTS = [
 vi.mock('./WebGPUPresenter', () => {
     class MockWebGPUPresenter {
         readonly fallbackHandler: (generation: number) => void;
+        readonly validationDevice = { label: 'validation-device' } as GPUDevice;
 
         constructor(fallbackHandler: (generation: number) => void) {
             this.fallbackHandler = fallbackHandler;
@@ -38,10 +343,15 @@ vi.mock('./WebGPUPresenter', () => {
 
         startSession = vi.fn();
         attach = vi.fn();
+        configureColorPipeline = vi.fn(() => Promise.resolve(true));
+        setDecodedFrameProvider = vi.fn();
+        setDecodedFramePushMode = vi.fn();
+        presentDecodedFrame = vi.fn(() => true);
         seek = vi.fn();
         refresh = vi.fn();
         endSession = vi.fn();
         getTelemetry = vi.fn(() => ({
+            decodedFrameCount: 0,
             deviceRecoveryCount: 0,
             fallbackReason: null,
             firstFrameLatencyMicroseconds: null,
@@ -50,10 +360,18 @@ vi.mock('./WebGPUPresenter', () => {
             lastExpectedDisplayTimeMicroseconds: null,
             lastPresentedMediaTimeMicroseconds: null,
             mode: 'identity-sdr',
+            nativeFrameCount: 0,
+            presentationSource: null,
             presentedFrameCount: 0,
             sessionStartedMicroseconds: 0,
             state: 'idle'
         }));
+        getRenderSettings = vi.fn(() => ({ mode: 'identity-sdr', version: 3 }));
+        updateRenderSettings = vi.fn(() => true);
+        acquireValidationDevice = vi.fn(() => Promise.resolve(this.validationDevice));
+        isValidationDevice = vi.fn((device: GPUDevice | null) => (
+            device === this.validationDevice
+        ));
     }
 
     return { default: MockWebGPUPresenter };
@@ -76,6 +394,34 @@ vi.mock('plugins/htmlVideoPlayer/plugin', () => {
         currentSrc = vi.fn(() => 'backend-source');
         cancelPendingPlay = vi.fn();
         getPresentationSurface = vi.fn(() => this.presentationSurface);
+        prepareCustomPlayback = vi.fn(() => Promise.resolve(this.presentationSurface));
+        notifyCustomPlaybackEnded = vi.fn(() => {
+            Events.trigger(this, 'stopped');
+            return true;
+        });
+        notifyCustomPlaybackPaused = vi.fn(() => {
+            Events.trigger(this, 'pause');
+            return true;
+        });
+        notifyCustomPlaybackPlaying = vi.fn((emitUnpause = true) => {
+            if (emitUnpause) {
+                Events.trigger(this, 'unpause');
+            }
+            Events.trigger(this, 'playing');
+            return true;
+        });
+        notifyCustomPlaybackTimeUpdate = vi.fn(() => {
+            Events.trigger(this, 'timeupdate');
+            return true;
+        });
+        notifyCustomPlaybackVolumeChange = vi.fn(() => {
+            Events.trigger(this, 'volumechange');
+            return true;
+        });
+        notifyCustomPlaybackWaiting = vi.fn(() => {
+            Events.trigger(this, 'waiting');
+            return true;
+        });
         canPlayMediaType = vi.fn((mediaType: string | null | undefined) => mediaType?.toLowerCase() === 'video');
         supportsPlayMethod = vi.fn(() => true);
         getDeviceProfile = vi.fn(() => Promise.resolve(this.profile));
@@ -151,6 +497,13 @@ type MockHTMLPlayer = {
     presentationSurface: { container: HTMLDivElement, video: HTMLVideoElement } | null
     cancelPendingPlay: MockFunction
     currentSrc: MockFunction
+    prepareCustomPlayback: MockFunction
+    notifyCustomPlaybackEnded: MockFunction
+    notifyCustomPlaybackPaused: MockFunction
+    notifyCustomPlaybackPlaying: MockFunction
+    notifyCustomPlaybackTimeUpdate: MockFunction
+    notifyCustomPlaybackVolumeChange: MockFunction
+    notifyCustomPlaybackWaiting: MockFunction
     canPlayItem?: MockFunction
     canPlayMediaType: MockFunction
     supportsPlayMethod: MockFunction
@@ -187,12 +540,43 @@ type MockHTMLPlayer = {
 };
 
 type MockPresenter = {
+    acquireValidationDevice: MockFunction
     attach: MockFunction
+    configureColorPipeline: MockFunction
     endSession: MockFunction
     fallbackHandler: (generation: number) => void
+    getRenderSettings: MockFunction
+    isValidationDevice: MockFunction
     refresh: MockFunction
     seek: MockFunction
+    presentDecodedFrame: MockFunction
+    setDecodedFrameProvider: MockFunction
+    setDecodedFramePushMode: MockFunction
     startSession: MockFunction
+    updateRenderSettings: MockFunction
+    validationDevice: GPUDevice
+};
+
+type MockCustomPlaybackController = {
+    eventHandler: (event: object) => void
+    fallbackHook: (request: object) => Promise<void>
+    getTelemetry: MockFunction
+    play: MockFunction
+    seek: MockFunction
+    pause: MockFunction
+    resume: MockFunction
+    destroy: MockFunction
+    takeCurrentFrame: MockFunction
+    notifyFramePresented: MockFunction
+    canSetAudioStreamIndex: MockFunction
+    setAudioStreamIndex: MockFunction
+    setVolume: MockFunction
+    setMuted: MockFunction
+    setPlaybackRate: MockFunction
+    currentTimeMicroseconds: number
+    durationMicroseconds: number | null
+    playbackRate: number
+    playbackState: string
 };
 
 function getBackend(): MockHTMLPlayer {
@@ -203,6 +587,11 @@ function getBackend(): MockHTMLPlayer {
 function getPresenter(): MockPresenter {
     const presenterIndex = presenterMockState.instances.length - 1;
     return presenterMockState.instances[presenterIndex] as MockPresenter;
+}
+
+function getCustomPlaybackController(): MockCustomPlaybackController {
+    const sessionIndex = customDecodeMockState.instances.length - 1;
+    return customDecodeMockState.instances[sessionIndex] as MockCustomPlaybackController;
 }
 
 type Deferred<Value> = {
@@ -220,6 +609,16 @@ function createDeferred<Value>(): Deferred<Value> {
     return { promise, resolve: resolvePromise };
 }
 
+function runNextAnimationFrame(timestamp = 0): void {
+    const entry = animationFrameMockState.callbacks.entries().next();
+    if (entry.done) {
+        throw new Error('No animation frame is scheduled');
+    }
+    const [ identifier, callback ] = entry.value;
+    animationFrameMockState.callbacks.delete(identifier);
+    callback(timestamp);
+}
+
 function createKnownSDRPlayOptions(
     properties: Record<string, unknown> = {}
 ): Record<string, unknown> {
@@ -231,11 +630,51 @@ function createKnownSDRPlayOptions(
     };
 }
 
+function createKnownSDRAudioPlayOptions(sampleRate: unknown = 48_000): Record<string, unknown> {
+    return {
+        playMethod: 'DirectPlay',
+        mediaSource: {
+            DefaultAudioStreamIndex: 1,
+            MediaStreams: [
+                { Index: 0, Type: 'Video', VideoRangeType: 'SDR' },
+                { Index: 1, SampleRate: sampleRate, Type: 'Audio' }
+            ]
+        }
+    };
+}
+
 describe('WebGPUPlayer HTML delegation', () => {
     beforeEach(() => {
         htmlPlayerMockState.instances.length = 0;
         htmlPlayerMockState.owners.length = 0;
         presenterMockState.instances.length = 0;
+        webSettingsMockState.customDecodeEnabled = false;
+        customDecodeMockState.eligible = false;
+        customDecodeMockState.audioTrackIndex = null;
+        customDecodeMockState.instances.length = 0;
+        customDecodeMockState.startupFallback = false;
+        customProfileMockState.augmentationCalls.length = 0;
+        customProfileMockState.runtimeAvailable = true;
+        animationFrameMockState.callbacks.clear();
+        animationFrameMockState.nextIdentifier = 1;
+        colorValidationMockState.decision = null;
+        colorValidationMockState.error = null;
+        colorValidationMockState.requests.length = 0;
+        colorValidationMediaMockState.options.length = 0;
+        colorValidationMediaMockState.providers.length = 0;
+        audioPrewarmMockState.factoryLeases.length = 0;
+        audioPrewarmMockState.leases.length = 0;
+        audioPrewarmMockState.nextClosePromise = null;
+        audioPrewarmMockState.sampleRates.length = 0;
+        vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback): number => {
+            const identifier = animationFrameMockState.nextIdentifier;
+            animationFrameMockState.nextIdentifier += 1;
+            animationFrameMockState.callbacks.set(identifier, callback);
+            return identifier;
+        }));
+        vi.stubGlobal('cancelAnimationFrame', vi.fn((identifier: number): void => {
+            animationFrameMockState.callbacks.delete(identifier);
+        }));
     });
 
     it('owns exactly one HTML backend with the wrapper as manager identity', () => {
@@ -280,6 +719,161 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.play).toHaveBeenCalledWith(playOptions);
     });
 
+    it('widens a custom-decode profile only when enabled and never on retry', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const item = { Id: 'item' };
+        webSettingsMockState.customDecodeEnabled = true;
+
+        const profile = await player.getDeviceProfile(item, { isRetry: false }) as {
+            CustomDecode?: boolean
+        };
+        expect(profile.CustomDecode).toBe(true);
+        expect(profile).not.toBe(backend.profile);
+        expect(customProfileMockState.augmentationCalls[0]).toEqual({
+            options: { isRetry: false },
+            profile: backend.profile
+        });
+
+        await player.getDeviceProfile(item, { isRetry: true });
+        expect(customProfileMockState.augmentationCalls[1]?.options).toEqual({ isRetry: true });
+        expect(player.getCustomDeviceProfileTelemetry()).toMatchObject({
+            reason: 'augmented',
+            supportedVideoCodecs: [ 'h264' ]
+        });
+    });
+
+    it('keeps the native profile when the complete custom runtime is unavailable', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        webSettingsMockState.customDecodeEnabled = true;
+        customProfileMockState.runtimeAvailable = false;
+
+        await expect(player.getDeviceProfile({}, {})).resolves.toBe(backend.profile);
+        expect(customProfileMockState.augmentationCalls).toHaveLength(0);
+        expect(player.getCustomPlaybackRuntimeAvailability()).toMatchObject({
+            available: false,
+            reason: 'webgpu-unavailable'
+        });
+    });
+
+    it('runs color validation on the exact reusable presentation device', async () => {
+        const player = new WebGPUPlayer();
+        const presenter = getPresenter();
+        const metadata = {
+            bitDepth: 10,
+            matrix: 'bt2020-ncl' as const,
+            nominalPeakNits: 1_000,
+            primaries: 'bt2020' as const,
+            range: 'limited' as const,
+            sdrReferenceWhiteNits: 100,
+            transfer: 'pq' as const,
+            version: 1 as const
+        };
+        const decision = {
+            capability: 'supported',
+            classification: 'valid',
+            validation: { accepted: true }
+        };
+        colorValidationMockState.decision = decision;
+        const getFrame = vi.fn(() => Promise.reject(new Error('not invoked by mock')));
+
+        await expect(player.validateColorPipelineReference({
+            getFrame,
+            metadata
+        })).resolves.toBe(decision);
+
+        expect(presenter.acquireValidationDevice).toHaveBeenCalledOnce();
+        expect(colorValidationMockState.requests).toContainEqual({
+            device: presenter.validationDevice,
+            getFrame,
+            metadata
+        });
+        expect(player.getColorValidationDecision()).toBe(decision);
+    });
+
+    it('validates generated media without passing its URL into retained runner state', async () => {
+        const player = new WebGPUPlayer();
+        const presenter = getPresenter();
+        const metadata = {
+            bitDepth: 10,
+            matrix: 'bt2020-ncl' as const,
+            nominalPeakNits: 1_000,
+            primaries: 'bt2020' as const,
+            range: 'limited' as const,
+            sdrReferenceWhiteNits: 100,
+            transfer: 'pq' as const,
+            version: 1 as const
+        };
+        const decision = {
+            capability: 'supported',
+            classification: 'valid',
+            validation: { accepted: true }
+        };
+        const timestampsMicroseconds = [
+            secondsToMicroseconds(0),
+            secondsToMicroseconds(1),
+            secondsToMicroseconds(2)
+        ];
+        colorValidationMockState.decision = decision;
+
+        await expect(player.validateColorPipelineReferenceMedia({
+            globalTrackIndex: 0,
+            metadata,
+            rampOptions: {
+                encodedRGBTriplets: [
+                    [ 0, 0, 0 ],
+                    [ 0.5, 0.5, 0.5 ],
+                    [ 0.75, 0.25, 0.25 ]
+                ],
+                frameIntervalMicroseconds: secondsToMicroseconds(1)
+            },
+            timestampsMicroseconds,
+            url: 'http://localhost/reference.mp4?api_key=secret'
+        })).resolves.toBe(decision);
+
+        expect(colorValidationMediaMockState.options).toEqual([{
+            globalTrackIndex: 0,
+            timestampsMicroseconds,
+            url: 'http://localhost/reference.mp4?api_key=secret'
+        }]);
+        expect(colorValidationMediaMockState.providers[0].destroy).toHaveBeenCalledOnce();
+        expect(colorValidationMockState.requests[0]).toMatchObject({
+            device: presenter.validationDevice,
+            metadata
+        });
+        expect(colorValidationMockState.requests[0]).not.toHaveProperty('url');
+        expect(colorValidationMockState.requests[0]).not.toHaveProperty('timestampsMicroseconds');
+        expect(colorValidationMockState.requests[0]).not.toHaveProperty('globalTrackIndex');
+    });
+
+    it('destroys generated validation media after a runner failure', async () => {
+        const player = new WebGPUPlayer();
+        colorValidationMockState.error = new Error('simulated validation failure');
+
+        await expect(player.validateColorPipelineReferenceMedia({
+            globalTrackIndex: 0,
+            metadata: {
+                bitDepth: 8,
+                matrix: 'bt709',
+                nominalPeakNits: 100,
+                primaries: 'bt709',
+                range: 'limited',
+                sdrReferenceWhiteNits: 100,
+                transfer: 'sdr',
+                version: 1
+            },
+            timestampsMicroseconds: [
+                secondsToMicroseconds(0),
+                secondsToMicroseconds(1),
+                secondsToMicroseconds(2)
+            ],
+            url: 'http://localhost/reference.mp4'
+        })).rejects.toThrow('simulated validation failure');
+
+        expect(colorValidationMediaMockState.providers[0].destroy).toHaveBeenCalledOnce();
+    });
+
     it('attaches the presenter after HTML playback and invalidates it on seek and stop', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -300,6 +894,520 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         await player.stop(false);
         expect(presenter.endSession).toHaveBeenCalledWith(3);
+    });
+
+    it('uses eligible custom playback without starting the native media source', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        const options = createKnownSDRPlayOptions({ playMethod: 'DirectPlay' });
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+        expect(backend.prepareCustomPlayback).toHaveBeenCalledWith(options);
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(customPlaybackController.play).toHaveBeenCalledWith({
+            audioTrackIndex: null,
+            durationMicroseconds: 60_000_000,
+            startTimeMicroseconds: 1_000_000,
+            url: 'http://localhost/video.mp4',
+            videoTrackIndex: 0
+        });
+        expect(presenter.setDecodedFramePushMode).toHaveBeenCalledWith(true, 1);
+        expect(presenter.attach).toHaveBeenCalledWith(backend.presentationSurface, 1);
+
+        player.currentTime(2_500);
+        await Promise.resolve();
+        expect(customPlaybackController.seek).toHaveBeenCalledWith(2_500_000);
+        expect(presenter.seek).toHaveBeenCalledWith(2);
+
+        await player.stop(false);
+        expect(customPlaybackController.destroy).toHaveBeenCalledOnce();
+        expect(backend.stop).toHaveBeenCalledOnce();
+    });
+
+    it('prewarms selected audio synchronously and transfers it to custom playback', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+        const options = createKnownSDRAudioPlayOptions();
+
+        const playPromise = player.play(options);
+        expect(audioPrewarmMockState.sampleRates).toEqual([48_000]);
+        await playPromise;
+
+        expect(audioPrewarmMockState.factoryLeases).toEqual([
+            audioPrewarmMockState.leases[0]
+        ]);
+        await player.stop(false);
+        expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
+    });
+
+    it('closes an unused audio prewarm before native playback', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = false;
+        const options = createKnownSDRAudioPlayOptions();
+
+        const playPromise = player.play(options);
+        expect(audioPrewarmMockState.sampleRates).toEqual([48_000]);
+        await playPromise;
+
+        expect(audioPrewarmMockState.factoryLeases).toHaveLength(0);
+        expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
+        expect(backend.play).toHaveBeenCalledWith(options);
+    });
+
+    it('starts native playback before prewarm close and makes stop await cleanup', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const deferredClose = createDeferred<void>();
+        audioPrewarmMockState.nextClosePromise = deferredClose.promise;
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = false;
+
+        await player.play(createKnownSDRAudioPlayOptions());
+        expect(backend.play).toHaveBeenCalledOnce();
+
+        const stopPromise = player.stop(false);
+        let stopSettled = false;
+        const observedStopPromise = stopPromise.then((): void => {
+            stopSettled = true;
+        });
+        await Promise.resolve();
+        expect(stopSettled).toBe(false);
+
+        deferredClose.resolve();
+        await stopPromise;
+        await observedStopPromise;
+        expect(stopSettled).toBe(true);
+        expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
+    });
+
+    it('does not prewarm disabled or unsafe selected audio metadata', async () => {
+        const disabledPlayer = new WebGPUPlayer();
+        await disabledPlayer.play(createKnownSDRAudioPlayOptions());
+        expect(audioPrewarmMockState.sampleRates).toHaveLength(0);
+
+        webSettingsMockState.customDecodeEnabled = true;
+        const unsafePlayer = new WebGPUPlayer();
+        await unsafePlayer.play(createKnownSDRAudioPlayOptions('48000'));
+        expect(audioPrewarmMockState.sampleRates).toHaveLength(0);
+    });
+
+    it('closes a transferred prewarm once when custom playback falls back', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+
+        await player.play(createKnownSDRAudioPlayOptions());
+        const customPlaybackController = getCustomPlaybackController();
+        await customPlaybackController.fallbackHook({
+            generation: 1,
+            mediaTimeMicroseconds: 2_000_000,
+            preserveHTMLSession: true,
+            reason: 'decode-failed'
+        });
+
+        expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
+        expect(backend.play).toHaveBeenCalledOnce();
+    });
+
+    it('falls back to the same HTML session at the custom clock position', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        const options = createKnownSDRPlayOptions({ playMethod: 'DirectPlay' });
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+        customPlaybackController.currentTimeMicroseconds = 2_500_000;
+        await customPlaybackController.fallbackHook({
+            generation: 1,
+            mediaTimeMicroseconds: 2_500_000,
+            preserveHTMLSession: true,
+            reason: 'decode-failed'
+        });
+
+        expect(backend.play).toHaveBeenCalledOnce();
+        expect(backend.play).toHaveBeenCalledWith({
+            ...options,
+            playerStartPositionTicks: 25_000_000,
+            suppressInitialUnpause: true
+        });
+        expect(backend.stop).not.toHaveBeenCalled();
+        expect(presenter.endSession).toHaveBeenCalledWith(2);
+        expect(customPlaybackController.destroy).toHaveBeenCalledOnce();
+
+        player.currentTime(2_500);
+        expect(customPlaybackController.seek).not.toHaveBeenCalled();
+        expect(backend.currentTime).toHaveBeenCalledWith(2_500);
+    });
+
+    it('presents clock-selected decoded frames through the push renderer', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000
+        };
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+
+        runNextAnimationFrame();
+
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(decodedFrame, 1);
+        expect(customPlaybackController.notifyFramePresented).toHaveBeenCalledWith(decodedFrame);
+        expect(animationFrameMockState.callbacks.size).toBe(1);
+    });
+
+    it('does not acknowledge a decoded frame rejected by the presenter', async () => {
+        const consoleWarning = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000
+        };
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+        presenter.presentDecodedFrame.mockReturnValueOnce(false);
+
+        runNextAnimationFrame();
+
+        expect(customPlaybackController.notifyFramePresented).not.toHaveBeenCalled();
+        expect(animationFrameMockState.callbacks.size).toBe(0);
+        expect(consoleWarning).toHaveBeenCalledOnce();
+        consoleWarning.mockRestore();
+    });
+
+    it('keeps polling a paused generation until its first decoded frame arrives', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        player.pause();
+        expect(animationFrameMockState.callbacks.size).toBe(1);
+
+        runNextAnimationFrame();
+        expect(animationFrameMockState.callbacks.size).toBe(1);
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000
+        };
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+        runNextAnimationFrame();
+
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(decodedFrame, 1);
+        expect(customPlaybackController.notifyFramePresented).toHaveBeenCalledWith(decodedFrame);
+        expect(animationFrameMockState.callbacks.size).toBe(0);
+    });
+
+    it('replaces the one-shot paused poll with a continuous loop on resume', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        player.pause();
+        player.resume();
+
+        expect(animationFrameMockState.callbacks.size).toBe(1);
+        runNextAnimationFrame();
+        expect(animationFrameMockState.callbacks.size).toBe(1);
+    });
+
+    it('routes custom clock, pause, gain, mute, and stream controls through the shell', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        const pauseListener = vi.fn();
+        const playingListener = vi.fn();
+        const timeListener = vi.fn();
+        const waitingListener = vi.fn();
+        Events.on(player, 'pause', pauseListener);
+        Events.on(player, 'playing', playingListener);
+        Events.on(player, 'timeupdate', timeListener);
+        Events.on(player, 'waiting', waitingListener);
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        customPlaybackController.currentTimeMicroseconds = 3_250_000;
+        customPlaybackController.eventHandler({
+            currentTimeMicroseconds: 3_250_000,
+            durationMicroseconds: 60_000_000,
+            generation: 1,
+            type: 'timeupdate'
+        });
+        customPlaybackController.eventHandler({
+            generation: 1,
+            reason: 'video-frame',
+            type: 'waiting'
+        });
+        player.pause();
+        player.resume();
+        player.setVolume(80);
+        player.setMute(true);
+        player.setAudioStreamIndex(3);
+        await Promise.resolve();
+
+        expect(player.currentTime()).toBe(3_250);
+        expect(player.duration()).toBe(60_000);
+        expect(timeListener).toHaveBeenCalled();
+        expect(waitingListener).toHaveBeenCalledOnce();
+        expect(pauseListener).toHaveBeenCalledOnce();
+        expect(playingListener).toHaveBeenCalledTimes(2);
+        expect(customPlaybackController.pause).toHaveBeenCalledOnce();
+        expect(customPlaybackController.resume).toHaveBeenCalledOnce();
+        const lastVolume = customPlaybackController.setVolume.mock.calls.at(-1)?.[0];
+        expect(lastVolume).toBeCloseTo(0.512);
+        expect(customPlaybackController.setMuted).toHaveBeenLastCalledWith(true);
+        expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(3);
+        expect(backend.notifyCustomPlaybackVolumeChange).not.toHaveBeenCalled();
+        expect(player.getVolume()).toBe(80);
+        expect(player.isMuted()).toBe(true);
+    });
+
+    it('reports custom pipeline stats and delegates live renderer controls', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const stats = await player.getStats() as {
+            categories: Array<{ stats: Array<{ label: string, value: string }> }>
+        };
+        const settings = {
+            display: { brightness: 0, contrast: 1, saturation: 1 },
+            mode: 'hdr-to-sdr' as const,
+            outputTransfer: 'srgb' as const,
+            toneMapping: {
+                desaturationStrength: 0.25,
+                exposure: 0,
+                inputPeakNits: 1_000,
+                operator: 'aces' as const,
+                outputPeakNits: 100,
+                paperWhiteNits: 203
+            },
+            version: 3 as const
+        };
+
+        expect(stats.categories[0].stats).toContainEqual({
+            label: 'Playback pipeline',
+            value: 'WebCodecs / WebGPU'
+        });
+        expect(backend.getStats).not.toHaveBeenCalled();
+        expect(player.updateRenderSettings(settings)).toBe(true);
+        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(settings, 1);
+        expect(player.getRenderSettings()).toEqual({ mode: 'identity-sdr', version: 3 });
+    });
+
+    it('preserves a custom audio switch when later falling back to native playback', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        const options = {
+            audioStreamIndex: 1,
+            mediaSource: {
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [{ Type: 'Video', VideoRangeType: 'SDR' }]
+            },
+            playMethod: 'DirectPlay'
+        };
+
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+        player.setAudioStreamIndex(3);
+        await Promise.resolve();
+        await customPlaybackController.fallbackHook({
+            generation: 2,
+            mediaTimeMicroseconds: 4_000_000,
+            preserveHTMLSession: true,
+            reason: 'decode-failed'
+        });
+
+        expect(backend.play).toHaveBeenCalledWith({
+            ...options,
+            audioStreamIndex: 3,
+            mediaSource: {
+                ...options.mediaSource,
+                DefaultAudioStreamIndex: 3
+            },
+            playerStartPositionTicks: 40_000_000,
+            suppressInitialUnpause: true
+        });
+    });
+
+    it('coalesces repeated custom fallback requests into one native start', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        const nativePlay = createDeferred<unknown>();
+        backend.play.mockReturnValue(nativePlay.promise);
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const request = {
+            generation: 1,
+            mediaTimeMicroseconds: 4_000_000,
+            preserveHTMLSession: true,
+            reason: 'decode-failed'
+        };
+        const firstFallback = customPlaybackController.fallbackHook(request);
+        const secondFallback = customPlaybackController.fallbackHook(request);
+        await vi.waitFor(() => expect(backend.play).toHaveBeenCalledOnce());
+        nativePlay.resolve(undefined);
+        await Promise.all([ firstFallback, secondFallback ]);
+
+        expect(customPlaybackController.destroy).toHaveBeenCalledOnce();
+        expect(backend.play).toHaveBeenCalledOnce();
+    });
+
+    it('emits one terminal error when an established native fallback fails', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        const errorListener = vi.fn();
+        Events.on(player, 'error', errorListener);
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const fallbackError = new Error('native fallback failed');
+        backend.play.mockRejectedValueOnce(fallbackError);
+        await expect(customPlaybackController.fallbackHook({
+            generation: 1,
+            mediaTimeMicroseconds: 4_000_000,
+            preserveHTMLSession: true,
+            reason: 'decode-failed'
+        })).rejects.toBe(fallbackError);
+
+        expect(backend.play).toHaveBeenCalledOnce();
+        expect(errorListener).toHaveBeenCalledOnce();
+    });
+
+    it('does not start native fallback twice when it fails during custom startup', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.startupFallback = true;
+        const fallbackError = new Error('initial native fallback failed');
+        backend.play.mockRejectedValueOnce(fallbackError);
+
+        await expect(player.play(
+            createKnownSDRPlayOptions({ playMethod: 'DirectPlay' })
+        )).rejects.toBe(fallbackError);
+
+        expect(backend.play).toHaveBeenCalledOnce();
+    });
+
+    it('uses native playback when the custom presentation cannot initialize', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        presenter.configureColorPipeline.mockResolvedValueOnce(false);
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        const options = createKnownSDRPlayOptions({ playMethod: 'DirectPlay' });
+        await player.play(options);
+
+        expect(backend.prepareCustomPlayback).toHaveBeenCalledOnce();
+        expect(customDecodeMockState.instances).toHaveLength(0);
+        expect(backend.play).toHaveBeenCalledWith(options);
     });
 
     it('advances the shared generation when presentation falls back', async () => {
@@ -437,7 +1545,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.forcedFullscreen).toBe(true);
         expect(player.supports('PictureInPicture')).toBe(false);
         expect(player.supports('AirPlay')).toBe(false);
-        expect(player.supports('PlaybackRate')).toBe(true);
+        expect(player.supports('PlaybackRate')).toBe(false);
     });
 });
 
@@ -446,6 +1554,11 @@ describe('WebGPUPlayer event and lifecycle contract', () => {
         htmlPlayerMockState.instances.length = 0;
         htmlPlayerMockState.owners.length = 0;
         presenterMockState.instances.length = 0;
+        webSettingsMockState.customDecodeEnabled = false;
+        customDecodeMockState.eligible = false;
+        customDecodeMockState.instances.length = 0;
+        customProfileMockState.augmentationCalls.length = 0;
+        customProfileMockState.runtimeAvailable = true;
     });
 
     it('pins the complete HTML backend event surface', () => {

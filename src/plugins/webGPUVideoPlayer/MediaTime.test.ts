@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    JELLYFIN_TICKS_PER_MICROSECOND,
     MICROSECONDS_PER_MILLISECOND,
     MICROSECONDS_PER_SECOND,
+    jellyfinTicksToMicroseconds,
+    microsecondsToJellyfinTicks,
     microsecondsToMilliseconds,
     microsecondsToSeconds,
     millisecondsToMicroseconds,
@@ -13,6 +16,7 @@ describe('MediaTime', () => {
     it('declares the media boundary conversion constants', () => {
         expect(MICROSECONDS_PER_MILLISECOND).toBe(1_000);
         expect(MICROSECONDS_PER_SECOND).toBe(1_000_000);
+        expect(JELLYFIN_TICKS_PER_MICROSECOND).toBe(10);
     });
 
     it('rounds HTML seconds to signed integer microseconds', () => {
@@ -32,11 +36,17 @@ describe('MediaTime', () => {
         const microseconds = millisecondsToMicroseconds(12.345);
         expect(microsecondsToMilliseconds(microseconds)).toBe(12.345);
         expect(microsecondsToSeconds(microseconds)).toBe(0.012345);
+        expect(microsecondsToJellyfinTicks(microseconds)).toBe(123_450);
+        expect(jellyfinTicksToMicroseconds(123_450)).toBe(microseconds);
     });
 
     it('rejects invalid and unsafe timestamps', () => {
         expect(() => secondsToMicroseconds(Number.NaN)).toThrow(RangeError);
         expect(() => secondsToMicroseconds(Number.POSITIVE_INFINITY)).toThrow(RangeError);
         expect(() => millisecondsToMicroseconds(Number.MAX_SAFE_INTEGER)).toThrow(RangeError);
+        expect(() => jellyfinTicksToMicroseconds(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+        expect(() => microsecondsToJellyfinTicks(
+            millisecondsToMicroseconds(Number.MAX_SAFE_INTEGER / 2_000)
+        )).toThrow(RangeError);
     });
 });

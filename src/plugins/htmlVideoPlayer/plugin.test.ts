@@ -18,12 +18,23 @@ type HtmlVideoPlayerTestHarness = {
     _currentPlayOptions: unknown
     cancelPendingPlay: () => void
     createMediaElement: (options: { fullscreen: boolean }, playSessionGeneration?: number) => Promise<HTMLVideoElement | null>
+    currentTime: () => number | undefined
     currentSrc: () => string | undefined
     destroy: () => void
     getPresentationSurface: () => { container: HTMLDivElement, video: HTMLVideoElement } | null
     isFetching: boolean
     onError: (event: Event) => void
+    notifyCustomPlaybackEnded: () => boolean
+    notifyCustomPlaybackPaused: () => boolean
+    notifyCustomPlaybackPlaying: () => boolean
+    notifyCustomPlaybackTimeUpdate: (timeMilliseconds: number) => boolean
+    notifyCustomPlaybackVolumeChange: () => boolean
+    notifyCustomPlaybackWaiting: () => boolean
+    onPlay: () => void
     play: (options: ReturnType<typeof createPlayOptions>) => Promise<unknown>
+    prepareCustomPlayback: (options: ReturnType<typeof createPlayOptions>) => Promise<
+        { container: HTMLDivElement, video: HTMLVideoElement } | string | null
+    >
     setSubtitleStreamIndex: (index: number) => void
     stop: (destroyPlayer: boolean) => Promise<void>
     updateVideoUrl: (options: ReturnType<typeof createPlayOptions>, playSessionGeneration?: number) => Promise<void>
@@ -283,6 +294,78 @@ beforeEach(() => {
     itemHelperMock.isLocalItem.mockReturnValue(false);
     webSettingsMock.getIncludeCorsCredentials.mockReturnValue(Promise.resolve(false));
     hlsModuleMock.instances.length = 0;
+});
+
+describe('HtmlVideoPlayer custom presentation shell', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    it('prepares the normal DOM surface without assigning a native source', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/custom.mkv', 'MKV');
+
+        const surface = await player.prepareCustomPlayback(options);
+
+        expect(surface).toMatchObject({
+            container: expect.any(HTMLDivElement),
+            video: expect.any(HTMLVideoElement)
+        });
+        expect(player.currentSrc()).toBe(options.url);
+        expect(htmlMediaHelperMock.applySrc).not.toHaveBeenCalled();
+        expect(htmlMediaHelperMock.playWithPromise).not.toHaveBeenCalled();
+        expect(htmlMediaHelperMock.resetSrc).toHaveBeenCalledOnce();
+    });
+
+    it('forwards custom clock events and retires natural end exactly once', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const eventOrder: string[] = [];
+        for (const eventName of [
+            'unpause',
+            'playing',
+            'timeupdate',
+            'pause',
+            'waiting',
+            'volumechange'
+        ]) {
+            Events.on(player, eventName, () => eventOrder.push(eventName));
+        }
+        const updateSubtitleText = vi.spyOn(player, 'updateSubtitleText');
+        await player.prepareCustomPlayback(createPlayOptions('https://example.test/custom.mp4'));
+
+        expect(player.notifyCustomPlaybackPlaying()).toBe(true);
+        expect(player.notifyCustomPlaybackTimeUpdate(2_500)).toBe(true);
+        expect(player.notifyCustomPlaybackPaused()).toBe(true);
+        expect(player.notifyCustomPlaybackWaiting()).toBe(true);
+        expect(player.notifyCustomPlaybackVolumeChange()).toBe(true);
+
+        expect(player.currentTime()).toBe(2_500);
+        expect(updateSubtitleText).toHaveBeenCalledWith(2_500);
+        expect(eventOrder).toEqual([
+            'unpause',
+            'playing',
+            'timeupdate',
+            'pause',
+            'waiting',
+            'volumechange'
+        ]);
+        expect(player.notifyCustomPlaybackEnded()).toBe(true);
+        expect(player.notifyCustomPlaybackEnded()).toBe(false);
+        expect(htmlMediaHelperMock.onEndedInternal).toHaveBeenCalledOnce();
+        expect(player.currentSrc()).toBeUndefined();
+    });
+
+    it('suppresses only the first native unpause during same-session fallback', () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const unpauseListener = vi.fn();
+        Events.on(player, 'unpause', unpauseListener);
+        player._currentPlayOptions = { suppressInitialUnpause: true };
+
+        player.onPlay();
+        player.onPlay();
+
+        expect(unpauseListener).toHaveBeenCalledOnce();
+    });
 });
 
 describe('HtmlVideoPlayer subtitle generations', () => {

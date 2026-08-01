@@ -133,3 +133,29 @@ export function getPlugins() {
         return applyPlayerFeatureFlags(DefaultConfig, DefaultConfig.plugins);
     });
 }
+
+export function getWebGPUCustomDecodeEnabled() {
+    return getConfig().then(config => !!config.enableWebGPUCustomDecode).catch(error => {
+        console.log('cannot get web config:', error);
+        return false;
+    });
+}
+
+/** Returns the already-loaded custom decode flag without delaying playback. */
+export function isWebGPUCustomDecodeEnabled() {
+    return !!(data || DefaultConfig).enableWebGPUCustomDecode;
+}
+
+export function getWebGPUHDRToneMappingEnabled() {
+    return getConfig().then(config => !!config.enableWebGPUHDRToneMapping).catch(error => {
+        console.log('cannot get web config:', error);
+        return false;
+    });
+}
+
+export function getWebGPUValidationHarnessEnabled() {
+    return getConfig().then(config => !!config.enableWebGPUValidationHarness).catch(error => {
+        console.log('cannot get web config:', error);
+        return false;
+    });
+}

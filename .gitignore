@@ -5,6 +5,7 @@ node_modules
 
 # test coverage
 coverage
+scripts/webgpu/validation-media/
 
 # config
 config.json

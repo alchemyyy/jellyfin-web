@@ -15,6 +15,9 @@ export interface WebConfig {
     includeCorsCredentials?: boolean
     multiserver?: boolean
     enableWebGPUVideoPlayer?: boolean
+    enableWebGPUCustomDecode?: boolean
+    enableWebGPUHDRToneMapping?: boolean
+    enableWebGPUValidationHarness?: boolean
     themes?: Theme[]
     menuLinks?: MenuLink[]
     servers?: string[]

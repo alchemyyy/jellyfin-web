@@ -1,5 +1,6 @@
 export const MICROSECONDS_PER_MILLISECOND = 1_000;
 export const MICROSECONDS_PER_SECOND = 1_000_000;
+export const JELLYFIN_TICKS_PER_MICROSECOND = 10;
 
 declare const MICROSECONDS_BRAND: unique symbol;
 export type Microseconds = number & { readonly [MICROSECONDS_BRAND]: true };
@@ -35,4 +36,19 @@ export function microsecondsToSeconds(microseconds: Microseconds): number {
 /** Converts signed integer microseconds to a Jellyfin milliseconds boundary. */
 export function microsecondsToMilliseconds(microseconds: Microseconds): number {
     return microseconds / MICROSECONDS_PER_MILLISECOND;
+}
+
+/** Converts Jellyfin ticks to signed integer microseconds. */
+export function jellyfinTicksToMicroseconds(ticks: number): Microseconds {
+    return toIntegerMicroseconds(ticks / JELLYFIN_TICKS_PER_MICROSECOND);
+}
+
+/** Converts signed integer microseconds to Jellyfin ticks. */
+export function microsecondsToJellyfinTicks(microseconds: Microseconds): number {
+    const ticks = microseconds * JELLYFIN_TICKS_PER_MICROSECOND;
+    if (!Number.isSafeInteger(ticks)) {
+        throw new RangeError('Media time exceeds the Jellyfin tick range');
+    }
+
+    return ticks;
 }

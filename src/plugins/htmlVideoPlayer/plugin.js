@@ -370,6 +370,10 @@ export class HtmlVideoPlayer {
      */
     #timeUpdated;
     /**
+     * @type {boolean}
+     */
+    #customPlaybackActive = false;
+    /**
      * @type {number | null | undefined}
      */
     #currentTime;
@@ -471,6 +475,7 @@ export class HtmlVideoPlayer {
 
         this.#playSessionGeneration++;
         this.#pendingPlay = null;
+        this.#customPlaybackActive = false;
         if (pauseSource && pendingPlay.mediaElement === this.#mediaElement) {
             pendingPlay.mediaElement.pause();
         }
@@ -736,6 +741,7 @@ export class HtmlVideoPlayer {
     }
 
     async play(options) {
+        this.#customPlaybackActive = false;
         this.#invalidatePlaySession();
         const playSessionGeneration = this.#playSessionGeneration;
         let resolveCancellation;
@@ -764,6 +770,73 @@ export class HtmlVideoPlayer {
                 this.#pendingPlay = null;
             }
         }
+    }
+
+    /**
+     * Creates the normal video, subtitle, and OSD surface without assigning a
+     * native media source. A composed player can then own demux and decode.
+     *
+     * @param {any} options
+     * @returns {Promise<{ container: HTMLDivElement, video: HTMLVideoElement } | string | null>}
+     */
+    async prepareCustomPlayback(options) {
+        this.#invalidatePlaySession();
+        this.#customPlaybackActive = true;
+        const playSessionGeneration = this.#playSessionGeneration;
+        let resolveCancellation;
+        const cancellationPromise = new Promise((resolve) => {
+            resolveCancellation = resolve;
+        });
+        const pendingPlay = {
+            generation: playSessionGeneration,
+            resolve: resolveCancellation
+        };
+        this.#pendingPlay = pendingPlay;
+
+        const setupPromise = this.#setUpCustomPlayback(options, playSessionGeneration).catch((error) => {
+            if (this.#isPlaySessionCurrent(playSessionGeneration)) {
+                this.#playSessionGeneration++;
+                this.#customPlaybackActive = false;
+            }
+            throw error;
+        });
+        try {
+            return await Promise.race([setupPromise, cancellationPromise]);
+        } finally {
+            if (this.#pendingPlay?.generation === playSessionGeneration) {
+                this.#pendingPlay = null;
+            }
+        }
+    }
+
+    /**
+     * @private
+     */
+    async #setUpCustomPlayback(options, playSessionGeneration) {
+        this.#invalidateSubtitleSession();
+        this.#started = false;
+        this.#timeUpdated = false;
+        this.#currentTime = null;
+        this.#detectedAspectRatio = this.#getDetectedAspectRatio(options);
+
+        if (options.resetSubtitleOffset !== false) this.resetSubtitleOffset();
+
+        const elem = await this.createMediaElement(options, playSessionGeneration);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return null;
+        }
+
+        this.#markPendingPlaySource(playSessionGeneration, elem);
+        elem.removeEventListener('error', this.onError);
+        destroyHlsPlayer(this);
+        destroyFlvPlayer(this);
+        destroyCastPlayer(this);
+        resetSrc(elem);
+        this.#configureTrackSelection(options, true);
+        this._currentPlayOptions = options;
+        this.#currentSrc = options.url;
+        this.#applyAspectRatio(options.aspectRatio || this.getAspectRatio());
+        return this.getPresentationSurface();
     }
 
     /**
@@ -948,6 +1021,42 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
+    #configureTrackSelection(options, customAudio) {
+        let secondaryTrackValid = true;
+
+        this.#subtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSubtitleStreamIndex;
+        if (this.#subtitleTrackIndexToSetOnPlaying != null && this.#subtitleTrackIndexToSetOnPlaying >= 0) {
+            const initialSubtitleStream = options.mediaSource.MediaStreams[this.#subtitleTrackIndexToSetOnPlaying];
+            if (!initialSubtitleStream || initialSubtitleStream.DeliveryMethod === 'Encode') {
+                this.#subtitleTrackIndexToSetOnPlaying = -1;
+                secondaryTrackValid = false;
+            }
+            // secondary track should not be shown if primary track is no longer a valid pair
+            if (initialSubtitleStream && !playbackManager.trackHasSecondarySubtitleSupport(initialSubtitleStream, this.#playbackManagerPlayer)) {
+                secondaryTrackValid = false;
+            }
+        } else {
+            secondaryTrackValid = false;
+        }
+
+        this.#audioTrackIndexToSetOnPlaying = customAudio || options.playMethod === 'Transcode' ? null : options.mediaSource.DefaultAudioStreamIndex;
+
+        if (secondaryTrackValid) {
+            this.#secondarySubtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSecondarySubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSecondarySubtitleStreamIndex;
+            if (this.#secondarySubtitleTrackIndexToSetOnPlaying != null && this.#secondarySubtitleTrackIndexToSetOnPlaying >= 0) {
+                const initialSecondarySubtitleStream = options.mediaSource.MediaStreams[this.#secondarySubtitleTrackIndexToSetOnPlaying];
+                if (!initialSecondarySubtitleStream || !playbackManager.trackHasSecondarySubtitleSupport(initialSecondarySubtitleStream, this.#playbackManagerPlayer)) {
+                    this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
+                }
+            }
+        } else {
+            this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
+        }
+    }
+
+    /**
+     * @private
+     */
     async setCurrentSrc(elem, options, playSessionGeneration = this.#playSessionGeneration) {
         if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
             return;
@@ -967,39 +1076,8 @@ export class HtmlVideoPlayer {
         destroyHlsPlayer(this);
         destroyFlvPlayer(this);
         destroyCastPlayer(this);
-
-        let secondaryTrackValid = true;
-
-        this.#subtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSubtitleStreamIndex;
-        if (this.#subtitleTrackIndexToSetOnPlaying != null && this.#subtitleTrackIndexToSetOnPlaying >= 0) {
-            const initialSubtitleStream = options.mediaSource.MediaStreams[this.#subtitleTrackIndexToSetOnPlaying];
-            if (!initialSubtitleStream || initialSubtitleStream.DeliveryMethod === 'Encode') {
-                this.#subtitleTrackIndexToSetOnPlaying = -1;
-                secondaryTrackValid = false;
-            }
-            // secondary track should not be shown if primary track is no longer a valid pair
-            if (initialSubtitleStream && !playbackManager.trackHasSecondarySubtitleSupport(initialSubtitleStream, this.#playbackManagerPlayer)) {
-                secondaryTrackValid = false;
-            }
-        } else {
-            secondaryTrackValid = false;
-        }
-
-        this.#audioTrackIndexToSetOnPlaying = options.playMethod === 'Transcode' ? null : options.mediaSource.DefaultAudioStreamIndex;
-
+        this.#configureTrackSelection(options, false);
         this._currentPlayOptions = options;
-
-        if (secondaryTrackValid) {
-            this.#secondarySubtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSecondarySubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSecondarySubtitleStreamIndex;
-            if (this.#secondarySubtitleTrackIndexToSetOnPlaying != null && this.#secondarySubtitleTrackIndexToSetOnPlaying >= 0) {
-                const initialSecondarySubtitleStream = options.mediaSource.MediaStreams[this.#secondarySubtitleTrackIndexToSetOnPlaying];
-                if (!initialSecondarySubtitleStream || !playbackManager.trackHasSecondarySubtitleSupport(initialSecondarySubtitleStream, this.#playbackManagerPlayer)) {
-                    this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
-                }
-            }
-        } else {
-            this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
-        }
 
         const crossOrigin = getCrossOriginValue(options.mediaSource);
         if (crossOrigin) {
@@ -1323,6 +1401,7 @@ export class HtmlVideoPlayer {
     }
 
     stop(destroyPlayer) {
+        this.#customPlaybackActive = false;
         this.#invalidatePlaySession(false);
         this.#invalidateSubtitleSession();
         const elem = this.#mediaElement;
@@ -1334,6 +1413,8 @@ export class HtmlVideoPlayer {
             }
 
             onEndedInternal(this, elem, this.onError);
+            this.#currentSrc = undefined;
+            this.#currentTime = null;
         }
 
         this.destroyCustomTrack(elem);
@@ -1346,6 +1427,7 @@ export class HtmlVideoPlayer {
     }
 
     destroy() {
+        this.#customPlaybackActive = false;
         this.#invalidatePlaySession();
         this.#invalidateSubtitleSession();
         this.setSubtitleOffset.cancel();
@@ -1380,6 +1462,10 @@ export class HtmlVideoPlayer {
 
             videoElement.parentNode.removeChild(videoElement);
         }
+
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
+        this._currentPlayOptions = null;
 
         const dlg = this.#videoDialog;
         if (dlg) {
@@ -1485,6 +1571,8 @@ export class HtmlVideoPlayer {
         this.#invalidateSubtitleSession();
         this.destroyCustomTrack(elem);
         onEndedInternal(this, elem, this.onError);
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
     };
 
     /**
@@ -1577,6 +1665,128 @@ export class HtmlVideoPlayer {
     }
 
     /**
+     * Activates the existing Jellyfin playback UI for a source decoded by a
+     * composed player rather than by the owned video element.
+     *
+     * @param {boolean} emitUnpause
+     * @returns {boolean}
+     */
+    notifyCustomPlaybackPlaying(emitUnpause = true) {
+        if (!this.#customPlaybackActive || !this.#mediaElement) {
+            return false;
+        }
+
+        if (emitUnpause) {
+            Events.trigger(this, 'unpause');
+        }
+        this.#startPlaybackPresentation(this.#mediaElement, false);
+        Events.trigger(this, 'playing');
+        return true;
+    }
+
+    /** Updates DOM subtitles and forwards one custom-clock time event. */
+    notifyCustomPlaybackTimeUpdate(timeMilliseconds) {
+        if (!this.#customPlaybackActive || !Number.isFinite(timeMilliseconds)) {
+            return false;
+        }
+
+        this.#currentTime = timeMilliseconds / 1000;
+        const transcodingOffsetMilliseconds = (this._currentPlayOptions?.transcodingOffsetTicks || 0) / 10000;
+        this.updateSubtitleText(timeMilliseconds + transcodingOffsetMilliseconds);
+        Events.trigger(this, 'timeupdate');
+        return true;
+    }
+
+    /** Forwards a custom-clock pause without touching the source-less video. */
+    notifyCustomPlaybackPaused() {
+        if (!this.#customPlaybackActive) {
+            return false;
+        }
+
+        Events.trigger(this, 'pause');
+        return true;
+    }
+
+    /** Forwards custom decoder starvation to the normal Jellyfin event path. */
+    notifyCustomPlaybackWaiting() {
+        if (!this.#customPlaybackActive) {
+            return false;
+        }
+
+        Events.trigger(this, 'waiting');
+        return true;
+    }
+
+    /** Forwards custom output gain changes through the normal player event. */
+    notifyCustomPlaybackVolumeChange() {
+        if (!this.#customPlaybackActive) {
+            return false;
+        }
+
+        Events.trigger(this, 'volumechange');
+        return true;
+    }
+
+    /** Ends a custom source exactly once through the HTML player's stop path. */
+    notifyCustomPlaybackEnded() {
+        const elem = this.#mediaElement;
+        if (!this.#customPlaybackActive || !elem) {
+            return false;
+        }
+
+        this.#customPlaybackActive = false;
+        this.#invalidatePlaySession(false);
+        this.#invalidateSubtitleSession();
+        this.destroyCustomTrack(elem);
+        onEndedInternal(this, elem, this.onError);
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
+        return true;
+    }
+
+    /**
+     * @private
+     */
+    #startPlaybackPresentation(elem, seekNativeSource) {
+        if (this.#started) {
+            return;
+        }
+
+        this.#started = true;
+        elem.removeAttribute('controls');
+        loading.hide();
+
+        if (seekNativeSource) {
+            seekOnPlaybackStart(this, elem, this._currentPlayOptions.playerStartPositionTicks, () => {
+                if (this.#currentAssRenderer) {
+                    this.#currentAssRenderer.timeOffset = (this._currentPlayOptions.transcodingOffsetTicks || 0) / 10000000 + this.#currentTrackOffset;
+                    this.#currentAssRenderer.resize();
+                    this.#currentAssRenderer.resetRenderAheadCache(false);
+                }
+            });
+        }
+
+        if (this._currentPlayOptions.fullscreen) {
+            const subtitleSessionGeneration = this.#subtitleSessionGeneration;
+            const videoElement = this.#mediaElement;
+            appRouter.showVideoOsd().then(() => {
+                if (
+                    subtitleSessionGeneration !== this.#subtitleSessionGeneration
+                    || videoElement !== this.#mediaElement
+                ) {
+                    return;
+                }
+
+                this.onNavigatedToOsd();
+            });
+        } else {
+            setBackdropTransparency(TRANSPARENCY_LEVEL.Backdrop);
+            this.#videoDialog.classList.remove('videoPlayerContainer-onTop');
+            this.onStartedAndNavigatedToOsd();
+        }
+    }
+
+    /**
      * @private
      * @param e {Event} The event received from the `<video>` element
      */
@@ -1585,45 +1795,7 @@ export class HtmlVideoPlayer {
          * @type {HTMLMediaElement}
          */
         const elem = e.target;
-        if (!this.#started) {
-            this.#started = true;
-            elem.removeAttribute('controls');
-
-            loading.hide();
-
-            seekOnPlaybackStart(this, e.target, this._currentPlayOptions.playerStartPositionTicks, () => {
-                if (this.#currentAssRenderer) {
-                    this.#currentAssRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                    this.#currentAssRenderer.resize();
-                    this.#currentAssRenderer.resetRenderAheadCache(false);
-                }
-
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
-
-            if (this._currentPlayOptions.fullscreen) {
-                const subtitleSessionGeneration = this.#subtitleSessionGeneration;
-                const videoElement = this.#mediaElement;
-                appRouter.showVideoOsd().then(() => {
-                    if (
-                        subtitleSessionGeneration !== this.#subtitleSessionGeneration
-                        || videoElement !== this.#mediaElement
-                    ) {
-                        return;
-                    }
-
-                    this.onNavigatedToOsd();
-                });
-            } else {
-                setBackdropTransparency(TRANSPARENCY_LEVEL.Backdrop);
-                this.#videoDialog.classList.remove('videoPlayerContainer-onTop');
-
-                this.onStartedAndNavigatedToOsd();
-            }
-        }
+        this.#startPlaybackPresentation(elem, true);
         // Reapply detected aspect ratio now that video dimensions are available
         if (this.getAspectRatio() === 'detected') {
             this.#applyAspectRatio('detected');
@@ -1635,6 +1807,10 @@ export class HtmlVideoPlayer {
      * @private
      */
     onPlay = () => {
+        if (this._currentPlayOptions?.suppressInitialUnpause === true) {
+            this._currentPlayOptions.suppressInitialUnpause = false;
+            return;
+        }
         Events.trigger(this, 'unpause');
     };
 

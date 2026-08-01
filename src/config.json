@@ -2,6 +2,9 @@
   "includeCorsCredentials": false,
   "multiserver": false,
   "enableWebGPUVideoPlayer": false,
+  "enableWebGPUCustomDecode": false,
+  "enableWebGPUHDRToneMapping": false,
+  "enableWebGPUValidationHarness": false,
   "themes": [
     {
       "name": "Apple TV",

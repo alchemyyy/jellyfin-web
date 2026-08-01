@@ -1,13 +1,26 @@
+import { getWebGPUHDRToneMappingEnabled } from 'scripts/settings/webSettings';
+
 import {
     millisecondsToMicroseconds,
     secondsToMicroseconds,
     type Microseconds
 } from './MediaTime';
 import {
+    assertValidRenderSettings,
     createDefaultRenderSettings,
+    createRenderSettingsUniformData,
+    RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
+    type HDRToSDRRenderSettings,
+    type IdentitySDRRenderSettings,
     type RenderMode,
     type RenderSettings
 } from './RenderSettings';
+import {
+    assertValidInputColorMetadata,
+    type InputColorMetadata
+} from './color/ColorMetadata';
+import { createColorPipelineWGSL } from './color/ColorPipelineShader';
+import { type ColorValidationCapabilityDecision } from './validation/ColorValidationHarness';
 import identityShader from './shaders/identity.wgsl';
 
 const CANVAS_CLASS = 'webgpuVideoPlayerCanvas';
@@ -29,14 +42,19 @@ export type PresentationFallbackReason =
     | 'canvas-configuration-failed'
     | 'device-recovery-failed'
     | 'device-request-failed'
+    | 'decoded-frame-color-mismatch'
     | 'frame-import-failed'
     | 'frame-render-failed'
     | 'gpu-unavailable'
+    | 'hdr-color-configuration-invalid'
+    | 'hdr-color-validation-failed'
+    | 'hdr-tone-mapping-disabled'
     | 'insecure-context'
     | 'pipeline-creation-failed'
     | 'request-video-frame-callback-unavailable';
 
 export type PresentationTelemetry = {
+    decodedFrameCount: number
     deviceRecoveryCount: number
     fallbackReason: PresentationFallbackReason | null
     firstFrameLatencyMicroseconds: Microseconds | null
@@ -45,10 +63,38 @@ export type PresentationTelemetry = {
     lastExpectedDisplayTimeMicroseconds: Microseconds | null
     lastPresentedMediaTimeMicroseconds: Microseconds | null
     mode: RenderMode
+    nativeFrameCount: number
+    presentationSource: 'decoded' | 'native' | null
     presentedFrameCount: number
     sessionStartedMicroseconds: Microseconds
     state: 'fallback' | 'idle' | 'initializing' | 'presenting'
 };
+
+export type DecodedPresentationFrame = {
+    durationMicroseconds: Microseconds
+    frame: VideoFrame
+    mediaTimeMicroseconds: Microseconds
+};
+
+/** Supplies owned decoded frames synchronized to the HTML backend clock. */
+export type DecodedFrameProvider = {
+    takeFrame: (targetTimeMicroseconds: Microseconds) => DecodedPresentationFrame | null
+};
+
+export type IdentityColorPipelineConfiguration = {
+    settings: IdentitySDRRenderSettings
+};
+
+export type HDRColorPipelineConfiguration = {
+    metadata: InputColorMetadata
+    settings: HDRToSDRRenderSettings
+    validation: ColorValidationCapabilityDecision | null
+    validationDevice?: GPUDevice | null
+};
+
+export type PresentationColorPipelineConfiguration =
+    | HDRColorPipelineConfiguration
+    | IdentityColorPipelineConfiguration;
 
 type PresentationFallbackHandler = (
     generation: number,
@@ -64,6 +110,18 @@ type PendingFrameCallback = {
 type FrameSubmission = {
     device: GPUDevice
     validationResult: Promise<GPUError | null> | null
+};
+
+type PendingColorConfiguration = {
+    generation: number
+    revision: number
+};
+
+type PreparedColorPipeline = {
+    hdrValidation: ColorValidationCapabilityDecision | null
+    inputColorMetadata: InputColorMetadata | null
+    settings: RenderSettings
+    shaderCode: string
 };
 
 type PendingSubmissionValidation = {
@@ -102,6 +160,7 @@ function getMonotonicMicroseconds(): Microseconds {
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
+        decodedFrameCount: 0,
         deviceRecoveryCount: 0,
         fallbackReason: null,
         firstFrameLatencyMicroseconds: null,
@@ -110,10 +169,96 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
         lastExpectedDisplayTimeMicroseconds: null,
         lastPresentedMediaTimeMicroseconds: null,
         mode: settings.mode,
+        nativeFrameCount: 0,
+        presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: getMonotonicMicroseconds(),
         state: 'idle'
     };
+}
+
+function cloneRenderSettings(settings: RenderSettings): RenderSettings {
+    switch (settings.mode) {
+        case 'identity-sdr':
+            return { ...settings };
+        case 'hdr-to-sdr':
+            return {
+                ...settings,
+                display: { ...settings.display },
+                toneMapping: { ...settings.toneMapping }
+            };
+    }
+}
+
+function metadataMatches(
+    left: InputColorMetadata,
+    right: InputColorMetadata
+): boolean {
+    return left.bitDepth === right.bitDepth
+        && left.matrix === right.matrix
+        && left.nominalPeakNits === right.nominalPeakNits
+        && left.primaries === right.primaries
+        && left.range === right.range
+        && left.sdrReferenceWhiteNits === right.sdrReferenceWhiteNits
+        && left.transfer === right.transfer
+        && left.version === right.version;
+}
+
+function decodedFrameColorMatches(
+    frame: VideoFrame,
+    metadata: InputColorMetadata
+): boolean {
+    const colorSpace = frame.colorSpace;
+    return String(colorSpace.transfer) === metadata.transfer
+        && String(colorSpace.primaries) === metadata.primaries
+        && String(colorSpace.matrix) === metadata.matrix
+        && colorSpace.fullRange === (metadata.range === 'full');
+}
+
+function hasAcceptedColorValidation(
+    validation: ColorValidationCapabilityDecision | null,
+    metadata: InputColorMetadata
+): validation is ColorValidationCapabilityDecision {
+    if (
+        !validation
+        || validation.capability !== 'supported'
+        || validation.classification !== 'valid'
+        || validation.validation?.accepted !== true
+        || validation.frames.length === 0
+        || validation.frames.length !== validation.validation.sampleCount
+    ) {
+        return false;
+    }
+
+    return validation.frames.every(frame => metadataMatches(
+        frame.inputColorMetadata,
+        metadata
+    ));
+}
+
+function hasMatchingGPUValidation(
+    validation: ColorValidationCapabilityDecision,
+    device: GPUDevice
+): boolean {
+    if (
+        validation.gpu.maximumTextureDimension2D !== null
+        && validation.gpu.maximumTextureDimension2D !== device.limits.maxTextureDimension2D
+    ) {
+        return false;
+    }
+    if (validation.gpu.deviceLabel && validation.gpu.deviceLabel !== device.label) {
+        return false;
+    }
+
+    const currentFeatures: string[] = [];
+    for (const feature of device.features) {
+        currentFeatures.push(feature);
+    }
+    currentFeatures.sort((left: string, right: string): number => left.localeCompare(right));
+    return currentFeatures.length === validation.gpu.features.length
+        && currentFeatures.every((feature: string, index: number): boolean => (
+            feature === validation.gpu.features[index]
+        ));
 }
 
 /** Presents frames from an owned HTML video without taking over playback. */
@@ -122,27 +267,35 @@ export default class WebGPUPresenter {
     private readonly presentationUniformValues = new Float32Array(FLOATS_PER_PRESENTATION_UNIFORM);
 
     private activeGeneration = 0;
+    private activeInputColorMetadata: InputColorMetadata | null = null;
     private cachedPresentationLayout: CachedPresentationLayout | null = null;
     private canvas: HTMLCanvasElement | null = null;
     private canvasContext: GPUCanvasContext | null = null;
     private canvasFormat: GPUTextureFormat | null = null;
+    private colorConfigurationRevision = 0;
     private configuredDevice: GPUDevice | null = null;
     private device: GPUDevice | null = null;
     private deviceRecoveryAttempts = 0;
+    private decodedFrameProvider: DecodedFrameProvider | null = null;
+    private decodedFramePushActive = false;
     private fallbackLatched = false;
     private initializationFailureReason: PresentationFallbackReason = 'gpu-unavailable';
     private initializationPromise: Promise<boolean> | null = null;
     private pendingFrameCallback: PendingFrameCallback | null = null;
+    private pendingColorConfiguration: PendingColorConfiguration | null = null;
     private pendingSubmissionValidation: PendingSubmissionValidation | null = null;
     private pipeline: GPURenderPipeline | null = null;
+    private pipelineShaderCode: string | null = null;
     private presentationUniformBuffer: GPUBuffer | null = null;
+    private renderSettingsUniformBuffer: GPUBuffer | null = null;
     private resizeObserver: ResizeObserver | null = null;
     private sampler: GPUSampler | null = null;
     private sessionActive = false;
-    private settings = createDefaultRenderSettings();
+    private settings: RenderSettings = createDefaultRenderSettings();
     private surface: PresentationSurface | null = null;
     private submissionValidated = false;
     private telemetry = createTelemetry(this.settings);
+    private desiredShaderCode = identityShader;
 
     constructor(fallbackHandler: PresentationFallbackHandler) {
         this.fallbackHandler = fallbackHandler;
@@ -155,8 +308,14 @@ export default class WebGPUPresenter {
         this.removeCanvas();
 
         this.activeGeneration = generation;
+        this.activeInputColorMetadata = null;
+        this.colorConfigurationRevision += 1;
+        this.decodedFrameProvider = null;
+        this.decodedFramePushActive = false;
+        this.desiredShaderCode = identityShader;
         this.deviceRecoveryAttempts = 0;
         this.fallbackLatched = false;
+        this.pendingColorConfiguration = null;
         this.pendingSubmissionValidation = null;
         this.sessionActive = true;
         this.settings = createDefaultRenderSettings();
@@ -192,6 +351,8 @@ export default class WebGPUPresenter {
 
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
+        this.colorConfigurationRevision += 1;
+        this.pendingColorConfiguration = null;
         this.activeGeneration = generation;
         if (this.surface && !this.fallbackLatched) {
             void this.activateSurface(generation);
@@ -211,7 +372,12 @@ export default class WebGPUPresenter {
     /** Ends presentation while retaining reusable GPU resources. */
     endSession(generation: number): void {
         this.activeGeneration = generation;
+        this.colorConfigurationRevision += 1;
         this.sessionActive = false;
+        this.activeInputColorMetadata = null;
+        this.decodedFrameProvider = null;
+        this.decodedFramePushActive = false;
+        this.pendingColorConfiguration = null;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
         this.unbindResizeHandling();
@@ -223,6 +389,452 @@ export default class WebGPUPresenter {
     /** Returns a snapshot of current presentation telemetry. */
     getTelemetry(): PresentationTelemetry {
         return { ...this.telemetry };
+    }
+
+    /** Returns a detached snapshot of the active renderer controls. */
+    getRenderSettings(): RenderSettings {
+        return cloneRenderSettings(this.settings);
+    }
+
+    /** Acquires the reusable device used by both validation and presentation. */
+    async acquireValidationDevice(): Promise<GPUDevice | null> {
+        return await this.ensureDevice() ? this.device : null;
+    }
+
+    /** Reports exact GPUDevice identity rather than comparing descriptive fields. */
+    isValidationDevice(device: GPUDevice | null): boolean {
+        return device !== null && this.device === device;
+    }
+
+    /** Selects an optional custom decoder as the frame source for this generation. */
+    setDecodedFrameProvider(provider: DecodedFrameProvider | null, generation: number): void {
+        if (!this.isCurrent(generation)) {
+            return;
+        }
+
+        this.decodedFrameProvider = provider;
+    }
+
+    /** Selects clock-driven decoded-frame ticks before a surface is attached. */
+    setDecodedFramePushMode(enabled: boolean, generation: number): void {
+        if (!this.isCurrent(generation)) {
+            return;
+        }
+
+        this.decodedFramePushActive = enabled;
+        if (enabled) {
+            this.cancelFrameCallback();
+        } else {
+            this.scheduleFrameCallback(generation);
+        }
+    }
+
+    /**
+     * Takes ownership of one clock-selected decoded frame and closes it on
+     * every path. This path does not require a native video-frame callback.
+     */
+    presentDecodedFrame(
+        decodedFrame: DecodedPresentationFrame,
+        generation: number
+    ): boolean {
+        try {
+            if (!this.isCurrent(generation) || this.fallbackLatched) {
+                return false;
+            }
+            if (
+                !Number.isSafeInteger(decodedFrame.mediaTimeMicroseconds)
+                || !Number.isSafeInteger(decodedFrame.durationMicroseconds)
+                || decodedFrame.durationMicroseconds < 0
+            ) {
+                this.fallback(generation, 'frame-render-failed');
+                return false;
+            }
+            if (this.activeInputColorMetadata
+                && !decodedFrameColorMatches(
+                    decodedFrame.frame,
+                    this.activeInputColorMetadata
+                )) {
+                this.fallback(generation, 'decoded-frame-color-mismatch');
+                return false;
+            }
+            if (
+                this.pendingColorConfiguration?.generation === generation
+                || this.pendingSubmissionValidation
+                || !this.hasReadyPresentationResources()
+            ) {
+                return false;
+            }
+
+            const frameWidth = decodedFrame.frame.displayWidth
+                || decodedFrame.frame.codedWidth;
+            const frameHeight = decodedFrame.frame.displayHeight
+                || decodedFrame.frame.codedHeight;
+            if (frameWidth <= 0 || frameHeight <= 0) {
+                this.fallback(generation, 'frame-render-failed');
+                return false;
+            }
+
+            this.decodedFramePushActive = true;
+            this.cancelFrameCallback();
+            const submission = this.renderCurrentFrame(
+                decodedFrame.frame,
+                frameWidth,
+                frameHeight
+            );
+            if (!submission) {
+                return false;
+            }
+
+            const callbackTimeMicroseconds = getMonotonicMicroseconds();
+            this.completeSubmission(submission, generation, () => {
+                if (!this.isCurrent(generation) || this.fallbackLatched) {
+                    return;
+                }
+                this.recordPresentedFrame(
+                    decodedFrame.mediaTimeMicroseconds,
+                    callbackTimeMicroseconds,
+                    callbackTimeMicroseconds,
+                    'decoded'
+                );
+            });
+            return true;
+        } catch (error) {
+            console.warn('WebGPU decoded frame presentation failed', error);
+            this.fallback(generation, 'frame-import-failed');
+            return false;
+        } finally {
+            decodedFrame.frame.close();
+        }
+    }
+
+    /**
+     * Atomically selects identity SDR or a validated HDR-to-SDR pipeline.
+     * HDR requests keep native video visible until the feature gate, validation,
+     * runtime GPU identity, and shader compilation all succeed.
+     */
+    async configureColorPipeline(
+        configuration: PresentationColorPipelineConfiguration,
+        generation: number
+    ): Promise<boolean> {
+        if (!this.isCurrent(generation) || this.fallbackLatched) {
+            return false;
+        }
+
+        const revision = this.colorConfigurationRevision + 1;
+        this.colorConfigurationRevision = revision;
+        const pendingConfiguration: PendingColorConfiguration = { generation, revision };
+        this.pendingColorConfiguration = pendingConfiguration;
+        this.suspendForColorConfiguration();
+
+        const preparedPipeline = await this.prepareColorPipeline(
+            configuration,
+            pendingConfiguration
+        );
+        if (!preparedPipeline || !this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return false;
+        }
+
+        const pipelineInstalled = await this.installPipelineShader(
+            preparedPipeline.shaderCode,
+            pendingConfiguration
+        );
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return false;
+        }
+        if (!pipelineInstalled) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'pipeline-creation-failed'
+            );
+            return false;
+        }
+        if (
+            preparedPipeline.hdrValidation
+            && (
+                !this.device
+                || !hasMatchingGPUValidation(preparedPipeline.hdrValidation, this.device)
+            )
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-validation-failed'
+            );
+            return false;
+        }
+        if (
+            preparedPipeline.settings.mode === 'hdr-to-sdr'
+            && !this.writeRenderSettingsUniform(preparedPipeline.settings)
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'pipeline-creation-failed'
+            );
+            return false;
+        }
+
+        this.desiredShaderCode = preparedPipeline.shaderCode;
+        this.activeInputColorMetadata = preparedPipeline.inputColorMetadata ?
+            { ...preparedPipeline.inputColorMetadata } :
+            null;
+        this.settings = preparedPipeline.settings;
+        this.telemetry.mode = preparedPipeline.settings.mode;
+        this.pendingColorConfiguration = null;
+        this.resumeAfterColorConfiguration(generation);
+        return true;
+    }
+
+    private createRenderSettingsUniformBuffer(device: GPUDevice): GPUBuffer {
+        return device.createBuffer({
+            label: 'WebGPU video render settings uniforms',
+            size: RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
+        });
+    }
+
+    private writeRenderSettingsUniform(settings: HDRToSDRRenderSettings): boolean {
+        const device = this.device;
+        if (!device) {
+            return false;
+        }
+
+        try {
+            const renderSettingsUniformBuffer = this.renderSettingsUniformBuffer
+                ?? this.createRenderSettingsUniformBuffer(device);
+            const uniformData = createRenderSettingsUniformData(settings);
+            device.queue.writeBuffer(renderSettingsUniformBuffer, 0, uniformData);
+            this.renderSettingsUniformBuffer = renderSettingsUniformBuffer;
+            return true;
+        } catch (error) {
+            console.warn('Unable to update WebGPU render settings uniforms', error);
+            return false;
+        }
+    }
+
+    /** Updates live HDR controls through uniforms without rebuilding the shader. */
+    updateRenderSettings(
+        settings: HDRToSDRRenderSettings,
+        generation: number
+    ): boolean {
+        if (
+            !this.isCurrent(generation)
+            || this.fallbackLatched
+            || this.pendingColorConfiguration !== null
+            || this.settings.mode !== 'hdr-to-sdr'
+        ) {
+            return false;
+        }
+
+        try {
+            assertValidRenderSettings(settings);
+            if (!this.writeRenderSettingsUniform(settings)) {
+                return false;
+            }
+        } catch (error) {
+            console.warn('Invalid live WebGPU render settings', error);
+            return false;
+        }
+
+        this.settings = cloneRenderSettings(settings);
+        return true;
+    }
+
+    private async prepareColorPipeline(
+        configuration: PresentationColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        if ('metadata' in configuration) {
+            return this.prepareHDRColorPipeline(configuration, pendingConfiguration);
+        }
+
+        try {
+            assertValidRenderSettings(configuration.settings);
+        } catch (error) {
+            console.warn('Invalid WebGPU identity color configuration', error);
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+        return {
+            hdrValidation: null,
+            inputColorMetadata: null,
+            settings: cloneRenderSettings(configuration.settings),
+            shaderCode: identityShader
+        };
+    }
+
+    private async prepareHDRColorPipeline(
+        configuration: HDRColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        if (!this.validateHDRColorConfiguration(configuration)) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+
+        const featureEnabled = await getWebGPUHDRToneMappingEnabled();
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        if (!featureEnabled) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-tone-mapping-disabled'
+            );
+            return null;
+        }
+        if (!hasAcceptedColorValidation(
+            configuration.validation,
+            configuration.metadata
+        )) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-validation-failed'
+            );
+            return null;
+        }
+
+        const initialized = await this.ensureDevice();
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        const device = this.device;
+        if (!initialized || !device) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                this.initializationFailureReason
+            );
+            return null;
+        }
+        if (!hasMatchingGPUValidation(configuration.validation, device)) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-validation-failed'
+            );
+            return null;
+        }
+        if (configuration.validationDevice
+            && configuration.validationDevice !== device) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-validation-failed'
+            );
+            return null;
+        }
+
+        return {
+            hdrValidation: configuration.validation,
+            inputColorMetadata: { ...configuration.metadata },
+            settings: cloneRenderSettings(configuration.settings),
+            shaderCode: createColorPipelineWGSL(
+                configuration.metadata,
+                configuration.settings
+            )
+        };
+    }
+
+    private validateHDRColorConfiguration(
+        configuration: HDRColorPipelineConfiguration
+    ): boolean {
+        try {
+            assertValidInputColorMetadata(configuration.metadata);
+            assertValidRenderSettings(configuration.settings);
+        } catch (error) {
+            console.warn('Invalid WebGPU HDR color configuration', error);
+            return false;
+        }
+
+        switch (configuration.metadata.transfer) {
+            case 'hlg':
+            case 'pq':
+                return true;
+            case 'sdr':
+                return false;
+        }
+    }
+
+    private suspendForColorConfiguration(): void {
+        this.cancelFrameCallback();
+        this.discardPendingSubmissionValidation();
+        this.unbindResizeHandling();
+        this.removeCanvas();
+        this.telemetry.state = 'initializing';
+    }
+
+    private resumeAfterColorConfiguration(generation: number): void {
+        if (!this.surface || !this.isCurrent(generation) || this.fallbackLatched) {
+            return;
+        }
+        if (!this.createAndConfigureCanvas()) {
+            this.fallback(generation, this.initializationFailureReason);
+            return;
+        }
+
+        this.scheduleFrameCallback(generation);
+    }
+
+    private failColorConfiguration(
+        pendingConfiguration: PendingColorConfiguration,
+        reason: PresentationFallbackReason
+    ): void {
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return;
+        }
+
+        this.pendingColorConfiguration = null;
+        this.fallback(pendingConfiguration.generation, reason);
+    }
+
+    private isColorConfigurationCurrent(
+        pendingConfiguration: PendingColorConfiguration
+    ): boolean {
+        return this.pendingColorConfiguration === pendingConfiguration
+            && this.colorConfigurationRevision === pendingConfiguration.revision
+            && this.isCurrent(pendingConfiguration.generation)
+            && !this.fallbackLatched;
+    }
+
+    private async installPipelineShader(
+        shaderCode: string,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<boolean> {
+        const initialized = await this.ensureDevice();
+        if (!initialized || !this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return false;
+        }
+        if (this.pipeline && this.pipelineShaderCode === shaderCode) {
+            return true;
+        }
+
+        const device = this.device;
+        const canvasFormat = this.canvasFormat;
+        if (!device || !canvasFormat) {
+            return false;
+        }
+
+        let pipeline: GPURenderPipeline;
+        try {
+            pipeline = await this.createRenderPipeline(device, canvasFormat, shaderCode);
+        } catch (error) {
+            console.warn('WebGPU color pipeline creation failed', error);
+            return false;
+        }
+
+        if (
+            !this.isColorConfigurationCurrent(pendingConfiguration)
+            || this.device !== device
+        ) {
+            return false;
+        }
+
+        this.pipeline = pipeline;
+        this.pipelineShaderCode = shaderCode;
+        this.submissionValidated = false;
+        return true;
     }
 
     private async prepareGeneration(generation: number): Promise<void> {
@@ -237,6 +849,10 @@ export default class WebGPUPresenter {
     }
 
     private async activateSurface(generation: number): Promise<void> {
+        if (this.pendingColorConfiguration?.generation === generation) {
+            return;
+        }
+
         const initialized = await this.ensureDevice();
         if (!this.isCurrent(generation) || this.fallbackLatched || !this.surface) {
             return;
@@ -256,27 +872,89 @@ export default class WebGPUPresenter {
     }
 
     private async ensureDevice(): Promise<boolean> {
-        if (this.device && this.pipeline && this.sampler && this.presentationUniformBuffer && this.canvasFormat) {
-            return true;
+        let initialized = this.hasBaseDeviceResources();
+        if (!initialized && !this.initializationPromise) {
+            this.initializationPromise = this.initializeDeviceResources();
         }
 
-        if (this.initializationPromise) {
-            return this.initializationPromise;
-        }
-
-        const initializationPromise = this.initializeDeviceResources();
-        this.initializationPromise = initializationPromise;
+        const initializationPromise = this.initializationPromise;
         try {
-            return await initializationPromise;
+            if (initializationPromise) {
+                initialized = await initializationPromise;
+            }
         } catch (error) {
             console.warn('Unexpected WebGPU initialization failure', error);
             this.initializationFailureReason = 'pipeline-creation-failed';
             return false;
         } finally {
-            if (this.initializationPromise === initializationPromise) {
+            if (initializationPromise && this.initializationPromise === initializationPromise) {
                 this.initializationPromise = null;
             }
         }
+
+        if (!initialized || !this.hasBaseDeviceResources()) {
+            return false;
+        }
+
+        return this.ensureDesiredPipeline();
+    }
+
+    private hasBaseDeviceResources(): boolean {
+        return this.device !== null
+            && this.sampler !== null
+            && this.presentationUniformBuffer !== null
+            && this.canvasFormat !== null;
+    }
+
+    private async ensureDesiredPipeline(): Promise<boolean> {
+        if (this.pipeline && this.pipelineShaderCode === this.desiredShaderCode) {
+            return true;
+        }
+
+        const device = this.device;
+        const canvasFormat = this.canvasFormat;
+        const shaderCode = this.desiredShaderCode;
+        if (!device || !canvasFormat) {
+            return false;
+        }
+
+        let pipeline: GPURenderPipeline;
+        try {
+            pipeline = await this.createRenderPipeline(device, canvasFormat, shaderCode);
+        } catch (error) {
+            console.warn('WebGPU pipeline creation failed', error);
+            this.initializationFailureReason = 'pipeline-creation-failed';
+            return false;
+        }
+        if (this.device !== device || this.desiredShaderCode !== shaderCode) {
+            return false;
+        }
+
+        this.pipeline = pipeline;
+        this.pipelineShaderCode = shaderCode;
+        this.submissionValidated = false;
+        return true;
+    }
+
+    private createRenderPipeline(
+        device: GPUDevice,
+        canvasFormat: GPUTextureFormat,
+        shaderCode: string
+    ): Promise<GPURenderPipeline> {
+        const shaderModule = device.createShaderModule({ code: shaderCode });
+        return device.createRenderPipelineAsync({
+            fragment: {
+                entryPoint: 'fragmentMain',
+                module: shaderModule,
+                targets: [{ format: canvasFormat }]
+            },
+            layout: 'auto',
+            primitive: { topology: 'triangle-list' },
+            vertex: {
+                entryPoint: 'vertexMain',
+                module: shaderModule
+            }
+        });
     }
 
     private async initializeDeviceResources(): Promise<boolean> {
@@ -316,20 +994,8 @@ export default class WebGPUPresenter {
 
         try {
             const canvasFormat = gpu.getPreferredCanvasFormat();
-            const shaderModule = device.createShaderModule({ code: identityShader });
-            const pipeline = await device.createRenderPipelineAsync({
-                fragment: {
-                    entryPoint: 'fragmentMain',
-                    module: shaderModule,
-                    targets: [{ format: canvasFormat }]
-                },
-                layout: 'auto',
-                primitive: { topology: 'triangle-list' },
-                vertex: {
-                    entryPoint: 'vertexMain',
-                    module: shaderModule
-                }
-            });
+            const shaderCode = this.desiredShaderCode;
+            const pipeline = await this.createRenderPipeline(device, canvasFormat, shaderCode);
             const sampler = device.createSampler({
                 magFilter: 'linear',
                 minFilter: 'linear'
@@ -339,11 +1005,22 @@ export default class WebGPUPresenter {
                 size: this.presentationUniformValues.byteLength,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
             });
+            let renderSettingsUniformBuffer: GPUBuffer | null = null;
+            if (this.settings.mode === 'hdr-to-sdr') {
+                renderSettingsUniformBuffer = this.createRenderSettingsUniformBuffer(device);
+                device.queue.writeBuffer(
+                    renderSettingsUniformBuffer,
+                    0,
+                    createRenderSettingsUniformData(this.settings)
+                );
+            }
 
             this.canvasFormat = canvasFormat;
             this.device = device;
             this.pipeline = pipeline;
+            this.pipelineShaderCode = shaderCode;
             this.presentationUniformBuffer = presentationUniformBuffer;
+            this.renderSettingsUniformBuffer = renderSettingsUniformBuffer;
             this.sampler = sampler;
             device.addEventListener('uncapturederror', event => {
                 this.handleUncapturedError(device, event);
@@ -409,6 +1086,7 @@ export default class WebGPUPresenter {
         if (
             !video
             || !this.isCurrent(generation)
+            || this.decodedFramePushActive
             || this.pendingFrameCallback
             || this.pendingSubmissionValidation
         ) {
@@ -472,8 +1150,19 @@ export default class WebGPUPresenter {
             return;
         }
 
+        let decodedFrame: DecodedPresentationFrame | null = null;
+        const decodedFrameProvider = this.decodedFrameProvider;
+        if (decodedFrameProvider) {
+            try {
+                decodedFrame = decodedFrameProvider.takeFrame(mediaTimeMicroseconds);
+            } catch (error) {
+                console.warn('Custom decoded frame provider failed; returning to native frames', error);
+                this.decodedFrameProvider = null;
+            }
+        }
+
         try {
-            const submission = this.renderCurrentFrame();
+            const submission = this.renderCurrentFrame(decodedFrame?.frame ?? video);
             if (!submission) {
                 this.scheduleFrameCallback(generation);
                 return;
@@ -483,23 +1172,45 @@ export default class WebGPUPresenter {
                 submission,
                 generation,
                 video,
-                mediaTimeMicroseconds,
+                decodedFrame?.mediaTimeMicroseconds ?? mediaTimeMicroseconds,
                 callbackTimeMicroseconds,
-                expectedDisplayTimeMicroseconds
+                expectedDisplayTimeMicroseconds,
+                decodedFrame ? 'decoded' : 'native'
             );
         } catch (error) {
             console.warn('WebGPU video frame presentation failed', error);
             this.fallback(generation, 'frame-import-failed');
             return;
+        } finally {
+            decodedFrame?.frame.close();
         }
     }
 
-    private renderCurrentFrame(): FrameSubmission | null {
+    private hasReadyPresentationResources(): boolean {
+        return this.surface !== null
+            && this.canvas !== null
+            && this.canvasContext !== null
+            && this.device !== null
+            && this.pipeline !== null
+            && this.sampler !== null
+            && this.presentationUniformBuffer !== null
+            && (
+                this.settings.mode === 'identity-sdr'
+                || this.renderSettingsUniformBuffer !== null
+            );
+    }
+
+    private renderCurrentFrame(
+        source?: HTMLVideoElement | VideoFrame,
+        sourceWidth?: number,
+        sourceHeight?: number
+    ): FrameSubmission | null {
         const surface = this.surface;
         const canvas = this.canvas;
         const canvasContext = this.canvasContext;
         const device = this.device;
         const pipeline = this.pipeline;
+        const renderSettingsUniformBuffer = this.renderSettingsUniformBuffer;
         const sampler = this.sampler;
         const presentationUniformBuffer = this.presentationUniformBuffer;
         if (
@@ -510,11 +1221,18 @@ export default class WebGPUPresenter {
             || !pipeline
             || !sampler
             || !presentationUniformBuffer
+            || (this.settings.mode === 'hdr-to-sdr' && !renderSettingsUniformBuffer)
         ) {
             throw new Error('WebGPU presentation resources are incomplete');
         }
 
-        const layout = this.getPresentationLayout(surface, canvas, device);
+        const layout = this.getPresentationLayout(
+            surface,
+            canvas,
+            device,
+            sourceWidth ?? surface.video.videoWidth,
+            sourceHeight ?? surface.video.videoHeight
+        );
         if (!layout) {
             return null;
         }
@@ -532,18 +1250,29 @@ export default class WebGPUPresenter {
         try {
             device.queue.writeBuffer(presentationUniformBuffer, 0, this.presentationUniformValues);
 
-            const externalTexture = device.importExternalTexture({ source: surface.video });
+            const externalTexture = device.importExternalTexture({
+                colorSpace: 'srgb',
+                source: source ?? surface.video
+            });
+            const bindGroupEntries: GPUBindGroupEntry[] = [];
+            bindGroupEntries.push({
+                binding: 0,
+                resource: sampler
+            }, {
+                binding: 1,
+                resource: externalTexture
+            }, {
+                binding: 2,
+                resource: { buffer: presentationUniformBuffer }
+            });
+            if (this.settings.mode === 'hdr-to-sdr' && renderSettingsUniformBuffer) {
+                bindGroupEntries.push({
+                    binding: 3,
+                    resource: { buffer: renderSettingsUniformBuffer }
+                });
+            }
             const bindGroup = device.createBindGroup({
-                entries: [{
-                    binding: 0,
-                    resource: sampler
-                }, {
-                    binding: 1,
-                    resource: externalTexture
-                }, {
-                    binding: 2,
-                    resource: { buffer: presentationUniformBuffer }
-                }],
+                entries: bindGroupEntries,
                 layout: pipeline.getBindGroupLayout(0)
             });
             const commandEncoder = device.createCommandEncoder();
@@ -587,7 +1316,8 @@ export default class WebGPUPresenter {
         video: HTMLVideoElement,
         mediaTimeMicroseconds: Microseconds,
         callbackTimeMicroseconds: Microseconds,
-        expectedDisplayTimeMicroseconds: Microseconds
+        expectedDisplayTimeMicroseconds: Microseconds,
+        presentationSource: 'decoded' | 'native'
     ): void {
         this.completeSubmission(submission, generation, () => {
             if (!this.isCurrent(generation) || this.surface?.video !== video) {
@@ -597,7 +1327,8 @@ export default class WebGPUPresenter {
             this.recordPresentedFrame(
                 mediaTimeMicroseconds,
                 callbackTimeMicroseconds,
-                expectedDisplayTimeMicroseconds
+                expectedDisplayTimeMicroseconds,
+                presentationSource
             );
             this.scheduleFrameCallback(generation);
         });
@@ -738,11 +1469,11 @@ export default class WebGPUPresenter {
     private getPresentationLayout(
         surface: PresentationSurface,
         canvas: HTMLCanvasElement,
-        device: GPUDevice
+        device: GPUDevice,
+        sourceWidth: number,
+        sourceHeight: number
     ): CachedPresentationLayout | null {
-        const videoWidth = surface.video.videoWidth;
-        const videoHeight = surface.video.videoHeight;
-        if (videoWidth <= 0 || videoHeight <= 0) {
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
             return null;
         }
 
@@ -751,8 +1482,8 @@ export default class WebGPUPresenter {
         if (
             cachedLayout
             && cachedLayout.devicePixelRatio === devicePixelRatio
-            && cachedLayout.videoHeight === videoHeight
-            && cachedLayout.videoWidth === videoWidth
+            && cachedLayout.videoHeight === sourceHeight
+            && cachedLayout.videoWidth === sourceWidth
         ) {
             return cachedLayout;
         }
@@ -767,13 +1498,18 @@ export default class WebGPUPresenter {
             return null;
         }
 
-        const presentation = this.calculateTexturePresentation(surface.video, geometry);
+        const presentation = this.calculateTexturePresentation(
+            surface.video,
+            geometry,
+            sourceWidth,
+            sourceHeight
+        );
         const layout: CachedPresentationLayout = {
             devicePixelRatio,
             geometry,
             presentation,
-            videoHeight,
-            videoWidth
+            videoHeight: sourceHeight,
+            videoWidth: sourceWidth
         };
         this.cachedPresentationLayout = layout;
         return layout;
@@ -781,9 +1517,11 @@ export default class WebGPUPresenter {
 
     private calculateTexturePresentation(
         video: HTMLVideoElement,
-        geometry: CanvasGeometry
+        geometry: CanvasGeometry,
+        sourceWidth: number,
+        sourceHeight: number
     ): TexturePresentation {
-        const sourceAspectRatio = video.videoWidth / video.videoHeight;
+        const sourceAspectRatio = sourceWidth / sourceHeight;
         const targetAspectRatio = geometry.width / geometry.height;
         const objectFit = window.getComputedStyle(video).objectFit || 'fill';
         const presentation: TexturePresentation = {
@@ -829,12 +1567,22 @@ export default class WebGPUPresenter {
     private recordPresentedFrame(
         mediaTimeMicroseconds: Microseconds,
         callbackTimeMicroseconds: Microseconds,
-        expectedDisplayTimeMicroseconds: Microseconds
+        expectedDisplayTimeMicroseconds: Microseconds,
+        presentationSource: 'decoded' | 'native'
     ): void {
         this.telemetry.lastCallbackTimeMicroseconds = callbackTimeMicroseconds;
         this.telemetry.lastExpectedDisplayTimeMicroseconds = expectedDisplayTimeMicroseconds;
         this.telemetry.lastPresentedMediaTimeMicroseconds = mediaTimeMicroseconds;
+        this.telemetry.presentationSource = presentationSource;
         this.telemetry.presentedFrameCount += 1;
+        switch (presentationSource) {
+            case 'decoded':
+                this.telemetry.decodedFrameCount += 1;
+                break;
+            case 'native':
+                this.telemetry.nativeFrameCount += 1;
+                break;
+        }
 
         if (this.telemetry.firstPresentedMediaTimeMicroseconds == null) {
             this.telemetry.firstPresentedMediaTimeMicroseconds = mediaTimeMicroseconds;
@@ -851,6 +1599,9 @@ export default class WebGPUPresenter {
         }
 
         this.cachedPresentationLayout = null;
+        if (this.decodedFramePushActive) {
+            return;
+        }
         this.renderCurrentFrameOrFallback(this.activeGeneration);
     };
 
@@ -866,6 +1617,10 @@ export default class WebGPUPresenter {
             || !this.pipeline
             || !this.presentationUniformBuffer
             || !this.sampler
+            || (
+                this.settings.mode === 'hdr-to-sdr'
+                && !this.renderSettingsUniformBuffer
+            )
             || this.pendingSubmissionValidation
         ) {
             return;
@@ -952,13 +1707,21 @@ export default class WebGPUPresenter {
         this.removeCanvas();
         this.device = null;
         this.pipeline = null;
+        this.pipelineShaderCode = null;
         this.presentationUniformBuffer = null;
+        this.renderSettingsUniformBuffer = null;
         this.sampler = null;
         this.submissionValidated = false;
         this.configuredDevice = null;
 
         const generation = this.activeGeneration;
         if (!this.isCurrent(generation) || this.fallbackLatched) {
+            return;
+        }
+
+        // A replacement device has not passed the measured HDR input ramp
+        if (this.activeInputColorMetadata) {
+            this.fallback(generation, 'hdr-color-validation-failed');
             return;
         }
 
@@ -976,7 +1739,16 @@ export default class WebGPUPresenter {
             return;
         }
 
-        if (!recovered || !this.createAndConfigureCanvas()) {
+        if (!recovered) {
+            this.fallback(generation, 'device-recovery-failed');
+            return;
+        }
+
+        if (this.pendingColorConfiguration?.generation === generation) {
+            return;
+        }
+
+        if (!this.createAndConfigureCanvas()) {
             this.fallback(generation, 'device-recovery-failed');
             return;
         }
@@ -1005,12 +1777,17 @@ export default class WebGPUPresenter {
         }
 
         this.fallbackLatched = true;
+        this.colorConfigurationRevision += 1;
+        this.pendingColorConfiguration = null;
         this.telemetry.fallbackReason = reason;
         this.telemetry.state = 'fallback';
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
         this.unbindResizeHandling();
         this.removeCanvas();
+        this.decodedFrameProvider = null;
+        this.decodedFramePushActive = false;
+        this.activeInputColorMetadata = null;
         this.surface = null;
         console.warn(`WebGPU presentation disabled for this session: ${reason}`);
         this.fallbackHandler(generation, reason);

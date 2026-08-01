@@ -1,5 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const webSettingsMockState = vi.hoisted(() => ({
+    hdrToneMappingEnabled: false
+}));
+
+vi.mock('scripts/settings/webSettings', () => ({
+    getWebGPUHDRToneMappingEnabled: vi.fn(
+        (): Promise<boolean> => Promise.resolve(webSettingsMockState.hdrToneMappingEnabled)
+    )
+}));
+
+import { createPQColorMetadata, type InputColorMetadata } from './color/ColorMetadata';
+import { secondsToMicroseconds } from './MediaTime';
+import { createHDRToSDRRenderSettings } from './RenderSettings';
+import { type ColorValidationCapabilityDecision } from './validation/ColorValidationHarness';
 import WebGPUPresenter, { type PresentationSurface } from './WebGPUPresenter';
 
 type MockFunction = ReturnType<typeof vi.fn>;
@@ -17,6 +31,9 @@ type CanvasContextHarness = {
 };
 
 type DeviceHarness = {
+    createBindGroup: MockFunction
+    createBuffer: MockFunction
+    createShaderModule: MockFunction
     createRenderPipelineAsync: MockFunction
     device: GPUDevice
     dispatchUncapturedError: (error: GPUError) => boolean
@@ -101,19 +118,26 @@ function createDeviceHarness(): DeviceHarness {
     const queueWriteBuffer = vi.fn();
     const importExternalTexture = vi.fn(() => ({}));
     const createRenderPipelineAsync = vi.fn(() => Promise.resolve(pipeline));
+    const createShaderModule = vi.fn(() => ({}));
+    const createBindGroup = vi.fn(() => ({}));
+    const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => ({
+        label: descriptor.label
+    }));
     const destroy = vi.fn();
     const popErrorScope = vi.fn(() => Promise.resolve(null));
     const pushErrorScope = vi.fn();
     const device = {
         addEventListener: deviceEventTarget.addEventListener.bind(deviceEventTarget),
-        createBindGroup: vi.fn(() => ({})),
-        createBuffer: vi.fn(() => ({})),
+        createBindGroup,
+        createBuffer,
         createCommandEncoder: vi.fn(() => commandEncoder),
         createRenderPipelineAsync,
         createSampler: vi.fn(() => ({})),
-        createShaderModule: vi.fn(() => ({})),
+        createShaderModule,
         destroy,
+        features: new Set<GPUFeatureName>(),
         importExternalTexture,
+        label: '',
         limits: { maxTextureDimension2D: 8_192 },
         lost: lost.promise,
         popErrorScope,
@@ -131,6 +155,9 @@ function createDeviceHarness(): DeviceHarness {
     };
 
     return {
+        createBindGroup,
+        createBuffer,
+        createShaderModule,
         createRenderPipelineAsync,
         device,
         dispatchUncapturedError,
@@ -230,6 +257,66 @@ function createFrameMetadata(mediaTime = 1.234567): VideoFrameCallbackMetadata {
     };
 }
 
+function createAcceptedColorValidation(
+    metadata: InputColorMetadata
+): ColorValidationCapabilityDecision {
+    const timestampMicroseconds = secondsToMicroseconds(0);
+    return {
+        browser: {
+            colorGamut: 'rec2020',
+            dynamicRange: 'high',
+            language: 'en',
+            secureContext: true,
+            userAgent: 'WebGPU presenter test'
+        },
+        canvas: {
+            alphaMode: 'opaque',
+            colorSpace: 'srgb',
+            format: 'rgba16float',
+            height: 1,
+            toneMappingMode: 'standard',
+            width: 1
+        },
+        capability: 'supported',
+        classification: 'valid',
+        frames: [{
+            codedHeight: 1,
+            codedWidth: 1,
+            displayHeight: 1,
+            displayWidth: 1,
+            inputColorMetadata: { ...metadata },
+            timestampMicroseconds,
+            videoColorSpace: {
+                fullRange: false,
+                matrix: metadata.matrix,
+                primaries: metadata.primaries,
+                transfer: metadata.transfer
+            }
+        }],
+        gpu: {
+            architecture: '',
+            description: '',
+            device: '',
+            deviceLabel: '',
+            features: [],
+            maximumTextureDimension2D: 8_192,
+            vendor: ''
+        },
+        observations: [{
+            linearRGB: [ 0, 0, 0 ],
+            timestampMicroseconds
+        }],
+        readbackFailure: null,
+        validation: {
+            accepted: true,
+            classification: 'valid',
+            maximumAbsoluteError: 0,
+            rootMeanSquareError: 0,
+            sampleCount: 1
+        }
+    };
+}
+
 function installGPU(gpu: GPU): void {
     Object.defineProperty(navigator, 'gpu', {
         configurable: true,
@@ -260,6 +347,7 @@ const VIDEO_READY_STATE_CURRENT_DATA = 2;
 
 describe('WebGPUPresenter', () => {
     beforeEach(() => {
+        webSettingsMockState.hdrToneMappingEnabled = false;
         Object.defineProperty(window, 'isSecureContext', {
             configurable: true,
             value: true
@@ -456,6 +544,7 @@ describe('WebGPUPresenter', () => {
 
         const deviceHarness = gpuHarness.devices[0];
         expect(deviceHarness.importExternalTexture).toHaveBeenCalledWith({
+            colorSpace: 'srgb',
             source: surfaceHarness.surface.video
         });
         expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
@@ -477,6 +566,417 @@ describe('WebGPUPresenter', () => {
             presentedFrameCount: 1,
             state: 'presenting'
         });
+    });
+
+    it('prefers an owned custom decoded frame and closes it after submission', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const closeFrame = vi.fn();
+        const decodedFrame = { close: closeFrame } as unknown as VideoFrame;
+        const takeFrame = vi.fn(() => ({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: decodedFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(1.2)
+        }));
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        presenter.setDecodedFrameProvider({ takeFrame }, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+
+        surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata(1.234567));
+
+        expect(takeFrame).toHaveBeenCalledWith(1_234_567);
+        expect(gpuHarness.devices[0].importExternalTexture).toHaveBeenCalledWith({
+            colorSpace: 'srgb',
+            source: decodedFrame
+        });
+        expect(closeFrame).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(presenter.getTelemetry()).toMatchObject({
+            decodedFrameCount: 1,
+            lastPresentedMediaTimeMicroseconds: 1_200_000,
+            nativeFrameCount: 0,
+            presentationSource: 'decoded'
+        });
+    });
+
+    it('presents and closes an owned decoded frame without a native callback tick', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const closeFrame = vi.fn();
+        const frame = {
+            close: closeFrame,
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+
+        const submitted = presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2)
+        }, 1);
+
+        expect(submitted).toBe(true);
+        expect(surfaceHarness.requestVideoFrameCallback).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].importExternalTexture).toHaveBeenCalledWith({
+            colorSpace: 'srgb',
+            source: frame
+        });
+        expect(closeFrame).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(surfaceHarness.requestVideoFrameCallback).not.toHaveBeenCalled();
+        expect(presenter.getTelemetry()).toMatchObject({
+            decodedFrameCount: 1,
+            lastPresentedMediaTimeMicroseconds: 2_000_000,
+            presentationSource: 'decoded'
+        });
+    });
+
+    it('closes but never imports a pushed decoded frame from a stale generation', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const closeFrame = vi.fn();
+        const frame = {
+            close: closeFrame,
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        presenter.seek(2);
+
+        const submitted = presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2)
+        }, 1);
+
+        expect(submitted).toBe(false);
+        expect(closeFrame).toHaveBeenCalledOnce();
+        expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
+    });
+
+    it('keeps HDR input on native video when the tone-mapping flag is disabled', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+
+        const configured = await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1);
+
+        expect(configured).toBe(false);
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-tone-mapping-disabled');
+        expect(surfaceHarness.surface.container.children).toHaveLength(1);
+        expect(surfaceHarness.surface.container.firstChild).toBe(surfaceHarness.surface.video);
+        expect(presenter.getTelemetry()).toMatchObject({
+            fallbackReason: 'hdr-tone-mapping-disabled',
+            mode: 'identity-sdr',
+            state: 'fallback'
+        });
+    });
+
+    it('keeps HDR input on native video when validation has not accepted the path', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+        const validation = createAcceptedColorValidation(metadata);
+        validation.capability = 'unsupported';
+        validation.classification = 'clamped';
+        if (validation.validation) {
+            validation.validation.accepted = false;
+            validation.validation.classification = 'clamped';
+        }
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+
+        const configured = await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation
+        }, 1);
+
+        expect(configured).toBe(false);
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-color-validation-failed');
+        expect(surfaceHarness.surface.container.children).toHaveLength(1);
+    });
+
+    it('rejects an HDR decision measured on a different GPUDevice identity', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        const configured = await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata),
+            validationDevice: { label: 'different-device' } as GPUDevice
+        }, 1);
+
+        expect(configured).toBe(false);
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-color-validation-failed');
+    });
+
+    it('atomically installs a validated PQ-to-SDR shader and resumes presentation', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        const configured = await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1);
+
+        expect(configured).toBe(true);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledTimes(2);
+        const hdrShaderDescriptor = gpuHarness.devices[0].createShaderModule.mock.calls[1][0] as {
+            code: string
+        };
+        expect(hdrShaderDescriptor.code).toContain('fn applyPQEOTF');
+        expect(hdrShaderDescriptor.code).toContain('fn toneMapToSDR');
+        expect(surfaceHarness.cancelVideoFrameCallback).toHaveBeenCalledWith(1);
+        expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
+        expect(presenter.getTelemetry()).toMatchObject({
+            fallbackReason: null,
+            mode: 'hdr-to-sdr',
+            state: 'initializing'
+        });
+
+        surfaceHarness.callbacks.get(2)?.(performance.now(), createFrameMetadata(2));
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const hdrBindGroupDescriptor = gpuHarness.devices[0].createBindGroup.mock.calls[0][0] as {
+            entries: GPUBindGroupEntry[]
+        };
+        expect(hdrBindGroupDescriptor.entries.map(entry => entry.binding))
+            .toEqual([ 0, 1, 2, 3 ]);
+        expect(presenter.getTelemetry()).toMatchObject({
+            lastPresentedMediaTimeMicroseconds: 2_000_000,
+            mode: 'hdr-to-sdr',
+            state: 'presenting'
+        });
+    });
+
+    it('updates live HDR controls through one uniform write without recompiling', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1);
+
+        const deviceHarness = gpuHarness.devices[0];
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(2);
+        deviceHarness.queueWriteBuffer.mockClear();
+        const updated = presenter.updateRenderSettings(
+            createHDRToSDRRenderSettings({
+                display: {
+                    brightness: 0.25,
+                    contrast: 1.5,
+                    saturation: 0.75
+                },
+                outputTransfer: 'bt709',
+                toneMapping: {
+                    exposure: 0.5,
+                    operator: 'reinhard',
+                    outputPeakNits: 120
+                }
+            }),
+            1
+        );
+
+        expect(updated).toBe(true);
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(2);
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(2);
+        expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
+        const uniformWrite = deviceHarness.queueWriteBuffer.mock.calls[0];
+        expect(uniformWrite[0]).toMatchObject({
+            label: 'WebGPU video render settings uniforms'
+        });
+        const uniformData = uniformWrite[2] as Uint8Array<ArrayBuffer>;
+        const integerValues = new Uint32Array(uniformData.buffer);
+        const floatValues = new Float32Array(uniformData.buffer);
+        expect(integerValues[1]).toBe(1);
+        expect(integerValues[2]).toBe(0);
+        expect(floatValues[5]).toBeCloseTo(0.5);
+        expect(floatValues[7]).toBeCloseTo(120);
+        expect(floatValues[9]).toBeCloseTo(0.25);
+        expect(floatValues[10]).toBeCloseTo(1.5);
+        expect(floatValues[11]).toBeCloseTo(0.75);
+    });
+
+    it('rejects a decoded frame whose color description contradicts validated HDR input', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+        const closeFrame = vi.fn();
+        const frame = {
+            close: closeFrame,
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            colorSpace: {
+                fullRange: false,
+                matrix: 'bt709',
+                primaries: 'bt709',
+                transfer: 'bt709'
+            },
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1)).resolves.toBe(true);
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2)
+        }, 1)).toBe(false);
+        expect(closeFrame).toHaveBeenCalledOnce();
+        expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+    });
+
+    it('rejects live renderer updates from stale generations without a GPU write', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1);
+        presenter.seek(2);
+        gpuHarness.devices[0].queueWriteBuffer.mockClear();
+
+        expect(presenter.updateRenderSettings(createHDRToSDRRenderSettings(), 1)).toBe(false);
+        expect(gpuHarness.devices[0].queueWriteBuffer).not.toHaveBeenCalled();
+    });
+
+    it('discards an HDR gate result after the presentation generation changes', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        const configuration = presenter.configureColorPipeline({
+            metadata,
+            settings: createHDRToSDRRenderSettings(),
+            validation: createAcceptedColorValidation(metadata)
+        }, 1);
+        presenter.seek(2);
+
+        await expect(configuration).resolves.toBe(false);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].createShaderModule).toHaveBeenCalledOnce();
+        expect(presenter.getTelemetry().mode).toBe('identity-sdr');
     });
 
     it('rejects an invalid initial submission before revealing or counting the frame', async () => {

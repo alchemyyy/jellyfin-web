@@ -61,4 +61,28 @@ describe('webSettings player feature flags', () => {
 
         await expect(getPlugins()).resolves.toEqual(['htmlVideoPlayer/plugin']);
     });
+
+    it('reads independent custom decode, HDR, and validation flags', async () => {
+        fetchLocalMock.mockResolvedValue({
+            json: () => Promise.resolve({
+                enableWebGPUCustomDecode: true,
+                enableWebGPUHDRToneMapping: true,
+                enableWebGPUValidationHarness: false,
+                plugins: []
+            }),
+            ok: true
+        });
+        const {
+            getWebGPUCustomDecodeEnabled,
+            getWebGPUHDRToneMappingEnabled,
+            getWebGPUValidationHarnessEnabled,
+            isWebGPUCustomDecodeEnabled
+        } = await import('./webSettings');
+
+        expect(isWebGPUCustomDecodeEnabled()).toBe(false);
+        await expect(getWebGPUCustomDecodeEnabled()).resolves.toBe(true);
+        expect(isWebGPUCustomDecodeEnabled()).toBe(true);
+        await expect(getWebGPUHDRToneMappingEnabled()).resolves.toBe(true);
+        await expect(getWebGPUValidationHarnessEnabled()).resolves.toBe(false);
+    });
 });

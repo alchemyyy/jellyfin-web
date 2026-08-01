@@ -349,7 +349,9 @@ export function onEndedInternal(instance, elem, onErrorFn) {
     destroyCastPlayer(instance);
 
     const stopInfo = {
-        src: instance._currentSrc
+        src: typeof instance.currentSrc === 'function' ?
+            instance.currentSrc() :
+            instance._currentSrc
     };
 
     Events.trigger(instance, 'stopped', [stopInfo]);
