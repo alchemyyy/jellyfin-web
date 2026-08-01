@@ -1,14 +1,31 @@
 import { type Microseconds } from '../MediaTime';
 
 export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = 256;
+export const MAXIMUM_RAW_VIDEO_CODED_HEIGHT = 2_160;
+export const MAXIMUM_RAW_VIDEO_CODED_WIDTH = 3_840;
 
-const MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH = 1_073_741_824;
+// 4K planar 10/12-bit 4:2:0 with each plane row padded for WebGPU upload
+export const MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH = 24_883_200;
 
 export type SupportedRawVideoFrameFormat =
     | 'I420'
     | 'I420P10'
     | 'I420P12'
     | 'NV12';
+
+export type RawVideoFrameCopyOptions = {
+    expectedGeometry?: RawVideoFrameGeometry
+    format?: SupportedRawVideoFrameFormat
+    requireReusableBuffer?: boolean
+    reusableBuffer?: ArrayBuffer
+};
+
+export type RawVideoFrameGeometry = {
+    codedHeight: number
+    codedWidth: number
+    displayHeight: number
+    displayWidth: number
+};
 
 export type RawVideoPlaneKind = 'u' | 'uv' | 'v' | 'y';
 
@@ -278,12 +295,19 @@ function getColorSpace(frame: VideoFrame): RawVideoFrameColorSpace {
     };
 }
 
-function assertValidFrameMetadata(frame: VideoFrame): void {
+function assertValidFrameMetadata(
+    frame: VideoFrame,
+    expectedGeometry: RawVideoFrameGeometry | undefined
+): void {
     if (
         !isPositiveSafeInteger(frame.codedWidth)
         || !isPositiveSafeInteger(frame.codedHeight)
+        || frame.codedWidth > MAXIMUM_RAW_VIDEO_CODED_WIDTH
+        || frame.codedHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
         || !isPositiveSafeInteger(frame.displayWidth)
         || !isPositiveSafeInteger(frame.displayHeight)
+        || frame.displayWidth > MAXIMUM_RAW_VIDEO_CODED_WIDTH
+        || frame.displayHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
         || !Number.isSafeInteger(frame.timestamp)
         || (frame.duration !== null && !isNonNegativeSafeInteger(frame.duration))
     ) {
@@ -292,13 +316,25 @@ function assertValidFrameMetadata(frame: VideoFrame): void {
             'The VideoFrame geometry or timestamp metadata is invalid'
         );
     }
+    if (expectedGeometry && (
+        frame.codedWidth !== expectedGeometry.codedWidth
+        || frame.codedHeight !== expectedGeometry.codedHeight
+        || frame.displayWidth !== expectedGeometry.displayWidth
+        || frame.displayHeight !== expectedGeometry.displayHeight
+    )) {
+        throw new RawVideoFrameCopyError(
+            'invalid-dimensions',
+            'The VideoFrame geometry changed from its negotiated track configuration'
+        );
+    }
 }
 
 function prepareFrame(
     frame: VideoFrame,
-    format: RawVideoFormatDefinition
+    format: RawVideoFormatDefinition,
+    expectedGeometry: RawVideoFrameGeometry | undefined
 ): PreparedRawVideoFrame {
-    assertValidFrameMetadata(frame);
+    assertValidFrameMetadata(frame, expectedGeometry);
     const visibleRectangle = getVisibleRectangle(frame);
     const planes: RawVideoPlaneDescriptor[] = [];
     const copyLayouts: PlaneLayout[] = [];
@@ -378,6 +414,49 @@ function returnedLayoutsMatch(
     });
 }
 
+type RawVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
+    format: SupportedRawVideoFrameFormat
+};
+
+async function copyFrameData(
+    frame: VideoFrame,
+    data: ArrayBuffer,
+    preparedFrame: PreparedRawVideoFrame,
+    requestedFormat: SupportedRawVideoFrameFormat | undefined
+): Promise<PlaneLayout[]> {
+    const baseOptions: VideoFrameCopyToOptions = {
+        layout: preparedFrame.copyLayouts,
+        rect: {
+            height: frame.codedHeight,
+            width: frame.codedWidth,
+            x: 0,
+            y: 0
+        }
+    };
+    if (!requestedFormat) {
+        return frame.copyTo(data, baseOptions);
+    }
+
+    const requestedOptions: RawVideoFrameCopyToOptions = {
+        ...baseOptions,
+        format: requestedFormat
+    };
+    try {
+        return await frame.copyTo(
+            data,
+            requestedOptions as unknown as VideoFrameCopyToOptions
+        );
+    } catch (error) {
+        if (frame.format !== requestedFormat) {
+            throw error;
+        }
+
+        // Older Chromium versions reject explicit non-RGB formats even when
+        // the decoded frame already exposes that exact copyable format
+        return frame.copyTo(data, baseOptions);
+    }
+}
+
 function closeFrame(frame: VideoFrame): void {
     try {
         frame.close();
@@ -387,38 +466,47 @@ function closeFrame(frame: VideoFrame): void {
 }
 
 /**
- * Takes ownership of one software-visible VideoFrame, copies its complete coded
- * 4:2:0 planes into an aligned transferable buffer, and closes it exactly once.
+ * Takes ownership of one VideoFrame, copies its complete coded 4:2:0 planes in
+ * the exposed or requested format, and closes the frame exactly once.
+ * An exact-size live buffer is reused to keep the raw presentation cycle bounded.
  */
 export async function copyVideoFrameToRawPlanes(
-    frame: VideoFrame
+    frame: VideoFrame,
+    options: RawVideoFrameCopyOptions = {}
 ): Promise<TransferableRawVideoFrame> {
     try {
         const transformAwareFrame = frame as TransformAwareVideoFrame;
         assertNoTransform(transformAwareFrame);
-        const format = getFormatDefinition(frame.format as string | null);
-        const preparedFrame = prepareFrame(frame, format);
+        const frameFormat = options.format ?? (frame.format as string | null);
+        const format = getFormatDefinition(frameFormat);
+        const preparedFrame = prepareFrame(frame, format, options.expectedGeometry);
         let data: ArrayBuffer;
-        try {
-            data = new ArrayBuffer(preparedFrame.copyByteLength);
-        } catch (error) {
+        if (options.reusableBuffer?.byteLength === preparedFrame.copyByteLength) {
+            data = options.reusableBuffer;
+        } else if (options.requireReusableBuffer) {
             throw new RawVideoFrameCopyError(
                 'allocation-failed',
-                getErrorMessage(error)
+                'The recycled raw frame buffer size did not match the copy layout'
             );
+        } else {
+            try {
+                data = new ArrayBuffer(preparedFrame.copyByteLength);
+            } catch (error) {
+                throw new RawVideoFrameCopyError(
+                    'allocation-failed',
+                    getErrorMessage(error)
+                );
+            }
         }
 
         let returnedLayouts: PlaneLayout[];
         try {
-            returnedLayouts = await frame.copyTo(data, {
-                layout: preparedFrame.copyLayouts,
-                rect: {
-                    height: frame.codedHeight,
-                    width: frame.codedWidth,
-                    x: 0,
-                    y: 0
-                }
-            });
+            returnedLayouts = await copyFrameData(
+                frame,
+                data,
+                preparedFrame,
+                options.format
+            );
         } catch (error) {
             throw new RawVideoFrameCopyError('copy-failed', getErrorMessage(error));
         }

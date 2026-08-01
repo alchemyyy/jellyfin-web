@@ -23,7 +23,6 @@ describe('RenderSettings', () => {
                 contrast: 1.2,
                 saturation: 0.8
             },
-            outputTransfer: 'bt709',
             toneMapping: {
                 desaturationStrength: 0.5,
                 operator: 'reinhard'
@@ -38,7 +37,7 @@ describe('RenderSettings', () => {
                 contrast: 1.2,
                 saturation: 0.8
             },
-            outputTransfer: 'bt709',
+            outputTransfer: 'srgb',
             toneMapping: {
                 desaturationStrength: 0.5,
                 operator: 'reinhard'
@@ -59,8 +58,20 @@ describe('RenderSettings', () => {
             toneMapping: { outputPeakNits: 0 }
         })).toThrow('peak luminance');
         expect(() => createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 10_001 }
+        })).toThrow('peak luminance');
+        expect(() => createHDRToSDRRenderSettings({
+            toneMapping: { outputPeakNits: 10_001 }
+        })).toThrow('peak luminance');
+        expect(() => createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 100, paperWhiteNits: 203 }
         })).toThrow('Paper white');
+        expect(() => createHDRToSDRRenderSettings({
+            toneMapping: { exposure: 16.1 }
+        })).toThrow('Exposure');
+        expect(() => createHDRToSDRRenderSettings({
+            toneMapping: { exposure: -16.1 }
+        })).toThrow('Exposure');
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { desaturationStrength: 1.1 }
         })).toThrow('Desaturation');
@@ -73,6 +84,9 @@ describe('RenderSettings', () => {
         expect(() => createHDRToSDRRenderSettings({
             display: { saturation: 4.1 }
         })).toThrow('saturation');
+        expect(() => createHDRToSDRRenderSettings({
+            outputTransfer: 'bt709' as 'srgb'
+        })).toThrow('output transfer');
     });
 
     it('serializes all live controls into the aligned versioned uniform layout', () => {
@@ -82,7 +96,6 @@ describe('RenderSettings', () => {
                 contrast: 1.5,
                 saturation: 0.75
             },
-            outputTransfer: 'bt709',
             toneMapping: {
                 desaturationStrength: 0.375,
                 exposure: -0.5,
@@ -101,7 +114,7 @@ describe('RenderSettings', () => {
         expect(integerValues.slice(0, 4)).toEqual(new Uint32Array([
             RENDER_SETTINGS_VERSION,
             1,
-            0,
+            1,
             0
         ]));
         expect(floatValues[4]).toBeCloseTo(0.375);

@@ -17,7 +17,7 @@ import {
     type ReferenceFrameMetadataInput,
     type VideoFrameColorSpaceMetadata
 } from './ColorValidationHarness';
-import { getValidationCanvasUsage } from './GPUCanvasReadback';
+import { getValidationTextureUsage } from './GPUCanvasReadback';
 import {
     RuntimeColorValidationRegistry,
     type RuntimeColorValidationCaptureInput,
@@ -37,7 +37,7 @@ export type ExternalTextureReferenceFrameProvider = (
     frameRequest: Readonly<ExternalTextureReferenceFrameRequest>
 ) => Promise<VideoFrame>;
 
-export type WebGPUExternalTextureValidationRequest = {
+export type WebGPUExternalTextureDiagnosticRequest = {
     adapterInfo?: Pick<GPUAdapterInfo, 'architecture' | 'description' | 'device' | 'vendor'>
     browserMetadata?: BrowserColorMetadata
     device: GPUDevice
@@ -45,6 +45,13 @@ export type WebGPUExternalTextureValidationRequest = {
     metadata: InputColorMetadata
     rampOptions?: ColorValidationRampOptions
 };
+
+/** Compatibility name retained for existing callers. */
+export type WebGPUExternalTextureValidationRequest =
+    WebGPUExternalTextureDiagnosticRequest & {
+        /** This legacy request can only run diagnostic work. */
+        diagnosticOnly?: true
+    };
 
 export type WebGPUExternalTextureValidationRunnerOptions = {
     createCanvas?: () => HTMLCanvasElement
@@ -310,14 +317,6 @@ function createFrameMetadata(frame: VideoFrame): ReferenceFrameMetadataInput {
     };
 }
 
-function safelyUnconfigure(context: GPUCanvasContext): void {
-    try {
-        context.unconfigure();
-    } catch {
-        // Device loss can invalidate an already configured canvas
-    }
-}
-
 function releaseCanvas(canvas: HTMLCanvasElement): void {
     canvas.height = 0;
     canvas.width = 0;
@@ -326,9 +325,9 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
 
 class ExternalTextureValidationResources implements RuntimeColorValidationHarness {
     private readonly canvas: HTMLCanvasElement;
-    private readonly context: GPUCanvasContext;
     private readonly device: GPUDevice;
     private readonly harness: RuntimeColorValidationHarness;
+    private readonly outputTexture: GPUTexture;
     private readonly ramp: ColorValidationRamp;
     private readonly sampler: GPUSampler;
     private readonly shaderModule: GPUShaderModule;
@@ -341,37 +340,29 @@ class ExternalTextureValidationResources implements RuntimeColorValidationHarnes
         this.canvas.hidden = true;
         this.canvas.height = VALIDATION_CANVAS_SIZE;
         this.canvas.width = VALIDATION_CANVAS_SIZE;
-        const usage = getValidationCanvasUsage();
+        const usage = getValidationTextureUsage();
         if (usage === null) {
             releaseCanvas(this.canvas);
-            throw new Error('WebGPU validation canvas usage constants are unavailable');
+            throw new Error('WebGPU validation texture usage constants are unavailable');
         }
 
-        let context: GPUCanvasContext | null;
-        try {
-            context = this.canvas.getContext('webgpu') as GPUCanvasContext | null;
-        } catch (error) {
-            releaseCanvas(this.canvas);
-            throw error;
-        }
-        if (!context) {
-            releaseCanvas(this.canvas);
-            throw new Error('A WebGPU canvas context is unavailable');
-        }
-        this.context = context;
         this.device = options.device;
         this.ramp = options.ramp;
         this.usedFrames = options.usedFrames;
 
+        let outputTexture: GPUTexture | null = null;
         try {
-            this.context.configure({
-                alphaMode: 'opaque',
-                colorSpace: 'srgb',
-                device: this.device,
+            outputTexture = this.device.createTexture({
                 format: VALIDATION_CANVAS_FORMAT,
-                toneMapping: { mode: 'extended' },
+                label: 'WebGPU external texture diagnostic output',
+                size: {
+                    depthOrArrayLayers: 1,
+                    height: VALIDATION_CANVAS_SIZE,
+                    width: VALIDATION_CANVAS_SIZE
+                },
                 usage
             });
+            this.outputTexture = outputTexture;
             this.shaderModule = this.device.createShaderModule({
                 code: createExternalTextureValidationWGSL(this.ramp),
                 label: 'WebGPU external texture color validation shader'
@@ -391,12 +382,12 @@ class ExternalTextureValidationResources implements RuntimeColorValidationHarnes
                     toneMapping: { mode: 'extended' }
                 },
                 configureCanvas: false,
-                context: this.context,
                 device: this.device,
+                diagnosticKind: 'external-texture-conversion',
                 ramp: this.ramp
             });
         } catch (error) {
-            safelyUnconfigure(this.context);
+            outputTexture?.destroy();
             releaseCanvas(this.canvas);
             throw error;
         }
@@ -454,7 +445,7 @@ class ExternalTextureValidationResources implements RuntimeColorValidationHarnes
         try {
             this.harness.destroy();
         } finally {
-            safelyUnconfigure(this.context);
+            this.outputTexture.destroy();
             releaseCanvas(this.canvas);
         }
     }
@@ -466,7 +457,7 @@ class ExternalTextureValidationResources implements RuntimeColorValidationHarnes
         this.device.pushErrorScope('validation');
         let errorScopePending = true;
         try {
-            const sourceTexture = this.context.getCurrentTexture();
+            const sourceTexture = this.outputTexture;
             const externalTexture = this.device.importExternalTexture({
                 colorSpace: 'srgb',
                 source: frame
@@ -544,8 +535,8 @@ class ExternalTextureValidationResources implements RuntimeColorValidationHarnes
 }
 
 /**
- * Validates decoded reference VideoFrames through the exact supplied GPUDevice
- * without retaining reference frames, URLs, credentials, or source callbacks.
+ * Diagnoses browser external-texture color conversion on the supplied GPUDevice.
+ * A passing result never authorizes the production HDR path.
  */
 export class WebGPUExternalTextureValidationRunner {
     private readonly createCanvas: () => HTMLCanvasElement;
@@ -564,9 +555,9 @@ export class WebGPUExternalTextureValidationRunner {
         });
     }
 
-    /** Runs the reference ramp or returns its exact GPU and metadata cache entry. */
-    public validate(
-        validationRequest: WebGPUExternalTextureValidationRequest
+    /** Runs the diagnostic ramp or returns its exact device and ramp cache entry. */
+    public runDiagnostic(
+        validationRequest: WebGPUExternalTextureDiagnosticRequest
     ): Promise<ColorValidationCapabilityDecision | null> {
         if (this.destroyed) {
             return Promise.resolve(null);
@@ -605,16 +596,24 @@ export class WebGPUExternalTextureValidationRunner {
         });
     }
 
+    /** Compatibility alias for callers migrating to the diagnostic-only API name. */
+    public validate(
+        validationRequest: WebGPUExternalTextureValidationRequest
+    ): Promise<ColorValidationCapabilityDecision | null> {
+        return this.runDiagnostic(validationRequest);
+    }
+
     /** Returns a previously measured decision while the validation flag is enabled. */
     public getCachedDecision(
         device: GPUDevice,
-        metadata: InputColorMetadata
+        metadata: InputColorMetadata,
+        rampOptions: ColorValidationRampOptions = {}
     ): Promise<ColorValidationCapabilityDecision | null> {
         if (this.destroyed) {
             return Promise.resolve(null);
         }
 
-        return this.registry.getCachedDecision(device, metadata);
+        return this.registry.getCachedDecision(device, metadata, rampOptions);
     }
 
     /** Invalidates one metadata decision or every decision for a GPU device. */

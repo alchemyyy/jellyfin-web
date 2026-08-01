@@ -1,6 +1,13 @@
 import { type ColorTriplet } from '../color/ColorPipeline';
+import {
+    microsecondsToMilliseconds,
+    millisecondsToMicroseconds
+} from '../MediaTime';
 
 export const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
+export const GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
+const GPU_CANVAS_READBACK_OPERATION_DESTROYED = Symbol('gpu-canvas-readback-operation-destroyed');
+const GPU_CANVAS_READBACK_OPERATION_TIMEOUT = Symbol('gpu-canvas-readback-operation-timeout');
 
 export type ReadableCanvasFormat =
     | 'bgra8unorm'
@@ -17,6 +24,7 @@ export type GPUCanvasReadbackFailureCode =
     | 'gpu-api-unavailable'
     | 'mapping-failed'
     | 'observation-limit-reached'
+    | 'operation-timeout'
     | 'unsupported-format'
     | 'validation-error';
 
@@ -31,7 +39,7 @@ export type GPUCanvasPixelReadbackResult = {
 };
 
 export type GPUCanvasPixelReaderOptions = {
-    context: GPUCanvasContext
+    context?: GPUCanvasContext
     device: GPUDevice
     format: GPUTextureFormat
     maximumReadbacks: number
@@ -181,8 +189,8 @@ function decodePixel(bytes: Uint8Array, format: ReadableCanvasFormat): ColorTrip
     return linearRGB;
 }
 
-/** Returns the texture usage required by a renderable, readable canvas. */
-export function getValidationCanvasUsage(): GPUTextureUsageFlags | null {
+/** Returns the texture usage required by a renderable diagnostic target. */
+export function getValidationTextureUsage(): GPUTextureUsageFlags | null {
     if (typeof GPUTextureUsage === 'undefined') {
         return null;
     }
@@ -190,10 +198,16 @@ export function getValidationCanvasUsage(): GPUTextureUsageFlags | null {
     return GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC;
 }
 
-/** Copies one canvas texel into a short-lived mapped buffer. */
+/** Returns the usage required when the diagnostic target is a canvas texture. */
+export function getValidationCanvasUsage(): GPUTextureUsageFlags | null {
+    return getValidationTextureUsage();
+}
+
+/** Copies one texture texel into a short-lived mapped buffer. */
 export class GPUCanvasPixelReader {
     private readonly activeBuffers = new Set<GPUBuffer>();
-    private readonly context: GPUCanvasContext;
+    private readonly pendingOperationCancellations = new Set<() => void>();
+    private readonly context: GPUCanvasContext | null;
     private readonly device: GPUDevice;
     private readonly format: GPUTextureFormat;
     private readonly maximumReadbacks: number;
@@ -208,7 +222,7 @@ export class GPUCanvasPixelReader {
             throw new RangeError('Maximum readbacks must be an integer from 1 through 64');
         }
 
-        this.context = options.context;
+        this.context = options.context ?? null;
         this.device = options.device;
         this.format = options.format;
         this.maximumReadbacks = options.maximumReadbacks;
@@ -241,6 +255,9 @@ export class GPUCanvasPixelReader {
         }
 
         this.destroyed = true;
+        for (const cancelOperation of [ ...this.pendingOperationCancellations ]) {
+            cancelOperation();
+        }
         for (const buffer of this.activeBuffers) {
             buffer.destroy();
         }
@@ -264,7 +281,7 @@ export class GPUCanvasPixelReader {
             || !Number.isSafeInteger(sampleY)
             || sampleX < 0
             || sampleY < 0) {
-            return createFailure('validation-error', 'Canvas sample coordinates must be non-negative integers');
+            return createFailure('validation-error', 'Texture sample coordinates must be non-negative integers');
         }
         if (!isReadableCanvasFormat(this.format)) {
             return createFailure(
@@ -288,12 +305,21 @@ export class GPUCanvasPixelReader {
 
         let texture: GPUTexture;
         try {
-            texture = sourceTexture ?? this.context.getCurrentTexture();
+            if (sourceTexture) {
+                texture = sourceTexture;
+            } else if (this.context) {
+                texture = this.context.getCurrentTexture();
+            } else {
+                return createFailure(
+                    'gpu-api-unavailable',
+                    'A source texture or configured WebGPU canvas context is required'
+                );
+            }
         } catch (error) {
             return createFailure('mapping-failed', getErrorMessage(error));
         }
         if (sampleX >= texture.width || sampleY >= texture.height) {
-            return createFailure('validation-error', 'Canvas sample coordinates exceed the texture bounds');
+            return createFailure('validation-error', 'Sample coordinates exceed the texture bounds');
         }
         if (texture.format !== this.format) {
             return createFailure(
@@ -304,7 +330,7 @@ export class GPUCanvasPixelReader {
         if ((texture.usage & usageConstants.textureCopySource) === 0) {
             return createFailure(
                 'copy-source-disabled',
-                'The canvas must be configured with GPUTextureUsage.COPY_SRC'
+                'The source texture must include GPUTextureUsage.COPY_SRC'
             );
         }
 
@@ -352,12 +378,27 @@ export class GPUCanvasPixelReader {
                 { depthOrArrayLayers: 1, height: 1, width: 1 }
             );
             this.device.queue.submit([ commandEncoder.finish() ]);
-            await buffer.mapAsync(usageConstants.mapRead, 0, pixelByteLength);
+            const mappingResult = await this.waitForOperation(
+                buffer.mapAsync(usageConstants.mapRead, 0, pixelByteLength)
+            );
+            if (mappingResult === GPU_CANVAS_READBACK_OPERATION_DESTROYED) {
+                return createFailure('destroyed', 'The reader was destroyed during canvas readback');
+            }
+            if (mappingResult === GPU_CANVAS_READBACK_OPERATION_TIMEOUT) {
+                return createFailure('operation-timeout', 'The GPU buffer mapping operation timed out');
+            }
             mapped = true;
-            const validationError = await this.device.popErrorScope();
+            const validationPromise = this.device.popErrorScope();
             errorScopePushed = false;
-            if (validationError) {
-                return createFailure('validation-error', validationError.message);
+            const validationResult = await this.waitForOperation(validationPromise);
+            if (validationResult === GPU_CANVAS_READBACK_OPERATION_DESTROYED) {
+                return createFailure('destroyed', 'The reader was destroyed during canvas readback');
+            }
+            if (validationResult === GPU_CANVAS_READBACK_OPERATION_TIMEOUT) {
+                return createFailure('operation-timeout', 'The GPU validation scope operation timed out');
+            }
+            if (validationResult) {
+                return createFailure('validation-error', validationResult.message);
             }
             if (this.destroyed) {
                 return createFailure('destroyed', 'The reader was destroyed during canvas readback');
@@ -373,11 +414,7 @@ export class GPUCanvasPixelReader {
             return createFailure('mapping-failed', getErrorMessage(error));
         } finally {
             if (errorScopePushed) {
-                try {
-                    await this.device.popErrorScope();
-                } catch {
-                    // Device destruction can invalidate an outstanding error scope
-                }
+                this.discardErrorScope();
             }
             if (buffer) {
                 if (mapped) {
@@ -391,5 +428,69 @@ export class GPUCanvasPixelReader {
                 this.activeBuffers.delete(buffer);
             }
         }
+    }
+
+    private discardErrorScope(): void {
+        let discardedScope: Promise<GPUError | null>;
+        // popErrorScope can fail synchronously when the device is unavailable
+        // eslint-disable-next-line sonarjs/no-try-promise
+        try {
+            discardedScope = this.device.popErrorScope();
+        } catch {
+            return;
+        }
+
+        void discardedScope.catch((): void => {
+            // Device destruction can invalidate an outstanding error scope
+        });
+    }
+
+    private waitForOperation<Value>(
+        operation: Promise<Value>
+    ): Promise<
+        Value
+        | typeof GPU_CANVAS_READBACK_OPERATION_DESTROYED
+        | typeof GPU_CANVAS_READBACK_OPERATION_TIMEOUT
+        > {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const timeout = globalThis.setTimeout((): void => {
+                settle(GPU_CANVAS_READBACK_OPERATION_TIMEOUT);
+            }, microsecondsToMilliseconds(GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS));
+            const cancelOperation = (): void => {
+                settle(GPU_CANVAS_READBACK_OPERATION_DESTROYED);
+            };
+            const settle = (
+                result:
+                    | Value
+                    | typeof GPU_CANVAS_READBACK_OPERATION_DESTROYED
+                    | typeof GPU_CANVAS_READBACK_OPERATION_TIMEOUT
+            ): void => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                globalThis.clearTimeout(timeout);
+                this.pendingOperationCancellations.delete(cancelOperation);
+                resolve(result);
+            };
+            const rejectOperation = (error: unknown): void => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                globalThis.clearTimeout(timeout);
+                this.pendingOperationCancellations.delete(cancelOperation);
+                reject(error);
+            };
+
+            this.pendingOperationCancellations.add(cancelOperation);
+            operation.then(settle, rejectOperation);
+            if (this.destroyed) {
+                cancelOperation();
+            }
+        });
     }
 }

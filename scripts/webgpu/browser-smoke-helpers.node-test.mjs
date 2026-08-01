@@ -4,45 +4,120 @@ import test from 'node:test';
 /* eslint-disable sonarjs/no-hardcoded-passwords -- Test-only sentinel values */
 
 import {
+    createPrimarySeekTargetMicroseconds,
+    createSeekStormTargetsMicroseconds,
     createFrontendRouteURL,
+    deriveRawHDRPlaybackRouteKey,
     parseSmokeConfiguration,
     sanitizeReport,
+    SMOKE_USAGE,
     validateActivePlaybackSnapshot,
+    validateAudioStreamSwitchSnapshot,
+    validateControlEventTransitions,
+    validateFullscreenTransitionSnapshots,
+    validateInjectedDeviceRecoverySnapshot,
+    validateInjectedPresentationFallbackSnapshot,
+    validateNaturalEndSnapshots,
+    validatePausedDeviceRecoverySnapshots,
     validatePauseSnapshot,
+    validatePresentedFrameEvidence,
+    validateResizedPresentationSnapshot,
     validateResumeSnapshot,
+    validateSeekStormSnapshot,
     validateSeekSnapshot,
     validateStopSnapshot
 } from './browser-smoke-helpers.mjs';
+
+const SDR_EXPECTATIONS = Object.freeze({
+    expectedAudioPath: 'disabled',
+    expectedVideoDecoderBackend: 'native',
+    expectedVideoOutputMode: 'video-frame'
+});
+const HDR_AUDIO_EXPECTATIONS = Object.freeze({
+    expectedAudioPath: 'ready',
+    expectedVideoDecoderBackend: 'bundled-hevc',
+    expectedVideoOutputMode: 'raw-planes'
+});
 
 function createActiveSnapshot(overrides = {}) {
     return {
         captured: true,
         customPlayback: {
+            activeGeneration: 1,
+            audioBridge: null,
+            audioOutput: null,
+            audioPath: 'disabled',
             currentTimeMicroseconds: 2_000_000,
+            durationMicroseconds: 120_000_000,
             fallbackReason: null,
             hasLastError: false,
+            staleEventCount: 0,
             state: 'playing',
             videoDecode: {
+                activeGeneration: 1,
+                audioCodec: null,
                 failureKind: null,
-                receivedFrameCount: 12
+                peakFrameCount: 2,
+                pendingFrameCount: 0,
+                queuedFrameCount: 2,
+                receivedFrameCount: 12,
+                staleAudioSampleCount: 0,
+                staleFrameCount: 0
             }
         },
+        customPlaybackEligibility: {
+            eligible: true,
+            hdr: false,
+            reason: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        },
         dom: {
+            canvasBackingHeight: 1080,
+            canvasBackingWidth: 1920,
             canvasCount: 1,
+            canvasCSSHeight: 1080,
+            canvasCSSWidth: 1920,
+            devicePixelRatio: 1,
+            fullscreenActive: false,
+            fullscreenContainsCanvas: false,
+            nativeVideoPlaying: false,
+            nativeVideoTimeMicroseconds: null,
             sourceLessVideoCount: 1,
             sourcedVideoCount: 0,
+            viewportHeight: 1080,
+            viewportWidth: 1920,
             visibleCanvasCount: 1
         },
+        eventCounts: {
+            ended: 0,
+            error: 0,
+            fullscreenchange: 0,
+            pause: 0,
+            playbackstart: 1,
+            playing: 1,
+            stopped: 0,
+            timeupdate: 10,
+            unpause: 0,
+            volumechange: 0,
+            waiting: 1
+        },
+        eventSequence: [ 'waiting', 'playing', 'playbackstart' ],
         hasCurrentSource: false,
         isFetching: false,
         playerID: 'webgpuvideoplayer',
         presentation: {
             decodedFrameCount: 10,
+            deviceRecoveryCount: 0,
             fallbackReason: null,
             presentationSource: 'decoded',
             presentedFrameCount: 10,
+            mode: 'identity-sdr',
             state: 'presenting'
         },
+        rawHDRValidation: null,
+        rawHDRPlaybackRouteKey: null,
+        sessionGeneration: 1,
         stoppedEventCount: 0,
         terminalErrorCount: 0,
         ...overrides
@@ -55,29 +130,76 @@ test('parses CLI values before environment values', () => {
         '--frontend-url', 'http://localhost:8181/',
         '--server-url', 'http://localhost:9096/',
         '--item-id', 'cli-item',
+        '--completion-mode', 'controlled-stop',
+        '--expected-video-decoder', 'bundled-hevc',
+        '--expected-video-output', 'raw-planes',
+        '--expected-audio', 'ready',
+        '--expected-frame-evidence', 'testsrc2-motion',
         '--username', 'cli-user',
         '--password', 'cli-password',
+        '--repeat-sessions', '3',
+        '--inject-failure', 'presentation',
+        '--seek-storm-count', '4',
         '--timeout-ms', '45000'
     ], {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER: 'native',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame',
         WEBGPU_SMOKE_ITEM_ID: 'environment-item',
         WEBGPU_SMOKE_PASSWORD: 'environment-password',
         WEBGPU_SMOKE_USERNAME: 'environment-user'
     });
 
     assert.deepEqual(configuration, {
+        audioStreamIndex: null,
+        completionMode: 'controlled-stop',
         debugURL: 'http://localhost:9333',
+        expectedAudioCodec: null,
         frontendURL: 'http://localhost:8181',
+        expectedAudioPath: 'ready',
+        expectedFrameEvidence: 'testsrc2-motion',
+        expectedVideoDecoderBackend: 'bundled-hevc',
+        expectedVideoOutputMode: 'raw-planes',
+        failureInjection: 'presentation',
         itemID: 'cli-item',
         password: 'cli-password',
+        repeatSessionCount: 3,
+        seekStormCount: 4,
         serverURL: 'http://localhost:9096',
         timeoutMilliseconds: 45_000,
         username: 'cli-user'
     });
 });
 
+test('documents the required output expectations in CLI and environment usage', () => {
+    assert.match(SMOKE_USAGE, /--expected-video-output <video-frame\|raw-planes>/u);
+    assert.match(SMOKE_USAGE, /--expected-video-decoder <native\|bundled-hevc>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio <disabled\|ready>/u);
+    assert.match(SMOKE_USAGE, /--audio-stream-index <number>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio-codec <codec>/u);
+    assert.match(SMOKE_USAGE, /--expected-frame-evidence <none\|testsrc2-motion>/u);
+    assert.match(SMOKE_USAGE, /--completion-mode <controlled-stop\|natural-end>/u);
+    assert.match(SMOKE_USAGE, /--repeat-sessions <1-5>/u);
+    assert.match(
+        SMOKE_USAGE,
+        /--inject-failure <none\|presentation\|device-loss\|paused-device-loss>/u
+    );
+    assert.match(SMOKE_USAGE, /--seek-storm-count <0-5>/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_AUDIO_STREAM_INDEX/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_COMPLETION_MODE/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SEEK_STORM_COUNT/u);
+});
+
 test('uses local URL defaults without inventing credentials', () => {
     const configuration = parseSmokeConfiguration([], {
         WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame',
         WEBGPU_SMOKE_PASSWORD: 'test-password',
         WEBGPU_SMOKE_USERNAME: 'test-user'
     });
@@ -86,10 +208,230 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.frontendURL, 'http://localhost:8080');
     assert.equal(configuration.serverURL, 'http://localhost:8096');
     assert.equal(configuration.timeoutMilliseconds, 30_000);
+    assert.equal(configuration.completionMode, 'controlled-stop');
+    assert.equal(configuration.repeatSessionCount, 1);
+    assert.equal(configuration.seekStormCount, 3);
+    assert.equal(configuration.failureInjection, 'none');
+    assert.equal(configuration.audioStreamIndex, null);
+    assert.equal(configuration.expectedAudioCodec, null);
+    assert.equal(configuration.expectedAudioPath, 'disabled');
+    assert.equal(configuration.expectedFrameEvidence, 'none');
+    assert.equal(configuration.expectedVideoDecoderBackend, null);
+    assert.equal(configuration.expectedVideoOutputMode, 'video-frame');
     assert.throws(
-        () => parseSmokeConfiguration([], {}),
+        () => parseSmokeConfiguration([], {
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
         /--item-id/u
     );
+});
+
+test('configures an isolated natural-end lifecycle exercise', () => {
+    const configuration = parseSmokeConfiguration([
+        '--completion-mode', 'natural-end'
+    ], {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER: 'bundled-hevc',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'natural-end-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    });
+
+    assert.equal(configuration.completionMode, 'natural-end');
+    assert.equal(configuration.repeatSessionCount, 1);
+    assert.equal(configuration.seekStormCount, 0);
+    assert.equal(configuration.failureInjection, 'none');
+    assert.throws(
+        () => parseSmokeConfiguration([ '--completion-mode', 'natural-end' ], {
+            WEBGPU_SMOKE_AUDIO_STREAM_INDEX: '2',
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC: 'ac-3',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+            WEBGPU_SMOKE_ITEM_ID: 'natural-end-item',
+            WEBGPU_SMOKE_PASSWORD: 'test-password',
+            WEBGPU_SMOKE_USERNAME: 'test-user'
+        }),
+        /does not support an in-session audio stream change/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--completion-mode', 'natural-end',
+            '--seek-storm-count', '1'
+        ], {
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+            WEBGPU_SMOKE_ITEM_ID: 'natural-end-item',
+            WEBGPU_SMOKE_PASSWORD: 'test-password',
+            WEBGPU_SMOKE_USERNAME: 'test-user'
+        }),
+        /requires --seek-storm-count 0/u
+    );
+});
+
+test('requires valid independent video and audio expectations', () => {
+    const baseEnvironment = {
+        WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    };
+
+    assert.throws(
+        () => parseSmokeConfiguration([], baseEnvironment),
+        /--expected-audio/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'automatic',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /--expected-audio/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'external-texture'
+        }),
+        /--expected-video-output/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--repeat-sessions', '0' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /repeat sessions/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--inject-failure', 'adapter-loss' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /--inject-failure/u
+    );
+    assert.equal(parseSmokeConfiguration([ '--inject-failure', 'device-loss' ], {
+        ...baseEnvironment,
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+    }).failureInjection, 'device-loss');
+    assert.equal(parseSmokeConfiguration([ '--inject-failure', 'paused-device-loss' ], {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    }).failureInjection, 'paused-device-loss');
+    assert.equal(
+        parseSmokeConfiguration([ '--inject-failure', 'device-loss' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes'
+        }).failureInjection,
+        'device-loss'
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--seek-storm-count', '6' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /seek storm count/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--audio-stream-index', '3' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes'
+        }),
+        /requires both/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--audio-stream-index', '3',
+            '--expected-audio-codec', 'ac-3'
+        ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /requires --expected-audio ready/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--audio-stream-index', '-1',
+            '--expected-audio-codec', 'ac-3'
+        ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes'
+        }),
+        /audio stream index/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--audio-stream-index', '3',
+            '--expected-audio-codec', 'ac-3',
+            '--repeat-sessions', '2'
+        ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes'
+        }),
+        /requires --repeat-sessions 1/u
+    );
+});
+
+test('validates an in-session audio decoder generation and codec change', () => {
+    const configuration = parseSmokeConfiguration([
+        '--audio-stream-index', '3',
+        '--expected-audio-codec', 'ac-3'
+    ], {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    });
+    assert.equal(configuration.audioStreamIndex, 3);
+    assert.equal(configuration.expectedAudioCodec, 'ac-3');
+
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            activeGeneration: 4,
+            audioPath: 'ready'
+        }
+    });
+    const switchedSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...initialSnapshot.customPlayback,
+            activeGeneration: 5,
+            audioPath: 'ready',
+            videoDecode: {
+                ...initialSnapshot.customPlayback.videoDecode,
+                audioCodec: 'ac-3',
+                receivedAudioFrameCount: 8
+            }
+        }
+    });
+
+    assert.deepEqual(
+        validateAudioStreamSwitchSnapshot(initialSnapshot, switchedSnapshot, 'ac-3'),
+        []
+    );
+    assert.ok(validateAudioStreamSwitchSnapshot(initialSnapshot, {
+        ...switchedSnapshot,
+        customPlayback: {
+            ...switchedSnapshot.customPlayback,
+            activeGeneration: 4
+        }
+    }, 'ac-3').includes('audio-generation-not-advanced'));
+    assert.ok(validateAudioStreamSwitchSnapshot(initialSnapshot, switchedSnapshot, 'ec-3')
+        .includes('unexpected-selected-audio-codec'));
 });
 
 test('builds a hash route on the configured frontend', () => {
@@ -97,6 +439,442 @@ test('builds a hash route on the configured frontend', () => {
         createFrontendRouteURL('http://localhost:8080/web/', '/details?id=abc'),
         'http://localhost:8080/web/#/details?id=abc'
     );
+});
+
+test('derives only exact measured raw HDR authorization routes', () => {
+    const baseMetadata = {
+        bitDepth: 10,
+        matrix: 'bt2020-ncl',
+        primaries: 'bt2020',
+        range: 'limited'
+    };
+    assert.equal(
+        deriveRawHDRPlaybackRouteKey('I420P10', {
+            ...baseMetadata,
+            transfer: 'pq'
+        }),
+        'I420P10:bt2020-ncl:bt2020:limited:pq'
+    );
+    assert.equal(
+        deriveRawHDRPlaybackRouteKey('I420P10', {
+            ...baseMetadata,
+            transfer: 'hlg'
+        }),
+        'I420P10:bt2020-ncl:bt2020:limited:hlg'
+    );
+    assert.equal(deriveRawHDRPlaybackRouteKey('I420P12', {
+        ...baseMetadata,
+        bitDepth: 12,
+        transfer: 'pq'
+    }), null);
+    assert.equal(deriveRawHDRPlaybackRouteKey('I420P10', {
+        ...baseMetadata,
+        range: 'full',
+        transfer: 'pq'
+    }), null);
+});
+
+function createPresentedFrameEvidence(hash, overrides = {}) {
+    return {
+        channelMaximums: [ 245, 238, 250 ],
+        channelMinimums: [ 3, 5, 2 ],
+        chromaticPixelCount: 1_800,
+        hash,
+        horizontalSamples: [
+            [ 220, 40, 30 ],
+            [ 230, 90, 70 ],
+            [ 190, 170, 20 ],
+            [ 230, 220, 20 ],
+            [ 15, 30, 230 ],
+            [ 60, 80, 235 ],
+            [ 10, 180, 200 ],
+            [ 5, 220, 235 ]
+        ],
+        nonBlackPixelCount: 2_200,
+        opaquePixelCount: 2_304,
+        pixelCount: 2_304,
+        sampleHeight: 36,
+        sampleWidth: 64,
+        status: 'captured',
+        ...overrides
+    };
+}
+
+test('validates actual generated-media canvas pixels and motion', () => {
+    const initialEvidence = createPresentedFrameEvidence(123);
+    const laterEvidence = createPresentedFrameEvidence(456);
+
+    assert.deepEqual(
+        validatePresentedFrameEvidence(
+            initialEvidence,
+            laterEvidence,
+            'testsrc2-motion'
+        ),
+        []
+    );
+    assert.deepEqual(validatePresentedFrameEvidence(null, null, 'none'), []);
+    assert.ok(validatePresentedFrameEvidence(
+        initialEvidence,
+        createPresentedFrameEvidence(123),
+        'testsrc2-motion'
+    ).includes('presented-frame-motion-missing'));
+    assert.ok(validatePresentedFrameEvidence(
+        initialEvidence,
+        createPresentedFrameEvidence(456, {
+            horizontalSamples: Array.from({ length: 8 }, () => [ 20, 20, 20 ])
+        }),
+        'testsrc2-motion'
+    ).includes('later-frame-testsrc2-signature-mismatch'));
+    assert.ok(validatePresentedFrameEvidence(
+        initialEvidence,
+        createPresentedFrameEvidence(456, { nonBlackPixelCount: 0 }),
+        'testsrc2-motion'
+    ).includes('later-frame-mostly-black'));
+    assert.throws(
+        () => validatePresentedFrameEvidence(initialEvidence, laterEvidence, 'unknown'),
+        /expectation is invalid/u
+    );
+});
+
+test('creates bounded deterministic non-monotonic seek storm targets', () => {
+    assert.deepEqual(
+        createSeekStormTargetsMicroseconds(100_000_000, 5),
+        [ 20_400_000, 68_900_000, 34_950_000, 78_600_000, 49_500_000 ]
+    );
+    assert.deepEqual(createSeekStormTargetsMicroseconds(100_000_000, 0), []);
+    assert.deepEqual(createSeekStormTargetsMicroseconds(7_999_999, 3), []);
+    assert.throws(
+        () => createSeekStormTargetsMicroseconds(100_000_000, 6),
+        /Seek storm count/u
+    );
+});
+
+test('bounds the primary seek inside short and long media', () => {
+    assert.equal(
+        createPrimarySeekTargetMicroseconds(3_000_000, 6_000_000),
+        2_100_000
+    );
+    assert.equal(
+        createPrimarySeekTargetMicroseconds(2_000_000, 50_000_000),
+        7_000_000
+    );
+    assert.equal(
+        createPrimarySeekTargetMicroseconds(3_000_000, null),
+        8_000_000
+    );
+});
+
+test('validates rapid seeks against decoder and backend generations', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            activeGeneration: 4,
+            currentTimeMicroseconds: 10_000_000,
+            staleEventCount: 2,
+            videoDecode: {
+                ...createActiveSnapshot().customPlayback.videoDecode,
+                activeGeneration: 4
+            }
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            presentedFrameCount: 20
+        },
+        sessionGeneration: 9
+    });
+    const targetMicrosecondsList = [ 20_000_000, 60_000_000, 35_000_000 ];
+    const laterSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...initialSnapshot.customPlayback,
+            activeGeneration: 7,
+            currentTimeMicroseconds: 35_500_000,
+            staleEventCount: 5,
+            videoDecode: {
+                ...initialSnapshot.customPlayback.videoDecode,
+                activeGeneration: 7,
+                receivedFrameCount: 4,
+                staleAudioSampleCount: 1,
+                staleFrameCount: 2
+            }
+        },
+        presentation: {
+            ...initialSnapshot.presentation,
+            presentedFrameCount: 25
+        },
+        sessionGeneration: 9
+    });
+
+    assert.deepEqual(
+        validateSeekStormSnapshot(
+            initialSnapshot,
+            laterSnapshot,
+            targetMicrosecondsList
+        ),
+        []
+    );
+    assert.ok(validateSeekStormSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        sessionGeneration: 10
+    }, targetMicrosecondsList).includes('seek-storm-backend-session-restarted'));
+    assert.ok(validateSeekStormSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        customPlayback: {
+            ...laterSnapshot.customPlayback,
+            activeGeneration: 6
+        }
+    }, targetMicrosecondsList).includes('seek-storm-generation-mismatch'));
+});
+
+test('validates control event cardinality and resume ordering', () => {
+    const beforePause = createActiveSnapshot();
+    const paused = createActiveSnapshot({
+        eventCounts: {
+            ...beforePause.eventCounts,
+            pause: 1
+        },
+        eventSequence: [ ...beforePause.eventSequence, 'pause' ]
+    });
+    const resumed = createActiveSnapshot({
+        eventCounts: {
+            ...paused.eventCounts,
+            playing: paused.eventCounts.playing + 1,
+            unpause: 1
+        },
+        eventSequence: [ ...paused.eventSequence, 'unpause', 'playing' ]
+    });
+    const beforeStop = createActiveSnapshot({
+        eventCounts: { ...resumed.eventCounts },
+        eventSequence: [ ...resumed.eventSequence, 'waiting' ]
+    });
+    const stopped = createActiveSnapshot({
+        eventCounts: {
+            ...beforeStop.eventCounts,
+            stopped: 1
+        },
+        eventSequence: [ ...beforeStop.eventSequence, 'stopped' ]
+    });
+
+    assert.deepEqual(
+        validateControlEventTransitions(
+            beforePause,
+            paused,
+            resumed,
+            beforeStop,
+            stopped
+        ),
+        []
+    );
+    assert.ok(validateControlEventTransitions(
+        beforePause,
+        paused,
+        {
+            ...resumed,
+            eventSequence: [ ...paused.eventSequence, 'playing', 'unpause' ]
+        },
+        beforeStop,
+        stopped
+    ).includes('resume-event-order'));
+});
+
+test('validates fullscreen and device-pixel-ratio presentation changes', () => {
+    const initialSnapshot = createActiveSnapshot();
+    const fullscreenSnapshot = createActiveSnapshot({
+        dom: {
+            ...initialSnapshot.dom,
+            fullscreenActive: true,
+            fullscreenContainsCanvas: true
+        },
+        eventCounts: {
+            ...initialSnapshot.eventCounts,
+            fullscreenchange: 1
+        },
+        presentation: {
+            ...initialSnapshot.presentation,
+            presentedFrameCount: 12
+        }
+    });
+    const exitedSnapshot = createActiveSnapshot({
+        eventCounts: {
+            ...fullscreenSnapshot.eventCounts,
+            fullscreenchange: 2
+        },
+        presentation: {
+            ...fullscreenSnapshot.presentation,
+            presentedFrameCount: 14
+        }
+    });
+    assert.deepEqual(
+        validateFullscreenTransitionSnapshots(
+            initialSnapshot,
+            fullscreenSnapshot,
+            exitedSnapshot
+        ),
+        []
+    );
+
+    const resizedSnapshot = createActiveSnapshot({
+        dom: {
+            ...initialSnapshot.dom,
+            canvasBackingHeight: 1050,
+            canvasBackingWidth: 1500,
+            canvasCSSHeight: 700,
+            canvasCSSWidth: 1000,
+            devicePixelRatio: 1.5,
+            viewportHeight: 700,
+            viewportWidth: 1000
+        },
+        presentation: {
+            ...initialSnapshot.presentation,
+            presentedFrameCount: 12
+        }
+    });
+    const expectedViewport = {
+        devicePixelRatio: 1.5,
+        height: 700,
+        width: 1000
+    };
+    assert.deepEqual(
+        validateResizedPresentationSnapshot(
+            initialSnapshot,
+            resizedSnapshot,
+            expectedViewport
+        ),
+        []
+    );
+    assert.ok(validateResizedPresentationSnapshot(initialSnapshot, {
+        ...resizedSnapshot,
+        dom: {
+            ...resizedSnapshot.dom,
+            canvasBackingWidth: 1400
+        }
+    }, expectedViewport).includes('canvas-backing-geometry-mismatch'));
+});
+
+test('validates one replacement device without restarting custom decode', () => {
+    const initialSnapshot = createActiveSnapshot();
+    const recoveredSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...initialSnapshot.customPlayback,
+            currentTimeMicroseconds: 2_500_000
+        },
+        presentation: {
+            ...initialSnapshot.presentation,
+            deviceRecoveryCount: 1,
+            presentedFrameCount: 15
+        }
+    });
+    const injectionObservation = {
+        available: true,
+        destroyInvoked: true,
+        recoveryCountAfter: 1,
+        replacementDevice: true
+    };
+    assert.deepEqual(
+        validateInjectedDeviceRecoverySnapshot(
+            initialSnapshot,
+            recoveredSnapshot,
+            injectionObservation
+        ),
+        []
+    );
+    assert.ok(validateInjectedDeviceRecoverySnapshot(
+        initialSnapshot,
+        {
+            ...recoveredSnapshot,
+            sessionGeneration: 2
+        },
+        injectionObservation
+    ).includes('device-recovery-session-restarted'));
+});
+
+test('validates one paused repaint generation after device recovery', () => {
+    const activeSnapshot = createActiveSnapshot();
+    const pausedSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...activeSnapshot.customPlayback,
+            state: 'paused'
+        },
+        eventCounts: {
+            ...activeSnapshot.eventCounts,
+            pause: 1
+        },
+        eventSequence: [ ...activeSnapshot.eventSequence, 'pause' ]
+    });
+    const recoveredSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...pausedSnapshot.customPlayback,
+            activeGeneration: 2,
+            currentTimeMicroseconds: 2_005_000,
+            videoDecode: {
+                ...pausedSnapshot.customPlayback.videoDecode,
+                activeGeneration: 2
+            }
+        },
+        eventCounts: { ...pausedSnapshot.eventCounts },
+        eventSequence: [ ...pausedSnapshot.eventSequence ],
+        presentation: {
+            ...pausedSnapshot.presentation,
+            deviceRecoveryCount: 1,
+            presentedFrameCount: 11
+        }
+    });
+    const resumedSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...recoveredSnapshot.customPlayback,
+            currentTimeMicroseconds: 2_505_000,
+            state: 'playing'
+        },
+        eventCounts: {
+            ...recoveredSnapshot.eventCounts,
+            playing: recoveredSnapshot.eventCounts.playing + 1,
+            unpause: 1
+        },
+        eventSequence: [ ...recoveredSnapshot.eventSequence, 'unpause', 'playing' ],
+        presentation: {
+            ...recoveredSnapshot.presentation,
+            presentedFrameCount: 15
+        }
+    });
+    const injectionObservation = {
+        available: true,
+        destroyInvoked: true,
+        recoveryCountAfter: 1,
+        replacementDevice: true
+    };
+
+    assert.deepEqual(validatePausedDeviceRecoverySnapshots(
+        activeSnapshot,
+        pausedSnapshot,
+        recoveredSnapshot,
+        resumedSnapshot,
+        injectionObservation
+    ), []);
+    assert.ok(validatePausedDeviceRecoverySnapshots(
+        activeSnapshot,
+        pausedSnapshot,
+        {
+            ...recoveredSnapshot,
+            eventCounts: {
+                ...recoveredSnapshot.eventCounts,
+                pause: recoveredSnapshot.eventCounts.pause + 1
+            }
+        },
+        resumedSnapshot,
+        injectionObservation
+    ).includes('paused-recovery-pause-event'));
+    assert.ok(validatePausedDeviceRecoverySnapshots(
+        activeSnapshot,
+        pausedSnapshot,
+        {
+            ...recoveredSnapshot,
+            eventCounts: {
+                ...recoveredSnapshot.eventCounts,
+                waiting: recoveredSnapshot.eventCounts.waiting + 1
+            }
+        },
+        resumedSnapshot,
+        injectionObservation
+    ).includes('paused-recovery-waiting-event'));
 });
 
 test('accepts advancing source-less custom playback', () => {
@@ -113,7 +891,7 @@ test('accepts advancing source-less custom playback', () => {
     const laterSnapshot = createActiveSnapshot();
 
     assert.deepEqual(
-        validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot),
+        validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, SDR_EXPECTATIONS),
         []
     );
     assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
@@ -122,7 +900,366 @@ test('accepts advancing source-less custom playback', () => {
             ...laterSnapshot.dom,
             sourcedVideoCount: 1
         }
-    }).includes('native-video-source-active'));
+    }, SDR_EXPECTATIONS).includes('native-video-source-active'));
+    const expectationFailures = validateActivePlaybackSnapshot(
+        initialSnapshot,
+        laterSnapshot,
+        HDR_AUDIO_EXPECTATIONS
+    );
+    assert.ok(expectationFailures.includes('unexpected-video-output-mode'));
+    assert.ok(expectationFailures.includes('unexpected-audio-path'));
+});
+
+test('rejects repeated waiting and playing churn during steady playback', () => {
+    const initialSnapshot = createActiveSnapshot();
+    const laterSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            currentTimeMicroseconds: 6_000_000
+        },
+        eventCounts: { playing: 8, waiting: 7 },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            presentedFrameCount: 12
+        }
+    });
+    initialSnapshot.eventCounts = { playing: 1, waiting: 1 };
+
+    const failures = validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, {
+        expectedAudioPath: 'disabled',
+        expectedVideoOutputMode: 'video-frame'
+    });
+
+    assert.ok(failures.includes('waiting-event-churn'));
+    assert.ok(failures.includes('playing-event-churn'));
+});
+
+test('accepts bounded raw HDR playback with healthy custom audio', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            currentTimeMicroseconds: 1_000_000
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr',
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioBridge: {
+                failed: false,
+                pendingFrameCount: 8,
+                pendingSampleCount: 1
+            },
+            audioOutput: {
+                consumedFrames: 48_000,
+                droppedFrames: 0,
+                overflowEvents: 0,
+                outputFrames: 48_000,
+                playing: true,
+                staleChunks: 0,
+                underflowFrames: 100
+            },
+            audioPath: 'ready',
+            videoDecode: {
+                ...createActiveSnapshot().customPlayback.videoDecode,
+                pendingFrameCount: 1,
+                queuedFrameCount: 1
+            }
+        },
+        customPlaybackEligibility: {
+            eligible: true,
+            hdr: true,
+            reason: null,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr'
+        },
+        rawHDRValidation: {
+            authorizedRouteKeys: [ 'I420P10:bt2020-ncl:bt2020:limited:pq' ],
+            failureReasons: {},
+            fixtureVersion: 1,
+            pendingRouteKeys: [],
+            rejectedRouteKeys: [],
+            renderSettingsVersion: 1,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        rawHDRPlaybackRouteKey: 'I420P10:bt2020-ncl:bt2020:limited:pq'
+    });
+
+    assert.deepEqual(
+        validateActivePlaybackSnapshot(
+            initialSnapshot,
+            laterSnapshot,
+            HDR_AUDIO_EXPECTATIONS
+        ),
+        []
+    );
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        customPlayback: {
+            ...laterSnapshot.customPlayback,
+            audioOutput: {
+                ...laterSnapshot.customPlayback.audioOutput,
+                overflowEvents: 1
+            }
+        }
+    }, HDR_AUDIO_EXPECTATIONS).includes('audio-overflow'));
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        customPlayback: {
+            ...laterSnapshot.customPlayback,
+            videoDecode: {
+                ...laterSnapshot.customPlayback.videoDecode,
+                pendingFrameCount: 1,
+                queuedFrameCount: 2
+            }
+        }
+    }, HDR_AUDIO_EXPECTATIONS).includes('raw-frame-credit-window-exceeded'));
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        rawHDRValidation: {
+            ...laterSnapshot.rawHDRValidation,
+            authorizedRouteKeys: [ 'I420P10:bt2020-ncl:bt2020:limited:hlg' ]
+        }
+    }, HDR_AUDIO_EXPECTATIONS).includes('raw-hdr-playback-route-unauthorized'));
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        rawHDRValidation: {
+            ...laterSnapshot.rawHDRValidation,
+            status: 'pending'
+        }
+    }, HDR_AUDIO_EXPECTATIONS).includes('raw-hdr-authorization-not-authorized'));
+
+    for (const [ pendingFrameCount, queuedFrameCount ] of [ [ 0, 2 ], [ 1, 1 ], [ 2, 0 ] ]) {
+        const failures = validateActivePlaybackSnapshot(initialSnapshot, {
+            ...laterSnapshot,
+            customPlayback: {
+                ...laterSnapshot.customPlayback,
+                videoDecode: {
+                    ...laterSnapshot.customPlayback.videoDecode,
+                    pendingFrameCount,
+                    queuedFrameCount
+                }
+            }
+        }, HDR_AUDIO_EXPECTATIONS);
+        assert.ok(!failures.includes('raw-frame-credit-window-exceeded'));
+        assert.ok(!failures.includes('pending-frame-bound-exceeded'));
+    }
+});
+
+test('rejects sustained audio underflow while ignoring a short observation window', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioBridge: { failed: false },
+            audioOutput: {
+                consumedFrames: 48_000,
+                droppedFrames: 0,
+                outputFrames: 48_000,
+                overflowEvents: 0,
+                playing: true,
+                staleChunks: 0,
+                underflowFrames: 1_000
+            },
+            audioPath: 'ready'
+        },
+        customPlaybackEligibility: {
+            eligible: true,
+            hdr: true,
+            reason: null,
+            videoOutputMode: 'raw-planes'
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr',
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...initialSnapshot.customPlayback,
+            currentTimeMicroseconds: 3_000_000,
+            audioOutput: {
+                ...initialSnapshot.customPlayback.audioOutput,
+                consumedFrames: 96_000,
+                outputFrames: 96_000,
+                underflowFrames: 3_000
+            },
+            videoDecode: {
+                ...initialSnapshot.customPlayback.videoDecode,
+                pendingFrameCount: 1,
+                queuedFrameCount: 1
+            }
+        },
+        customPlaybackEligibility: initialSnapshot.customPlaybackEligibility,
+        presentation: {
+            ...initialSnapshot.presentation,
+            presentedFrameCount: 10
+        }
+    });
+
+    const failures = validateActivePlaybackSnapshot(
+        initialSnapshot,
+        laterSnapshot,
+        HDR_AUDIO_EXPECTATIONS
+    );
+    assert.ok(failures.includes('audio-underflow-ratio-exceeded'));
+
+    const shortWindowSnapshot = {
+        ...laterSnapshot,
+        customPlayback: {
+            ...laterSnapshot.customPlayback,
+            audioOutput: {
+                ...laterSnapshot.customPlayback.audioOutput,
+                outputFrames: 52_000,
+                underflowFrames: 1_500
+            }
+        }
+    };
+    assert.ok(!validateActivePlaybackSnapshot(
+        initialSnapshot,
+        shortWindowSnapshot,
+        HDR_AUDIO_EXPECTATIONS
+    ).includes('audio-underflow-ratio-exceeded'));
+});
+
+test('validates repeated stop counts and injected native fallback progress', () => {
+    const fallbackInitial = createActiveSnapshot({
+        dom: {
+            ...createActiveSnapshot().dom,
+            canvasCount: 0,
+            nativeVideoPlaying: true,
+            nativeVideoTimeMicroseconds: 2_000_000,
+            sourcedVideoCount: 1,
+            visibleCanvasCount: 0
+        },
+        hasCurrentSource: true,
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            fallbackReason: 'frame-render-failed',
+            state: 'idle'
+        }
+    });
+    const fallbackLater = {
+        ...fallbackInitial,
+        dom: {
+            ...fallbackInitial.dom,
+            nativeVideoTimeMicroseconds: 2_500_000
+        }
+    };
+    const repeatedStop = createActiveSnapshot({
+        dom: {
+            ...createActiveSnapshot().dom,
+            canvasCount: 0,
+            visibleCanvasCount: 0
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            state: 'idle'
+        },
+        stoppedEventCount: 2
+    });
+
+    assert.deepEqual(
+        validateInjectedPresentationFallbackSnapshot(fallbackInitial, fallbackLater),
+        []
+    );
+    assert.deepEqual(validateStopSnapshot(repeatedStop, 2), []);
+    assert.ok(validateStopSnapshot(repeatedStop).includes('stopped-event-count'));
+});
+
+test('validates natural EOF only after the submitted physical audio tail', () => {
+    const activeSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioBridge: {
+                pendingFrameCount: 2,
+                pendingSampleCount: 1_024,
+                submittedEndMediaTimeMicroseconds: 6_000_000
+            },
+            audioOutput: {
+                playing: true,
+                queuedFrames: 1_024
+            },
+            audioPath: 'ready',
+            currentTimeMicroseconds: 5_000_000,
+            durationMicroseconds: 6_000_000
+        }
+    });
+    const endedSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...activeSnapshot.customPlayback,
+            audioBridge: {
+                pendingFrameCount: 0,
+                pendingSampleCount: 0,
+                submittedEndMediaTimeMicroseconds: 6_000_000
+            },
+            audioOutput: {
+                playing: false,
+                queuedFrames: 0
+            },
+            currentTimeMicroseconds: 6_000_000,
+            state: 'ended',
+            videoDecode: {
+                ...activeSnapshot.customPlayback.videoDecode,
+                pendingFrameCount: 0,
+                queuedFrameCount: 0
+            }
+        },
+        eventCounts: {
+            ...activeSnapshot.eventCounts,
+            stopped: 1,
+            timeupdate: 18
+        },
+        eventSequence: [ ...activeSnapshot.eventSequence, 'stopped' ]
+    });
+    const stableEndedSnapshot = createActiveSnapshot({
+        ...endedSnapshot,
+        customPlayback: {
+            ...endedSnapshot.customPlayback,
+            currentTimeMicroseconds: 6_005_000
+        }
+    });
+
+    assert.deepEqual(validateNaturalEndSnapshots(
+        activeSnapshot,
+        endedSnapshot,
+        stableEndedSnapshot,
+        'ready'
+    ), []);
+
+    const prematureSnapshot = createActiveSnapshot({
+        ...endedSnapshot,
+        customPlayback: {
+            ...endedSnapshot.customPlayback,
+            audioOutput: {
+                playing: true,
+                queuedFrames: 128
+            },
+            currentTimeMicroseconds: 5_950_000
+        },
+        eventCounts: {
+            ...endedSnapshot.eventCounts,
+            waiting: activeSnapshot.eventCounts.waiting + 1
+        }
+    });
+    const prematureFailures = validateNaturalEndSnapshots(
+        activeSnapshot,
+        prematureSnapshot,
+        prematureSnapshot,
+        'ready'
+    );
+    assert.ok(prematureFailures.includes('terminal-waiting-event'));
+    assert.ok(prematureFailures.includes('audio-output-not-drained'));
+    assert.ok(prematureFailures.includes('audio-physical-tail-not-reached'));
 });
 
 test('validates pause, resume, seek, and stop observations', () => {
@@ -179,6 +1316,10 @@ test('sanitizes URLs and authentication material recursively', () => {
             frontendURL: 'http://localhost:8080',
             note: 'password=sample-secret and wss://localhost:9224/devtools/page/1'
         },
+        rawHDRValidation: {
+            authorizedRouteKeys: [ 'I420P10:bt2020-ncl:bt2020:limited:pq' ],
+            status: 'authorized'
+        },
         username: 'sample-user'
     };
     const serialized = JSON.stringify(sanitizeReport(report, [
@@ -192,6 +1333,7 @@ test('sanitizes URLs and authentication material recursively', () => {
     );
     assert.match(serialized, /\[redacted\]/u);
     assert.match(serialized, /\[redacted-url\]/u);
+    assert.match(serialized, /I420P10:bt2020-ncl:bt2020:limited:pq/u);
 });
 
 /* eslint-enable sonarjs/no-hardcoded-passwords */

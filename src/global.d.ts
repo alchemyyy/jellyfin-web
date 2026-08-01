@@ -17,6 +17,7 @@ export declare global {
     }
 
     const __COMMIT_SHA__: string;
+    const __ENABLE_BUNDLED_AC3_SOFTWARE_DECODER__: boolean;
     const __JF_BUILD_VERSION__: string;
     const __PACKAGE_JSON_NAME__: string;
     const __PACKAGE_JSON_VERSION__: string;

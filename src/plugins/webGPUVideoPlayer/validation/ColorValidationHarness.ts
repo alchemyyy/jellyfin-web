@@ -5,6 +5,7 @@ import {
     type ColorRampTolerances,
     type ColorValidationClassification,
     type ColorValidationRamp,
+    type ColorValidationRampIdentity,
     type ColorValidationResult
 } from '../color/ColorValidation';
 import { type InputColorMetadata } from '../color/ColorMetadata';
@@ -84,11 +85,23 @@ export type ColorValidationHarnessClassification =
     | ColorValidationClassification
     | 'readback-unavailable';
 
+export type ColorValidationDiagnosticKind =
+    | 'external-texture-conversion'
+    | 'gpu-texture-readback';
+
+export type ColorValidationDiagnosticMetadata = {
+    kind: ColorValidationDiagnosticKind
+    productionAuthorization: false
+    rampIdentity: ColorValidationRampIdentity
+};
+
 export type ColorValidationCapabilityDecision = {
     browser: BrowserColorMetadata
     canvas: CanvasColorMetadata
+    /** Diagnostic match status retained for telemetry compatibility. */
     capability: ColorValidationCapability
     classification: ColorValidationHarnessClassification
+    diagnostic: ColorValidationDiagnosticMetadata
     frames: readonly ReferenceFrameColorMetadata[]
     gpu: GPUColorMetadata
     observations: readonly ColorRampObservation[]
@@ -109,8 +122,9 @@ export type ColorValidationHarnessOptions = {
     canvas: HTMLCanvasElement
     canvasConfiguration: ValidationCanvasConfiguration
     configureCanvas?: boolean
-    context: GPUCanvasContext
+    context?: GPUCanvasContext
     device: GPUDevice
+    diagnosticKind?: ColorValidationDiagnosticKind
     ramp: ColorValidationRamp
     tolerances?: ColorRampTolerances
 };
@@ -208,12 +222,13 @@ function snapshotInputColorMetadata(metadata: InputColorMetadata): InputColorMet
     return { ...metadata };
 }
 
-/** Captures and classifies a bounded reference ramp from a WebGPU canvas. */
+/** Captures and classifies a bounded diagnostic ramp from a WebGPU texture. */
 export class GPUCanvasColorValidationHarness {
     private readonly browserMetadata: BrowserColorMetadata;
     private readonly canvas: HTMLCanvasElement;
     private readonly canvasConfiguration: ValidationCanvasConfiguration;
-    private readonly context: GPUCanvasContext;
+    private readonly context: GPUCanvasContext | null;
+    private readonly diagnosticKind: ColorValidationDiagnosticKind;
     private readonly frames: ReferenceFrameColorMetadata[] = [];
     private readonly gpuMetadata: GPUColorMetadata;
     private readonly observations: ColorRampObservation[] = [];
@@ -241,9 +256,13 @@ export class GPUCanvasColorValidationHarness {
                 { ...options.canvasConfiguration.toneMapping } :
                 undefined
         };
-        this.context = options.context;
+        this.context = options.context ?? null;
+        this.diagnosticKind = options.diagnosticKind ?? 'gpu-texture-readback';
         this.gpuMetadata = collectGPUMetadata(options.device, options.adapterInfo);
         this.ownsCanvasConfiguration = options.configureCanvas !== false;
+        if (this.ownsCanvasConfiguration && !this.context) {
+            throw new Error('A WebGPU canvas context is required when configuring the canvas');
+        }
         this.ramp = options.ramp;
         this.tolerances = options.tolerances;
         this.pixelReader = new GPUCanvasPixelReader({
@@ -351,11 +370,17 @@ export class GPUCanvasColorValidationHarness {
         this.destroyed = true;
         this.pixelReader.destroy();
         if (this.ownsCanvasConfiguration) {
-            this.context.unconfigure();
+            this.context?.unconfigure();
         }
     }
 
     private configureCanvas(device: GPUDevice): void {
+        if (!this.context) {
+            this.readbackFailure = createInitializationFailure(
+                'A WebGPU canvas context is unavailable'
+            );
+            return;
+        }
         const usage = getValidationCanvasUsage();
         if (usage === null) {
             this.readbackFailure = createInitializationFailure(
@@ -423,6 +448,11 @@ export class GPUCanvasColorValidationHarness {
             },
             capability,
             classification,
+            diagnostic: {
+                kind: this.diagnosticKind,
+                productionAuthorization: false,
+                rampIdentity: { ...this.ramp.identity }
+            },
             frames: this.frames.map((frame: ReferenceFrameColorMetadata) => ({
                 ...frame,
                 inputColorMetadata: snapshotInputColorMetadata(frame.inputColorMetadata),

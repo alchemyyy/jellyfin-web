@@ -3,8 +3,10 @@
     "files": "./dist/**/*.js",
     "not": [
         "./dist/libraries/pdf.worker.js",
+        "./dist/libraries/hevcjs/hevc-decode.js",
         "./dist/libraries/worker-bundle.js",
-        "./dist/libbitsub.*.js",
+        "./dist/CustomDecode.worker.bundle.js",
+        "./dist/node_modules.mediabunny.*.chunk.js",
         "./dist/serviceworker.js"
     ]
 }

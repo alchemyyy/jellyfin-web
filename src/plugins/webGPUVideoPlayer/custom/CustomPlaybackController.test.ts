@@ -5,7 +5,10 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from '../MediaTime';
-import type { DecodedPresentationFrame } from '../WebGPUPresenter';
+import type {
+    DecodedPresentationFrame,
+    DecodedVideoPresentationFrame
+} from '../WebGPUPresenter';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
@@ -16,11 +19,13 @@ import type {
     CustomDecodeSessionTelemetry
 } from './CustomDecodeSession';
 import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
+import { addMicroseconds, requireMicroseconds } from './TimeMath';
 import CustomPlaybackController from './CustomPlaybackController';
 import type {
     CustomAudioOutput,
     CustomAudioOutputBinding,
     CustomPlaybackControllerEvent,
+    CustomPlaybackControllerOptions,
     CustomPlaybackFallbackRequest,
     CustomPlaybackPlayOptions,
     CustomVideoDecodeSession
@@ -33,16 +38,20 @@ vi.mock('./CustomDecode.worker', () => ({
 function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
     return {
         activeGeneration: null,
+        abandonedRawFrameCount: 0,
         audioCodec: null,
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
+        peakFrameCount: 0,
+        pendingFrameCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
         receivedFrameCount: 0,
+        recycledRawFrameCount: 0,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
@@ -53,11 +62,16 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
 }
 
 class FakeVideoDecodeSession implements CustomVideoDecodeSession {
+    private pendingFrameCount = 0;
     private readonly queuedFrames: DecodedPresentationFrame[] = [];
     public readonly starts: CustomDecodeSessionStartOptions[] = [];
+    public readonly acknowledgeFrame = vi.fn((): boolean => true);
+    public readonly discardFrame = vi.fn((): boolean => true);
     public readonly stop = vi.fn((): Promise<void> => {
         for (const queuedFrame of this.queuedFrames) {
-            queuedFrame.frame.close();
+            if (queuedFrame.outputMode === 'video-frame') {
+                queuedFrame.frame.close();
+            }
         }
         this.queuedFrames.length = 0;
         return Promise.resolve();
@@ -77,7 +91,10 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
             }
 
             for (let frameIndex = 0; frameIndex < selectedFrameIndex; frameIndex += 1) {
-                this.queuedFrames[frameIndex].frame.close();
+                const queuedFrame = this.queuedFrames[frameIndex];
+                if (queuedFrame.outputMode === 'video-frame') {
+                    queuedFrame.frame.close();
+                }
             }
             const selectedFrame = this.queuedFrames[selectedFrameIndex];
             this.queuedFrames.splice(0, selectedFrameIndex + 1);
@@ -97,12 +114,17 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     public getTelemetry(): CustomDecodeSessionTelemetry {
         return {
             ...createDecodeTelemetry(),
+            pendingFrameCount: this.pendingFrameCount,
             queuedFrameCount: this.queuedFrames.length
         };
     }
 
     public queueFrame(frame: DecodedPresentationFrame): void {
         this.queuedFrames.push(frame);
+    }
+
+    public setPendingFrameCount(pendingFrameCount: number): void {
+        this.pendingFrameCount = pendingFrameCount;
     }
 
     public async prepareAudio(
@@ -121,6 +143,8 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
 
 class FakeAudioOutput implements CustomAudioOutput {
     private currentGeneration = 1;
+    private estimatedOutputLatencyMicroseconds: Microseconds | null = null;
+    private lastTelemetry: AudioWorkletTelemetry | null = null;
     public readonly destroy = vi.fn();
     public readonly setMuted = vi.fn();
     public readonly setPlaying = vi.fn();
@@ -131,8 +155,12 @@ class FakeAudioOutput implements CustomAudioOutput {
         return this.currentGeneration;
     }
 
+    public getEstimatedOutputLatencyMicroseconds(): Microseconds | null {
+        return this.estimatedOutputLatencyMicroseconds;
+    }
+
     public getTelemetry(): AudioWorkletTelemetry | null {
-        return null;
+        return this.lastTelemetry ? { ...this.lastTelemetry } : null;
     }
 
     public emitTelemetry(
@@ -143,6 +171,8 @@ class FakeAudioOutput implements CustomAudioOutput {
         const telemetry: AudioWorkletTelemetry = {
             consumedFrames: 1_024,
             droppedFrames: 0,
+            hasPhysicalOutputTimeCorrelation: true,
+            mediaTimeContextTimeMicroseconds: null,
             muted: false,
             outputFrames: 1_024,
             overflowEvents: 0,
@@ -160,6 +190,7 @@ class FakeAudioOutput implements CustomAudioOutput {
             generation,
             mediaTimeMicroseconds
         };
+        this.lastTelemetry = { ...telemetry };
         for (const listener of this.telemetryListeners) {
             listener(telemetry);
         }
@@ -175,6 +206,12 @@ class FakeAudioOutput implements CustomAudioOutput {
     public setGeneration(generation: number): void {
         this.currentGeneration = generation;
     }
+
+    public setEstimatedOutputLatencyMicroseconds(
+        estimatedOutputLatencyMicroseconds: Microseconds | null
+    ): void {
+        this.estimatedOutputLatencyMicroseconds = estimatedOutputLatencyMicroseconds;
+    }
 }
 
 class FakeAudioBridge {
@@ -188,6 +225,7 @@ class FakeAudioBridge {
             pendingSampleCount: 0,
             releasedSampleCredits: 0,
             staleSampleCount: 0,
+            submittedEndMediaTimeMicroseconds: null,
             submittedFrameCount: 0,
             submittedSampleCount: 0,
             workletGeneration
@@ -213,6 +251,17 @@ class FakeAudioBridge {
             pendingSampleCount: pendingFrameCount === 0 ? 0 : 1
         };
     }
+
+    public setSubmittedEndMediaTimeMicroseconds(
+        submittedEndMediaTimeMicroseconds: Microseconds | null
+    ): void {
+        this.telemetry = {
+            ...this.telemetry,
+            submittedEndMediaTimeMicroseconds,
+            submittedFrameCount: submittedEndMediaTimeMicroseconds === null ? 0 : 1,
+            submittedSampleCount: submittedEndMediaTimeMicroseconds === null ? 0 : 1
+        };
+    }
 }
 
 type ControllerHarness = {
@@ -229,21 +278,33 @@ function createPlayOptions(audioTrackIndex: number | null = null): CustomPlaybac
     return {
         audioTrackIndex,
         durationMicroseconds: secondsToMicroseconds(120),
+        maximumCodedHeight: 1_080,
+        maximumCodedWidth: 1_920,
+        rawVideoFrameFormat: null,
         startTimeMicroseconds: secondsToMicroseconds(5),
         url: 'http://localhost/video.mkv?ApiKey=secret',
+        videoDecoderBackend: 'native',
+        videoOutputMode: 'video-frame',
         videoTrackIndex: 0
     };
 }
 
-function createDecodedFrame(mediaTimeMicroseconds: Microseconds): DecodedPresentationFrame {
+function createDecodedFrame(
+    mediaTimeMicroseconds: Microseconds,
+    durationMicroseconds: Microseconds = millisecondsToMicroseconds(40)
+): DecodedVideoPresentationFrame {
     return {
-        durationMicroseconds: millisecondsToMicroseconds(40),
+        durationMicroseconds,
         frame: { close: vi.fn() } as unknown as VideoFrame,
-        mediaTimeMicroseconds
+        mediaTimeMicroseconds,
+        outputMode: 'video-frame'
     };
 }
 
-function createControllerHarness(withAudio: boolean): ControllerHarness {
+function createControllerHarness(
+    withAudio: boolean,
+    controllerOptions: Partial<CustomPlaybackControllerOptions> = {}
+): ControllerHarness {
     const events: CustomPlaybackControllerEvent[] = [];
     const fallbackRequests: CustomPlaybackFallbackRequest[] = [];
     let videoDecodeSession: FakeVideoDecodeSession | null = null;
@@ -270,7 +331,8 @@ function createControllerHarness(withAudio: boolean): ControllerHarness {
         videoDecodeSessionFactory: (eventHandler, audioBridgeFactory) => {
             videoDecodeSession = new FakeVideoDecodeSession(eventHandler, audioBridgeFactory);
             return videoDecodeSession;
-        }
+        },
+        ...controllerOptions
     });
     if (!videoDecodeSession) {
         throw new Error('Video decode session factory was not called');
@@ -361,7 +423,9 @@ describe('CustomPlaybackController', () => {
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
             audioTrackIndex: 1,
             generation,
-            startTimeMicroseconds: 5_000_000
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 5_000_000,
+            videoDecoderBackend: 'native'
         });
         expect(harness.audioOutput?.setPlaying).toHaveBeenLastCalledWith(true);
         expect(harness.events.some(event => event.type === 'ready')).toBe(true);
@@ -401,6 +465,56 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
         await harness.controller.destroy();
         expect(harness.audioOutput?.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not pin the audio-master clock to repeated uncorrelated telemetry', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+
+        harness.setMonotonicTime(secondsToMicroseconds(10.25));
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5),
+            undefined,
+            { hasPhysicalOutputTimeCorrelation: false }
+        );
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
+
+        harness.setMonotonicTime(secondsToMicroseconds(10.5));
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5),
+            undefined,
+            { hasPhysicalOutputTimeCorrelation: false }
+        );
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_500_000);
+    });
+
+    it('passes an explicit raw frame format into the decode session', async () => {
+        const harness = createControllerHarness(false);
+        const playOptions: CustomPlaybackPlayOptions = {
+            ...createPlayOptions(),
+            rawVideoFrameFormat: 'I420P12',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        };
+        const startPromise = harness.controller.prepare(playOptions);
+        await vi.waitFor(() => expect(harness.videoDecodeSession.starts).toHaveLength(1));
+        const generation = harness.videoDecodeSession.starts[0].generation;
+
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+
+        await expect(startPromise).resolves.toMatchObject({ status: 'started' });
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            rawVideoFrameFormat: 'I420P12',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        });
+        await harness.controller.destroy();
     });
 
     it('freezes the audio-master clock across underflow and reanchors on recovery', async () => {
@@ -444,6 +558,60 @@ describe('CustomPlaybackController', () => {
         expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(2);
     });
 
+    it('preserves audio underflow suspension without an output-time correlation', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+
+        harness.setMonotonicTime(secondsToMicroseconds(10.1));
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5),
+            undefined,
+            {
+                hasPhysicalOutputTimeCorrelation: false,
+                reason: 'underflow'
+            }
+        );
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_100_000);
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'audio-buffer')).toHaveLength(1);
+
+        harness.setMonotonicTime(secondsToMicroseconds(12));
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_100_000);
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5),
+            undefined,
+            {
+                hasPhysicalOutputTimeCorrelation: false,
+                reason: 'underflow-recovered'
+            }
+        );
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_100_000);
+
+        harness.setMonotonicTime(secondsToMicroseconds(12.25));
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_350_000);
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(2);
+    });
+
+    it('renegotiates after a sustained audio underflow', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        harness.setMonotonicTime(secondsToMicroseconds(10.1));
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.08),
+            undefined,
+            { reason: 'underflow' }
+        );
+        harness.setMonotonicTime(secondsToMicroseconds(20.1));
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.controller.playbackState).toBe('fallback');
+        expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+            disposition: 'renegotiate-source',
+            reason: 'playback-stalled'
+        }) ]);
+    });
+
     it('ignores old worklet telemetry during and after a seek generation change', async () => {
         const harness = createControllerHarness(true);
         const firstGeneration = await startReadyPlayback(harness, true);
@@ -458,7 +626,11 @@ describe('CustomPlaybackController', () => {
             throw new Error('Seek generation did not start');
         }
         harness.audioOutput.setGeneration(2);
-        harness.audioOutput.emitTelemetry(secondsToMicroseconds(99), 1);
+        harness.audioOutput.emitTelemetry(
+            secondsToMicroseconds(99),
+            1,
+            { hasPhysicalOutputTimeCorrelation: false }
+        );
         expect(harness.controller.currentTimeMicroseconds).toBe(42_000_000);
 
         const audioConfiguration: DecodeWorkerAudioConfiguration = {
@@ -476,10 +648,21 @@ describe('CustomPlaybackController', () => {
         });
         await seekPromise;
 
-        harness.audioOutput.emitTelemetry(secondsToMicroseconds(100), 1);
+        harness.audioOutput.emitTelemetry(
+            secondsToMicroseconds(100),
+            1,
+            { hasPhysicalOutputTimeCorrelation: false }
+        );
+        expect(harness.controller.currentTimeMicroseconds).toBe(42_000_000);
+        harness.audioOutput.emitTelemetry(
+            secondsToMicroseconds(100),
+            2,
+            { hasPhysicalOutputTimeCorrelation: false }
+        );
         expect(harness.controller.currentTimeMicroseconds).toBe(42_000_000);
         harness.audioOutput.emitTelemetry(secondsToMicroseconds(43), 2);
         expect(harness.controller.currentTimeMicroseconds).toBe(43_000_000);
+        expect(harness.controller.getTelemetry().staleEventCount).toBe(2);
         expect(secondGeneration).toBeGreaterThan(firstGeneration);
     });
 
@@ -490,8 +673,15 @@ describe('CustomPlaybackController', () => {
         harness.setMonotonicTime(secondsToMicroseconds(10.25));
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_349));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_350));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_350_000);
         harness.setMonotonicTime(secondsToMicroseconds(11));
-        expect(harness.controller.currentTimeMicroseconds).toBe(5_250_000);
+        expect(harness.controller.currentTimeMicroseconds).toBe(5_350_000);
 
         const recoveredFrame = createDecodedFrame(secondsToMicroseconds(5.5));
         harness.videoDecodeSession.queueFrame(recoveredFrame);
@@ -506,6 +696,61 @@ describe('CustomPlaybackController', () => {
 
         harness.setMonotonicTime(secondsToMicroseconds(11.25));
         expect(harness.controller.currentTimeMicroseconds).toBe(5_750_000);
+    });
+
+    it('renegotiates after sustained video starvation', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_200));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(20_199));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.setMonotonicTime(millisecondsToMicroseconds(20_200));
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('fallback');
+        expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+            disposition: 'renegotiate-source',
+            reason: 'playback-stalled'
+        }) ]);
+    });
+
+    it('renegotiates when decoded video falls materially behind the clock', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        const lateFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(lateFrame);
+        harness.setMonotonicTime(secondsToMicroseconds(13));
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(lateFrame);
+        expect(harness.controller.playbackState).toBe('fallback');
+        expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+            disposition: 'renegotiate-source',
+            reason: 'playback-stalled'
+        }) ]);
+    });
+
+    it('does not count a user pause toward the sustained starvation bound', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_200));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.controller.pause();
+        harness.setMonotonicTime(millisecondsToMicroseconds(30_000));
+        harness.controller.resume();
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
     });
 
     it('prepares paused playback and exposes frame-provider waiting recovery', async () => {
@@ -528,8 +773,14 @@ describe('CustomPlaybackController', () => {
         ).length;
         expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.takeCurrentFrame()).toBeNull();
-        harness.setMonotonicTime(secondsToMicroseconds(10.249));
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_099));
         expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(1);
         expect(harness.events.filter(event => event.type === 'timeupdate')).toHaveLength(
             initialTimeUpdateCount
         );
@@ -544,7 +795,8 @@ describe('CustomPlaybackController', () => {
         const decodedFrame = {
             durationMicroseconds: millisecondsToMicroseconds(40),
             frame: { close: vi.fn() } as unknown as VideoFrame,
-            mediaTimeMicroseconds: secondsToMicroseconds(5)
+            mediaTimeMicroseconds: secondsToMicroseconds(5),
+            outputMode: 'video-frame' as const
         };
         harness.videoDecodeSession.takeFrame.mockReturnValueOnce(decodedFrame);
         expect(harness.controller.takeCurrentFrame()).toBe(decodedFrame);
@@ -552,6 +804,126 @@ describe('CustomPlaybackController', () => {
 
         await harness.controller.stop();
         expect(harness.controller.playbackState).toBe('idle');
+    });
+
+    it('holds normal future-dated frames without video waiting and playing churn', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        const firstFrame = createDecodedFrame(secondsToMicroseconds(5));
+        const secondFrame = createDecodedFrame(millisecondsToMicroseconds(5_040));
+        const thirdFrame = createDecodedFrame(millisecondsToMicroseconds(5_080));
+        harness.videoDecodeSession.queueFrame(firstFrame);
+        harness.videoDecodeSession.queueFrame(secondFrame);
+        harness.videoDecodeSession.queueFrame(thirdFrame);
+
+        expect(harness.controller.takeCurrentFrame()).toBe(firstFrame);
+        expect(harness.controller.notifyFramePresented(firstFrame)).toBe(true);
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_016));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_032));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_040));
+        expect(harness.controller.takeCurrentFrame()).toBe(secondFrame);
+        expect(harness.controller.notifyFramePresented(secondFrame)).toBe(true);
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_056));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_080));
+        expect(harness.controller.takeCurrentFrame()).toBe(thirdFrame);
+        expect(harness.controller.notifyFramePresented(thirdFrame)).toBe(true);
+
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(1);
+        await harness.controller.destroy();
+    });
+
+    it('debounces a short empty raw-frame handoff below the starvation grace', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        const firstFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(firstFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(firstFrame);
+        expect(harness.controller.notifyFramePresented(firstFrame)).toBe(true);
+
+        for (const elapsedMilliseconds of [ 16, 32, 64, 96 ]) {
+            harness.setMonotonicTime(millisecondsToMicroseconds(10_000 + elapsedMilliseconds));
+            expect(harness.controller.takeCurrentFrame()).toBeNull();
+        }
+        const nextFrame = createDecodedFrame(millisecondsToMicroseconds(5_080));
+        harness.videoDecodeSession.queueFrame(nextFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(nextFrame);
+        expect(harness.controller.notifyFramePresented(nextFrame)).toBe(true);
+
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(1);
+        await harness.controller.destroy();
+    });
+
+    it('does not report playback recovery until overlapping video and audio waits clear', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.audioOutput?.emitTelemetry(
+            millisecondsToMicroseconds(5_100),
+            undefined,
+            { reason: 'underflow' }
+        );
+        expect(harness.events.filter(event => event.type === 'waiting')).toHaveLength(2);
+
+        const recoveredVideoFrame = createDecodedFrame(millisecondsToMicroseconds(5_100));
+        harness.videoDecodeSession.queueFrame(recoveredVideoFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(recoveredVideoFrame);
+        expect(harness.controller.notifyFramePresented(recoveredVideoFrame)).toBe(true);
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(1);
+
+        harness.audioOutput?.emitTelemetry(
+            millisecondsToMicroseconds(5_120),
+            undefined,
+            { reason: 'underflow-recovered' }
+        );
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(2);
+        await harness.controller.destroy();
+    });
+
+    it('does not count user-paused time toward video starvation', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_050));
+        harness.controller.pause();
+        harness.setMonotonicTime(secondsToMicroseconds(12));
+        harness.controller.resume();
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(12_099));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        harness.setMonotonicTime(millisecondsToMicroseconds(12_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(1);
+        await harness.controller.destroy();
+    });
+
+    it('holds the final frame without video starvation while audio drains', async () => {
+        const harness = createControllerHarness(true);
+        const generation = await startReadyPlayback(harness, true);
+        harness.audioBridge.setPendingFrameCount(1_024);
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_500));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'video-frame')).toHaveLength(0);
+        await harness.controller.destroy();
     });
 
     it('waits for submitted video and consumed audio before emitting ended', async () => {
@@ -562,6 +934,9 @@ describe('CustomPlaybackController', () => {
         harness.videoDecodeSession.queueFrame(firstFrame);
         harness.videoDecodeSession.queueFrame(finalFrame);
         harness.audioBridge.setPendingFrameCount(2_048);
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
+            secondsToMicroseconds(5.08)
+        );
 
         harness.videoDecodeSession.emit({ generation, type: 'ended' });
 
@@ -579,7 +954,11 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('playing');
 
         harness.audioBridge.setPendingFrameCount(0);
-        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(5.08));
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.08),
+            undefined,
+            { queuedFrames: 0 }
+        );
         expect(harness.controller.playbackState).toBe('ended');
         expect(harness.events.filter(event => event.type === 'ended')).toEqual([
             { generation, type: 'ended' }
@@ -587,6 +966,137 @@ describe('CustomPlaybackController', () => {
         expect(harness.audioOutput?.setPlaying).toHaveBeenLastCalledWith(false);
         expect(firstFrame.frame.close).not.toHaveBeenCalled();
         expect(finalFrame.frame.close).not.toHaveBeenCalled();
+    });
+
+    it('recovers a pre-EOF underflow and waits for correlated physical audio tail output', async () => {
+        const harness = createControllerHarness(true, {
+            playbackStallTimeoutMicroseconds: millisecondsToMicroseconds(100)
+        });
+        const generation = await startReadyPlayback(harness, true);
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
+            secondsToMicroseconds(5.12)
+        );
+
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.04),
+            undefined,
+            { queuedFrames: 0, reason: 'underflow' }
+        );
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'audio-buffer')).toHaveLength(1);
+
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.events.filter(event => event.type === 'playing')).toHaveLength(2);
+
+        harness.setMonotonicTime(secondsToMicroseconds(11));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+
+        harness.audioOutput?.emitTelemetry(
+            requireMicroseconds(5_119_999),
+            undefined,
+            { queuedFrames: 0 }
+        );
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.12),
+            undefined,
+            { queuedFrames: 0 }
+        );
+
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.events.filter(event => event.type === 'ended')).toEqual([ {
+            generation,
+            type: 'ended'
+        } ]);
+        expect(harness.fallbackRequests).toHaveLength(0);
+    });
+
+    it('continues the presentation clock through a video tail after physical audio drains', async () => {
+        const harness = createControllerHarness(true);
+        const generation = await startReadyPlayback(harness, true);
+        const finalFrame = createDecodedFrame(
+            secondsToMicroseconds(5.12),
+            millisecondsToMicroseconds(40)
+        );
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
+            secondsToMicroseconds(5.08)
+        );
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.04),
+            undefined,
+            { queuedFrames: 0, reason: 'underflow' }
+        );
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.08),
+            undefined,
+            { queuedFrames: 0 }
+        );
+        expect(harness.controller.playbackState).toBe('playing');
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_030));
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.08),
+            undefined,
+            { queuedFrames: 0, reason: 'periodic' }
+        );
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_040));
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        expect(harness.controller.playbackState).toBe('playing');
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_080));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.fallbackRequests).toHaveLength(0);
+    });
+
+    it('uses a bounded latency-based grace when physical output correlation is unavailable', async () => {
+        const harness = createControllerHarness(true, {
+            playbackStallTimeoutMicroseconds: millisecondsToMicroseconds(100)
+        });
+        const generation = await startReadyPlayback(harness, true);
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        harness.audioBridge.setSubmittedEndMediaTimeMicroseconds(
+            secondsToMicroseconds(5.08)
+        );
+        harness.audioOutput?.setEstimatedOutputLatencyMicroseconds(
+            millisecondsToMicroseconds(50)
+        );
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+        harness.audioOutput?.emitTelemetry(
+            secondsToMicroseconds(5.08),
+            undefined,
+            {
+                hasPhysicalOutputTimeCorrelation: false,
+                queuedFrames: 0,
+                reason: 'underflow'
+            }
+        );
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_149));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_150));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.events.filter(event => event.type === 'waiting'
+            && event.reason === 'audio-buffer')).toHaveLength(0);
+        expect(harness.fallbackRequests).toHaveLength(0);
     });
 
     it('requires an exact presenter acknowledgment before video-only ended', async () => {
@@ -604,10 +1114,108 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('playing');
 
         expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        expect(harness.videoDecodeSession.acknowledgeFrame).toHaveBeenCalledWith(finalFrame);
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_039));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_040));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
         expect(harness.controller.playbackState).toBe('ended');
         expect(harness.events.filter(event => event.type === 'ended')).toEqual([
             { generation, type: 'ended' }
         ]);
+    });
+
+    it('holds a submitted final frame when the decoder ends after its acknowledgment', async () => {
+        const harness = createControllerHarness(false);
+        const generation = await startReadyPlayback(harness, false);
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(finalFrame);
+
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+        expect(harness.controller.playbackState).toBe('playing');
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_040));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.events.filter(event => event.type === 'ended')).toEqual([
+            { generation, type: 'ended' }
+        ]);
+    });
+
+    it.each([
+        {
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            label: '24 fps'
+        },
+        {
+            durationMicroseconds: secondsToMicroseconds(2),
+            label: 'long VFR still'
+        }
+    ])('holds a $label final frame for its complete duration', async ({
+        durationMicroseconds
+    }) => {
+        const harness = createControllerHarness(false);
+        const generation = await startReadyPlayback(harness, false);
+        const finalFrame = createDecodedFrame(
+            secondsToMicroseconds(5),
+            durationMicroseconds
+        );
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        harness.setMonotonicTime(
+            addMicroseconds(
+                secondsToMicroseconds(10),
+                addMicroseconds(durationMicroseconds, millisecondsToMicroseconds(-0.001))
+            )
+        );
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+
+        harness.setMonotonicTime(addMicroseconds(
+            secondsToMicroseconds(10),
+            durationMicroseconds
+        ));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('ended');
+    });
+
+    it('does not invent a hold duration for a zero-duration final frame', async () => {
+        const harness = createControllerHarness(false);
+        const generation = await startReadyPlayback(harness, false);
+        const finalFrame = createDecodedFrame(
+            secondsToMicroseconds(5),
+            secondsToMicroseconds(0)
+        );
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFramePresented(finalFrame)).toBe(true);
+        expect(harness.controller.playbackState).toBe('ended');
+    });
+
+    it('releases a discarded presentation frame and completes end drain', async () => {
+        const harness = createControllerHarness(false);
+        const generation = await startReadyPlayback(harness, false);
+        const finalFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(finalFrame);
+        harness.videoDecodeSession.emit({ generation, type: 'ended' });
+
+        expect(harness.controller.takeCurrentFrame()).toBe(finalFrame);
+        expect(harness.controller.notifyFrameDiscarded(finalFrame)).toBe(true);
+        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(finalFrame);
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_040));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('ended');
+        expect(harness.controller.notifyFrameDiscarded(finalFrame)).toBe(false);
     });
 
     it('invalidates a pending end drain when seeking to a new generation', async () => {
@@ -759,6 +1367,7 @@ describe('CustomPlaybackController', () => {
             status: 'fallback'
         });
         expect(harness.fallbackRequests).toEqual([ {
+            disposition: 'same-session-native',
             generation: result.generation,
             mediaTimeMicroseconds: 5_000_000,
             preserveHTMLSession: true,
@@ -768,12 +1377,20 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('fallback');
     });
 
-    it('bounds startup and latches one fallback request', async () => {
+    it('keeps configured-without-media startup bounded and latches one fallback request', async () => {
         vi.useFakeTimers();
         try {
             const harness = createControllerHarness(false);
             const startPromise = harness.controller.play(createPlayOptions());
             await flushAsyncWork();
+            const generation = harness.videoDecodeSession.starts[0].generation;
+            harness.videoDecodeSession.emit({
+                audio: null,
+                codec: 'avc1.640028',
+                generation,
+                type: 'configured'
+            });
+            expect(harness.controller.playbackState).toBe('starting');
             await vi.advanceTimersByTimeAsync(100);
 
             await expect(startPromise).resolves.toMatchObject({
@@ -781,8 +1398,11 @@ describe('CustomPlaybackController', () => {
                 status: 'fallback'
             });
             expect(harness.fallbackRequests).toHaveLength(1);
+            expect(harness.fallbackRequests[0]).toMatchObject({
+                disposition: 'renegotiate-source',
+                reason: 'startup-timeout'
+            });
 
-            const generation = harness.videoDecodeSession.starts[0].generation;
             harness.videoDecodeSession.emit({
                 failureKind: 'decode-failed',
                 generation,
@@ -802,11 +1422,45 @@ describe('CustomPlaybackController', () => {
 
         expect(harness.controller.setPlaybackRate(2)).toBe(false);
         expect(harness.fallbackRequests[0]).toMatchObject({
+            disposition: 'same-session-native',
             preserveHTMLSession: true,
             reason: 'playback-rate-unsupported'
         });
         expect(harness.controller.playbackState).toBe('fallback');
     });
+
+    it.each([
+        [ 'decode-failed', 'renegotiate-source' ],
+        [ 'network-failed', 'renegotiate-source' ],
+        [ 'range-unsupported', 'renegotiate-source' ],
+        [ 'source-unsupported', 'renegotiate-source' ],
+        [ 'audio-output-failed', 'same-session-native' ]
+    ] as const)(
+        'preserves worker failure %s and assigns %s fallback',
+        async (failureKind, disposition) => {
+            const harness = createControllerHarness(false);
+            const startPromise = harness.controller.play(createPlayOptions());
+            await flushAsyncWork();
+            const generation = harness.videoDecodeSession.starts[0].generation;
+
+            harness.videoDecodeSession.emit({
+                failureKind,
+                generation,
+                message: `simulated ${failureKind}`,
+                type: 'error'
+            });
+
+            await expect(startPromise).resolves.toMatchObject({
+                fallbackReason: failureKind,
+                status: 'fallback'
+            });
+            expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+                disposition,
+                generation,
+                reason: failureKind
+            }) ]);
+        }
+    );
 
     it('does not finish startup until asynchronous audio playback starts', async () => {
         const harness = createControllerHarness(true);
@@ -845,6 +1499,26 @@ describe('CustomPlaybackController', () => {
             status: 'started'
         });
         expect(harness.controller.playbackState).toBe('playing');
+    });
+
+    it('rejects an unmeasured decoder layout before invoking the audio output factory', async () => {
+        const harness = createControllerHarness(true);
+        if (!harness.audioOutput) {
+            throw new Error('Expected an audio output');
+        }
+        const startPromise = harness.controller.play(createPlayOptions(1));
+        await flushAsyncWork();
+
+        await expect(harness.videoDecodeSession.prepareAudio({
+            channelCount: 6,
+            codec: 'ac3',
+            sampleRate: 48_000
+        })).rejects.toThrow('Custom audio output requires 2 channels at 48000 Hz');
+        expect(harness.audioOutput.setVolume).not.toHaveBeenCalled();
+        expect(harness.audioOutput.setMuted).not.toHaveBeenCalled();
+
+        await harness.controller.stop();
+        await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
     });
 
     it('latches one fallback when asynchronous audio startup fails', async () => {
@@ -926,7 +1600,125 @@ describe('CustomPlaybackController', () => {
         );
     });
 
-    it('waits for and releases an audio factory that outlives destruction', async () => {
+    it('bounds stalled audio destruction', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createControllerHarness(true);
+            await startReadyPlayback(harness, true);
+            if (!harness.audioOutput) {
+                throw new Error('Expected an audio output');
+            }
+            harness.audioOutput.destroy.mockReturnValueOnce(
+                new Promise<void>(() => undefined)
+            );
+            const destroyPromise = harness.controller.destroy();
+
+            await vi.advanceTimersByTimeAsync(100);
+
+            await expect(destroyPromise).resolves.toBeUndefined();
+            expect(harness.audioOutput.destroy).toHaveBeenCalledOnce();
+            expect(harness.controller.getTelemetry().lastErrorMessage).toContain(
+                'Custom audio output destruction exceeded its bound'
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('bounds stalled audio suspension while stopping the decode pipeline', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createControllerHarness(true);
+            await startReadyPlayback(harness, true);
+            if (!harness.audioOutput) {
+                throw new Error('Expected an audio output');
+            }
+            harness.audioOutput.setPlaying.mockImplementation((playing: boolean) => (
+                playing ? undefined : new Promise<void>(() => undefined)
+            ));
+
+            const stopPromise = harness.controller.stop();
+            expect(harness.videoDecodeSession.stop).toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(100);
+
+            await expect(stopPromise).resolves.toBeUndefined();
+            expect(harness.controller.getTelemetry().lastErrorMessage).toContain(
+                'Custom playback shutdown exceeded its bound'
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('bounds an unresolved audio suspension before preparing a replacement generation', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createControllerHarness(true, {
+                startupTimeoutMicroseconds: millisecondsToMicroseconds(200)
+            });
+            await startReadyPlayback(harness, true);
+            if (!harness.audioOutput) {
+                throw new Error('Expected an audio output');
+            }
+            harness.audioOutput.setPlaying.mockImplementation((playing: boolean) => (
+                playing ? undefined : new Promise<void>(() => undefined)
+            ));
+
+            const seekPromise = harness.controller.seek(secondsToMicroseconds(42));
+            await vi.advanceTimersByTimeAsync(100);
+
+            await expect(seekPromise).resolves.toMatchObject({
+                fallbackReason: 'audio-output-failed',
+                status: 'fallback'
+            });
+            expect(harness.controller.getTelemetry().lastErrorMessage).toContain(
+                'Custom audio suspension exceeded its bound'
+            );
+            expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+                reason: 'audio-output-failed'
+            }) ]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('bounds an unresolved initial audio suspension and destroys the rejected binding', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createControllerHarness(true, {
+                startupTimeoutMicroseconds: millisecondsToMicroseconds(200)
+            });
+            if (!harness.audioOutput) {
+                throw new Error('Expected an audio output');
+            }
+            harness.audioOutput.setPlaying.mockImplementation((playing: boolean) => (
+                playing ? undefined : new Promise<void>(() => undefined)
+            ));
+            const startPromise = harness.controller.play(createPlayOptions(1));
+            await flushAsyncWork();
+            const audioPreparation = harness.videoDecodeSession.prepareAudio({
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: 48_000
+            });
+            const audioPreparationRejection = expect(audioPreparation).rejects.toThrow(
+                'Custom audio initialization suspension exceeded its bound'
+            );
+
+            await vi.advanceTimersByTimeAsync(100);
+
+            await audioPreparationRejection;
+            expect(harness.audioOutput.destroy).toHaveBeenCalledOnce();
+            const stopPromise = harness.controller.stop();
+            await vi.advanceTimersByTimeAsync(100);
+            await expect(stopPromise).resolves.toBeUndefined();
+            await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('settles destruction and asynchronously releases an audio factory that outlives it', async () => {
         const audioOutput = new FakeAudioOutput();
         const audioBridge = new FakeAudioBridge(audioOutput.generation);
         const audioConfiguration: DecodeWorkerAudioConfiguration = {
@@ -961,7 +1753,7 @@ describe('CustomPlaybackController', () => {
             destroySettled = true;
         });
         await flushAsyncWork();
-        expect(destroySettled).toBe(false);
+        expect(destroySettled).toBe(true);
 
         factoryResult.resolve({
             bridge: audioBridge as unknown as CustomDecodeAudioBridge,
@@ -971,6 +1763,7 @@ describe('CustomPlaybackController', () => {
         await expect(audioPreparation).resolves.toBeNull();
         await expect(destroyPromise).resolves.toBeUndefined();
         await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
+        await flushAsyncWork();
         expect(audioOutput.destroy).toHaveBeenCalledOnce();
     });
 

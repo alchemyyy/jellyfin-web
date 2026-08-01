@@ -3,7 +3,6 @@ import {
     RENDER_SETTINGS_VERSION,
     type DisplaySettings,
     type HDRToSDRRenderSettings,
-    type OutputTransfer,
     type RenderSettings,
     type ToneMappingSettings
 } from '../RenderSettings';
@@ -15,6 +14,7 @@ import {
 } from './ColorMetadata';
 
 export type ColorTriplet = readonly [number, number, number];
+export type ReferenceSDROutputTransfer = 'bt709' | 'srgb';
 
 const ACES_A = 2.51;
 const ACES_B = 0.03;
@@ -308,7 +308,7 @@ function applyDisplayControls(
 export function encodeSDROutput(
     linearRGBNits: ColorTriplet,
     outputPeakNits: number,
-    transfer: OutputTransfer
+    transfer: ReferenceSDROutputTransfer
 ): ColorTriplet {
     if (!Number.isFinite(outputPeakNits) || outputPeakNits <= 0) {
         throw new RangeError('Output peak luminance must be positive and finite');

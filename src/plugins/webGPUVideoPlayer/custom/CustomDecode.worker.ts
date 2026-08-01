@@ -13,17 +13,49 @@ import {
 
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 import { getAudioSampleWindow } from './AudioSampleWindow';
+import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
+import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
+    getCustomDecodeHardwareAcceleration,
     isDecodeWorkerRequest,
     MAX_DECODED_AUDIO_CHANNELS,
     MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
+    MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
+    type CustomDecodeRawVideoFrameFormat,
+    type CustomDecodeVideoDecoderBackend,
+    type CustomDecodeVideoOutputMode,
     type DecodeWorkerAudioConfiguration,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse
 } from './DecodeWorkerProtocol';
+import { getTrackByOrdinal } from './CustomDecodeTrackSelection';
+import {
+    DecodedVideoGeometryError,
+    requireConsistentDecodedVideoGeometry
+} from './DecodedVideoGeometry';
+import {
+    armHEVCSoftwareVideoDecoderLifecycle,
+    registerHEVCSoftwareVideoDecoder,
+    waitForHEVCSoftwareVideoDecoderShutdown
+} from './HEVCSoftwareVideoDecoder';
+import {
+    requireValidByteRangeResponse,
+    UnsupportedRangeResponseError
+} from './HTTPRangeResponse';
+import {
+    isRetryableMediaFetchError,
+    MediaNetworkError,
+    requireSuccessfulMediaHTTPResponse
+} from './MediaFetchPolicy';
+import RawFrameBufferPool from './RawFrameBufferPool';
+import {
+    copyVideoFrameToRawPlanes,
+    getRawVideoFrameTransferList,
+    type RawVideoFrameGeometry
+} from './RawVideoFrameCopy';
 import { requireMicroseconds } from './TimeMath';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
@@ -40,9 +72,18 @@ type DecodeRun = {
     audioIterator: MediaSampleIterator<AudioSample> | null
     audioSampleCredits: number
     cancelled: boolean
+    decodedVideoGeometry: RawVideoFrameGeometry | null
     frameCredits: number
     generation: number
     input: Input | null
+    iteratorRetirementPromise: Promise<void> | null
+    maximumCodedHeight: number
+    maximumCodedWidth: number
+    outstandingRawFrameBufferCount: number
+    rawFrameBufferPool: RawFrameBufferPool | null
+    rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    videoOutputMode: CustomDecodeVideoOutputMode
     videoIterator: MediaSampleIterator<VideoSample> | null
     wakeAudioCreditWaiters: Array<() => void>
     wakeFrameCreditWaiters: Array<() => void>
@@ -50,6 +91,7 @@ type DecodeRun = {
 
 type PreparedVideoTrack = {
     decoderConfig: VideoDecoderConfig
+    geometry: RawVideoFrameGeometry
     videoTrack: InputVideoTrack
 };
 
@@ -66,13 +108,6 @@ type WorkerScope = {
     postMessage: (message: DecodeWorkerResponse, transfer?: Transferable[]) => void
 };
 
-class UnsupportedRangeResponseError extends Error {
-    public constructor() {
-        super('The media endpoint did not honor a byte-range request');
-        this.name = 'UnsupportedRangeResponseError';
-    }
-}
-
 class UnsupportedCustomDecodeSourceError extends Error {
     public constructor(message: string) {
         super(message);
@@ -87,8 +122,22 @@ function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[])
     workerScope.postMessage(response, transfer);
 }
 
+function createRawFrameBufferPool(
+    videoOutputMode: CustomDecodeVideoOutputMode
+): RawFrameBufferPool | null {
+    switch (videoOutputMode) {
+        case 'raw-planes':
+            return new RawFrameBufferPool(MAX_DECODED_RAW_FRAME_CREDITS);
+        case 'video-frame':
+            return null;
+    }
+}
+
 function getRetryDelay(previousAttempts: number, error: unknown): number | null {
-    if (error instanceof UnsupportedRangeResponseError) {
+    if (
+        error instanceof UnsupportedRangeResponseError
+        || !isRetryableMediaFetchError(error)
+    ) {
         return null;
     }
     if (previousAttempts > MAX_NETWORK_RETRY_ATTEMPTS) {
@@ -102,17 +151,19 @@ const validatedRangeFetch: typeof fetch = async (
     input: RequestInfo | URL,
     requestInit?: RequestInit
 ): Promise<Response> => {
-    const response = await fetch(input, requestInit);
-    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-    const requestHeaders = new Headers(requestInit?.headers);
-    if (!requestHeaders.has('Range') || response.status === 206) {
-        return response;
+    let response: Response;
+    try {
+        response = await fetch(input, requestInit);
+    } catch (error) {
+        throw new MediaNetworkError(error);
     }
-
-    if (response.body) {
-        void response.body.cancel().catch(() => undefined);
-    }
-    throw new UnsupportedRangeResponseError();
+    const requestHeaders = requestInit?.headers === undefined && input instanceof Request ?
+        input.headers :
+        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+        new Headers(requestInit?.headers);
+    requireSuccessfulMediaHTTPResponse(response);
+    requireValidByteRangeResponse(requestHeaders.get('Range'), response);
+    return response;
 };
 
 function wakeWaiters(waiters: Array<() => void>): void {
@@ -123,8 +174,11 @@ function wakeWaiters(waiters: Array<() => void>): void {
 }
 
 function addFrameCredits(run: DecodeRun, frameCredits: number): void {
+    const maximumFrameCredits = run.videoOutputMode === 'raw-planes' ?
+        MAX_DECODED_RAW_FRAME_CREDITS :
+        MAX_DECODED_FRAME_CREDITS;
     run.frameCredits = Math.min(
-        MAX_DECODED_FRAME_CREDITS,
+        maximumFrameCredits,
         run.frameCredits + frameCredits
     );
     wakeWaiters(run.wakeFrameCreditWaiters);
@@ -168,10 +222,11 @@ async function waitForAudioSampleCredit(run: DecodeRun): Promise<boolean> {
     return true;
 }
 
-function retireIterator<Sample>(iterator: MediaSampleIterator<Sample> | null): void {
-    const iteratorReturn = iterator?.return?.();
-    if (iteratorReturn) {
-        void iteratorReturn.catch(() => undefined);
+async function retireIterator<Sample>(iterator: MediaSampleIterator<Sample> | null): Promise<void> {
+    try {
+        await iterator?.return?.();
+    } catch {
+        return;
     }
 }
 
@@ -184,8 +239,12 @@ function stopRun(run: DecodeRun): void {
     wakeWaiters(run.wakeAudioCreditWaiters);
     wakeWaiters(run.wakeFrameCreditWaiters);
     run.input?.dispose();
-    retireIterator(run.audioIterator);
-    retireIterator(run.videoIterator);
+    const iteratorRetirementPromises: Array<Promise<void>> = [];
+    iteratorRetirementPromises.push(retireIterator(run.audioIterator));
+    iteratorRetirementPromises.push(retireIterator(run.videoIterator));
+    run.iteratorRetirementPromise = Promise.all(iteratorRetirementPromises).then(
+        (): void => undefined
+    );
 }
 
 function getSafeErrorMessage(error: unknown): string {
@@ -206,7 +265,7 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     if (error instanceof UnsupportedCustomDecodeSourceError) {
         return 'source-unsupported';
     }
-    if (error instanceof TypeError) {
+    if (error instanceof MediaNetworkError) {
         return 'network-failed';
     }
 
@@ -216,66 +275,101 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
 async function prepareVideoTrack(
     input: Input,
     run: DecodeRun,
-    videoTrackIndex: number
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>
 ): Promise<PreparedVideoTrack> {
-    const tracks = await input.getTracks();
+    const videoTracks = await input.getVideoTracks();
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
     }
 
-    const selectedTrack = tracks[videoTrackIndex];
-    if (!selectedTrack?.isVideoTrack()) {
+    const videoTrack = getTrackByOrdinal(videoTracks, request.videoTrackIndex);
+    if (!videoTrack) {
         throw new UnsupportedCustomDecodeSourceError(
-            'The selected stream index does not identify a video track'
+            'The selected video track ordinal is unavailable'
         );
     }
-    const videoTrack = selectedTrack;
 
-    const [ codec, decoderConfig, canDecode ] = await Promise.all([
+    const [
+        codec,
+        decoderConfig,
+        canDecode,
+        codedHeight,
+        codedWidth,
+        displayHeight,
+        displayWidth
+    ] = await Promise.all([
         videoTrack.getCodec(),
         videoTrack.getDecoderConfig(),
-        videoTrack.canDecode()
+        videoTrack.canDecode(),
+        videoTrack.getCodedHeight(),
+        videoTrack.getCodedWidth(),
+        videoTrack.getDisplayHeight(),
+        videoTrack.getDisplayWidth()
     ]);
     if (!codec || !decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError('The selected video codec configuration is unavailable');
+    }
+    if (request.videoDecoderBackend === 'bundled-hevc' && codec !== 'hevc') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected video track does not match the negotiated bundled HEVC decoder'
+        );
     }
     if (!canDecode) {
         throw new UnsupportedCustomDecodeSourceError(
             `The browser cannot decode the selected ${codec} video configuration`
         );
     }
+    const dimensions = [ codedHeight, codedWidth, displayHeight, displayWidth ];
+    if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
+        throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
+    }
+    if (
+        codedWidth > request.maximumCodedWidth
+        || codedHeight > request.maximumCodedHeight
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected video track exceeds its negotiated decode route'
+        );
+    }
 
-    return { decoderConfig, videoTrack };
+    return {
+        decoderConfig,
+        geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
+        videoTrack
+    };
 }
 
 async function prepareAudioTrack(
     input: Input,
     run: DecodeRun,
-    audioTrackIndex: number
+    audioTrackOrdinal: number
 ): Promise<PreparedAudioTrack> {
-    const tracks = await input.getTracks();
+    const audioTracks = await input.getAudioTracks();
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
     }
 
-    const selectedTrack = tracks[audioTrackIndex];
-    if (!selectedTrack?.isAudioTrack()) {
+    const audioTrack = getTrackByOrdinal(audioTracks, audioTrackOrdinal);
+    if (!audioTrack) {
         throw new UnsupportedCustomDecodeSourceError(
-            'The selected stream index does not identify an audio track'
+            'The selected audio track ordinal is unavailable'
         );
     }
-    const audioTrack = selectedTrack;
 
-    const [ codec, decoderConfig, canDecode, channelCount, sampleRate ] = await Promise.all([
+    const [ codec, decoderConfig, channelCount, sampleRate ] = await Promise.all([
         audioTrack.getCodec(),
         audioTrack.getDecoderConfig(),
-        audioTrack.canDecode(),
         audioTrack.getNumberOfChannels(),
         audioTrack.getSampleRate()
     ]);
     if (!codec || !decoderConfig) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
     }
+    await registerRequiredCustomAudioDecoder(codec);
+    if (run.cancelled) {
+        throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
+    }
+    const canDecode = await audioTrack.canDecode();
     if (!canDecode) {
         throw new UnsupportedCustomDecodeSourceError(
             `The browser cannot decode the selected ${codec} audio configuration`
@@ -298,36 +392,57 @@ async function prepareAudioTrack(
     };
 }
 
-async function postReadyResponse(
+function postReadyResponse(
     run: DecodeRun,
     preparedVideoTrack: PreparedVideoTrack,
     preparedAudioTrack: PreparedAudioTrack | null
-): Promise<void> {
-    const [ codedHeight, codedWidth, displayHeight, displayWidth ] = await Promise.all([
-        preparedVideoTrack.videoTrack.getCodedHeight(),
-        preparedVideoTrack.videoTrack.getCodedWidth(),
-        preparedVideoTrack.videoTrack.getDisplayHeight(),
-        preparedVideoTrack.videoTrack.getDisplayWidth()
-    ]);
-    const dimensions = [ codedHeight, codedWidth, displayHeight, displayWidth ];
-    if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
-        throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
-    }
-
+): void {
+    const geometry = preparedVideoTrack.geometry;
     postResponse({
         audio: preparedAudioTrack?.audioConfiguration ?? null,
         codec: preparedVideoTrack.decoderConfig.codec,
-        codedHeight,
-        codedWidth,
-        displayHeight,
-        displayWidth,
+        codedHeight: geometry.codedHeight,
+        codedWidth: geometry.codedWidth,
+        displayHeight: geometry.displayHeight,
+        displayWidth: geometry.displayWidth,
         generation: run.generation,
         type: 'ready'
     });
 }
 
-function postVideoFrame(run: DecodeRun, sample: VideoSample): void {
-    let frame: VideoFrame | null = null;
+function lockDecodedFrameGeometry(
+    run: DecodeRun,
+    frame: VideoFrame,
+    selectedTrackGeometry: RawVideoFrameGeometry
+): RawVideoFrameGeometry {
+    try {
+        const decodedVideoGeometry = requireConsistentDecodedVideoGeometry(
+            {
+                codedHeight: frame.codedHeight,
+                codedWidth: frame.codedWidth,
+                displayHeight: frame.displayHeight,
+                displayWidth: frame.displayWidth
+            },
+            selectedTrackGeometry,
+            run.maximumCodedWidth,
+            run.maximumCodedHeight,
+            run.decodedVideoGeometry
+        );
+        run.decodedVideoGeometry = decodedVideoGeometry;
+        return decodedVideoGeometry;
+    } catch (error) {
+        if (error instanceof DecodedVideoGeometryError) {
+            throw new UnsupportedCustomDecodeSourceError(error.message);
+        }
+        throw error;
+    }
+}
+
+function takeVideoFrame(sample: VideoSample): {
+    durationMicroseconds: Microseconds
+    frame: VideoFrame
+    mediaTimeMicroseconds: Microseconds
+} {
     try {
         const mediaTimeMicroseconds = requireMicroseconds(
             sample.microsecondTimestamp,
@@ -341,8 +456,83 @@ function postVideoFrame(run: DecodeRun, sample: VideoSample): void {
             throw new RangeError('Decoded frame duration must not be negative');
         }
 
-        frame = sample.toVideoFrame();
-        if (run.cancelled) {
+        return {
+            durationMicroseconds,
+            frame: sample.toVideoFrame(),
+            mediaTimeMicroseconds
+        };
+    } finally {
+        // VideoFrame ownership is independent, so do not retain the sample across copies
+        sample.close();
+    }
+}
+
+async function postVideoFrame(
+    run: DecodeRun,
+    sample: VideoSample,
+    expectedGeometry: RawVideoFrameGeometry
+): Promise<void> {
+    let frame: VideoFrame | null = null;
+    try {
+        const decodedSample = takeVideoFrame(sample);
+        const durationMicroseconds = decodedSample.durationMicroseconds;
+        const mediaTimeMicroseconds = decodedSample.mediaTimeMicroseconds;
+        frame = decodedSample.frame;
+        const decodedVideoGeometry = lockDecodedFrameGeometry(
+            run,
+            frame,
+            expectedGeometry
+        );
+        if (run.cancelled || currentRun !== run) {
+            return;
+        }
+
+        if (run.videoOutputMode === 'raw-planes') {
+            const rawVideoFrameFormat = run.rawVideoFrameFormat;
+            if (rawVideoFrameFormat === null) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    'The raw video frame output format is unavailable'
+                );
+            }
+            const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
+            if (!bufferLease) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    'The raw video frame buffer pool was exhausted'
+                );
+            }
+            const ownedFrame = frame;
+            frame = null;
+            const rawFrame = await copyVideoFrameToRawPlanes(ownedFrame, {
+                expectedGeometry: decodedVideoGeometry,
+                format: rawVideoFrameFormat,
+                requireReusableBuffer: bufferLease.kind === 'reuse',
+                reusableBuffer: bufferLease.kind === 'reuse' ?
+                    bufferLease.buffer :
+                    undefined
+            });
+            if (run.cancelled || currentRun !== run) {
+                return;
+            }
+
+            if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    'The decoded raw frame timestamp did not match its media sample'
+                );
+            }
+            if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    'The raw video frame buffer window exceeded its bound'
+                );
+            }
+            run.outstandingRawFrameBufferCount += 1;
+            postResponse({
+                durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
+                frame: rawFrame,
+                generation: run.generation,
+                mediaTimeMicroseconds,
+                outputMode: 'raw-planes',
+                type: 'frame'
+            }, getRawVideoFrameTransferList(rawFrame));
             return;
         }
 
@@ -351,12 +541,12 @@ function postVideoFrame(run: DecodeRun, sample: VideoSample): void {
             frame,
             generation: run.generation,
             mediaTimeMicroseconds,
+            outputMode: 'video-frame',
             type: 'frame'
         }, [ frame as unknown as Transferable ]);
         frame = null;
     } finally {
         frame?.close();
-        sample.close();
     }
 }
 
@@ -430,28 +620,48 @@ function postAudioSample(
 async function streamVideoFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    videoTrack: InputVideoTrack
+    preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
-    const sampleSink = new VideoSampleSink(videoTrack, {
-        hardwareAcceleration: 'prefer-hardware',
+    const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
+        hardwareAcceleration: getCustomDecodeHardwareAcceleration(
+            run.videoOutputMode,
+            run.videoDecoderBackend
+        ),
         optimizeForLatency: true
     });
-    const iterator = sampleSink.samples(
-        microsecondsToSeconds(request.startTimeMicroseconds)
-    ) as unknown as MediaSampleIterator<VideoSample>;
+    // Mediabunny creates its decoder after asynchronous track probes
+    const cancelDecoderLifecycle = run.videoDecoderBackend === 'bundled-hevc' ?
+        armHEVCSoftwareVideoDecoderLifecycle() :
+        null;
+    let iterator: MediaSampleIterator<VideoSample>;
+    try {
+        iterator = sampleSink.samples(
+            microsecondsToSeconds(request.startTimeMicroseconds)
+        ) as unknown as MediaSampleIterator<VideoSample>;
+    } catch (error) {
+        cancelDecoderLifecycle?.();
+        throw error;
+    }
     run.videoIterator = iterator;
 
-    while (await waitForFrameCredit(run)) {
-        const iteratorResult = await iterator.next();
-        if (run.cancelled) {
-            iteratorResult.value?.close();
-            return;
-        }
-        if (iteratorResult.done) {
-            return;
-        }
+    try {
+        while (await waitForFrameCredit(run)) {
+            const iteratorResult = await iterator.next();
+            if (run.cancelled) {
+                iteratorResult.value?.close();
+                return;
+            }
+            if (iteratorResult.done) {
+                return;
+            }
 
-        postVideoFrame(run, iteratorResult.value);
+            await postVideoFrame(run, iteratorResult.value, preparedVideoTrack.geometry);
+        }
+    } catch (error) {
+        if (!run.cancelled) {
+            cancelDecoderLifecycle?.();
+        }
+        throw error;
     }
 }
 
@@ -489,23 +699,22 @@ async function streamAudioSamples(
 }
 
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
-    const input = new Input({
-        formats: ALL_FORMATS,
-        source: new UrlSource(request.url, {
-            fetchFn: validatedRangeFetch,
-            getRetryDelay,
-            maxCacheSize: URL_SOURCE_CACHE_BYTES,
-            parallelism: URL_SOURCE_PARALLELISM
-        })
-    });
-    run.input = input;
-
     try {
+        const input = new Input({
+            formats: ALL_FORMATS,
+            source: new UrlSource(request.url, {
+                fetchFn: validatedRangeFetch,
+                getRetryDelay,
+                maxCacheSize: URL_SOURCE_CACHE_BYTES,
+                parallelism: URL_SOURCE_PARALLELISM
+            })
+        });
+        run.input = input;
         const preparedTrackPromises: [
             Promise<PreparedVideoTrack>,
             Promise<PreparedAudioTrack | null>
         ] = [
-            prepareVideoTrack(input, run, request.videoTrackIndex),
+            prepareVideoTrack(input, run, request),
             request.audioTrackIndex === null ?
                 Promise.resolve(null) :
                 prepareAudioTrack(input, run, request.audioTrackIndex)
@@ -515,13 +724,13 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
 
-        await postReadyResponse(run, preparedVideoTrack, preparedAudioTrack);
+        postReadyResponse(run, preparedVideoTrack, preparedAudioTrack);
         const streamPromises: Array<Promise<void>> = [];
-        streamPromises.push(streamVideoFrames(run, request, preparedVideoTrack.videoTrack));
+        streamPromises.push(streamVideoFrames(run, request, preparedVideoTrack));
         if (preparedAudioTrack) {
             streamPromises.push(streamAudioSamples(run, request, preparedAudioTrack));
         }
-        await Promise.all(streamPromises);
+        await settleConcurrentDecodeStreams(streamPromises, (): void => stopRun(run));
         if (!run.cancelled) {
             postResponse({ generation: run.generation, type: 'ended' });
         }
@@ -536,10 +745,24 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         }
     } finally {
         stopRun(run);
+        if (run.iteratorRetirementPromise) {
+            await run.iteratorRetirementPromise;
+        }
+        if (run.videoDecoderBackend === 'bundled-hevc') {
+            await waitForHEVCSoftwareVideoDecoderShutdown();
+        }
         if (currentRun === run) {
             currentRun = null;
         }
         postResponse({ generation: run.generation, type: 'stopped' });
+    }
+}
+
+function registerRequiredVideoDecoder(
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>
+): void {
+    if (request.videoDecoderBackend === 'bundled-hevc') {
+        registerHEVCSoftwareVideoDecoder();
     }
 }
 
@@ -553,14 +776,24 @@ function handleRequest(requestValue: unknown): void {
             if (currentRun) {
                 stopRun(currentRun);
             }
+            registerRequiredVideoDecoder(requestValue);
 
             const run: DecodeRun = {
                 audioIterator: null,
                 audioSampleCredits: requestValue.audioSampleCredits,
                 cancelled: false,
+                decodedVideoGeometry: null,
                 frameCredits: requestValue.frameCredits,
                 generation: requestValue.generation,
                 input: null,
+                iteratorRetirementPromise: null,
+                maximumCodedHeight: requestValue.maximumCodedHeight,
+                maximumCodedWidth: requestValue.maximumCodedWidth,
+                outstandingRawFrameBufferCount: 0,
+                rawFrameBufferPool: createRawFrameBufferPool(requestValue.videoOutputMode),
+                rawVideoFrameFormat: requestValue.rawVideoFrameFormat,
+                videoDecoderBackend: requestValue.videoDecoderBackend,
+                videoOutputMode: requestValue.videoOutputMode,
                 videoIterator: null,
                 wakeAudioCreditWaiters: [],
                 wakeFrameCreditWaiters: []
@@ -570,13 +803,28 @@ function handleRequest(requestValue: unknown): void {
             break;
         }
         case 'pull':
-            if (currentRun?.generation === requestValue.generation) {
+            if (
+                currentRun?.generation === requestValue.generation
+                && currentRun.videoOutputMode === 'video-frame'
+            ) {
                 addFrameCredits(currentRun, requestValue.frameCredits);
             }
             break;
         case 'pull-audio':
             if (currentRun?.generation === requestValue.generation) {
                 addAudioSampleCredits(currentRun, requestValue.audioSampleCredits);
+            }
+            break;
+        case 'recycle-frame':
+            if (
+                currentRun?.generation === requestValue.generation
+                && currentRun.videoOutputMode === 'raw-planes'
+                && !currentRun.cancelled
+                && currentRun.outstandingRawFrameBufferCount > 0
+                && currentRun.rawFrameBufferPool?.recycle(requestValue.buffer)
+            ) {
+                currentRun.outstandingRawFrameBufferCount -= 1;
+                addFrameCredits(currentRun, 1);
             }
             break;
         case 'stop':

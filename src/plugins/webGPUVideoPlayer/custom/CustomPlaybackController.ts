@@ -9,6 +9,7 @@ import type {
 } from '../WebGPUPresenter';
 import AudioWorkletController from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
+import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolicy';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeAudioBridgeFactory,
@@ -16,6 +17,10 @@ import CustomDecodeSession, {
 } from './CustomDecodeSession';
 import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
 import MediaClock from './MediaClock';
+import {
+    MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
+    MAXIMUM_RAW_VIDEO_CODED_WIDTH
+} from './RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from './TimeMath';
 import type {
     CustomAudioOutput,
@@ -24,6 +29,7 @@ import type {
     CustomPlaybackControllerEvent,
     CustomPlaybackControllerEventHandler,
     CustomPlaybackControllerOptions,
+    CustomPlaybackFallbackDisposition,
     CustomPlaybackFallbackReason,
     CustomPlaybackFallbackRequest,
     CustomPlaybackHTMLFallbackHook,
@@ -42,6 +48,19 @@ export const DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(1_500);
 export const DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS =
     millisecondsToMicroseconds(250);
+export const DEFAULT_CUSTOM_PLAYBACK_VIDEO_STARVATION_GRACE_MICROSECONDS =
+    millisecondsToMicroseconds(100);
+export const DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS =
+    millisecondsToMicroseconds(10_000);
+export const DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS =
+    millisecondsToMicroseconds(2_000);
+export const DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS =
+    millisecondsToMicroseconds(2_000);
+
+const MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS =
+    millisecondsToMicroseconds(100);
+const CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS =
+    millisecondsToMicroseconds(100);
 
 type PendingStartup = {
     completing: boolean
@@ -53,10 +72,15 @@ type PendingStartup = {
     settled: boolean
     startedAtMicroseconds: Microseconds
     timer: ReturnType<typeof globalThis.setTimeout>
-    videoReady: boolean
+    mediaReady: boolean
 };
 
 type ClockStarvation = 'audio' | 'video';
+
+type DrainedAudioTail = {
+    endMediaTimeMicroseconds: Microseconds | null
+    outputTelemetry: AudioWorkletTelemetry
+};
 
 const MAXIMUM_CONTROLLER_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(60_000);
 const ZERO_MICROSECONDS = millisecondsToMicroseconds(0);
@@ -94,6 +118,16 @@ function validateTrackIndex(trackIndex: number, label: string): void {
     }
 }
 
+function validateCodedDimension(
+    value: number,
+    absoluteMaximum: number,
+    label: string
+): void {
+    if (!Number.isSafeInteger(value) || value <= 0 || value > absoluteMaximum) {
+        throw new RangeError(`${label} exceeds the custom decode route bound`);
+    }
+}
+
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
     if (options.durationMicroseconds !== null) {
@@ -105,9 +139,42 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     if (typeof options.url !== 'string' || options.url.length === 0) {
         throw new TypeError('Custom playback URL must be a non-empty string');
     }
+    if (
+        options.videoDecoderBackend !== 'bundled-hevc'
+        && options.videoDecoderBackend !== 'native'
+    ) {
+        throw new TypeError('Custom playback video decoder backend is invalid');
+    }
+    validateCodedDimension(
+        options.maximumCodedWidth,
+        MAXIMUM_RAW_VIDEO_CODED_WIDTH,
+        'Maximum coded width'
+    );
+    validateCodedDimension(
+        options.maximumCodedHeight,
+        MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
+        'Maximum coded height'
+    );
     validateTrackIndex(options.videoTrackIndex, 'Video track index');
     if (options.audioTrackIndex !== null) {
         validateTrackIndex(options.audioTrackIndex, 'Audio track index');
+    }
+    switch (options.videoOutputMode) {
+        case 'raw-planes':
+            if (
+                options.rawVideoFrameFormat !== 'I420P10'
+                && options.rawVideoFrameFormat !== 'I420P12'
+            ) {
+                throw new TypeError('Raw custom playback requires a requested raw frame format');
+            }
+            break;
+        case 'video-frame':
+            if (options.rawVideoFrameFormat !== null) {
+                throw new TypeError('VideoFrame custom playback cannot request a raw frame format');
+            }
+            break;
+        default:
+            throw new TypeError('Custom playback video output mode is invalid');
     }
 }
 
@@ -115,8 +182,13 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
     return {
         audioTrackIndex: options.audioTrackIndex,
         durationMicroseconds: options.durationMicroseconds,
+        maximumCodedHeight: options.maximumCodedHeight,
+        maximumCodedWidth: options.maximumCodedWidth,
+        rawVideoFrameFormat: options.rawVideoFrameFormat,
         startTimeMicroseconds: options.startTimeMicroseconds,
         url: options.url,
+        videoDecoderBackend: options.videoDecoderBackend,
+        videoOutputMode: options.videoOutputMode,
         videoTrackIndex: options.videoTrackIndex
     };
 }
@@ -127,6 +199,26 @@ function hasSameAudioLayout(
 ): boolean {
     return left.channelCount === right.channelCount
         && left.sampleRate === right.sampleRate;
+}
+
+function getFallbackDisposition(
+    reason: CustomPlaybackFallbackReason
+): CustomPlaybackFallbackDisposition {
+    switch (reason) {
+        case 'audio-output-failed':
+        case 'audio-output-unavailable':
+        case 'lifecycle-failed':
+        case 'playback-rate-unsupported':
+            return 'same-session-native';
+        case 'decode-failed':
+        case 'ended-before-ready':
+        case 'network-failed':
+        case 'playback-stalled':
+        case 'range-unsupported':
+        case 'source-unsupported':
+        case 'startup-timeout':
+            return 'renegotiate-source';
+    }
 }
 
 function createDefaultAudioOutputFactory(
@@ -168,6 +260,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private audioBinding: CustomAudioOutputBinding | null = null;
     private audioOutput: CustomAudioOutput | null = null;
     private readonly audioOutputFactory: CustomAudioOutputFactory | null;
+    private audioOutputCreationRevision = 0;
     private audioOutputPromise: Promise<CustomAudioOutputBinding> | null = null;
     private audioOutputPromiseConfiguration: DecodeWorkerAudioConfiguration | null = null;
     private audioPath: CustomPlaybackTelemetry['audioPath'] = 'disabled';
@@ -186,20 +279,28 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private lastErrorMessage: string | null = null;
     private lastTimeUpdateMonotonicMicroseconds: Microseconds | null = null;
     private readonly monotonicTimeSource: () => Microseconds;
+    private readonly maximumVideoDecodeLagMicroseconds: Microseconds;
     private muted = false;
     private pendingEndedGeneration: number | null = null;
+    private lastDrainedVideoFrameEndTimeMicroseconds: Microseconds | null = null;
     private readonly pendingPresentationFrames = new Set<DecodedPresentationFrame>();
     private pendingStartup: PendingStartup | null = null;
     private readonly pipelineStopTimeoutMicroseconds: Microseconds;
+    private readonly playbackStallTimeoutMicroseconds: Microseconds;
+    private playbackStarvationStartedAtMicroseconds: Microseconds | null = null;
     private playCount = 0;
     private readonly startupTimeoutMicroseconds: Microseconds;
     private startupDurationMicroseconds: Microseconds | null = null;
     private staleEventCount = 0;
     private state: CustomPlaybackState = 'idle';
     private stopPromise: Promise<void> | null = null;
+    private terminalAudioDrainDeadlineMicroseconds: Microseconds | null = null;
+    private terminalAudioDrainGeneration: number | null = null;
+    private terminalAudioTailReleased = false;
     private readonly videoDecodeSession: CustomVideoDecodeSession;
     private readonly timeUpdateIntervalMicroseconds: Microseconds;
     private volume = 1;
+    private videoFrameMissStartedAtMicroseconds: Microseconds | null = null;
     private waitingForVideoFrame = false;
     private videoStarvationAnchorMediaTimeMicroseconds: Microseconds | null = null;
     private videoStarvationAnchorMonotonicTimeMicroseconds: Microseconds | null = null;
@@ -209,6 +310,11 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.fallbackHook = options.fallbackHook ?? createNoopFallbackHook();
         this.monotonicTimeSource = options.monotonicTimeSource ?? defaultMonotonicTimeSource;
         this.clock = options.clock ?? new MediaClock(this.monotonicTimeSource);
+        this.maximumVideoDecodeLagMicroseconds = requirePositiveTimeout(
+            options.maximumVideoDecodeLagMicroseconds
+                ?? DEFAULT_CUSTOM_PLAYBACK_MAXIMUM_VIDEO_DECODE_LAG_MICROSECONDS,
+            'Maximum video decode lag'
+        );
         this.pipelineStopTimeoutMicroseconds = requirePositiveTimeout(
             options.pipelineStopTimeoutMicroseconds
                 ?? DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS,
@@ -218,6 +324,11 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             options.startupTimeoutMicroseconds
                 ?? DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS,
             'Playback startup timeout'
+        );
+        this.playbackStallTimeoutMicroseconds = requirePositiveTimeout(
+            options.playbackStallTimeoutMicroseconds
+                ?? DEFAULT_CUSTOM_PLAYBACK_STALL_TIMEOUT_MICROSECONDS,
+            'Playback stall timeout'
         );
         this.timeUpdateIntervalMicroseconds = requirePositiveTimeout(
             options.timeUpdateIntervalMicroseconds
@@ -282,6 +393,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
+        this.videoFrameMissStartedAtMicroseconds = null;
         const generation = this.requireActiveGeneration();
         if (!this.clock.isPaused) {
             this.clock.pause();
@@ -289,6 +401,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         if (this.clockStarvation === 'video') {
             this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
         }
+        this.playbackStarvationStartedAtMicroseconds = null;
         void this.setAudioPlaying(false).catch((error: unknown): void => {
             this.activateFallback(generation, 'audio-output-failed', this.getErrorMessage(error));
         });
@@ -314,11 +427,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         } else if (this.clockStarvation === null) {
             this.clock.resume();
         }
+        if (this.hasActivePlaybackWait()) {
+            this.playbackStarvationStartedAtMicroseconds = this.readMonotonicTime();
+        }
         void this.setAudioPlaying(true).catch((error: unknown): void => {
             this.activateFallback(generation, 'audio-output-failed', this.getErrorMessage(error));
         });
         this.setState('playing', generation);
-        if (this.clockStarvation === null) {
+        if (this.clockStarvation === null && !this.waitingForVideoFrame) {
             this.emitEvent({ generation, type: 'playing' });
         }
         this.emitTimeUpdate();
@@ -434,30 +550,43 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             || (this.state !== 'playing' && this.state !== 'paused')) {
             return null;
         }
+        if (this.shouldAbortFrameTake(generation)) {
+            return null;
+        }
 
         const presentationFrame = this.videoDecodeSession.takeFrame(targetTimeMicroseconds);
         if (!presentationFrame && this.state === 'playing') {
-            this.beginVideoStarvationIfNeeded();
-            if (!this.waitingForVideoFrame) {
-                this.waitingForVideoFrame = true;
-                this.emitEvent({
-                    generation,
-                    reason: 'video-frame',
-                    type: 'waiting'
-                });
-            }
+            this.handleMissingVideoFrame(generation);
         } else if (presentationFrame) {
+            if (this.hasExcessiveVideoDecodeLag(presentationFrame, targetTimeMicroseconds)) {
+                this.videoDecodeSession.discardFrame(presentationFrame);
+                this.activateFallback(
+                    generation,
+                    'playback-stalled',
+                    'Custom video decoding fell behind the playback clock'
+                );
+                return null;
+            }
+            this.videoFrameMissStartedAtMicroseconds = null;
             this.pendingPresentationFrames.add(presentationFrame);
-            const recoveredFromStarvation = this.recoverVideoStarvation(presentationFrame);
+            this.recoverVideoStarvation(presentationFrame);
             if (this.waitingForVideoFrame) {
                 this.waitingForVideoFrame = false;
-                if (this.state === 'playing' && !recoveredFromStarvation) {
+                if (this.state === 'playing' && this.clockStarvation === null) {
                     this.emitEvent({ generation, type: 'playing' });
                 }
             }
+            this.clearPlaybackStarvationIfRecovered();
         }
         this.emitTimeUpdateIfDue();
+        this.completeEndedPlaybackIfDrained(generation);
         return presentationFrame;
+    }
+
+    private shouldAbortFrameTake(generation: number): boolean {
+        this.completeEndedPlaybackIfDrained(generation);
+        return this.playbackState === 'ended'
+            || (this.state === 'playing' && this.hasPlaybackStallExceeded(generation));
     }
 
     /** Takes a frame against the controller's application-owned clock. */
@@ -470,9 +599,30 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         if (!this.pendingPresentationFrames.delete(presentationFrame)) {
             return false;
         }
+        if (!this.videoDecodeSession.acknowledgeFrame(presentationFrame)) {
+            return false;
+        }
 
         const generation = this.activeGeneration;
         if (generation !== null) {
+            this.recordDrainedVideoFrameEnd(presentationFrame);
+            this.completeEndedPlaybackIfDrained(generation);
+        }
+        return true;
+    }
+
+    /** Acknowledges that the renderer discarded a transferred decoded frame. */
+    public notifyFrameDiscarded(presentationFrame: DecodedPresentationFrame): boolean {
+        if (!this.pendingPresentationFrames.delete(presentationFrame)) {
+            return false;
+        }
+        if (!this.videoDecodeSession.discardFrame(presentationFrame)) {
+            return false;
+        }
+
+        const generation = this.activeGeneration;
+        if (generation !== null) {
+            this.recordDrainedVideoFrameEnd(presentationFrame);
             this.completeEndedPlaybackIfDrained(generation);
         }
         return true;
@@ -596,7 +746,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             settled: false,
             startedAtMicroseconds: this.readMonotonicTime(),
             timer,
-            videoReady: false
+            mediaReady: false
         };
     }
 
@@ -605,7 +755,10 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         options: CustomPlaybackPlayOptions
     ): Promise<void> {
         try {
-            await this.setAudioPlaying(false);
+            await this.waitBounded(
+                this.setAudioPlaying(false),
+                'Custom audio suspension exceeded its bound'
+            );
         } catch (error) {
             this.activateFallback(
                 generation,
@@ -638,8 +791,13 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             this.videoDecodeSession.start({
                 audioTrackIndex: options.audioTrackIndex,
                 generation,
+                maximumCodedHeight: options.maximumCodedHeight,
+                maximumCodedWidth: options.maximumCodedWidth,
+                rawVideoFrameFormat: options.rawVideoFrameFormat,
                 startTimeMicroseconds: options.startTimeMicroseconds,
                 url: options.url,
+                videoDecoderBackend: options.videoDecoderBackend,
+                videoOutputMode: options.videoOutputMode,
                 videoTrackIndex: options.videoTrackIndex
             });
         } catch (error) {
@@ -658,14 +816,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
 
         switch (event.type) {
+            case 'configured':
+                this.handleVideoConfigured(event);
+                break;
             case 'ready':
-                if (this.pendingStartup?.generation === event.generation) {
-                    this.audioPath = event.audio ? 'ready' : 'disabled';
-                    this.pendingStartup.videoReady = true;
-                    void this.completeStartupIfReady(event.generation);
-                }
+                this.handleVideoReady(event);
                 break;
             case 'ended':
+                this.videoFrameMissStartedAtMicroseconds = null;
                 if (this.pendingStartup?.generation === event.generation) {
                     this.activateFallback(
                         event.generation,
@@ -684,20 +842,40 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             case 'error':
                 this.activateFallback(
                     event.generation,
-                    event.failureKind === 'audio-output-failed' ?
-                        'audio-output-failed' :
-                        'decode-failed',
+                    event.failureKind,
                     event.message
                 );
                 break;
         }
     };
 
+    private handleVideoConfigured(
+        event: Extract<CustomDecodeSessionEvent, { type: 'configured' }>
+    ): void {
+        if (this.pendingStartup?.generation !== event.generation) {
+            return;
+        }
+
+        this.audioPath = event.audio ? 'pending' : 'disabled';
+    }
+
+    private handleVideoReady(
+        event: Extract<CustomDecodeSessionEvent, { type: 'ready' }>
+    ): void {
+        if (this.pendingStartup?.generation !== event.generation) {
+            return;
+        }
+
+        this.audioPath = event.audio ? 'ready' : 'disabled';
+        this.pendingStartup.mediaReady = true;
+        void this.completeStartupIfReady(event.generation);
+    }
+
     private async completeStartupIfReady(generation: number): Promise<void> {
         const pendingStartup = this.pendingStartup;
         if (!pendingStartup
             || pendingStartup.generation !== generation
-            || !pendingStartup.videoReady
+            || !pendingStartup.mediaReady
             || pendingStartup.completing) {
             return;
         }
@@ -768,6 +946,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
         this.pendingEndedGeneration = null;
         this.clockStarvation = null;
+        this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoFrameMissStartedAtMicroseconds = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
         this.waitingForVideoFrame = false;
@@ -788,6 +968,18 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
+        let audioEndTimeMicroseconds: Microseconds | null = null;
+        if (typeof this.currentSource?.audioTrackIndex === 'number') {
+            const drainedAudioTail = this.getDrainedAudioTail(generation);
+            if (!drainedAudioTail) {
+                return;
+            }
+            audioEndTimeMicroseconds = drainedAudioTail.endMediaTimeMicroseconds;
+            if (!this.updateTerminalAudioDrain(generation, drainedAudioTail)) {
+                return;
+            }
+        }
+
         const queuedFrameCount = this.videoDecodeSession.getTelemetry().queuedFrameCount;
         if (queuedFrameCount !== 0) {
             return;
@@ -797,20 +989,220 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
-        if (typeof this.currentSource?.audioTrackIndex === 'number') {
-            const bridgeTelemetry = this.audioBinding?.bridge.getTelemetry();
-            if (!bridgeTelemetry
-                || bridgeTelemetry.activeDecodeGeneration !== generation
-                || bridgeTelemetry.workletGeneration === null
-                || bridgeTelemetry.pendingFrameCount !== 0) {
-                return;
-            }
+        let finalMediaEndTimeMicroseconds = this.lastDrainedVideoFrameEndTimeMicroseconds;
+        if (audioEndTimeMicroseconds !== null
+            && (finalMediaEndTimeMicroseconds === null
+                || audioEndTimeMicroseconds > finalMediaEndTimeMicroseconds)) {
+            finalMediaEndTimeMicroseconds = audioEndTimeMicroseconds;
+        }
+        if (finalMediaEndTimeMicroseconds !== null
+            && this.currentTimeMicroseconds < finalMediaEndTimeMicroseconds) {
+            return;
         }
 
         if (this.pendingEndedGeneration !== generation) {
             return;
         }
         this.finishEndedPlayback(generation);
+    }
+
+    private getDrainedAudioTail(generation: number): DrainedAudioTail | null {
+        const audioBinding = this.audioBinding;
+        const audioOutput = this.audioOutput;
+        const bridgeTelemetry = audioBinding?.bridge.getTelemetry();
+        if (!audioBinding
+            || !audioOutput
+            || audioBinding.output !== audioOutput
+            || !bridgeTelemetry
+            || bridgeTelemetry.activeDecodeGeneration !== generation
+            || bridgeTelemetry.workletGeneration === null
+            || bridgeTelemetry.pendingFrameCount !== 0
+            || bridgeTelemetry.pendingSampleCount !== 0
+            || (bridgeTelemetry.submittedSampleCount > 0
+                && bridgeTelemetry.submittedEndMediaTimeMicroseconds === null)) {
+            return null;
+        }
+
+        const outputTelemetry = audioOutput.getTelemetry();
+        if (!outputTelemetry
+            || outputTelemetry.generation !== bridgeTelemetry.workletGeneration
+            || outputTelemetry.generation !== audioOutput.generation
+            || outputTelemetry.queuedFrames !== 0) {
+            return null;
+        }
+
+        return {
+            endMediaTimeMicroseconds: bridgeTelemetry.submittedEndMediaTimeMicroseconds,
+            outputTelemetry
+        };
+    }
+
+    private getTerminalAudioTailFromUnderflow(
+        telemetry: AudioWorkletTelemetry,
+        generation: number
+    ): DrainedAudioTail | null {
+        const bridgeTelemetry = this.audioBinding?.bridge.getTelemetry();
+        if (this.pendingEndedGeneration !== generation
+            || typeof this.currentSource?.audioTrackIndex !== 'number'
+            || telemetry.queuedFrames !== 0
+            || !bridgeTelemetry
+            || bridgeTelemetry.activeDecodeGeneration !== generation
+            || bridgeTelemetry.workletGeneration !== telemetry.generation
+            || (bridgeTelemetry.submittedSampleCount > 0
+                && bridgeTelemetry.submittedEndMediaTimeMicroseconds === null)) {
+            return null;
+        }
+
+        return {
+            endMediaTimeMicroseconds: bridgeTelemetry.submittedEndMediaTimeMicroseconds,
+            outputTelemetry: telemetry
+        };
+    }
+
+    private updateTerminalAudioDrain(
+        generation: number,
+        drainedAudioTail: DrainedAudioTail
+    ): boolean {
+        this.prepareTerminalAudioDrain(generation);
+        if (this.terminalAudioTailReleased) {
+            return true;
+        }
+
+        const audioEndTimeMicroseconds = drainedAudioTail.endMediaTimeMicroseconds;
+        if (audioEndTimeMicroseconds === null) {
+            this.releaseTerminalAudioTail();
+            return true;
+        }
+
+        return drainedAudioTail.outputTelemetry.hasPhysicalOutputTimeCorrelation ?
+            this.updateCorrelatedTerminalAudioDrain(
+                drainedAudioTail.outputTelemetry,
+                audioEndTimeMicroseconds
+            ) :
+            this.updateUncorrelatedTerminalAudioDrain(audioEndTimeMicroseconds);
+    }
+
+    private prepareTerminalAudioDrain(generation: number): void {
+        if (this.terminalAudioDrainGeneration !== generation) {
+            this.terminalAudioDrainDeadlineMicroseconds = null;
+            this.terminalAudioDrainGeneration = generation;
+            this.terminalAudioTailReleased = false;
+        }
+
+        const playbackWasWaiting = this.hasActivePlaybackWait();
+        this.clockStarvation = null;
+        this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoFrameMissStartedAtMicroseconds = null;
+        this.videoStarvationAnchorMediaTimeMicroseconds = null;
+        this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
+        this.waitingForVideoFrame = false;
+        if (playbackWasWaiting && this.state === 'playing') {
+            this.emitEvent({ generation, type: 'playing' });
+        }
+    }
+
+    private updateCorrelatedTerminalAudioDrain(
+        outputTelemetry: AudioWorkletTelemetry,
+        audioEndTimeMicroseconds: Microseconds
+    ): boolean {
+        this.terminalAudioDrainDeadlineMicroseconds = null;
+        const correlatedMediaTimeMicroseconds = requireMicroseconds(
+            Math.min(outputTelemetry.mediaTimeMicroseconds, audioEndTimeMicroseconds),
+            'Correlated terminal audio time'
+        );
+        this.clock.synchronize(correlatedMediaTimeMicroseconds);
+        if (this.state === 'playing' && this.clock.isPaused) {
+            this.clock.resume();
+        }
+        if (outputTelemetry.mediaTimeMicroseconds < audioEndTimeMicroseconds) {
+            return false;
+        }
+
+        this.releaseTerminalAudioTail();
+        return true;
+    }
+
+    private updateUncorrelatedTerminalAudioDrain(
+        audioEndTimeMicroseconds: Microseconds
+    ): boolean {
+        const monotonicTimeMicroseconds = this.readMonotonicTime();
+        if (this.terminalAudioDrainDeadlineMicroseconds === null) {
+            if (this.state === 'playing' && !this.clock.isPaused) {
+                this.clock.pause();
+            }
+            this.terminalAudioDrainDeadlineMicroseconds = addMicroseconds(
+                monotonicTimeMicroseconds,
+                this.getUncorrelatedAudioDrainGraceMicroseconds()
+            );
+        }
+        if (monotonicTimeMicroseconds < this.terminalAudioDrainDeadlineMicroseconds) {
+            return false;
+        }
+
+        this.clock.synchronize(requireMicroseconds(
+            Math.max(this.currentTimeMicroseconds, audioEndTimeMicroseconds),
+            'Uncorrelated terminal audio release time'
+        ));
+        this.releaseTerminalAudioTail();
+        return true;
+    }
+
+    private releaseTerminalAudioTail(): void {
+        this.terminalAudioDrainDeadlineMicroseconds = null;
+        this.terminalAudioTailReleased = true;
+        if (this.state === 'playing' && this.clock.isPaused) {
+            this.clock.resume();
+        }
+    }
+
+    private getUncorrelatedAudioDrainGraceMicroseconds(): Microseconds {
+        const getEstimatedOutputLatencyMicroseconds =
+            this.audioOutput?.getEstimatedOutputLatencyMicroseconds;
+        if (!getEstimatedOutputLatencyMicroseconds) {
+            return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
+        }
+
+        let estimatedOutputLatencyMicroseconds: Microseconds | null;
+        try {
+            estimatedOutputLatencyMicroseconds = getEstimatedOutputLatencyMicroseconds.call(
+                this.audioOutput
+            );
+        } catch {
+            return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
+        }
+        if (estimatedOutputLatencyMicroseconds === null
+            || !Number.isSafeInteger(estimatedOutputLatencyMicroseconds)
+            || estimatedOutputLatencyMicroseconds < 0) {
+            return DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS;
+        }
+
+        const conservativeGraceMicroseconds = estimatedOutputLatencyMicroseconds
+            + CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS;
+        return requireMicroseconds(
+            Math.min(
+                DEFAULT_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS,
+                Math.max(
+                    MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS,
+                    conservativeGraceMicroseconds
+                )
+            ),
+            'Uncorrelated terminal audio drain grace'
+        );
+    }
+
+    private recordDrainedVideoFrameEnd(
+        presentationFrame: DecodedPresentationFrame
+    ): void {
+        const frameEndTimeMicroseconds = addMicroseconds(
+            presentationFrame.mediaTimeMicroseconds,
+            presentationFrame.durationMicroseconds > 0 ?
+                presentationFrame.durationMicroseconds :
+                ZERO_MICROSECONDS
+        );
+        if (this.lastDrainedVideoFrameEndTimeMicroseconds === null
+            || frameEndTimeMicroseconds > this.lastDrainedVideoFrameEndTimeMicroseconds) {
+            this.lastDrainedVideoFrameEndTimeMicroseconds = frameEndTimeMicroseconds;
+        }
     }
 
     private activateFallback(
@@ -844,6 +1236,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.setState('fallback', generation);
 
         const fallbackRequest: CustomPlaybackFallbackRequest = {
+            disposition: getFallbackDisposition(reason),
             generation,
             mediaTimeMicroseconds,
             preserveHTMLSession: true,
@@ -886,6 +1279,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private getOrCreateAudioBinding(
         configuration: DecodeWorkerAudioConfiguration
     ): Promise<CustomAudioOutputBinding> {
+        try {
+            assertSupportedCustomAudioOutputLayout(
+                configuration.channelCount,
+                configuration.sampleRate
+            );
+        } catch (error) {
+            return Promise.reject(error);
+        }
         if (!this.audioOutputFactory) {
             return Promise.reject(new Error('Custom audio output is unavailable'));
         }
@@ -903,10 +1304,10 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return this.audioOutputPromise;
         }
 
-        const previousPromise = this.audioOutputPromise;
+        const creationRevision = this.advanceAudioOutputCreationRevision();
         const creationPromise = this.createAudioBinding(
             configuration,
-            previousPromise
+            creationRevision
         ).catch((error: unknown): never => {
             if (this.audioOutputPromise === creationPromise) {
                 this.audioOutputPromise = null;
@@ -921,15 +1322,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
     private async createAudioBinding(
         configuration: DecodeWorkerAudioConfiguration,
-        previousPromise: Promise<CustomAudioOutputBinding> | null
+        creationRevision: number
     ): Promise<CustomAudioOutputBinding> {
-        if (previousPromise) {
-            try {
-                await previousPromise;
-            } catch {
-                // A failed prior layout must not prevent a supported later layout
-            }
-        }
         if (this.destroyed) {
             throw new Error('Custom playback was destroyed during audio initialization');
         }
@@ -945,12 +1339,28 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             throw new Error('Custom audio output is unavailable');
         }
 
-        const binding = await this.audioOutputFactory({ ...configuration });
+        const factoryPromise = Promise.resolve(this.audioOutputFactory({ ...configuration }));
+        let binding: CustomAudioOutputBinding;
+        try {
+            binding = await this.waitBounded(
+                factoryPromise,
+                'Custom audio output initialization exceeded its bound',
+                this.startupTimeoutMicroseconds
+            );
+        } catch (error) {
+            void factoryPromise.then(
+                (lateBinding: CustomAudioOutputBinding): Promise<void> => (
+                    this.destroyAudioOutput(lateBinding.output)
+                ),
+                (): void => undefined
+            );
+            throw error;
+        }
         if (!hasSameAudioLayout(binding.configuration, configuration)) {
             await this.destroyAudioOutput(binding.output);
             throw new RangeError('Custom audio output factory returned the wrong layout');
         }
-        if (!this.canAcceptAudioBinding()) {
+        if (!this.canAcceptAudioBinding(creationRevision)) {
             await this.destroyAudioOutput(binding.output);
             throw new Error('Custom audio initialization outlived its playback generation');
         }
@@ -968,12 +1378,15 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         try {
             binding.output.setVolume(this.volume);
             binding.output.setMuted(this.muted);
-            await binding.output.setPlaying(false);
+            await this.waitBounded(
+                Promise.resolve(binding.output.setPlaying(false)),
+                'Custom audio initialization suspension exceeded its bound'
+            );
         } catch (error) {
             await this.destroyAudioOutput(binding.output);
             throw error;
         }
-        if (!this.canAcceptAudioBinding()) {
+        if (!this.canAcceptAudioBinding(creationRevision)) {
             await this.destroyAudioOutput(binding.output);
             throw new Error('Custom audio initialization outlived its playback generation');
         }
@@ -988,8 +1401,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         return this.audioBinding;
     }
 
-    private canAcceptAudioBinding(): boolean {
+    private canAcceptAudioBinding(creationRevision: number): boolean {
         return !this.destroyed
+            && this.audioOutputCreationRevision === creationRevision
             && this.activeGeneration !== null
             && typeof this.currentSource?.audioTrackIndex === 'number';
     }
@@ -1037,32 +1451,19 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     ): void {
         switch (telemetry.reason) {
             case 'underflow':
-                if (this.state !== 'playing' || this.clockStarvation === 'audio') {
-                    return;
-                }
-                this.clock.synchronize(telemetry.mediaTimeMicroseconds);
-                if (!this.clock.isPaused) {
-                    this.clock.pause();
-                }
-                this.clockStarvation = 'audio';
-                this.emitEvent({ generation, reason: 'audio-buffer', type: 'waiting' });
-                this.emitTimeUpdateIfDue();
+                this.handleAudioUnderflow(telemetry, generation);
                 return;
             case 'underflow-recovered':
-                if (this.clockStarvation === 'audio') {
-                    this.clockStarvation = null;
-                    if (this.state === 'playing') {
-                        this.clock.synchronize(telemetry.mediaTimeMicroseconds);
-                        this.clock.resume();
-                        this.emitEvent({ generation, type: 'playing' });
-                    }
-                } else if (this.state === 'playing' && this.clockStarvation === null) {
-                    this.clock.synchronize(telemetry.mediaTimeMicroseconds);
-                }
-                this.emitTimeUpdateIfDue();
+                this.handleAudioUnderflowRecovery(telemetry, generation);
                 return;
             case 'periodic':
-                if (this.state === 'playing' && this.clockStarvation === null) {
+                if (
+                    telemetry.hasPhysicalOutputTimeCorrelation
+                    && this.state === 'playing'
+                    && this.clockStarvation === null
+                    && !(this.pendingEndedGeneration === generation
+                        && this.terminalAudioTailReleased)
+                ) {
                     this.clock.synchronize(telemetry.mediaTimeMicroseconds);
                     this.emitTimeUpdateIfDue();
                 }
@@ -1072,6 +1473,159 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             case 'overflow':
             case 'stale-generation':
                 return;
+        }
+    }
+
+    private handleAudioUnderflow(
+        telemetry: AudioWorkletTelemetry,
+        generation: number
+    ): void {
+        if (this.state !== 'playing' || this.clockStarvation === 'audio') {
+            return;
+        }
+
+        const terminalAudioTail = this.getTerminalAudioTailFromUnderflow(
+            telemetry,
+            generation
+        );
+        if (terminalAudioTail) {
+            this.updateTerminalAudioDrain(generation, terminalAudioTail);
+            this.emitTimeUpdateIfDue();
+            return;
+        }
+
+        const playbackWasWaiting = this.hasActivePlaybackWait();
+        if (telemetry.hasPhysicalOutputTimeCorrelation) {
+            this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+        }
+        if (!this.clock.isPaused) {
+            this.clock.pause();
+        }
+        this.clockStarvation = 'audio';
+        if (!playbackWasWaiting) {
+            this.playbackStarvationStartedAtMicroseconds = this.readMonotonicTime();
+        }
+        if (!playbackWasWaiting) {
+            this.emitEvent({ generation, reason: 'audio-buffer', type: 'waiting' });
+        }
+        this.emitTimeUpdateIfDue();
+    }
+
+    private handleAudioUnderflowRecovery(
+        telemetry: AudioWorkletTelemetry,
+        generation: number
+    ): void {
+        if (this.clockStarvation === 'audio') {
+            this.clockStarvation = null;
+            if (this.state === 'playing') {
+                if (telemetry.hasPhysicalOutputTimeCorrelation) {
+                    this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+                }
+                this.clock.resume();
+                if (!this.waitingForVideoFrame) {
+                    this.emitEvent({ generation, type: 'playing' });
+                }
+            }
+        } else if (
+            telemetry.hasPhysicalOutputTimeCorrelation
+            && this.state === 'playing'
+            && this.clockStarvation === null
+        ) {
+            this.clock.synchronize(telemetry.mediaTimeMicroseconds);
+        }
+        this.clearPlaybackStarvationIfRecovered();
+        this.emitTimeUpdateIfDue();
+    }
+
+    private handleMissingVideoFrame(generation: number): void {
+        const decodeTelemetry = this.videoDecodeSession.getTelemetry();
+        if (
+            decodeTelemetry.queuedFrameCount > 0
+            || decodeTelemetry.pendingFrameCount > 0
+            || this.pendingPresentationFrames.size > 0
+            || this.pendingEndedGeneration === generation
+        ) {
+            this.videoFrameMissStartedAtMicroseconds = null;
+            return;
+        }
+
+        const monotonicTimeMicroseconds = this.readMonotonicTime();
+        if (this.videoFrameMissStartedAtMicroseconds === null) {
+            this.videoFrameMissStartedAtMicroseconds = monotonicTimeMicroseconds;
+            return;
+        }
+        const missDurationMicroseconds = monotonicTimeMicroseconds
+            - this.videoFrameMissStartedAtMicroseconds;
+        if (missDurationMicroseconds < 0) {
+            throw new RangeError('Monotonic time moved backwards while waiting for a video frame');
+        }
+        if (
+            missDurationMicroseconds
+                < DEFAULT_CUSTOM_PLAYBACK_VIDEO_STARVATION_GRACE_MICROSECONDS
+            || this.waitingForVideoFrame
+        ) {
+            return;
+        }
+
+        const playbackWasWaiting = this.hasActivePlaybackWait();
+        this.beginVideoStarvationIfNeeded();
+        this.waitingForVideoFrame = true;
+        if (!playbackWasWaiting) {
+            this.playbackStarvationStartedAtMicroseconds = monotonicTimeMicroseconds;
+        }
+        if (!playbackWasWaiting) {
+            this.emitEvent({
+                generation,
+                reason: 'video-frame',
+                type: 'waiting'
+            });
+        }
+    }
+
+    private hasActivePlaybackWait(): boolean {
+        return this.clockStarvation !== null || this.waitingForVideoFrame;
+    }
+
+    private hasPlaybackStallExceeded(generation: number): boolean {
+        const starvationStartedAtMicroseconds = this.playbackStarvationStartedAtMicroseconds;
+        if (starvationStartedAtMicroseconds === null || !this.hasActivePlaybackWait()) {
+            return false;
+        }
+
+        const starvationDurationMicroseconds = this.readMonotonicTime()
+            - starvationStartedAtMicroseconds;
+        if (starvationDurationMicroseconds < 0) {
+            throw new RangeError('Monotonic time moved backwards during playback starvation');
+        }
+        if (starvationDurationMicroseconds < this.playbackStallTimeoutMicroseconds) {
+            return false;
+        }
+
+        this.activateFallback(
+            generation,
+            'playback-stalled',
+            'Custom playback remained starved beyond its bounded timeout'
+        );
+        return true;
+    }
+
+    private hasExcessiveVideoDecodeLag(
+        presentationFrame: DecodedPresentationFrame,
+        targetTimeMicroseconds: Microseconds
+    ): boolean {
+        const frameEndMicroseconds = addMicroseconds(
+            presentationFrame.mediaTimeMicroseconds,
+            presentationFrame.durationMicroseconds > 0 ?
+                presentationFrame.durationMicroseconds :
+                ZERO_MICROSECONDS
+        );
+        return targetTimeMicroseconds - frameEndMicroseconds
+            > this.maximumVideoDecodeLagMicroseconds;
+    }
+
+    private clearPlaybackStarvationIfRecovered(): void {
+        if (!this.hasActivePlaybackWait()) {
+            this.playbackStarvationStartedAtMicroseconds = null;
         }
     }
 
@@ -1089,11 +1643,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.videoStarvationAnchorMonotonicTimeMicroseconds = this.readMonotonicTime();
     }
 
-    private recoverVideoStarvation(
-        presentationFrame: DecodedPresentationFrame
-    ): boolean {
+    private recoverVideoStarvation(presentationFrame: DecodedPresentationFrame): void {
         if (this.clockStarvation !== 'video') {
-            return false;
+            return;
         }
 
         this.clock.synchronize(presentationFrame.mediaTimeMicroseconds);
@@ -1102,12 +1654,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
         if (this.state === 'playing') {
             this.clock.resume();
-            const generation = this.activeGeneration;
-            if (generation !== null) {
-                this.emitEvent({ generation, type: 'playing' });
-            }
         }
-        return true;
     }
 
     private getCurrentPresentationTargetTime(): Microseconds {
@@ -1174,16 +1721,17 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             });
         }
         this.setState('stopping', controlGeneration);
-        try {
-            await this.setAudioPlaying(false);
-        } catch (error) {
+        const audioStopPromise = this.setAudioPlaying(false).catch((error: unknown): void => {
             this.lastErrorMessage = this.getErrorMessage(error);
-        }
+        });
         this.clock.reset(ZERO_MICROSECONDS);
 
         const stopPromise = this.waitBounded(
-            this.stopDecodePipelines(),
-            'Custom decoder shutdown exceeded its bound'
+            Promise.all([
+                audioStopPromise,
+                this.stopDecodePipelines()
+            ]),
+            'Custom playback shutdown exceeded its bound'
         ).catch((error: unknown): void => {
             this.lastErrorMessage = this.getErrorMessage(error);
         }).then((): void => {
@@ -1218,27 +1766,37 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.audioTelemetryUnsubscribe?.();
         this.audioTelemetryUnsubscribe = null;
         const pendingOutputPromise = this.audioOutputPromise;
-        if (pendingOutputPromise) {
-            try {
-                const binding = await pendingOutputPromise;
-                outputs.add(binding.output);
-            } catch {
-                // Stale factory outputs are released by createAudioBinding
-            }
-        }
-
+        this.advanceAudioOutputCreationRevision();
         this.audioBinding = null;
         this.audioOutput = null;
         this.audioOutputPromise = null;
         this.audioOutputPromiseConfiguration = null;
-        for (const output of outputs) {
-            await this.destroyAudioOutput(output);
+        if (pendingOutputPromise) {
+            // A browser factory may never settle; creation revisioning makes a
+            // late result self-dispose without blocking stop or replacement
+            void pendingOutputPromise.then(
+                (binding: CustomAudioOutputBinding): Promise<void> | void => {
+                    if (!outputs.has(binding.output)) {
+                        return this.destroyAudioOutput(binding.output);
+                    }
+                },
+                (): void => undefined
+            );
         }
+
+        const destroyPromises: Promise<void>[] = [];
+        for (const output of outputs) {
+            destroyPromises.push(this.destroyAudioOutput(output));
+        }
+        await Promise.all(destroyPromises);
     }
 
     private async destroyAudioOutput(output: CustomAudioOutput): Promise<void> {
         try {
-            await output.destroy();
+            await this.waitBounded(
+                Promise.resolve(output.destroy()),
+                'Custom audio output destruction exceeded its bound'
+            );
         } catch (error) {
             const message = this.getErrorMessage(error);
             this.lastErrorMessage = this.lastErrorMessage ?
@@ -1247,8 +1805,13 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
     }
 
-    private waitBounded(promise: Promise<void>, timeoutMessage: string): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
+    private waitBounded<Result>(
+        promise: PromiseLike<Result>,
+        timeoutMessage: string,
+        timeoutMicroseconds: Microseconds = this.pipelineStopTimeoutMicroseconds
+    ): Promise<Result> {
+        requirePositiveTimeout(timeoutMicroseconds, 'Operation timeout');
+        return new Promise<Result>((resolve, reject) => {
             let settled = false;
             const timer = globalThis.setTimeout(() => {
                 if (settled) {
@@ -1256,15 +1819,15 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
                 }
                 settled = true;
                 reject(new Error(timeoutMessage));
-            }, microsecondsToMilliseconds(this.pipelineStopTimeoutMicroseconds));
-            promise.then(
-                (): void => {
+            }, microsecondsToMilliseconds(timeoutMicroseconds));
+            Promise.resolve(promise).then(
+                (result: Result): void => {
                     if (settled) {
                         return;
                     }
                     settled = true;
                     globalThis.clearTimeout(timer);
-                    resolve();
+                    resolve(result);
                 },
                 (error: unknown): void => {
                     if (settled) {
@@ -1298,11 +1861,17 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
     private resetDrainAndStarvationState(): void {
         this.pendingEndedGeneration = null;
+        this.lastDrainedVideoFrameEndTimeMicroseconds = null;
         this.pendingPresentationFrames.clear();
         this.clockStarvation = null;
+        this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoFrameMissStartedAtMicroseconds = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
         this.waitingForVideoFrame = false;
+        this.terminalAudioDrainDeadlineMicroseconds = null;
+        this.terminalAudioDrainGeneration = null;
+        this.terminalAudioTailReleased = false;
     }
 
     private settlePendingStartup(result: CustomPlaybackStartResult): void {
@@ -1347,6 +1916,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
         this.currentGeneration += 1;
         return this.currentGeneration;
+    }
+
+    private advanceAudioOutputCreationRevision(): number {
+        if (this.audioOutputCreationRevision === Number.MAX_SAFE_INTEGER) {
+            throw new RangeError('Custom audio output creation revision exhausted');
+        }
+        this.audioOutputCreationRevision += 1;
+        return this.audioOutputCreationRevision;
     }
 
     private isGenerationActive(generation: number): boolean {

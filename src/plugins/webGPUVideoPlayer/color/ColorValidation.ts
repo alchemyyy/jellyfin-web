@@ -18,7 +18,16 @@ export type ColorRampSample = {
     timestampMicroseconds: Microseconds
 };
 
+export const COLOR_VALIDATION_RAMP_IDENTITY_VERSION = 1 as const;
+
+export type ColorValidationRampIdentity = {
+    hash: string
+    kind: 'canonical-transfer' | 'custom'
+    version: typeof COLOR_VALIDATION_RAMP_IDENTITY_VERSION
+};
+
 export type ColorValidationRamp = {
+    identity: ColorValidationRampIdentity
     metadata: InputColorMetadata
     normalizationNits: number
     samples: readonly ColorRampSample[]
@@ -68,6 +77,61 @@ const DEFAULT_TOLERANCES: ColorRampTolerances = {
     maximumAbsoluteError: 0.01,
     rootMeanSquareError: 0.005
 };
+
+type ColorValidationRampContent = Pick<
+    ColorValidationRamp,
+    'metadata' | 'normalizationNits' | 'samples'
+>;
+
+function serializeColorValidationRampContent(
+    ramp: ColorValidationRampContent
+): string {
+    return JSON.stringify([
+        COLOR_VALIDATION_RAMP_IDENTITY_VERSION,
+        ramp.metadata.version,
+        ramp.metadata.bitDepth,
+        ramp.metadata.matrix,
+        ramp.metadata.nominalPeakNits,
+        ramp.metadata.primaries,
+        ramp.metadata.range,
+        ramp.metadata.sdrReferenceWhiteNits,
+        ramp.metadata.transfer,
+        ramp.normalizationNits,
+        ramp.samples.map((sample: ColorRampSample) => [
+            sample.timestampMicroseconds,
+            ...sample.encodedInputRGB,
+            ...sample.expectedLinearRGB,
+            ...sample.doubleTransformedLinearRGB
+        ])
+    ]);
+}
+
+function createStableRampHash(serializedRamp: string): string {
+    let hash = 0x811c9dc5;
+    for (let characterIndex = 0; characterIndex < serializedRamp.length; characterIndex += 1) {
+        hash = Math.imul(hash ^ serializedRamp.charCodeAt(characterIndex), 0x01000193);
+    }
+
+    return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/** Returns the complete collision-free in-memory cache signature for one ramp. */
+export function createColorValidationRampCacheSignature(
+    ramp: ColorValidationRamp
+): string {
+    return JSON.stringify([
+        ramp.identity.version,
+        ramp.identity.kind,
+        serializeColorValidationRampContent(ramp)
+    ]);
+}
+
+/** Returns the versioned content hash recorded in diagnostics and fixture manifests. */
+export function createColorValidationRampHash(
+    ramp: ColorValidationRampContent
+): string {
+    return createStableRampHash(serializeColorValidationRampContent(ramp));
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.min(Math.max(value, minimum), maximum);
@@ -151,6 +215,7 @@ export function createTransferValidationRamp(
     options: ColorValidationRampOptions = {}
 ): ColorValidationRamp {
     assertValidInputColorMetadata(metadata);
+    const rampMetadata: InputColorMetadata = { ...metadata };
     if (options.encodedRGBTriplets && options.encodedSignalLevels) {
         throw new RangeError(
             'Specify encoded RGB triplets or scalar signal levels, not both'
@@ -166,7 +231,7 @@ export function createTransferValidationRamp(
         );
     const frameIntervalMicroseconds = options.frameIntervalMicroseconds
         ?? DEFAULT_FRAME_INTERVAL_MICROSECONDS;
-    const normalizationNits = options.normalizationNits ?? metadata.sdrReferenceWhiteNits;
+    const normalizationNits = options.normalizationNits ?? rampMetadata.sdrReferenceWhiteNits;
     const startTimestampMicroseconds = options.startTimestampMicroseconds
         ?? millisecondsToMicroseconds(0);
     if (
@@ -194,7 +259,7 @@ export function createTransferValidationRamp(
         const encodedRGB = encodedRGBTriplets[sampleIndex];
         const encodedInputRGB: ColorTriplet = [ encodedRGB[0], encodedRGB[1], encodedRGB[2] ];
         const expectedLinearRGB = normalizeRGB(
-            decodeEncodedRGBToNits(encodedInputRGB, metadata),
+            decodeEncodedRGBToNits(encodedInputRGB, rampMetadata),
             normalizationNits
         );
         const secondTransferInputRGB: ColorTriplet = [
@@ -203,7 +268,7 @@ export function createTransferValidationRamp(
             clamp(expectedLinearRGB[2], 0, 1)
         ];
         const doubleTransformedLinearRGB = normalizeRGB(
-            decodeEncodedRGBToNits(secondTransferInputRGB, metadata),
+            decodeEncodedRGBToNits(secondTransferInputRGB, rampMetadata),
             normalizationNits
         );
         const timestamp = startTimestampMicroseconds
@@ -219,7 +284,35 @@ export function createTransferValidationRamp(
         });
     }
 
-    return { metadata, normalizationNits, samples };
+    Object.freeze(rampMetadata);
+    for (const sample of samples) {
+        Object.freeze(sample.doubleTransformedLinearRGB);
+        Object.freeze(sample.encodedInputRGB);
+        Object.freeze(sample.expectedLinearRGB);
+        Object.freeze(sample);
+    }
+    Object.freeze(samples);
+
+    const rampContent: ColorValidationRampContent = {
+        metadata: rampMetadata,
+        normalizationNits,
+        samples
+    };
+    const usesCanonicalOptions = options.encodedRGBTriplets === undefined
+        && options.encodedSignalLevels === undefined
+        && options.frameIntervalMicroseconds === undefined
+        && options.normalizationNits === undefined
+        && options.startTimestampMicroseconds === undefined;
+    const identity: ColorValidationRampIdentity = {
+        hash: createColorValidationRampHash(rampContent),
+        kind: usesCanonicalOptions ? 'canonical-transfer' : 'custom',
+        version: COLOR_VALIDATION_RAMP_IDENTITY_VERSION
+    };
+    Object.freeze(identity);
+    return Object.freeze({
+        identity,
+        ...rampContent
+    });
 }
 
 /** Compares captured ramp values and explicitly rejects clamping or a second EOTF. */

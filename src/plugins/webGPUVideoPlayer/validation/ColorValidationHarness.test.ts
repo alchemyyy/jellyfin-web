@@ -12,20 +12,22 @@ import {
     type ColorValidationRamp
 } from '../color/ColorValidation';
 import { type ColorTriplet } from '../color/ColorPipeline';
+import { microsecondsToMilliseconds } from '../MediaTime';
 import {
     GPUCanvasColorValidationHarness,
     type BrowserColorMetadata
 } from './ColorValidationHarness';
 import {
     COPY_BYTES_PER_ROW_ALIGNMENT,
+    GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS,
     GPUCanvasPixelReader
 } from './GPUCanvasReadback';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
-type Deferred = {
-    promise: Promise<void>
-    resolve: () => void
+type Deferred<Value = void> = {
+    promise: Promise<Value>
+    resolve: (value: Value) => void
 };
 
 type GPUHarness = {
@@ -36,6 +38,7 @@ type GPUHarness = {
     copyTextureToBuffer: MockFunction
     device: GPUDevice
     mapAsync: MockFunction
+    popErrorScope: MockFunction
     texture: GPUTexture
     unconfigure: MockFunction
 };
@@ -52,11 +55,11 @@ const browserMetadata: BrowserColorMetadata = {
     userAgent: 'Validation Browser'
 };
 
-function createDeferred(): Deferred {
-    let resolvePromise: () => void = () => {
+function createDeferred<Value = void>(): Deferred<Value> {
+    let resolvePromise: (value: Value) => void = () => {
         throw new Error('Deferred promise was not initialized');
     };
-    const promise = new Promise<void>(resolve => {
+    const promise = new Promise<Value>(resolve => {
         resolvePromise = resolve;
     });
     return { promise, resolve: resolvePromise };
@@ -145,13 +148,14 @@ function createGPUHarness(
     });
     const copyTextureToBuffer = vi.fn();
     const finish = vi.fn(() => ({} as GPUCommandBuffer));
+    const popErrorScope = vi.fn(() => Promise.resolve(null));
     const device = {
         createBuffer,
         createCommandEncoder: vi.fn(() => ({ copyTextureToBuffer, finish })),
         features: new Set<GPUFeatureName>([ 'float32-filterable' ]),
         label: 'Validation Device',
         limits: { maxTextureDimension2D: 8_192 },
-        popErrorScope: vi.fn(() => Promise.resolve(null)),
+        popErrorScope,
         pushErrorScope: vi.fn(),
         queue: { submit: vi.fn() }
     } as unknown as GPUDevice;
@@ -176,6 +180,7 @@ function createGPUHarness(
         copyTextureToBuffer,
         device,
         mapAsync,
+        popErrorScope,
         texture,
         unconfigure
     };
@@ -266,12 +271,36 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     restoreProperty('GPUBufferUsage', originalGPUBufferUsage);
     restoreProperty('GPUMapMode', originalGPUMapMode);
     restoreProperty('GPUTextureUsage', originalGPUTextureUsage);
 });
 
 describe('GPUCanvasColorValidationHarness', () => {
+    it('reads an owned source texture without a GPUCanvasContext', async () => {
+        const gpuHarness = createGPUHarness([
+            encodeRGBA16Float([ 0.25, 0.5, 0.75 ])
+        ]);
+        const pixelReader = new GPUCanvasPixelReader({
+            device: gpuHarness.device,
+            format: 'rgba16float',
+            maximumReadbacks: 2
+        });
+
+        await expect(pixelReader.readPixel(0, 0, gpuHarness.texture)).resolves.toMatchObject({
+            failure: null,
+            linearRGB: [ 0.25, 0.5, 0.75 ]
+        });
+        await expect(pixelReader.readPixel(0, 0)).resolves.toMatchObject({
+            failure: {
+                code: 'gpu-api-unavailable'
+            },
+            linearRGB: null
+        });
+        pixelReader.destroy();
+    });
+
     it.each([
         [ 'SDR', createSDRColorMetadata(), 'rgba8unorm', encodeRGBA8 ],
         [ 'PQ', createPQColorMetadata(), 'rgba16float', encodeRGBA16Float ],
@@ -300,6 +329,11 @@ describe('GPUCanvasColorValidationHarness', () => {
                 },
                 capability: 'supported',
                 classification: 'valid',
+                diagnostic: {
+                    kind: 'gpu-texture-readback',
+                    productionAuthorization: false,
+                    rampIdentity: ramp.identity
+                },
                 gpu: {
                     architecture: 'test-architecture',
                     deviceLabel: 'Validation Device',
@@ -460,16 +494,81 @@ describe('GPUCanvasColorValidationHarness', () => {
 
         const pendingCapture = reader.readPixel(0, 0);
         reader.destroy();
-        deferred.resolve();
 
         await expect(pendingCapture).resolves.toMatchObject({
             failure: { code: 'destroyed' },
             linearRGB: null
         });
+        deferred.resolve();
         await expect(reader.readPixel(0, 0)).resolves.toMatchObject({
             failure: { code: 'destroyed' },
             linearRGB: null
         });
         expect(gpuHarness.bufferDestroy).toHaveBeenCalled();
+    });
+
+    it('bounds a GPU buffer mapping operation that never settles', async () => {
+        vi.useFakeTimers();
+        const gpuHarness = createGPUHarness(
+            [ encodeRGBA8([ 0, 0, 0 ]) ],
+            new Promise<void>(() => undefined),
+            0x05,
+            'rgba8unorm'
+        );
+        const reader = new GPUCanvasPixelReader({
+            context: gpuHarness.context,
+            device: gpuHarness.device,
+            format: 'rgba8unorm',
+            maximumReadbacks: 1
+        });
+
+        const pendingCapture = reader.readPixel(0, 0);
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS)
+        );
+
+        await expect(pendingCapture).resolves.toMatchObject({
+            failure: { code: 'operation-timeout' },
+            linearRGB: null
+        });
+        expect(gpuHarness.popErrorScope).toHaveBeenCalledOnce();
+        expect(gpuHarness.bufferDestroy).toHaveBeenCalledOnce();
+        reader.destroy();
+    });
+
+    it('bounds a GPU validation scope operation and ignores its late result', async () => {
+        vi.useFakeTimers();
+        const validationResult = createDeferred<GPUError | null>();
+        const gpuHarness = createGPUHarness(
+            [ encodeRGBA8([ 0, 0, 0 ]) ],
+            undefined,
+            0x05,
+            'rgba8unorm'
+        );
+        gpuHarness.popErrorScope.mockImplementationOnce(() => validationResult.promise);
+        const reader = new GPUCanvasPixelReader({
+            context: gpuHarness.context,
+            device: gpuHarness.device,
+            format: 'rgba8unorm',
+            maximumReadbacks: 1
+        });
+
+        const pendingCapture = reader.readPixel(0, 0);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(gpuHarness.popErrorScope).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS)
+        );
+
+        await expect(pendingCapture).resolves.toMatchObject({
+            failure: { code: 'operation-timeout' },
+            linearRGB: null
+        });
+        expect(gpuHarness.bufferDestroy).toHaveBeenCalledOnce();
+        validationResult.resolve(null);
+        await validationResult.promise;
+        await Promise.resolve();
+        expect(gpuHarness.bufferDestroy).toHaveBeenCalledOnce();
+        reader.destroy();
     });
 });

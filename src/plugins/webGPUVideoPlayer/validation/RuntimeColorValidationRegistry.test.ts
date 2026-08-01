@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
     createHLGColorMetadata,
@@ -9,6 +9,7 @@ import {
     type ColorRampObservation,
     type ColorValidationRamp
 } from '../color/ColorValidation';
+import { microsecondsToMilliseconds } from '../MediaTime';
 import {
     type ColorValidationCapabilityDecision,
     type ColorValidationCaptureRequest,
@@ -17,6 +18,7 @@ import {
 } from './ColorValidationHarness';
 import {
     isMeasuredColorValidationDecision,
+    RUNTIME_COLOR_VALIDATION_SAMPLE_TIMEOUT_MICROSECONDS,
     RuntimeColorValidationRegistry,
     type RuntimeColorValidationHarness,
     type RuntimeColorValidationRequest
@@ -85,6 +87,11 @@ function createDecision(
         },
         capability,
         classification: accepted ? 'valid' : 'mismatch',
+        diagnostic: {
+            kind: 'gpu-texture-readback',
+            productionAuthorization: false,
+            rampIdentity: { ...ramp.identity }
+        },
         frames,
         gpu: {
             architecture: 'test-architecture',
@@ -174,6 +181,10 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('RuntimeColorValidationRegistry', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
     it('does not create a harness when the feature is disabled', async () => {
         const device = createDevice();
         const createHarnessMock = vi.fn((ramp: ColorValidationRamp) => createHarness(ramp));
@@ -249,6 +260,59 @@ describe('RuntimeColorValidationRegistry', () => {
         expect(firstDecision).toEqual(secondDecision);
         expect(firstDecision).not.toBe(secondDecision);
         expect(createHarnessMock).toHaveBeenCalledOnce();
+    });
+
+    it('separates canonical and custom ramps even when their samples are identical', async () => {
+        const device = createDevice();
+        const metadata = createPQColorMetadata();
+        const createHarnessMock = vi.fn((ramp: ColorValidationRamp) => createHarness(ramp));
+        const registry = new RuntimeColorValidationRegistry({
+            isEnabled: async () => true
+        });
+        const canonicalRequest = createRequest(device.device, metadata, createHarnessMock);
+        const customRequest = createRequest(device.device, metadata, createHarnessMock);
+        customRequest.rampOptions = {
+            encodedSignalLevels: [ 0, 0.25, 0.5, 0.75, 1 ]
+        };
+
+        const customDecision = await registry.validate(customRequest);
+
+        await expect(registry.getCachedDecision(device.device, metadata)).resolves.toBeNull();
+        await expect(registry.getCachedDecision(
+            device.device,
+            metadata,
+            customRequest.rampOptions
+        )).resolves.toEqual(customDecision);
+
+        const canonicalDecision = await registry.validate(canonicalRequest);
+        expect(canonicalDecision?.diagnostic.rampIdentity.kind).toBe('canonical-transfer');
+        expect(customDecision?.diagnostic.rampIdentity.kind).toBe('custom');
+        expect(createHarnessMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects a decision carrying a different ramp identity', async () => {
+        const device = createDevice();
+        const metadata = createPQColorMetadata();
+        const registry = new RuntimeColorValidationRegistry({
+            isEnabled: async () => true
+        });
+        const request = createRequest(
+            device.device,
+            metadata,
+            (ramp: ColorValidationRamp) => createHarness(ramp, {
+                decision: (
+                    currentRamp: ColorValidationRamp,
+                    frames: readonly ReferenceFrameColorMetadata[],
+                    observations: readonly ColorRampObservation[]
+                ) => {
+                    const decision = createDecision(currentRamp, frames, observations);
+                    decision.diagnostic.rampIdentity.hash = 'fnv1a32-00000000';
+                    return decision;
+                }
+            })
+        );
+
+        await expect(registry.validate(request)).resolves.toBeNull();
     });
 
     it('rejects a claimed HDR result without measured frames', async () => {
@@ -400,7 +464,7 @@ describe('RuntimeColorValidationRegistry', () => {
         const renderStarted = createDeferred();
         const releaseRender = createDeferred();
         const destroyHarness = vi.fn();
-        const sampleState: { isCurrent?: () => boolean } = {};
+        const sampleState: { isCurrent?: () => boolean; signal?: AbortSignal } = {};
         const request = createRequest(
             device.device,
             metadata,
@@ -412,6 +476,7 @@ describe('RuntimeColorValidationRegistry', () => {
         );
         request.renderSample = async (_sample, context) => {
             sampleState.isCurrent = context.isCurrent;
+            sampleState.signal = context.signal;
             renderStarted.resolve();
             await releaseRender.promise;
             return undefined;
@@ -424,7 +489,81 @@ describe('RuntimeColorValidationRegistry', () => {
         await renderStarted.promise;
         registry.invalidate(device.device, metadata);
         expect(sampleState.isCurrent?.()).toBe(false);
+        expect(sampleState.signal?.aborted).toBe(true);
+
+        await expect(validation).resolves.toBeNull();
+        expect(destroyHarness).toHaveBeenCalledOnce();
+        await expect(registry.getCachedDecision(device.device, metadata)).resolves.toBeNull();
         releaseRender.resolve();
+    });
+
+    it('bounds a sample render that never settles', async () => {
+        vi.useFakeTimers();
+        const device = createDevice();
+        const metadata = createPQColorMetadata();
+        const renderStarted = createDeferred();
+        const destroyHarness = vi.fn();
+        const renderState: { signal?: AbortSignal } = {};
+        const request = createRequest(
+            device.device,
+            metadata,
+            (ramp: ColorValidationRamp) => {
+                const harness = createHarness(ramp);
+                harness.destroy = destroyHarness;
+                return harness;
+            }
+        );
+        request.renderSample = (_sample, context) => {
+            renderState.signal = context.signal;
+            renderStarted.resolve();
+            return new Promise<undefined>(() => undefined);
+        };
+        const registry = new RuntimeColorValidationRegistry({
+            isEnabled: async () => true
+        });
+
+        const validation = registry.validate(request);
+        await vi.advanceTimersByTimeAsync(0);
+        await renderStarted.promise;
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(RUNTIME_COLOR_VALIDATION_SAMPLE_TIMEOUT_MICROSECONDS)
+        );
+
+        await expect(validation).resolves.toBeNull();
+        expect(renderState.signal?.aborted).toBe(true);
+        expect(destroyHarness).toHaveBeenCalledOnce();
+        await expect(registry.getCachedDecision(device.device, metadata)).resolves.toBeNull();
+    });
+
+    it('bounds a sample capture that never settles', async () => {
+        vi.useFakeTimers();
+        const device = createDevice();
+        const metadata = createPQColorMetadata();
+        const captureStarted = createDeferred();
+        const destroyHarness = vi.fn();
+        const request = createRequest(
+            device.device,
+            metadata,
+            (ramp: ColorValidationRamp) => {
+                const harness = createHarness(ramp);
+                harness.captureCurrentFrame = vi.fn(() => {
+                    captureStarted.resolve();
+                    return new Promise<ColorValidationCaptureResult>(() => undefined);
+                });
+                harness.destroy = destroyHarness;
+                return harness;
+            }
+        );
+        const registry = new RuntimeColorValidationRegistry({
+            isEnabled: async () => true
+        });
+
+        const validation = registry.validate(request);
+        await vi.advanceTimersByTimeAsync(0);
+        await captureStarted.promise;
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(RUNTIME_COLOR_VALIDATION_SAMPLE_TIMEOUT_MICROSECONDS)
+        );
 
         await expect(validation).resolves.toBeNull();
         expect(destroyHarness).toHaveBeenCalledOnce();

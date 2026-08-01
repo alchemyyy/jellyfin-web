@@ -33,6 +33,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.underflowEvents = 0;
         this.underflowFrames = 0;
         this.framesSinceTelemetry = 0;
+        this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
         this.port.onmessage = messageEvent => this.handleMessage(messageEvent.data);
@@ -127,6 +128,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     flush(generation, mediaTimeMicroseconds) {
         this.clearQueue();
         this.generation = generation;
+        this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = mediaTimeMicroseconds;
         this.underflowActive = false;
         this.postTelemetry('flush', null);
@@ -191,6 +193,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.consumedFrames += copiedFrames;
             this.mediaTimeMicroseconds = chunk.timestampMicroseconds
                 + Math.round((chunk.frameOffset * MICROSECONDS_PER_SECOND) / sampleRate);
+            this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(
+                currentFrame + outputOffset
+            );
 
             if (chunk.frameOffset === chunkFrameCount) {
                 this.chunks[this.headChunkIndex] = undefined;
@@ -221,11 +226,20 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         return true;
     }
 
+    framesToMicroseconds(frameCount) {
+        const wholeSeconds = Math.floor(frameCount / sampleRate);
+        const remainingFrames = frameCount - wholeSeconds * sampleRate;
+        return wholeSeconds * MICROSECONDS_PER_SECOND
+            + Math.round((remainingFrames * MICROSECONDS_PER_SECOND) / sampleRate);
+    }
+
     postTelemetry(reason, sequence) {
         this.port.postMessage({
             consumedFrames: this.consumedFrames,
             droppedFrames: this.droppedFrames,
             generation: this.generation,
+            hasPhysicalOutputTimeCorrelation: false,
+            mediaTimeContextTimeMicroseconds: this.mediaTimeContextTimeMicroseconds,
             mediaTimeMicroseconds: this.mediaTimeMicroseconds,
             muted: this.muted,
             outputFrames: this.outputFrames,

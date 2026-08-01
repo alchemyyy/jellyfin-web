@@ -59,6 +59,13 @@ describe('isKnownSDRPresentationInput', () => {
         { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: true },
         { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: 1 },
         { VideoRangeType: 'SDR', DvProfile: 8 },
+        { VideoRangeType: 'SDR', DvVersionMajor: 1 },
+        { VideoRangeType: 'SDR', DvVersionMinor: 0 },
+        { VideoRangeType: 'SDR', DvLevel: 6 },
+        { VideoRangeType: 'SDR', DvBlSignalCompatibilityId: 1 },
+        { VideoRangeType: 'SDR', VideoDoViTitle: 'Dolby Vision' },
+        { VideoRangeType: 'SDR', BlPresentFlag: true },
+        { VideoRangeType: 'SDR', ElPresentFlag: true },
         { VideoRangeType: 'SDR', RpuPresentFlag: '1' }
     ])('rejects non-SDR or contradictory video metadata: %o', videoMetadata => {
         expect(isKnownSDRPresentationInput({
@@ -147,17 +154,11 @@ describe('parseVideoStreamColorMetadata', () => {
         { ColorSpace: 'smpte170m', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorPrimaries: 'display-p3', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorRange: 'unknown', Type: 'Video', VideoRangeType: 'SDR' },
-        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }
+        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' },
+        { Type: 'Video', VideoRangeType: 'HDR10Plus' },
+        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'HDR10' }
     ])('rejects unknown, Dolby Vision, or contradictory metadata: %o', stream => {
         expect(parseVideoStreamColorMetadata(stream)).toBeNull();
-    });
-
-    it('accepts HDR10+ as a PQ base layer', () => {
-        expect(parseVideoStreamColorMetadata({
-            Hdr10PlusPresentFlag: true,
-            Type: 'Video',
-            VideoRangeType: 'HDR10Plus'
-        })?.transfer).toBe('pq');
     });
 });
 

@@ -4,15 +4,59 @@ const DEFAULT_DEBUG_URL = 'http://localhost:9224';
 const DEFAULT_FRONTEND_URL = 'http://localhost:8080';
 const DEFAULT_SERVER_URL = 'http://localhost:8096';
 const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
+const MAXIMUM_AUDIO_UNDERFLOW_RATIO = 0.02;
+const MAXIMUM_RAW_OUTSTANDING_FRAMES = 2;
+const MAXIMUM_VIDEO_FRAME_PENDING_FRAMES = 4;
+const MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO = 4_800;
+const MAXIMUM_REPEAT_SESSION_COUNT = 5;
+const DEFAULT_SEEK_STORM_COUNT = 3;
+const MAXIMUM_SEEK_STORM_COUNT = 5;
+const MICROSECONDS_PER_SECOND = 1_000_000;
+const NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS = 20_000;
+const SEEK_END_GUARD_MICROSECONDS = 2 * MICROSECONDS_PER_SECOND;
+const SEEK_START_GUARD_MICROSECONDS = MICROSECONDS_PER_SECOND;
+const SEEK_STORM_FRACTIONS = Object.freeze([ 0.2, 0.7, 0.35, 0.8, 0.5 ]);
 
 const OPTION_DEFINITIONS = Object.freeze({
+    '--audio-stream-index': {
+        environmentName: 'WEBGPU_SMOKE_AUDIO_STREAM_INDEX',
+        name: 'audioStreamIndex'
+    },
+    '--completion-mode': {
+        environmentName: 'WEBGPU_SMOKE_COMPLETION_MODE',
+        name: 'completionMode'
+    },
     '--debug-url': {
         environmentName: 'WEBGPU_SMOKE_DEBUG_URL',
         name: 'debugURL'
     },
+    '--expected-audio': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO',
+        name: 'expectedAudioPath'
+    },
+    '--expected-audio-codec': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC',
+        name: 'expectedAudioCodec'
+    },
+    '--expected-frame-evidence': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE',
+        name: 'expectedFrameEvidence'
+    },
+    '--expected-video-output': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT',
+        name: 'expectedVideoOutputMode'
+    },
+    '--expected-video-decoder': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER',
+        name: 'expectedVideoDecoderBackend'
+    },
     '--frontend-url': {
         environmentName: 'WEBGPU_SMOKE_FRONTEND_URL',
         name: 'frontendURL'
+    },
+    '--inject-failure': {
+        environmentName: 'WEBGPU_SMOKE_INJECT_FAILURE',
+        name: 'failureInjection'
     },
     '--item-id': {
         environmentName: 'WEBGPU_SMOKE_ITEM_ID',
@@ -21,6 +65,14 @@ const OPTION_DEFINITIONS = Object.freeze({
     '--password': {
         environmentName: 'WEBGPU_SMOKE_PASSWORD',
         name: 'password'
+    },
+    '--repeat-sessions': {
+        environmentName: 'WEBGPU_SMOKE_REPEAT_SESSIONS',
+        name: 'repeatSessionCount'
+    },
+    '--seek-storm-count': {
+        environmentName: 'WEBGPU_SMOKE_SEEK_STORM_COUNT',
+        name: 'seekStormCount'
     },
     '--server-url': {
         environmentName: 'WEBGPU_SMOKE_SERVER_URL',
@@ -48,6 +100,27 @@ Options:
   --frontend-url <url>   Built Jellyfin Web frontend URL
   --server-url <url>     Jellyfin server URL entered in the UI
   --item-id <id>         Video item ID to play
+  --expected-video-output <video-frame|raw-planes>
+                         Required decoded video output mode
+  --expected-video-decoder <native|bundled-hevc>
+                         Optional negotiated video decoder backend
+  --expected-audio <disabled|ready>
+                         Required custom audio path state
+  --audio-stream-index <number>
+                         Optional Jellyfin stream index to select during playback
+  --expected-audio-codec <codec>
+                         Decoder codec expected after selecting the audio stream
+  --expected-frame-evidence <none|testsrc2-motion>
+                         Optional canvas evidence for generated smoke media
+  --completion-mode <controlled-stop|natural-end>
+                         Lifecycle exercise; defaults to controlled-stop
+  --repeat-sessions <1-5>
+                         Playback sessions to run; defaults to 1
+  --inject-failure <none|presentation|device-loss|paused-device-loss>
+                         Optional presentation fault exercise; defaults to none
+                         Device loss validates route-specific recovery
+  --seek-storm-count <0-5>
+                         Rapid in-session seeks to issue; defaults to 3
   --username <name>      Jellyfin username
   --password <password>  Jellyfin password
   --timeout-ms <number>  Per-phase timeout in milliseconds
@@ -56,6 +129,12 @@ Options:
 Environment equivalents:
   WEBGPU_SMOKE_DEBUG_URL, WEBGPU_SMOKE_FRONTEND_URL,
   WEBGPU_SMOKE_SERVER_URL, WEBGPU_SMOKE_ITEM_ID,
+  WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
+  WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
+  WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
+  WEBGPU_SMOKE_COMPLETION_MODE,
+  WEBGPU_SMOKE_REPEAT_SESSIONS, WEBGPU_SMOKE_INJECT_FAILURE,
+  WEBGPU_SMOKE_SEEK_STORM_COUNT,
   WEBGPU_SMOKE_USERNAME, WEBGPU_SMOKE_PASSWORD,
   WEBGPU_SMOKE_TIMEOUT_MS`;
 
@@ -117,6 +196,85 @@ function parseTimeoutMilliseconds(value) {
     return parsedValue;
 }
 
+function parseRepeatSessionCount(value) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || parsedValue < 1
+        || parsedValue > MAXIMUM_REPEAT_SESSION_COUNT) {
+        throw new RangeError('Browser smoke repeat sessions must be an integer from 1 through 5');
+    }
+    return parsedValue;
+}
+
+function parseSeekStormCount(value) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || parsedValue < 0
+        || parsedValue > MAXIMUM_SEEK_STORM_COUNT) {
+        throw new RangeError('Browser smoke seek storm count must be an integer from 0 through 5');
+    }
+    return parsedValue;
+}
+
+function parseAudioStreamIndex(value) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue) || parsedValue < 0 || parsedValue > 10_000) {
+        throw new RangeError('Browser smoke audio stream index must be an integer from 0 through 10000');
+    }
+    return parsedValue;
+}
+
+function parseExpectedAudioCodec(value) {
+    const expectedCodec = requireNonEmptyString(value, '--expected-audio-codec');
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/iu.test(expectedCodec)) {
+        throw new TypeError('Invalid browser smoke expectation for --expected-audio-codec');
+    }
+    return expectedCodec;
+}
+
+function parseExpectedValue(value, optionName, acceptedValues) {
+    const expectedValue = requireNonEmptyString(value, optionName);
+    if (!acceptedValues.includes(expectedValue)) {
+        throw new TypeError(
+            `Invalid browser smoke expectation for ${optionName}`
+        );
+    }
+    return expectedValue;
+}
+
+function resolveSeekStormCount(configuredValue, completionMode) {
+    if (configuredValue !== undefined) {
+        return parseSeekStormCount(configuredValue);
+    }
+    return completionMode === 'natural-end' ? 0 : DEFAULT_SEEK_STORM_COUNT;
+}
+
+function validateNaturalEndConfiguration(options) {
+    if (options.completionMode !== 'natural-end') {
+        return;
+    }
+    if (options.audioStreamIndex !== null) {
+        throw new TypeError(
+            'Browser smoke natural-end mode does not support an in-session audio stream change'
+        );
+    }
+    if (options.repeatSessionCount !== 1) {
+        throw new TypeError(
+            'Browser smoke natural-end mode requires --repeat-sessions 1'
+        );
+    }
+    if (options.failureInjection !== 'none') {
+        throw new TypeError(
+            'Browser smoke natural-end mode requires --inject-failure none'
+        );
+    }
+    if (options.seekStormCount !== 0) {
+        throw new TypeError(
+            'Browser smoke natural-end mode requires --seek-storm-count 0'
+        );
+    }
+}
+
 /** Parses CLI flags first, then environment variables, without supplying credentials. */
 export function parseSmokeConfiguration(argumentList, environment) {
     const optionValues = readOptionValues(argumentList);
@@ -135,7 +293,78 @@ export function parseSmokeConfiguration(argumentList, environment) {
     };
 
     const timeoutValue = configuredValue('timeoutMilliseconds');
+    const repeatSessionValue = configuredValue('repeatSessionCount');
+    const seekStormValue = configuredValue('seekStormCount');
+    const audioStreamIndexValue = configuredValue('audioStreamIndex');
+    const expectedAudioCodecValue = configuredValue('expectedAudioCodec');
+    const audioStreamIndex = audioStreamIndexValue === undefined ?
+        null :
+        parseAudioStreamIndex(audioStreamIndexValue);
+    const expectedAudioCodec = expectedAudioCodecValue === undefined ?
+        null :
+        parseExpectedAudioCodec(expectedAudioCodecValue);
+    const completionMode = parseExpectedValue(
+        configuredValue('completionMode') || 'controlled-stop',
+        '--completion-mode',
+        [ 'controlled-stop', 'natural-end' ]
+    );
+    if ((audioStreamIndex === null) !== (expectedAudioCodec === null)) {
+        throw new TypeError(
+            'Browser smoke audio stream selection requires both --audio-stream-index and --expected-audio-codec'
+        );
+    }
+    const expectedAudioPath = parseExpectedValue(
+        configuredValue('expectedAudioPath'),
+        '--expected-audio',
+        [ 'disabled', 'ready' ]
+    );
+    if (audioStreamIndex !== null && expectedAudioPath !== 'ready') {
+        throw new TypeError(
+            'Browser smoke audio stream selection requires --expected-audio ready'
+        );
+    }
+    if (audioStreamIndex !== null && repeatSessionValue && parseRepeatSessionCount(repeatSessionValue) !== 1) {
+        throw new TypeError(
+            'Browser smoke audio stream selection requires --repeat-sessions 1'
+        );
+    }
+    const failureInjection = parseExpectedValue(
+        configuredValue('failureInjection') || 'none',
+        '--inject-failure',
+        [ 'none', 'presentation', 'device-loss', 'paused-device-loss' ]
+    );
+    const expectedVideoOutputMode = parseExpectedValue(
+        configuredValue('expectedVideoOutputMode'),
+        '--expected-video-output',
+        [ 'video-frame', 'raw-planes' ]
+    );
+    const expectedFrameEvidence = parseExpectedValue(
+        configuredValue('expectedFrameEvidence') || 'none',
+        '--expected-frame-evidence',
+        [ 'none', 'testsrc2-motion' ]
+    );
+    const configuredVideoDecoderBackend = configuredValue('expectedVideoDecoderBackend');
+    const expectedVideoDecoderBackend = configuredVideoDecoderBackend === undefined ?
+        null :
+        parseExpectedValue(
+            configuredVideoDecoderBackend,
+            '--expected-video-decoder',
+            [ 'native', 'bundled-hevc' ]
+        );
+    const repeatSessionCount = repeatSessionValue ?
+        parseRepeatSessionCount(repeatSessionValue) :
+        1;
+    const seekStormCount = resolveSeekStormCount(seekStormValue, completionMode);
+    validateNaturalEndConfiguration({
+        audioStreamIndex,
+        completionMode,
+        failureInjection,
+        repeatSessionCount,
+        seekStormCount
+    });
     return {
+        audioStreamIndex,
+        completionMode,
         debugURL: parseHTTPURL(
             configuredValue('debugURL') || DEFAULT_DEBUG_URL,
             '--debug-url'
@@ -144,8 +373,16 @@ export function parseSmokeConfiguration(argumentList, environment) {
             configuredValue('frontendURL') || DEFAULT_FRONTEND_URL,
             '--frontend-url'
         ),
+        failureInjection,
+        expectedAudioCodec,
+        expectedAudioPath,
+        expectedFrameEvidence,
+        expectedVideoDecoderBackend,
+        expectedVideoOutputMode,
         itemID: requireNonEmptyString(configuredValue('itemID'), '--item-id'),
         password: requireNonEmptyString(configuredValue('password'), '--password'),
+        repeatSessionCount,
+        seekStormCount,
         serverURL: parseHTTPURL(
             configuredValue('serverURL') || DEFAULT_SERVER_URL,
             '--server-url'
@@ -164,16 +401,257 @@ export function createFrontendRouteURL(frontendURL, route) {
     return routeURL.toString();
 }
 
+/** Derives the bounded authorization key for an active raw presentation route. */
+export function deriveRawHDRPlaybackRouteKey(rawFrameFormat, colorMetadata) {
+    if (rawFrameFormat !== 'I420P10'
+        || colorMetadata?.bitDepth !== 10
+        || colorMetadata.matrix !== 'bt2020-ncl'
+        || colorMetadata.primaries !== 'bt2020'
+        || colorMetadata.range !== 'limited') {
+        return null;
+    }
+    switch (colorMetadata.transfer) {
+        case 'hlg':
+            return 'I420P10:bt2020-ncl:bt2020:limited:hlg';
+        case 'pq':
+            return 'I420P10:bt2020-ncl:bt2020:limited:pq';
+        default:
+            return null;
+    }
+}
+
+/** Creates deterministic, non-monotonic seek targets with fixed endpoint guards. */
+export function createSeekStormTargetsMicroseconds(durationMicroseconds, seekCount) {
+    if (!Number.isSafeInteger(seekCount)
+        || seekCount < 0
+        || seekCount > MAXIMUM_SEEK_STORM_COUNT) {
+        throw new RangeError('Seek storm count must be an integer from 0 through 5');
+    }
+    if (seekCount === 0) {
+        return [];
+    }
+    if (!Number.isSafeInteger(durationMicroseconds)
+        || durationMicroseconds < 8 * MICROSECONDS_PER_SECOND) {
+        return [];
+    }
+
+    const seekableSpanMicroseconds = durationMicroseconds
+        - SEEK_START_GUARD_MICROSECONDS
+        - SEEK_END_GUARD_MICROSECONDS;
+    const targets = [];
+    for (let targetIndex = 0; targetIndex < seekCount; targetIndex += 1) {
+        targets.push(
+            SEEK_START_GUARD_MICROSECONDS
+                + Math.round(seekableSpanMicroseconds * SEEK_STORM_FRACTIONS[targetIndex])
+        );
+    }
+    return targets;
+}
+
+/** Chooses one bounded seek target, including for short generated fixtures. */
+export function createPrimarySeekTargetMicroseconds(
+    currentTimeMicroseconds,
+    durationMicroseconds
+) {
+    const desiredForwardTarget = currentTimeMicroseconds + (5 * MICROSECONDS_PER_SECOND);
+    if (!Number.isSafeInteger(durationMicroseconds) || durationMicroseconds <= 0) {
+        return desiredForwardTarget;
+    }
+
+    const endpointGuardMicroseconds = Math.min(
+        SEEK_END_GUARD_MICROSECONDS,
+        Math.max(250_000, Math.floor(durationMicroseconds * 0.25))
+    );
+    const maximumTargetMicroseconds = Math.max(
+        0,
+        durationMicroseconds - endpointGuardMicroseconds
+    );
+    if (desiredForwardTarget <= maximumTargetMicroseconds) {
+        return desiredForwardTarget;
+    }
+
+    const proportionalTargetMicroseconds = Math.floor(durationMicroseconds * 0.35);
+    const minimumUsefulTargetMicroseconds = Math.min(
+        SEEK_START_GUARD_MICROSECONDS,
+        maximumTargetMicroseconds
+    );
+    return Math.min(
+        maximumTargetMicroseconds,
+        Math.max(minimumUsefulTargetMicroseconds, proportionalTargetMicroseconds)
+    );
+}
+
 function addFailure(failures, condition, code) {
     if (!condition) {
         failures.push(code);
     }
 }
 
+function hasRedDominance(sample, threshold) {
+    const [ red, green, blue ] = sample ?? [];
+    return Number.isInteger(red)
+        && Number.isInteger(green)
+        && Number.isInteger(blue)
+        && red >= green + threshold
+        && red >= blue + threshold;
+}
+
+function hasBlueDominance(sample, threshold) {
+    const [ red, green, blue ] = sample ?? [];
+    return Number.isInteger(red)
+        && Number.isInteger(green)
+        && Number.isInteger(blue)
+        && blue >= red + threshold
+        && blue >= green + threshold;
+}
+
+function hasYellowDominance(sample, threshold) {
+    const [ red, green, blue ] = sample ?? [];
+    return Number.isInteger(red)
+        && Number.isInteger(green)
+        && Number.isInteger(blue)
+        && red >= blue + threshold
+        && green >= blue + threshold;
+}
+
+function hasCyanDominance(sample, threshold) {
+    const [ red, green, blue ] = sample ?? [];
+    return Number.isInteger(red)
+        && Number.isInteger(green)
+        && Number.isInteger(blue)
+        && green >= red + threshold
+        && blue >= red + threshold;
+}
+
+function validateTestSourceFrame(failures, evidence, label) {
+    const expectedSampleWidth = 64;
+    const expectedSampleHeight = 36;
+    const expectedPixelCount = expectedSampleWidth * expectedSampleHeight;
+    const minimumChannelRange = 32;
+    const dominanceThreshold = 12;
+    const horizontalSamples = evidence?.horizontalSamples;
+
+    addFailure(failures, evidence?.status === 'captured', `${label}-capture-failed`);
+    addFailure(
+        failures,
+        evidence?.sampleWidth === expectedSampleWidth
+            && evidence?.sampleHeight === expectedSampleHeight
+            && evidence?.pixelCount === expectedPixelCount,
+        `${label}-sample-geometry-invalid`
+    );
+    addFailure(
+        failures,
+        evidence?.opaquePixelCount === expectedPixelCount,
+        `${label}-alpha-invalid`
+    );
+    addFailure(
+        failures,
+        Number.isInteger(evidence?.nonBlackPixelCount)
+            && evidence.nonBlackPixelCount >= expectedPixelCount / 2,
+        `${label}-mostly-black`
+    );
+    addFailure(
+        failures,
+        Number.isInteger(evidence?.chromaticPixelCount)
+            && evidence.chromaticPixelCount >= expectedPixelCount / 4,
+        `${label}-color-diversity-missing`
+    );
+    addFailure(
+        failures,
+        Array.isArray(evidence?.channelMinimums)
+            && evidence.channelMinimums.length === 3
+            && Array.isArray(evidence?.channelMaximums)
+            && evidence.channelMaximums.length === 3
+            && evidence.channelMaximums.every((maximum, channelIndex) => (
+                maximum - evidence.channelMinimums[channelIndex] >= minimumChannelRange
+            )),
+        `${label}-channel-range-insufficient`
+    );
+    addFailure(
+        failures,
+        Array.isArray(horizontalSamples)
+            && horizontalSamples.length === 8
+            && hasRedDominance(horizontalSamples[0], dominanceThreshold)
+            && hasYellowDominance(horizontalSamples[3], dominanceThreshold)
+            && hasBlueDominance(horizontalSamples[4], dominanceThreshold)
+            && hasCyanDominance(horizontalSamples[7], dominanceThreshold),
+        `${label}-testsrc2-signature-mismatch`
+    );
+}
+
+/** Validates sampled pixels from the actual presentation canvas for generated media. */
+export function validatePresentedFrameEvidence(initialEvidence, laterEvidence, expectation) {
+    if (expectation === 'none') {
+        return [];
+    }
+    if (expectation !== 'testsrc2-motion') {
+        throw new TypeError('The presented-frame evidence expectation is invalid');
+    }
+
+    const failures = [];
+    validateTestSourceFrame(failures, initialEvidence, 'initial-frame');
+    validateTestSourceFrame(failures, laterEvidence, 'later-frame');
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialEvidence?.hash)
+            && initialEvidence.hash >= 0
+            && Number.isSafeInteger(laterEvidence?.hash)
+            && laterEvidence.hash >= 0
+            && initialEvidence.hash !== laterEvidence.hash,
+        'presented-frame-motion-missing'
+    );
+    return failures;
+}
+
+function validateRawHDRAuthorizationSnapshot(failures, snapshot) {
+    if (snapshot.customPlaybackEligibility?.videoOutputMode !== 'raw-planes') {
+        return;
+    }
+
+    const authorization = snapshot.rawHDRValidation;
+    const routeKey = snapshot.rawHDRPlaybackRouteKey;
+    addFailure(
+        failures,
+        authorization?.status === 'authorized',
+        'raw-hdr-authorization-not-authorized'
+    );
+    addFailure(
+        failures,
+        authorization?.targetFormat === 'bgra8unorm'
+            || authorization?.targetFormat === 'rgba8unorm',
+        'raw-hdr-authorization-target-invalid'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(authorization?.fixtureVersion)
+            && authorization.fixtureVersion > 0
+            && Number.isSafeInteger(authorization?.renderSettingsVersion)
+            && authorization.renderSettingsVersion > 0,
+        'raw-hdr-authorization-version-invalid'
+    );
+    addFailure(
+        failures,
+        routeKey === 'I420P10:bt2020-ncl:bt2020:limited:hlg'
+            || routeKey === 'I420P10:bt2020-ncl:bt2020:limited:pq',
+        'raw-hdr-playback-route-missing'
+    );
+    addFailure(
+        failures,
+        Array.isArray(authorization?.authorizedRouteKeys)
+            && authorization.authorizedRouteKeys.includes(routeKey),
+        'raw-hdr-playback-route-unauthorized'
+    );
+}
+
 /** Returns stable failure codes for an active custom-decoded playback sample pair. */
-export function validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot) {
+export function validateActivePlaybackSnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    expectations
+) {
     const failures = [];
     const customTelemetry = laterSnapshot.customPlayback;
+    const eligibility = laterSnapshot.customPlaybackEligibility;
     const decodeTelemetry = customTelemetry?.videoDecode;
     const presentationTelemetry = laterSnapshot.presentation;
 
@@ -188,6 +666,7 @@ export function validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot) {
     );
     addFailure(failures, customTelemetry?.fallbackReason === null, 'custom-fallback');
     addFailure(failures, customTelemetry?.hasLastError === false, 'custom-error-message');
+    addFailure(failures, eligibility?.eligible === true, 'custom-eligibility-missing');
     addFailure(failures, decodeTelemetry?.failureKind === null, 'decode-failure');
     addFailure(failures, (decodeTelemetry?.receivedFrameCount ?? 0) > 0, 'no-decoded-frames');
     addFailure(failures, presentationTelemetry?.state === 'presenting', 'presenter-not-active');
@@ -195,6 +674,110 @@ export function validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot) {
     addFailure(failures, presentationTelemetry?.presentationSource === 'decoded', 'native-frame-source');
     addFailure(failures, (presentationTelemetry?.decodedFrameCount ?? 0) > 0, 'no-decoded-presentation');
     addFailure(failures, (presentationTelemetry?.presentedFrameCount ?? 0) > 0, 'no-presented-frames');
+    const expectedOutputMode = expectations.expectedVideoOutputMode;
+    const expectedVideoDecoderBackend = expectations.expectedVideoDecoderBackend;
+    const expectedAudioPath = expectations.expectedAudioPath;
+    addFailure(
+        failures,
+        eligibility?.videoOutputMode === expectedOutputMode,
+        'unexpected-video-output-mode'
+    );
+    if (
+        expectedVideoDecoderBackend !== null
+        && expectedVideoDecoderBackend !== undefined
+    ) {
+        addFailure(
+            failures,
+            eligibility?.videoDecoderBackend === expectedVideoDecoderBackend,
+            'unexpected-video-decoder-backend'
+        );
+    }
+    addFailure(
+        failures,
+        customTelemetry?.audioPath === expectedAudioPath,
+        'unexpected-audio-path'
+    );
+    addFailure(
+        failures,
+        presentationTelemetry?.mode === (
+            expectedOutputMode === 'raw-planes' ? 'hdr-to-sdr' : 'identity-sdr'
+        ),
+        'unexpected-presentation-mode'
+    );
+    addFailure(
+        failures,
+        eligibility?.hdr === (expectedOutputMode === 'raw-planes'),
+        'hdr-eligibility-mismatch'
+    );
+    const maximumPendingFrames = expectedOutputMode === 'raw-planes' ?
+        MAXIMUM_RAW_OUTSTANDING_FRAMES :
+        MAXIMUM_VIDEO_FRAME_PENDING_FRAMES;
+    addFailure(
+        failures,
+        Number.isSafeInteger(decodeTelemetry?.pendingFrameCount)
+            && decodeTelemetry.pendingFrameCount >= 0
+            && decodeTelemetry.pendingFrameCount <= maximumPendingFrames,
+        'pending-frame-bound-exceeded'
+    );
+    if (expectedOutputMode === 'raw-planes') {
+        const pendingFrameCount = decodeTelemetry?.pendingFrameCount;
+        const peakFrameCount = decodeTelemetry?.peakFrameCount;
+        const queuedFrameCount = decodeTelemetry?.queuedFrameCount;
+        addFailure(
+            failures,
+            Number.isSafeInteger(pendingFrameCount)
+                && pendingFrameCount >= 0
+                && Number.isSafeInteger(queuedFrameCount)
+                && queuedFrameCount >= 0
+                && pendingFrameCount + queuedFrameCount <= MAXIMUM_RAW_OUTSTANDING_FRAMES
+                && Number.isSafeInteger(peakFrameCount)
+                && peakFrameCount >= 0
+                && peakFrameCount <= MAXIMUM_RAW_OUTSTANDING_FRAMES,
+            'raw-frame-credit-window-exceeded'
+        );
+    }
+    validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
+    if (expectedAudioPath === 'ready') {
+        const audioBridge = customTelemetry.audioBridge;
+        const audioOutput = customTelemetry.audioOutput;
+        addFailure(failures, audioBridge !== null, 'audio-bridge-telemetry-missing');
+        addFailure(failures, audioOutput !== null, 'audio-output-telemetry-missing');
+        addFailure(failures, audioBridge?.failed === false, 'audio-bridge-failed');
+        addFailure(failures, (audioOutput?.consumedFrames ?? 0) > 0, 'audio-not-consumed');
+        addFailure(failures, audioOutput?.playing === true, 'audio-output-not-playing');
+        addFailure(failures, audioOutput?.droppedFrames === 0, 'audio-frames-dropped');
+        addFailure(failures, audioOutput?.overflowEvents === 0, 'audio-overflow');
+        addFailure(failures, audioOutput?.staleChunks === 0, 'stale-audio-chunks');
+        const initialOutputFrames = initialSnapshot.customPlayback?.audioOutput?.outputFrames ?? 0;
+        const laterOutputFrames = audioOutput?.outputFrames;
+        const initialUnderflowFrames =
+            initialSnapshot.customPlayback?.audioOutput?.underflowFrames ?? 0;
+        const laterUnderflowFrames = audioOutput?.underflowFrames;
+        const outputFrameDelta = laterOutputFrames - initialOutputFrames;
+        const underflowFrameDelta = laterUnderflowFrames - initialUnderflowFrames;
+        addFailure(
+            failures,
+            Number.isSafeInteger(initialOutputFrames)
+                && initialOutputFrames >= 0
+                && Number.isSafeInteger(laterOutputFrames)
+                && laterOutputFrames >= 0
+                && Number.isSafeInteger(initialUnderflowFrames)
+                && initialUnderflowFrames >= 0
+                && Number.isSafeInteger(laterUnderflowFrames)
+                && laterUnderflowFrames >= 0
+                && outputFrameDelta >= 0
+                && underflowFrameDelta >= 0
+                && (
+                    outputFrameDelta < MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO
+                    || underflowFrameDelta / outputFrameDelta
+                        <= MAXIMUM_AUDIO_UNDERFLOW_RATIO
+                ),
+            'audio-underflow-ratio-exceeded'
+        );
+    } else {
+        addFailure(failures, customTelemetry?.audioBridge === null, 'disabled-audio-bridge-active');
+        addFailure(failures, customTelemetry?.audioOutput === null, 'disabled-audio-output-active');
+    }
     addFailure(
         failures,
         (presentationTelemetry?.presentedFrameCount ?? 0)
@@ -207,9 +790,62 @@ export function validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot) {
             > (initialSnapshot.customPlayback?.currentTimeMicroseconds ?? -1),
         'media-clock-not-advancing'
     );
+    const waitingEventDelta = (laterSnapshot.eventCounts?.waiting ?? 0)
+        - (initialSnapshot.eventCounts?.waiting ?? 0);
+    const playingEventDelta = (laterSnapshot.eventCounts?.playing ?? 0)
+        - (initialSnapshot.eventCounts?.playing ?? 0);
+    addFailure(
+        failures,
+        waitingEventDelta >= 0 && waitingEventDelta <= 1,
+        'waiting-event-churn'
+    );
+    addFailure(
+        failures,
+        playingEventDelta >= 0 && playingEventDelta <= 1,
+        'playing-event-churn'
+    );
     addFailure(failures, laterSnapshot.dom.sourceLessVideoCount > 0, 'source-less-video-missing');
     addFailure(failures, laterSnapshot.dom.sourcedVideoCount === 0, 'native-video-source-active');
     addFailure(failures, laterSnapshot.dom.visibleCanvasCount > 0, 'webgpu-canvas-not-visible');
+    return failures;
+}
+
+/** Returns stable failure codes for an in-session custom audio decoder restart. */
+export function validateAudioStreamSwitchSnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    expectedAudioCodec
+) {
+    const failures = [];
+    const initialTelemetry = initialSnapshot.customPlayback;
+    const laterTelemetry = laterSnapshot.customPlayback;
+    const initialGeneration = initialTelemetry?.activeGeneration;
+    const laterGeneration = laterTelemetry?.activeGeneration;
+
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialGeneration)
+            && Number.isSafeInteger(laterGeneration)
+            && laterGeneration > initialGeneration,
+        'audio-generation-not-advanced'
+    );
+    addFailure(failures, laterTelemetry?.state === 'playing', 'audio-switch-not-playing');
+    addFailure(failures, laterTelemetry?.audioPath === 'ready', 'audio-switch-path-not-ready');
+    addFailure(failures, laterTelemetry?.fallbackReason === null, 'audio-switch-fallback');
+    addFailure(failures, laterTelemetry?.videoDecode?.failureKind === null, 'audio-switch-decode-failure');
+    addFailure(
+        failures,
+        laterTelemetry?.videoDecode?.audioCodec === expectedAudioCodec,
+        'unexpected-selected-audio-codec'
+    );
+    addFailure(
+        failures,
+        (laterTelemetry?.videoDecode?.receivedAudioFrameCount ?? 0) > 0,
+        'selected-audio-not-decoded'
+    );
+    addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'audio-switch-presenter-not-active');
+    addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
+    validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
     return failures;
 }
 
@@ -289,15 +925,575 @@ export function validateSeekSnapshot(snapshot, targetMicroseconds, toleranceMicr
     return failures;
 }
 
+/** Returns stable failure codes for a rapid seek burst and its final generation. */
+export function validateSeekStormSnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    targetMicrosecondsList,
+    toleranceMicroseconds = 2_000_000
+) {
+    const failures = [];
+    const finalTargetMicroseconds = targetMicrosecondsList.at(-1);
+    const initialGeneration = initialSnapshot.customPlayback?.activeGeneration;
+    const laterGeneration = laterSnapshot.customPlayback?.activeGeneration;
+    const decodeTelemetry = laterSnapshot.customPlayback?.videoDecode;
+
+    addFailure(
+        failures,
+        targetMicrosecondsList.length > 0
+            && Number.isSafeInteger(finalTargetMicroseconds),
+        'seek-storm-targets-missing'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialGeneration)
+            && Number.isSafeInteger(laterGeneration)
+            && laterGeneration === initialGeneration + targetMicrosecondsList.length,
+        'seek-storm-generation-mismatch'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.sessionGeneration === initialSnapshot.sessionGeneration,
+        'seek-storm-backend-session-restarted'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(finalTargetMicroseconds)
+            && Math.abs(
+                (laterSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+                    - finalTargetMicroseconds
+            ) <= toleranceMicroseconds,
+        'seek-storm-final-target-not-reached'
+    );
+    addFailure(failures, laterSnapshot.customPlayback?.state === 'playing', 'seek-storm-not-playing');
+    addFailure(failures, laterSnapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+    addFailure(failures, laterSnapshot.customPlayback?.hasLastError === false, 'custom-error-message');
+    addFailure(failures, decodeTelemetry?.activeGeneration === laterGeneration, 'decode-generation-mismatch');
+    addFailure(failures, decodeTelemetry?.failureKind === null, 'decode-failure');
+    addFailure(failures, (decodeTelemetry?.receivedFrameCount ?? 0) > 0, 'no-decoded-frames');
+    addFailure(
+        failures,
+        Number.isSafeInteger(decodeTelemetry?.staleFrameCount)
+            && decodeTelemetry.staleFrameCount >= 0
+            && Number.isSafeInteger(decodeTelemetry?.staleAudioSampleCount)
+            && decodeTelemetry.staleAudioSampleCount >= 0,
+        'stale-decode-accounting-invalid'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialSnapshot.customPlayback?.staleEventCount)
+            && Number.isSafeInteger(laterSnapshot.customPlayback?.staleEventCount)
+            && laterSnapshot.customPlayback.staleEventCount
+                >= initialSnapshot.customPlayback.staleEventCount,
+        'stale-controller-accounting-invalid'
+    );
+    const outputMode = laterSnapshot.customPlaybackEligibility?.videoOutputMode;
+    const pendingFrameCount = decodeTelemetry?.pendingFrameCount;
+    const queuedFrameCount = decodeTelemetry?.queuedFrameCount;
+    const peakFrameCount = decodeTelemetry?.peakFrameCount;
+    addFailure(
+        failures,
+        outputMode === 'raw-planes' ?
+            Number.isSafeInteger(pendingFrameCount)
+                && pendingFrameCount >= 0
+                && Number.isSafeInteger(queuedFrameCount)
+                && queuedFrameCount >= 0
+                && pendingFrameCount + queuedFrameCount
+                    <= MAXIMUM_RAW_OUTSTANDING_FRAMES
+                && Number.isSafeInteger(peakFrameCount)
+                && peakFrameCount >= 0
+                && peakFrameCount <= MAXIMUM_RAW_OUTSTANDING_FRAMES :
+            Number.isSafeInteger(pendingFrameCount)
+                && pendingFrameCount >= 0
+                && pendingFrameCount <= MAXIMUM_VIDEO_FRAME_PENDING_FRAMES,
+        'seek-storm-frame-window-exceeded'
+    );
+    addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'presenter-not-active');
+    addFailure(failures, laterSnapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+    addFailure(
+        failures,
+        (laterSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (initialSnapshot.presentation?.presentedFrameCount ?? 0),
+        'presented-frame-count-not-advancing'
+    );
+    addFailure(failures, laterSnapshot.dom?.sourceLessVideoCount > 0, 'source-less-video-missing');
+    addFailure(failures, laterSnapshot.dom?.sourcedVideoCount === 0, 'native-video-source-active');
+    addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
+    validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
+    return failures;
+}
+
+function eventCount(snapshot, eventType) {
+    const count = snapshot.eventCounts?.[eventType];
+    return Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+function hasExactEventDelta(initialSnapshot, laterSnapshot, eventType, expectedDelta) {
+    const initialCount = eventCount(initialSnapshot, eventType);
+    const laterCount = eventCount(laterSnapshot, eventType);
+    return initialCount !== null
+        && laterCount !== null
+        && laterCount - initialCount === expectedDelta;
+}
+
+/** Validates reliable pause, resume, and stop event cardinality and ordering. */
+export function validateControlEventTransitions(
+    beforePauseSnapshot,
+    pausedSnapshot,
+    resumedSnapshot,
+    beforeStopSnapshot,
+    stoppedSnapshot
+) {
+    const failures = [];
+    addFailure(
+        failures,
+        hasExactEventDelta(beforePauseSnapshot, pausedSnapshot, 'pause', 1),
+        'pause-event-cardinality'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(pausedSnapshot, resumedSnapshot, 'unpause', 1),
+        'unpause-event-cardinality'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(pausedSnapshot, resumedSnapshot, 'playing', 1),
+        'resume-playing-event-cardinality'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(beforeStopSnapshot, stoppedSnapshot, 'stopped', 1),
+        'stop-event-cardinality'
+    );
+    addFailure(
+        failures,
+        eventCount(stoppedSnapshot, 'error') === 0,
+        'player-error-event'
+    );
+
+    const pausedSequenceLength = pausedSnapshot.eventSequence?.length;
+    const resumedSequence = resumedSnapshot.eventSequence;
+    const resumedEvents = Number.isSafeInteger(pausedSequenceLength)
+        && Array.isArray(resumedSequence) ?
+        resumedSequence.slice(pausedSequenceLength) :
+        [];
+    const unpauseIndex = resumedEvents.indexOf('unpause');
+    const playingIndex = resumedEvents.indexOf('playing');
+    addFailure(
+        failures,
+        unpauseIndex >= 0 && playingIndex > unpauseIndex,
+        'resume-event-order'
+    );
+    return failures;
+}
+
+/** Validates decoder EOF through physical audio drain and Jellyfin stop semantics. */
+export function validateNaturalEndSnapshots(
+    activeSnapshot,
+    endedSnapshot,
+    stableEndedSnapshot,
+    expectedAudioPath
+) {
+    const failures = [];
+    addFailure(failures, endedSnapshot.customPlayback?.state === 'ended', 'state-not-ended');
+    addFailure(
+        failures,
+        stableEndedSnapshot.customPlayback?.state === 'ended',
+        'ended-state-not-stable'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(activeSnapshot, endedSnapshot, 'stopped', 1),
+        'natural-stop-event-cardinality'
+    );
+    addFailure(
+        failures,
+        eventCount(stableEndedSnapshot, 'stopped') === eventCount(endedSnapshot, 'stopped'),
+        'natural-stop-event-repeated'
+    );
+    addFailure(
+        failures,
+        eventCount(endedSnapshot, 'waiting') === eventCount(activeSnapshot, 'waiting'),
+        'terminal-waiting-event'
+    );
+    addFailure(
+        failures,
+        eventCount(endedSnapshot, 'ended') === eventCount(activeSnapshot, 'ended'),
+        'noncontract-ended-event'
+    );
+    addFailure(failures, endedSnapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+    addFailure(failures, endedSnapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+    addFailure(failures, endedSnapshot.terminalErrorCount === 0, 'player-error-event');
+    addFailure(
+        failures,
+        endedSnapshot.customPlayback?.videoDecode?.queuedFrameCount === 0
+            && endedSnapshot.customPlayback?.videoDecode?.pendingFrameCount === 0,
+        'video-tail-not-drained'
+    );
+    addFailure(
+        failures,
+        Math.abs(
+            (stableEndedSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            - (endedSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+        ) <= NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS,
+        'ended-clock-not-frozen'
+    );
+    if (expectedAudioPath === 'ready') {
+        const audioBridge = stableEndedSnapshot.customPlayback?.audioBridge;
+        const audioOutput = stableEndedSnapshot.customPlayback?.audioOutput;
+        const submittedEndMediaTimeMicroseconds =
+            audioBridge?.submittedEndMediaTimeMicroseconds;
+        addFailure(
+            failures,
+            audioBridge?.pendingFrameCount === 0
+                && audioBridge.pendingSampleCount === 0,
+            'audio-worklet-tail-not-drained'
+        );
+        addFailure(
+            failures,
+            audioOutput?.queuedFrames === 0,
+            'audio-output-not-drained'
+        );
+        addFailure(
+            failures,
+            Number.isSafeInteger(submittedEndMediaTimeMicroseconds)
+                && submittedEndMediaTimeMicroseconds >= 0
+                && (stableEndedSnapshot.customPlayback?.currentTimeMicroseconds ?? -1)
+                    >= submittedEndMediaTimeMicroseconds
+                        - NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS,
+            'audio-physical-tail-not-reached'
+        );
+    }
+    return failures;
+}
+
+/** Validates canvas geometry after a CDP viewport and device-scale override. */
+export function validateResizedPresentationSnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    expectedViewport
+) {
+    const failures = [];
+    const dom = laterSnapshot.dom;
+    const expectedBackingWidth = Math.round(
+        (dom?.canvasCSSWidth ?? 0) * expectedViewport.devicePixelRatio
+    );
+    const expectedBackingHeight = Math.round(
+        (dom?.canvasCSSHeight ?? 0) * expectedViewport.devicePixelRatio
+    );
+    addFailure(failures, dom?.viewportWidth === expectedViewport.width, 'viewport-width-mismatch');
+    addFailure(failures, dom?.viewportHeight === expectedViewport.height, 'viewport-height-mismatch');
+    addFailure(
+        failures,
+        Math.abs((dom?.devicePixelRatio ?? 0) - expectedViewport.devicePixelRatio) < 0.01,
+        'device-pixel-ratio-mismatch'
+    );
+    addFailure(
+        failures,
+        Number.isFinite(dom?.canvasCSSWidth)
+            && dom.canvasCSSWidth > 0
+            && Number.isFinite(dom?.canvasCSSHeight)
+            && dom.canvasCSSHeight > 0,
+        'canvas-css-geometry-missing'
+    );
+    addFailure(
+        failures,
+        Math.abs((dom?.canvasBackingWidth ?? 0) - expectedBackingWidth) <= 1
+            && Math.abs((dom?.canvasBackingHeight ?? 0) - expectedBackingHeight) <= 1,
+        'canvas-backing-geometry-mismatch'
+    );
+    addFailure(
+        failures,
+        dom?.canvasBackingWidth !== initialSnapshot.dom?.canvasBackingWidth
+            || dom?.canvasBackingHeight !== initialSnapshot.dom?.canvasBackingHeight,
+        'canvas-backing-geometry-unchanged'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.sessionGeneration === initialSnapshot.sessionGeneration
+            && laterSnapshot.customPlayback?.activeGeneration
+                === initialSnapshot.customPlayback?.activeGeneration,
+        'resize-session-restarted'
+    );
+    addFailure(failures, laterSnapshot.customPlayback?.state === 'playing', 'resize-not-playing');
+    addFailure(failures, laterSnapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+    addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'presenter-not-active');
+    addFailure(failures, laterSnapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+    addFailure(
+        failures,
+        (laterSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (initialSnapshot.presentation?.presentedFrameCount ?? 0),
+        'presented-frame-count-not-advancing'
+    );
+    addFailure(failures, dom?.visibleCanvasCount > 0, 'webgpu-canvas-not-visible');
+    addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
+    validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
+    return failures;
+}
+
+/** Validates one entered and exited native Fullscreen API transition. */
+export function validateFullscreenTransitionSnapshots(
+    initialSnapshot,
+    fullscreenSnapshot,
+    exitedSnapshot
+) {
+    const failures = [];
+    addFailure(failures, fullscreenSnapshot.dom?.fullscreenActive === true, 'fullscreen-not-active');
+    addFailure(
+        failures,
+        fullscreenSnapshot.dom?.fullscreenContainsCanvas === true,
+        'fullscreen-canvas-not-contained'
+    );
+    addFailure(failures, exitedSnapshot.dom?.fullscreenActive === false, 'fullscreen-not-exited');
+    addFailure(
+        failures,
+        hasExactEventDelta(initialSnapshot, fullscreenSnapshot, 'fullscreenchange', 1),
+        'fullscreen-enter-event-cardinality'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(fullscreenSnapshot, exitedSnapshot, 'fullscreenchange', 1),
+        'fullscreen-exit-event-cardinality'
+    );
+    addFailure(
+        failures,
+        fullscreenSnapshot.sessionGeneration === initialSnapshot.sessionGeneration
+            && exitedSnapshot.sessionGeneration === initialSnapshot.sessionGeneration
+            && fullscreenSnapshot.customPlayback?.activeGeneration
+                === initialSnapshot.customPlayback?.activeGeneration
+            && exitedSnapshot.customPlayback?.activeGeneration
+                === initialSnapshot.customPlayback?.activeGeneration,
+        'fullscreen-session-restarted'
+    );
+    addFailure(failures, exitedSnapshot.customPlayback?.state === 'playing', 'fullscreen-exit-not-playing');
+    addFailure(failures, exitedSnapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+    addFailure(failures, exitedSnapshot.presentation?.state === 'presenting', 'presenter-not-active');
+    addFailure(failures, exitedSnapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+    addFailure(
+        failures,
+        (fullscreenSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (initialSnapshot.presentation?.presentedFrameCount ?? 0)
+            && (exitedSnapshot.presentation?.presentedFrameCount ?? 0)
+                > (fullscreenSnapshot.presentation?.presentedFrameCount ?? 0),
+        'fullscreen-frames-not-advancing'
+    );
+    addFailure(failures, exitedSnapshot.terminalErrorCount === 0, 'player-error-event');
+    validateRawHDRAuthorizationSnapshot(failures, exitedSnapshot);
+    return failures;
+}
+
 /** Returns stable failure codes for stop cleanup without requiring backend destruction. */
-export function validateStopSnapshot(snapshot) {
+export function validateStopSnapshot(snapshot, expectedStoppedEventCount = 1) {
     const failures = [];
     addFailure(failures, snapshot.presentation?.state === 'idle', 'presenter-not-idle');
     addFailure(failures, snapshot.dom.canvasCount === 0, 'webgpu-canvas-retained');
     addFailure(failures, snapshot.hasCurrentSource === false, 'player-source-retained');
     addFailure(failures, snapshot.isFetching === false, 'player-still-fetching');
-    addFailure(failures, snapshot.stoppedEventCount === 1, 'stopped-event-count');
+    addFailure(
+        failures,
+        snapshot.stoppedEventCount === expectedStoppedEventCount,
+        'stopped-event-count'
+    );
     addFailure(failures, snapshot.terminalErrorCount === 0, 'player-error-event');
+    return failures;
+}
+
+/** Returns stable failure codes for a deliberately injected presenter fallback. */
+export function validateInjectedPresentationFallbackSnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    minimumClockAdvanceMicroseconds = 250_000
+) {
+    const failures = [];
+    const initialNativeTime = initialSnapshot.dom.nativeVideoTimeMicroseconds ?? 0;
+    const laterNativeTime = laterSnapshot.dom.nativeVideoTimeMicroseconds ?? 0;
+    addFailure(
+        failures,
+        laterSnapshot.presentation?.fallbackReason === 'frame-render-failed',
+        'injected-fallback-reason-missing'
+    );
+    addFailure(failures, laterSnapshot.presentation?.state === 'idle', 'fallback-presenter-not-idle');
+    addFailure(failures, laterSnapshot.dom.canvasCount === 0, 'fallback-canvas-retained');
+    addFailure(failures, laterSnapshot.dom.visibleCanvasCount === 0, 'fallback-canvas-visible');
+    addFailure(failures, laterSnapshot.dom.sourcedVideoCount > 0, 'native-fallback-source-missing');
+    addFailure(failures, laterSnapshot.dom.nativeVideoPlaying === true, 'native-fallback-not-playing');
+    addFailure(failures, laterSnapshot.hasCurrentSource === true, 'fallback-player-source-missing');
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialNativeTime)
+            && Number.isSafeInteger(laterNativeTime)
+            && laterNativeTime - initialNativeTime >= minimumClockAdvanceMicroseconds,
+        'native-fallback-clock-not-advancing'
+    );
+    addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
+    return failures;
+}
+
+/** Returns stable failure codes for one deliberately destroyed presentation device. */
+export function validateInjectedDeviceRecoverySnapshot(
+    initialSnapshot,
+    laterSnapshot,
+    injectionObservation,
+    minimumClockAdvanceMicroseconds = 250_000
+) {
+    const failures = [];
+    const initialRecoveryCount = initialSnapshot.presentation?.deviceRecoveryCount;
+    const laterRecoveryCount = laterSnapshot.presentation?.deviceRecoveryCount;
+    addFailure(failures, injectionObservation?.available === true, 'device-loss-injection-unavailable');
+    addFailure(failures, injectionObservation?.destroyInvoked === true, 'device-destruction-not-invoked');
+    addFailure(failures, injectionObservation?.replacementDevice === true, 'replacement-device-missing');
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialRecoveryCount)
+            && Number.isSafeInteger(laterRecoveryCount)
+            && laterRecoveryCount === initialRecoveryCount + 1
+            && injectionObservation?.recoveryCountAfter === laterRecoveryCount,
+        'device-recovery-count-mismatch'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.sessionGeneration === initialSnapshot.sessionGeneration
+            && laterSnapshot.customPlayback?.activeGeneration
+                === initialSnapshot.customPlayback?.activeGeneration,
+        'device-recovery-session-restarted'
+    );
+    addFailure(failures, laterSnapshot.customPlayback?.state === 'playing', 'device-recovery-not-playing');
+    addFailure(failures, laterSnapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+    addFailure(failures, laterSnapshot.customPlayback?.hasLastError === false, 'custom-error-message');
+    addFailure(failures, laterSnapshot.customPlayback?.videoDecode?.failureKind === null, 'decode-failure');
+    addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'presenter-not-active');
+    addFailure(failures, laterSnapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+    addFailure(
+        failures,
+        (laterSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (initialSnapshot.presentation?.presentedFrameCount ?? 0),
+        'presented-frame-count-not-advancing'
+    );
+    addFailure(
+        failures,
+        (laterSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            - (initialSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            >= minimumClockAdvanceMicroseconds,
+        'device-recovery-clock-not-advancing'
+    );
+    for (const eventType of [ 'error', 'pause', 'playbackstart', 'stopped', 'unpause' ]) {
+        addFailure(
+            failures,
+            hasExactEventDelta(initialSnapshot, laterSnapshot, eventType, 0),
+            `device-recovery-${eventType}-event`
+        );
+    }
+    addFailure(failures, laterSnapshot.dom?.sourceLessVideoCount > 0, 'source-less-video-missing');
+    addFailure(failures, laterSnapshot.dom?.sourcedVideoCount === 0, 'native-video-source-active');
+    addFailure(failures, laterSnapshot.dom?.visibleCanvasCount > 0, 'webgpu-canvas-not-visible');
+    addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
+    validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
+    return failures;
+}
+
+/** Validates paused device recovery through one generation-safe frame re-decode. */
+export function validatePausedDeviceRecoverySnapshots(
+    activeSnapshot,
+    pausedSnapshot,
+    recoveredSnapshot,
+    resumedSnapshot,
+    injectionObservation,
+    minimumResumeAdvanceMicroseconds = 250_000
+) {
+    const failures = [];
+    const initialRecoveryCount = pausedSnapshot.presentation?.deviceRecoveryCount;
+    const recoveredRecoveryCount = recoveredSnapshot.presentation?.deviceRecoveryCount;
+    addFailure(failures, injectionObservation?.available === true, 'device-loss-injection-unavailable');
+    addFailure(failures, injectionObservation?.destroyInvoked === true, 'device-destruction-not-invoked');
+    addFailure(failures, injectionObservation?.replacementDevice === true, 'replacement-device-missing');
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialRecoveryCount)
+            && Number.isSafeInteger(recoveredRecoveryCount)
+            && recoveredRecoveryCount === initialRecoveryCount + 1
+            && injectionObservation?.recoveryCountAfter === recoveredRecoveryCount,
+        'device-recovery-count-mismatch'
+    );
+    addFailure(
+        failures,
+        pausedSnapshot.sessionGeneration === activeSnapshot.sessionGeneration
+            && recoveredSnapshot.sessionGeneration === activeSnapshot.sessionGeneration
+            && resumedSnapshot.sessionGeneration === activeSnapshot.sessionGeneration,
+        'paused-recovery-backend-session-restarted'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(pausedSnapshot.customPlayback?.activeGeneration)
+            && recoveredSnapshot.customPlayback?.activeGeneration
+                === pausedSnapshot.customPlayback.activeGeneration + 1
+            && resumedSnapshot.customPlayback?.activeGeneration
+                === recoveredSnapshot.customPlayback.activeGeneration,
+        'paused-recovery-decode-generation-mismatch'
+    );
+    addFailure(failures, pausedSnapshot.customPlayback?.state === 'paused', 'pause-not-observed');
+    addFailure(
+        failures,
+        recoveredSnapshot.customPlayback?.state === 'paused',
+        'device-recovery-not-paused'
+    );
+    addFailure(
+        failures,
+        Math.abs(
+            (recoveredSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            - (pausedSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+        ) <= NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS,
+        'paused-recovery-clock-moved'
+    );
+    addFailure(failures, resumedSnapshot.customPlayback?.state === 'playing', 'recovery-resume-failed');
+    addFailure(
+        failures,
+        (resumedSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            - (recoveredSnapshot.customPlayback?.currentTimeMicroseconds ?? 0)
+            >= minimumResumeAdvanceMicroseconds,
+        'recovery-resume-clock-not-advancing'
+    );
+    addFailure(
+        failures,
+        (recoveredSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (pausedSnapshot.presentation?.presentedFrameCount ?? 0),
+        'paused-frame-not-repainted'
+    );
+    addFailure(
+        failures,
+        (resumedSnapshot.presentation?.presentedFrameCount ?? 0)
+            > (recoveredSnapshot.presentation?.presentedFrameCount ?? 0),
+        'recovery-resume-frames-not-advancing'
+    );
+    for (const snapshot of [ recoveredSnapshot, resumedSnapshot ]) {
+        addFailure(failures, snapshot.customPlayback?.fallbackReason === null, 'custom-fallback');
+        addFailure(failures, snapshot.presentation?.state === 'presenting', 'presenter-not-active');
+        addFailure(failures, snapshot.presentation?.fallbackReason === null, 'presentation-fallback');
+        addFailure(failures, snapshot.dom?.visibleCanvasCount > 0, 'webgpu-canvas-not-visible');
+        addFailure(failures, snapshot.terminalErrorCount === 0, 'player-error-event');
+        validateRawHDRAuthorizationSnapshot(failures, snapshot);
+    }
+    addFailure(
+        failures,
+        hasExactEventDelta(activeSnapshot, pausedSnapshot, 'pause', 1),
+        'pause-event-cardinality'
+    );
+    for (const eventType of [ 'error', 'pause', 'playing', 'stopped', 'unpause', 'waiting' ]) {
+        addFailure(
+            failures,
+            hasExactEventDelta(pausedSnapshot, recoveredSnapshot, eventType, 0),
+            `paused-recovery-${eventType}-event`
+        );
+    }
+    addFailure(
+        failures,
+        hasExactEventDelta(recoveredSnapshot, resumedSnapshot, 'unpause', 1),
+        'recovery-unpause-event-cardinality'
+    );
+    addFailure(
+        failures,
+        hasExactEventDelta(recoveredSnapshot, resumedSnapshot, 'playing', 1),
+        'recovery-playing-event-cardinality'
+    );
     return failures;
 }
 

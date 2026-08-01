@@ -66,6 +66,8 @@ function createTelemetry(
         consumedFrames: 0,
         droppedFrames: 0,
         generation,
+        hasPhysicalOutputTimeCorrelation: false,
+        mediaTimeContextTimeMicroseconds: null,
         mediaTimeMicroseconds: secondsToMicroseconds(1),
         muted: false,
         outputFrames: 0,
@@ -156,6 +158,7 @@ describe('CustomDecodeAudioBridge', () => {
             pendingFrameCount: 0,
             pendingSampleCount: 0,
             releasedSampleCredits: 1,
+            submittedEndMediaTimeMicroseconds: 1_000_083,
             submittedFrameCount: 4,
             submittedSampleCount: 1
         });
@@ -166,11 +169,11 @@ describe('CustomDecodeAudioBridge', () => {
         const callbacks = startBridge(harness, 8);
 
         expect(harness.bridge.enqueue(
-            createAudioResponse(8, secondsToMicroseconds(0), 4),
+            createAudioResponse(8, secondsToMicroseconds(1), 4),
             8
         ).status).toBe('submitted');
         expect(harness.bridge.enqueue(
-            createAudioResponse(8, secondsToMicroseconds(0.1), 4),
+            createAudioResponse(8, requireMicroseconds(1_000_083), 4),
             8
         ).status).toBe('output-capacity');
         expect(callbacks.onFailure).toHaveBeenCalledOnce();
@@ -196,7 +199,7 @@ describe('CustomDecodeAudioBridge', () => {
         const callbacks = startBridge(harness, 10);
         const workletGeneration = harness.controller.generation;
         harness.port.dispatchTelemetry(createTelemetry(workletGeneration, { reason: 'flush' }));
-        harness.bridge.enqueue(createAudioResponse(10, secondsToMicroseconds(0)), 10);
+        harness.bridge.enqueue(createAudioResponse(10, secondsToMicroseconds(1)), 10);
 
         harness.port.dispatchTelemetry(createTelemetry(workletGeneration, {
             reason: 'overflow',
@@ -226,5 +229,58 @@ describe('CustomDecodeAudioBridge', () => {
             decodeGeneration: 11,
             startTimeMicroseconds: secondsToMicroseconds(0)
         })).toThrow('sample rate');
+    });
+
+    it.each([
+        [ 'gap', 1_000_105 ],
+        [ 'overlap', 1_000_061 ]
+    ])('rejects a decoded PCM timestamp %s beyond one sample period', (_label, timestamp) => {
+        const harness = createHarness();
+        const callbacks = startBridge(harness, 12);
+        expect(harness.bridge.enqueue(
+            createAudioResponse(12, secondsToMicroseconds(1), 4),
+            12
+        ).status).toBe('submitted');
+
+        expect(harness.bridge.enqueue(
+            createAudioResponse(12, requireMicroseconds(timestamp), 4),
+            12
+        )).toEqual({
+            frameCount: 4,
+            status: 'timestamp-discontinuity'
+        });
+        expect(callbacks.onFailure).toHaveBeenCalledWith(
+            'Decoded audio timestamps contain a gap or overlap'
+        );
+    });
+
+    it('accepts timestamp rounding drift of exactly one sample period', () => {
+        const harness = createHarness();
+        const callbacks = startBridge(harness, 13);
+        expect(harness.bridge.enqueue(
+            createAudioResponse(13, secondsToMicroseconds(1), 4),
+            13
+        ).status).toBe('submitted');
+
+        expect(harness.bridge.enqueue(
+            createAudioResponse(13, requireMicroseconds(1_000_104), 4),
+            13
+        ).status).toBe('submitted');
+        expect(callbacks.onFailure).not.toHaveBeenCalled();
+    });
+
+    it('establishes continuity from the first post-start decoded sample', () => {
+        const harness = createHarness();
+        const callbacks = startBridge(harness, 14);
+
+        expect(harness.bridge.enqueue(
+            createAudioResponse(14, requireMicroseconds(1_250_000), 4),
+            14
+        ).status).toBe('submitted');
+        expect(harness.bridge.enqueue(
+            createAudioResponse(14, requireMicroseconds(1_250_083), 4),
+            14
+        ).status).toBe('submitted');
+        expect(callbacks.onFailure).not.toHaveBeenCalled();
     });
 });

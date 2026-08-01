@@ -1,5 +1,8 @@
 export const COLOR_METADATA_VERSION = 1;
 
+const MAXIMUM_LUMINANCE_NITS = 10_000;
+const MINIMUM_LUMINANCE_NITS = 1;
+
 export type ColorPrimaries = 'bt2020' | 'bt709';
 export type ColorRange = 'full' | 'limited';
 export type ColorTransfer = 'hlg' | 'pq' | 'sdr';
@@ -57,12 +60,15 @@ export function assertValidInputColorMetadata(metadata: InputColorMetadata): voi
         || metadata.bitDepth > 16) {
         throw new RangeError('Input bit depth must be an integer from 8 through 16');
     }
-    if (!Number.isFinite(metadata.nominalPeakNits) || metadata.nominalPeakNits <= 0) {
-        throw new RangeError('Nominal peak luminance must be positive and finite');
+    if (!Number.isFinite(metadata.nominalPeakNits)
+        || metadata.nominalPeakNits < MINIMUM_LUMINANCE_NITS
+        || metadata.nominalPeakNits > MAXIMUM_LUMINANCE_NITS) {
+        throw new RangeError('Nominal peak luminance must be from 1 through 10000 nits');
     }
     if (!Number.isFinite(metadata.sdrReferenceWhiteNits)
-        || metadata.sdrReferenceWhiteNits <= 0) {
-        throw new RangeError('SDR reference white must be positive and finite');
+        || metadata.sdrReferenceWhiteNits < MINIMUM_LUMINANCE_NITS
+        || metadata.sdrReferenceWhiteNits > MAXIMUM_LUMINANCE_NITS) {
+        throw new RangeError('SDR reference white must be from 1 through 10000 nits');
     }
 }
 

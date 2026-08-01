@@ -54,6 +54,8 @@ export type AudioWorkletTelemetry = {
     consumedFrames: number
     droppedFrames: number
     generation: number
+    hasPhysicalOutputTimeCorrelation: boolean
+    mediaTimeContextTimeMicroseconds: Microseconds | null
     mediaTimeMicroseconds: Microseconds
     muted: boolean
     outputFrames: number

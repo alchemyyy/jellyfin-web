@@ -1,11 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { secondsToMicroseconds } from '../MediaTime';
+import {
+    millisecondsToMicroseconds,
+    secondsToMicroseconds,
+    type Microseconds
+} from '../MediaTime';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeSessionEvent
 } from './CustomDecodeSession';
-import { MAX_DECODED_FRAME_CREDITS } from './DecodeWorkerProtocol';
+import {
+    MAX_DECODED_FRAME_CREDITS,
+    MAX_DECODED_RAW_FRAME_CREDITS
+} from './DecodeWorkerProtocol';
+import type {
+    RawVideoFrameGeometry,
+    TransferableRawVideoFrame
+} from './RawVideoFrameCopy';
 
 vi.mock('./CustomDecode.worker', () => ({
     default: class MockBundledWorker {}
@@ -16,13 +27,15 @@ type ErrorHandler = (event: ErrorEvent) => void;
 
 class MockWorker {
     readonly postedMessages: unknown[] = [];
+    readonly postedTransfers: Transferable[][] = [];
     readonly terminate = vi.fn();
 
     private readonly errorHandlers = new Set<ErrorHandler>();
     private readonly messageHandlers = new Set<MessageHandler>();
 
-    postMessage(message: unknown): void {
+    postMessage(message: unknown, transfer: Transferable[] = []): void {
         this.postedMessages.push(message);
+        this.postedTransfers.push(transfer);
     }
 
     addEventListener(type: string, handler: EventListenerOrEventListenerObject): void {
@@ -59,6 +72,81 @@ function createFrame(): VideoFrame & { close: ReturnType<typeof vi.fn> } {
     return { close: vi.fn() } as unknown as VideoFrame & { close: ReturnType<typeof vi.fn> };
 }
 
+function createRawFrame(
+    mediaTimeMicroseconds: Microseconds,
+    geometry: RawVideoFrameGeometry = {
+        codedHeight: 2,
+        codedWidth: 4,
+        displayHeight: 2,
+        displayWidth: 4
+    }
+): TransferableRawVideoFrame {
+    const yPlaneHeight = geometry.codedHeight;
+    const chromaPlaneHeight = Math.ceil(geometry.codedHeight / 2);
+    const yPlaneWidth = geometry.codedWidth;
+    const chromaPlaneWidth = Math.ceil(geometry.codedWidth / 2);
+    const yPlaneByteLength = 256 * yPlaneHeight;
+    const chromaPlaneByteLength = 256 * chromaPlaneHeight;
+    return {
+        bitDepth: 10,
+        codedHeight: geometry.codedHeight,
+        codedWidth: geometry.codedWidth,
+        colorSpace: {
+            fullRange: false,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            transfer: 'smpte2084'
+        },
+        data: new ArrayBuffer(yPlaneByteLength + (2 * chromaPlaneByteLength)),
+        displayHeight: geometry.displayHeight,
+        displayWidth: geometry.displayWidth,
+        durationMicroseconds: millisecondsToMicroseconds(100),
+        format: 'I420P10',
+        planes: [
+            {
+                byteLength: yPlaneByteLength,
+                byteOffset: 0,
+                bytesPerComponent: 2,
+                bytesPerRow: 256,
+                componentsPerTexel: 1,
+                height: yPlaneHeight,
+                kind: 'y',
+                rowByteLength: yPlaneWidth * 2,
+                width: yPlaneWidth
+            },
+            {
+                byteLength: chromaPlaneByteLength,
+                byteOffset: yPlaneByteLength,
+                bytesPerComponent: 2,
+                bytesPerRow: 256,
+                componentsPerTexel: 1,
+                height: chromaPlaneHeight,
+                kind: 'u',
+                rowByteLength: chromaPlaneWidth * 2,
+                width: chromaPlaneWidth
+            },
+            {
+                byteLength: chromaPlaneByteLength,
+                byteOffset: yPlaneByteLength + chromaPlaneByteLength,
+                bytesPerComponent: 2,
+                bytesPerRow: 256,
+                componentsPerTexel: 1,
+                height: chromaPlaneHeight,
+                kind: 'v',
+                rowByteLength: chromaPlaneWidth * 2,
+                width: chromaPlaneWidth
+            }
+        ],
+        timestampMicroseconds: mediaTimeMicroseconds,
+        visibleRectangle: {
+            height: geometry.displayHeight,
+            width: geometry.displayWidth,
+            x: 0,
+            y: 0
+        }
+    };
+}
+
 function createDeferred<Value>(): {
     promise: Promise<Value>
     resolve: (value: Value) => void
@@ -81,14 +169,42 @@ function createDeferred<Value>(): {
 function startSession(
     session: CustomDecodeSession,
     generation: number,
-    audioTrackIndex?: number
+    audioTrackIndex?: number,
+    videoOutputMode: 'raw-planes' | 'video-frame' = 'video-frame'
 ): void {
     session.start({
         audioTrackIndex,
         generation,
+        maximumCodedHeight: videoOutputMode === 'raw-planes' ? 2_160 : 1_080,
+        maximumCodedWidth: videoOutputMode === 'raw-planes' ? 3_840 : 1_920,
+        rawVideoFrameFormat: videoOutputMode === 'raw-planes' ? 'I420P10' : null,
         startTimeMicroseconds: secondsToMicroseconds(1),
         url: 'http://localhost/video.mp4?ApiKey=secret',
+        videoDecoderBackend: videoOutputMode === 'raw-planes' ? 'bundled-hevc' : 'native',
+        videoOutputMode,
         videoTrackIndex: 0
+    });
+}
+
+function emitRawReady(
+    worker: MockWorker,
+    generation: number,
+    geometry: RawVideoFrameGeometry = {
+        codedHeight: 2,
+        codedWidth: 4,
+        displayHeight: 2,
+        displayWidth: 4
+    }
+): void {
+    worker.emitMessage({
+        audio: null,
+        codec: 'hvc1.2.4.L153.B0',
+        codedHeight: geometry.codedHeight,
+        codedWidth: geometry.codedWidth,
+        displayHeight: geometry.displayHeight,
+        displayWidth: geometry.displayWidth,
+        generation,
+        type: 'ready'
     });
 }
 
@@ -103,6 +219,24 @@ function emitFrame(
         frame,
         generation,
         mediaTimeMicroseconds,
+        outputMode: 'video-frame',
+        type: 'frame'
+    });
+    return frame;
+}
+
+function emitRawFrame(
+    worker: MockWorker,
+    generation: number,
+    mediaTimeMicroseconds: Microseconds
+): TransferableRawVideoFrame {
+    const frame = createRawFrame(mediaTimeMicroseconds);
+    worker.emitMessage({
+        durationMicroseconds: 100_000,
+        frame,
+        generation,
+        mediaTimeMicroseconds,
+        outputMode: 'raw-planes',
         type: 'frame'
     });
     return frame;
@@ -123,9 +257,14 @@ describe('CustomDecodeSession', () => {
             audioTrackIndex: null,
             frameCredits: MAX_DECODED_FRAME_CREDITS,
             generation: 7,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            rawVideoFrameFormat: null,
             startTimeMicroseconds: 1_000_000,
             type: 'start',
             url: 'http://localhost/video.mp4?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
             videoTrackIndex: 0
         } ]);
 
@@ -139,7 +278,22 @@ describe('CustomDecodeSession', () => {
             generation: 7,
             type: 'ready'
         });
+        expect(session.getTelemetry().state).toBe('configured');
+        expect(events).toEqual([ {
+            audio: null,
+            codec: 'avc1.640028',
+            generation: 7,
+            type: 'configured'
+        } ]);
+
         const firstFrame = emitFrame(worker, 7, 1_100_000);
+        expect(session.getTelemetry().state).toBe('ready');
+        expect(events.at(-1)).toEqual({
+            audio: null,
+            codec: 'avc1.640028',
+            generation: 7,
+            type: 'ready'
+        });
         const selectedFrame = emitFrame(worker, 7, 1_200_000);
         emitFrame(worker, 7, 1_300_000);
         emitFrame(worker, 7, 1_400_000);
@@ -149,12 +303,13 @@ describe('CustomDecodeSession', () => {
         expect(firstFrame.close).toHaveBeenCalledOnce();
         expect(selectedFrame.close).not.toHaveBeenCalled();
         expect(worker.postedMessages.at(-1)).toEqual({
-            frameCredits: 2,
+            frameCredits: 1,
             generation: 7,
             type: 'pull'
         });
         expect(session.getTelemetry()).toMatchObject({
             queuedFrameCount: 2,
+            pendingFrameCount: 1,
             receivedFrameCount: 4,
             state: 'ready',
             takenFrameCount: 1
@@ -166,7 +321,309 @@ describe('CustomDecodeSession', () => {
             type: 'ready'
         });
 
-        presentationFrame?.frame.close();
+        if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
+            throw new Error('Expected a decoded VideoFrame');
+        }
+        expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            frameCredits: 1,
+            generation: 7,
+            type: 'pull'
+        });
+        expect(session.acknowledgeFrame(presentationFrame)).toBe(false);
+        presentationFrame.frame.close();
+    });
+
+    it('keeps two raw frames outstanding while acknowledgement is delayed', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 12, undefined, 'raw-planes');
+        emitRawReady(worker, 12);
+        expect(worker.postedMessages[0]).toMatchObject({
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 12,
+            rawVideoFrameFormat: 'I420P10',
+            type: 'start',
+            videoOutputMode: 'raw-planes'
+        });
+
+        const firstRawFrame = emitRawFrame(worker, 12, secondsToMicroseconds(1.1));
+        const secondRawFrame = emitRawFrame(worker, 12, secondsToMicroseconds(1.2));
+        expect(session.getTelemetry()).toMatchObject({
+            peakFrameCount: 2,
+            pendingFrameCount: 0,
+            queuedFrameCount: 2,
+            receivedFrameCount: 2
+        });
+
+        const firstPresentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        const secondPresentationFrame = session.takeFrame(secondsToMicroseconds(1.2));
+        expect(worker.postedMessages).toHaveLength(1);
+        expect(session.getTelemetry()).toMatchObject({
+            pendingFrameCount: 2,
+            queuedFrameCount: 0,
+            takenFrameCount: 2
+        });
+
+        if (
+            !firstPresentationFrame
+            || firstPresentationFrame.outputMode !== 'raw-planes'
+            || !secondPresentationFrame
+            || secondPresentationFrame.outputMode !== 'raw-planes'
+        ) {
+            throw new Error('Expected two decoded raw frames');
+        }
+        expect(session.acknowledgeFrame(firstPresentationFrame)).toBe(true);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            buffer: firstRawFrame.data,
+            generation: 12,
+            type: 'recycle-frame'
+        });
+        expect(worker.postedTransfers.at(-1)).toEqual([ firstRawFrame.data ]);
+        expect(session.getTelemetry().recycledRawFrameCount).toBe(1);
+
+        emitRawFrame(worker, 12, secondsToMicroseconds(1.3));
+        expect(session.getTelemetry()).toMatchObject({
+            pendingFrameCount: 1,
+            queuedFrameCount: 1,
+            receivedFrameCount: 3
+        });
+        expect(session.acknowledgeFrame(secondPresentationFrame)).toBe(true);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            buffer: secondRawFrame.data,
+            generation: 12,
+            type: 'recycle-frame'
+        });
+    });
+
+    it('recycles dropped raw buffers instead of issuing allocation credits', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 13, undefined, 'raw-planes');
+        emitRawReady(worker, 13);
+        const droppedRawFrame = emitRawFrame(worker, 13, secondsToMicroseconds(1.1));
+        const selectedRawFrame = emitRawFrame(worker, 13, secondsToMicroseconds(1.2));
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.2));
+
+        expect(worker.postedMessages.at(-1)).toEqual({
+            buffer: droppedRawFrame.data,
+            generation: 13,
+            type: 'recycle-frame'
+        });
+        expect(worker.postedTransfers.at(-1)).toEqual([ droppedRawFrame.data ]);
+        expect(session.getTelemetry()).toMatchObject({
+            droppedFrameCount: 1,
+            pendingFrameCount: 1,
+            queuedFrameCount: 0,
+            recycledRawFrameCount: 1
+        });
+
+        if (!presentationFrame || presentationFrame.outputMode !== 'raw-planes') {
+            throw new Error('Expected the selected decoded raw frame');
+        }
+        expect(session.discardFrame(presentationFrame)).toBe(true);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            buffer: selectedRawFrame.data,
+            generation: 13,
+            type: 'recycle-frame'
+        });
+    });
+
+    it('fails cleanly if recycling a skipped raw frame throws synchronously', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 17, undefined, 'raw-planes');
+        emitRawReady(worker, 17);
+        emitRawFrame(worker, 17, secondsToMicroseconds(1.1));
+        emitRawFrame(worker, 17, secondsToMicroseconds(1.2));
+        vi.spyOn(worker, 'postMessage').mockImplementation(() => {
+            throw new DOMException('Transfer failed', 'DataCloneError');
+        });
+
+        expect(session.takeFrame(secondsToMicroseconds(1.2))).toBeNull();
+        expect(session.getTelemetry()).toMatchObject({
+            abandonedRawFrameCount: 2,
+            pendingFrameCount: 0,
+            queuedFrameCount: 0,
+            state: 'error'
+        });
+    });
+
+    it('rejects a configured track above the negotiated route before accepting frames', () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => worker as unknown as Worker
+        );
+        session.start({
+            generation: 18,
+            maximumCodedHeight: 720,
+            maximumCodedWidth: 1_280,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mp4',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+
+        worker.emitMessage({
+            audio: null,
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 18,
+            type: 'ready'
+        });
+
+        expect(session.getTelemetry().state).toBe('error');
+        expect(events.at(-1)).toMatchObject({
+            failureKind: 'decode-failed',
+            generation: 18,
+            type: 'error'
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 18, type: 'stop' });
+    });
+
+    it('accepts first-frame coded padding and locks the actual raw geometry', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 19, undefined, 'raw-planes');
+        emitRawReady(worker, 19, {
+            codedHeight: 1,
+            codedWidth: 4,
+            displayHeight: 2,
+            displayWidth: 4
+        });
+
+        emitRawFrame(worker, 19, secondsToMicroseconds(1.1));
+        emitRawFrame(worker, 19, secondsToMicroseconds(1.2));
+
+        expect(session.getTelemetry()).toMatchObject({
+            abandonedRawFrameCount: 0,
+            receivedFrameCount: 2,
+            state: 'ready'
+        });
+    });
+
+    it('rejects raw display geometry that differs from the selected track', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 19, undefined, 'raw-planes');
+        emitRawReady(worker, 19);
+        const rawFrame = createRawFrame(secondsToMicroseconds(1.1));
+        rawFrame.displayWidth = 8;
+
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            frame: rawFrame,
+            generation: 19,
+            mediaTimeMicroseconds: secondsToMicroseconds(1.1),
+            outputMode: 'raw-planes',
+            type: 'frame'
+        });
+
+        expect(session.getTelemetry()).toMatchObject({
+            abandonedRawFrameCount: 1,
+            receivedFrameCount: 0,
+            state: 'error'
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 19, type: 'stop' });
+    });
+
+    it('rejects raw coded geometry changes after the first decoded frame', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 20, undefined, 'raw-planes');
+        emitRawReady(worker, 20);
+        emitRawFrame(worker, 20, secondsToMicroseconds(1.1));
+        const changedFrame = createRawFrame(secondsToMicroseconds(1.2), {
+            codedHeight: 4,
+            codedWidth: 4,
+            displayHeight: 2,
+            displayWidth: 4
+        });
+
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            frame: changedFrame,
+            generation: 20,
+            mediaTimeMicroseconds: secondsToMicroseconds(1.2),
+            outputMode: 'raw-planes',
+            type: 'frame'
+        });
+
+        expect(session.getTelemetry()).toMatchObject({
+            receivedFrameCount: 1,
+            state: 'error'
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 20, type: 'stop' });
+    });
+
+    it('rejects first-frame coded padding above the negotiated maximum', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        session.start({
+            generation: 21,
+            maximumCodedHeight: 2,
+            maximumCodedWidth: 4,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mp4',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        });
+        emitRawReady(worker, 21);
+        const oversizedFrame = createRawFrame(secondsToMicroseconds(1.1), {
+            codedHeight: 68,
+            codedWidth: 4,
+            displayHeight: 2,
+            displayWidth: 4
+        });
+
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            frame: oversizedFrame,
+            generation: 21,
+            mediaTimeMicroseconds: secondsToMicroseconds(1.1),
+            outputMode: 'raw-planes',
+            type: 'frame'
+        });
+
+        expect(session.getTelemetry()).toMatchObject({
+            abandonedRawFrameCount: 1,
+            receivedFrameCount: 0,
+            state: 'error'
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 21, type: 'stop' });
     });
 
     it('closes stale frames and retires superseded workers by generation', async () => {
@@ -198,6 +655,31 @@ describe('CustomDecodeSession', () => {
         workers[1].emitMessage({ generation: 2, type: 'stopped' });
         await stopPromise;
         expect(workers[1].terminate).toHaveBeenCalledOnce();
+    });
+
+    it('does not recycle a pending raw buffer into a superseding generation', () => {
+        const workers = [ new MockWorker(), new MockWorker() ];
+        let workerIndex = 0;
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => workers[workerIndex++] as unknown as Worker
+        );
+
+        startSession(session, 14, undefined, 'raw-planes');
+        emitRawReady(workers[0], 14);
+        emitRawFrame(workers[0], 14, secondsToMicroseconds(1.1));
+        const stalePresentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        startSession(session, 15, undefined, 'raw-planes');
+        emitRawReady(workers[1], 15);
+
+        if (!stalePresentationFrame || stalePresentationFrame.outputMode !== 'raw-planes') {
+            throw new Error('Expected a pending decoded raw frame');
+        }
+        const oldWorkerMessageCount = workers[0].postedMessages.length;
+        expect(session.acknowledgeFrame(stalePresentationFrame)).toBe(false);
+        expect(workers[0].postedMessages).toHaveLength(oldWorkerMessageCount);
+        expect(workers[1].postedMessages).toHaveLength(1);
+        expect(session.getTelemetry().staleFrameCount).toBe(0);
     });
 
     it('latches worker failures, closes queued frames, and reports an event', () => {
@@ -250,6 +732,35 @@ describe('CustomDecodeSession', () => {
         expect(overflowFrame.close).toHaveBeenCalledOnce();
         expect(session.getTelemetry().state).toBe('error');
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 4, type: 'stop' });
+    });
+
+    it('fails closed if queued and pending raw frames exceed the two-buffer pool', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 16, undefined, 'raw-planes');
+        emitRawReady(worker, 16);
+        emitRawFrame(worker, 16, secondsToMicroseconds(1.1));
+        emitRawFrame(worker, 16, secondsToMicroseconds(1.2));
+        const pendingFrame = session.takeFrame(secondsToMicroseconds(1.1));
+
+        expect(session.getTelemetry()).toMatchObject({
+            pendingFrameCount: 1,
+            queuedFrameCount: 1
+        });
+        emitRawFrame(worker, 16, secondsToMicroseconds(1.3));
+
+        expect(session.getTelemetry()).toMatchObject({
+            abandonedRawFrameCount: 3,
+            peakFrameCount: 2,
+            pendingFrameCount: 0,
+            queuedFrameCount: 0,
+            state: 'error'
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({ generation: 16, type: 'stop' });
+        expect(pendingFrame).not.toBeNull();
     });
 
     it('closes frames from invalid or crashed worker messages', () => {
@@ -358,7 +869,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.terminate).toHaveBeenCalledOnce();
     });
 
-    it('feeds decoded PCM through the audio bridge and replenishes consumed samples', () => {
+    it('waits for decoded video and accepted PCM before reporting audio media ready', () => {
         const worker = new MockWorker();
         const audioBridge = {
             enqueue: vi.fn(() => ({ frameCount: 1_024, status: 'submitted' as const })),
@@ -389,10 +900,10 @@ describe('CustomDecodeSession', () => {
         worker.emitMessage({
             audio: audioConfiguration,
             codec: 'hev1.2.4.L153.B0',
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            displayHeight: 2_160,
-            displayWidth: 3_840,
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
             generation: 9,
             type: 'ready'
         });
@@ -402,7 +913,16 @@ describe('CustomDecodeSession', () => {
             generation: 9,
             type: 'pull-audio'
         });
-        expect(events).toEqual([]);
+        expect(events).toEqual([ {
+            audio: audioConfiguration,
+            codec: 'hev1.2.4.L153.B0',
+            generation: 9,
+            type: 'configured'
+        } ]);
+
+        emitFrame(worker, 9, 1_000_000);
+        expect(session.getTelemetry().state).toBe('configured');
+        expect(events).toHaveLength(1);
 
         worker.emitMessage({
             channelCount: 2,

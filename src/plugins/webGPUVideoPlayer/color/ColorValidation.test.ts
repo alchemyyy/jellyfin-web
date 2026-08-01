@@ -4,10 +4,13 @@ import { millisecondsToMicroseconds } from '../MediaTime';
 import { createPQColorMetadata, createSDRColorMetadata } from './ColorMetadata';
 import { convertLinearRGBGamut } from './ColorPipeline';
 import {
+    COLOR_VALIDATION_RAMP_IDENTITY_VERSION,
+    createColorValidationRampCacheSignature,
     createTransferValidationRamp,
     validateColorRamp,
     type ColorRampObservation,
-    type ColorValidationRamp
+    type ColorValidationRamp,
+    type ColorValidationRampOptions
 } from './ColorValidation';
 
 function observeExpected(ramp: ColorValidationRamp): ColorRampObservation[] {
@@ -22,6 +25,46 @@ function observeExpected(ramp: ColorValidationRamp): ColorRampObservation[] {
 }
 
 describe('ColorValidation', () => {
+    it('assigns a versioned canonical identity and hashes every ramp value', () => {
+        const mutableMetadata = createPQColorMetadata();
+        const firstCanonicalRamp = createTransferValidationRamp(mutableMetadata);
+        const secondCanonicalRamp = createTransferValidationRamp(createPQColorMetadata());
+        const customRamp = createTransferValidationRamp(createPQColorMetadata(), {
+            encodedSignalLevels: [ 0, 0.25, 0.5, 0.75, 1 ]
+        });
+        const shiftedRamp = createTransferValidationRamp(createPQColorMetadata(), {
+            startTimestampMicroseconds: millisecondsToMicroseconds(1)
+        });
+        const inheritedOptions = Object.create({
+            encodedSignalLevels: [ 0, 0.5, 1 ]
+        }) as ColorValidationRampOptions;
+        const inheritedCustomRamp = createTransferValidationRamp(
+            createPQColorMetadata(),
+            inheritedOptions
+        );
+
+        expect(firstCanonicalRamp.identity).toEqual({
+            hash: secondCanonicalRamp.identity.hash,
+            kind: 'canonical-transfer',
+            version: COLOR_VALIDATION_RAMP_IDENTITY_VERSION
+        });
+        expect(customRamp.identity.kind).toBe('custom');
+        expect(inheritedCustomRamp.identity.kind).toBe('custom');
+        expect(Object.isFrozen(firstCanonicalRamp)).toBe(true);
+        expect(Object.isFrozen(firstCanonicalRamp.identity)).toBe(true);
+        expect(Object.isFrozen(firstCanonicalRamp.metadata)).toBe(true);
+        expect(Object.isFrozen(firstCanonicalRamp.samples)).toBe(true);
+        expect(firstCanonicalRamp.samples.every(Object.isFrozen)).toBe(true);
+        expect(customRamp.identity.hash).toBe(firstCanonicalRamp.identity.hash);
+        expect(createColorValidationRampCacheSignature(customRamp))
+            .not.toBe(createColorValidationRampCacheSignature(firstCanonicalRamp));
+        expect(shiftedRamp.identity.hash).not.toBe(firstCanonicalRamp.identity.hash);
+        expect(createColorValidationRampCacheSignature(shiftedRamp))
+            .not.toBe(createColorValidationRampCacheSignature(firstCanonicalRamp));
+        mutableMetadata.nominalPeakNits = 4_000;
+        expect(firstCanonicalRamp.metadata.nominalPeakNits).not.toBe(4_000);
+    });
+
     it('builds a deterministic integer-microsecond transfer ramp', () => {
         const ramp = createTransferValidationRamp(createSDRColorMetadata(), {
             frameIntervalMicroseconds: millisecondsToMicroseconds(20),

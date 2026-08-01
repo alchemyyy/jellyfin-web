@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { secondsToMicroseconds } from '../MediaTime';
 import type { AudioWorkletTelemetry, CustomAudioWorkletMessage } from './AudioWorkletProtocol';
@@ -55,6 +55,8 @@ function createTelemetry(overrides: Partial<AudioWorkletTelemetry> = {}): AudioW
         consumedFrames: 4,
         droppedFrames: 0,
         generation: 1,
+        hasPhysicalOutputTimeCorrelation: false,
+        mediaTimeContextTimeMicroseconds: secondsToMicroseconds(1.01),
         mediaTimeMicroseconds: secondsToMicroseconds(1),
         muted: false,
         outputFrames: 4,
@@ -74,6 +76,52 @@ function createTelemetry(overrides: Partial<AudioWorkletTelemetry> = {}): AudioW
 }
 
 describe('AudioWorkletController', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+    });
+
+    it('creates an explicit speaker-layout output without browser-selected channel expansion', async () => {
+        let capturedOptions: AudioWorkletNodeOptions | undefined;
+        const connect = vi.fn();
+        class MockAudioWorkletNode {
+            public readonly connect = connect;
+            public readonly port = new MockMessagePort();
+
+            public constructor(
+                _audioContext: BaseAudioContext,
+                _processorName: string,
+                options?: AudioWorkletNodeOptions
+            ) {
+                capturedOptions = options;
+            }
+        }
+        const addModule = vi.fn((): Promise<void> => Promise.resolve());
+        const audioContext = {
+            audioWorklet: { addModule },
+            destination: {},
+            sampleRate: 48_000
+        } as unknown as AudioContext;
+        vi.stubGlobal('AudioWorkletNode', MockAudioWorkletNode);
+        vi.stubGlobal('URL', {
+            createObjectURL: vi.fn((): string => 'blob:audio-worklet'),
+            revokeObjectURL: vi.fn()
+        });
+
+        await AudioWorkletController.create(audioContext, {
+            channelCount: 2,
+            maxBufferedFrames: 96_000
+        });
+
+        expect(capturedOptions).toMatchObject({
+            channelCount: 2,
+            channelCountMode: 'explicit',
+            channelInterpretation: 'speakers',
+            outputChannelCount: [ 2 ]
+        });
+        expect(connect).toHaveBeenCalledWith(audioContext.destination);
+    });
+
     it('submits planar PCM with transferable buffers and generation metadata', () => {
         const harness = createAudioNodeHarness();
         const controller = new AudioWorkletController(harness.node, configuration);
@@ -145,6 +193,15 @@ describe('AudioWorkletController', () => {
 
         harness.port.dispatchTelemetry(telemetry);
         harness.port.dispatchEvent(new MessageEvent('message', { data: { type: 'unrelated' } }));
+        harness.port.dispatchEvent(new MessageEvent('message', {
+            data: { ...createTelemetry(), mediaTimeContextTimeMicroseconds: -1 }
+        }));
+        harness.port.dispatchEvent(new MessageEvent('message', {
+            data: { ...createTelemetry(), hasPhysicalOutputTimeCorrelation: true }
+        }));
+        harness.port.dispatchEvent(new MessageEvent('message', {
+            data: { ...createTelemetry(), consumedFrames: 0.5 }
+        }));
         expect(listener).toHaveBeenCalledOnce();
         expect(listener).toHaveBeenCalledWith(telemetry);
         expect(controller.getTelemetry()).toEqual(telemetry);

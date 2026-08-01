@@ -54,18 +54,52 @@ await new Promise(resolve => setTimeout(resolve, 1_000));
 const expression = String.raw`(async () => {
     const videoConfigurations = {
         av1: { codec: 'av01.0.08M.08', codedHeight: 1080, codedWidth: 1920 },
-        h264: { codec: 'avc1.640028', codedHeight: 1080, codedWidth: 1920 },
+        av1Main10: {
+            codec: 'av01.0.08M.10',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'no-preference'
+        },
+        av1Main10Software: {
+            codec: 'av01.0.08M.10',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'prefer-software'
+        },
+        h264Baseline: { codec: 'avc1.420028', codedHeight: 1080, codedWidth: 1920 },
+        h264ConstrainedBaseline: {
+            codec: 'avc1.42e028',
+            codedHeight: 1080,
+            codedWidth: 1920
+        },
+        h264High: { codec: 'avc1.640028', codedHeight: 1080, codedWidth: 1920 },
+        h264Main: { codec: 'avc1.4d0028', codedHeight: 1080, codedWidth: 1920 },
+        hev1Main10: { codec: 'hev1.2.4.H153.90', codedHeight: 2160, codedWidth: 3840 },
         hevcMain: { codec: 'hvc1.1.6.L120.B0', codedHeight: 1080, codedWidth: 1920 },
         hevcMain10: { codec: 'hvc1.2.4.L153.B0', codedHeight: 2160, codedWidth: 3840 },
+        hevcMain10Software: {
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'prefer-software'
+        },
         prores422HQ: { codec: 'apch', codedHeight: 1080, codedWidth: 1920 },
         vp8: { codec: 'vp8', codedHeight: 1080, codedWidth: 1920 },
         vp9: { codec: 'vp09.00.10.08', codedHeight: 1080, codedWidth: 1920 },
-        vp9Profile2: { codec: 'vp09.02.10.10', codedHeight: 2160, codedWidth: 3840 }
+        vp9Profile2: { codec: 'vp09.02.10.10', codedHeight: 2160, codedWidth: 3840 },
+        vp9Profile2Software: {
+            codec: 'vp09.02.10.10',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'prefer-software'
+        }
     };
     const audioConfigurations = {
         aac: { codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate: 48000 },
-        ac3: { codec: 'ac-3', numberOfChannels: 6, sampleRate: 48000 },
-        eac3: { codec: 'ec-3', numberOfChannels: 6, sampleRate: 48000 },
+        ac3Stereo: { codec: 'ac-3', numberOfChannels: 2, sampleRate: 48000 },
+        ac3Surround: { codec: 'ac-3', numberOfChannels: 6, sampleRate: 48000 },
+        eac3Stereo: { codec: 'ec-3', numberOfChannels: 2, sampleRate: 48000 },
+        eac3Surround: { codec: 'ec-3', numberOfChannels: 6, sampleRate: 48000 },
         flac: {
             codec: 'flac',
             description: new Uint8Array(34),
@@ -118,6 +152,10 @@ const expression = String.raw`(async () => {
             videoDecoder: typeof VideoDecoder === 'function',
             videoFrame: typeof VideoFrame === 'function',
             webGPU: Boolean(navigator.gpu)
+        },
+        diagnosticScope: {
+            decodedOutputQualified: false,
+            note: 'Configuration support only; use production capability telemetry and playback smoke for exact decoded-output qualification'
         },
         userAgent: navigator.userAgent,
         video: typeof VideoDecoder === 'function' ?

@@ -19,7 +19,6 @@ describe('createColorPipelineWGSL', () => {
         const shader = createColorPipelineWGSL(
             createPQColorMetadata(),
             createHDRToSDRRenderSettings({
-                outputTransfer: 'bt709',
                 toneMapping: { operator: 'reinhard' }
             })
         );
@@ -35,14 +34,14 @@ describe('createColorPipelineWGSL', () => {
         expect(shader).toContain('noise / 255.0');
         expect(shader).toContain('@binding(3) var<uniform> renderSettings');
         expect(shader).toContain('renderSettings.toneMapOperator == 0u');
-        expect(shader).toContain('renderSettings.outputTransfer == 1u');
+        expect(shader).not.toContain('fn encodeBT709');
         expect(processFunction.indexOf('decodeInputTransfer')).toBeLessThan(
             processFunction.indexOf('convertToBT709')
         );
         expect(processFunction.indexOf('convertToBT709')).toBeLessThan(
             processFunction.indexOf('toneMapToSDR')
         );
-        expect(shader).toContain('return 1.099 * pow(linearValue, 0.45) - 0.099;');
+        expect(shader).toContain('return encodeSRGB(linearValue);');
     });
 
     it('keeps the specialized shader stable across live settings changes', () => {
@@ -59,7 +58,6 @@ describe('createColorPipelineWGSL', () => {
                     contrast: 1.4,
                     saturation: 0.7
                 },
-                outputTransfer: 'bt709',
                 toneMapping: {
                     desaturationStrength: 0.8,
                     exposure: 1,

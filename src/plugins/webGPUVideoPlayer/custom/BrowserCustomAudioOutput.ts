@@ -1,3 +1,7 @@
+import {
+    secondsToMicroseconds,
+    type Microseconds
+} from '../MediaTime';
 import AudioWorkletController, {
     type AudioTelemetryListener
 } from './AudioWorkletController';
@@ -6,6 +10,8 @@ import {
     type BrowserAudioContextPrewarmLease,
     takePrewarmedBrowserAudioContext
 } from './BrowserAudioContextPrewarm';
+import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
+import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolicy';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type {
     CustomAudioOutput,
@@ -13,8 +19,12 @@ import type {
     CustomAudioOutputFactory
 } from './CustomPlaybackControllerTypes';
 import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
+import { requireMicroseconds } from './TimeMath';
 
 const MAX_BUFFERED_AUDIO_SECONDS = 2;
+const MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS = secondsToMicroseconds(
+    MAX_BUFFERED_AUDIO_SECONDS
+);
 
 type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
 
@@ -26,15 +36,50 @@ type AudioContextRuntime = typeof globalThis & {
 class BrowserCustomAudioOutput implements CustomAudioOutput {
     private destroyed = false;
     private destroyPromise: Promise<void> | null = null;
+    private mediaFloorGeneration: number | null = null;
+    private mediaFloorMicroseconds: Microseconds | null = null;
+    private readonly outputTelemetryUnsubscribe: () => void;
+    private physicalCorrelationGeneration: number | null = null;
     private resumePromise: Promise<void> | null = null;
+    private readonly telemetryListeners = new Set<AudioTelemetryListener>();
 
     public constructor(
         private readonly audioContext: AudioContext,
         private readonly output: AudioWorkletController
-    ) {}
+    ) {
+        this.outputTelemetryUnsubscribe = output.onTelemetry(this.handleOutputTelemetry);
+    }
 
     public get generation(): number {
         return this.output.generation;
+    }
+
+    /** Returns the browser's current conservative physical-output latency estimate. */
+    public getEstimatedOutputLatencyMicroseconds(): Microseconds | null {
+        const latencySeconds = [
+            this.audioContext.baseLatency,
+            this.audioContext.outputLatency
+        ];
+        let estimatedLatencySeconds = 0;
+        let hasLatencyEstimate = false;
+        for (const candidateLatencySeconds of latencySeconds) {
+            if (typeof candidateLatencySeconds !== 'number'
+                || !Number.isFinite(candidateLatencySeconds)
+                || candidateLatencySeconds < 0) {
+                continue;
+            }
+            estimatedLatencySeconds += candidateLatencySeconds;
+            hasLatencyEstimate = true;
+        }
+        if (!hasLatencyEstimate) {
+            return null;
+        }
+
+        try {
+            return secondsToMicroseconds(estimatedLatencySeconds);
+        } catch {
+            return null;
+        }
     }
 
     public destroy(): Promise<void> {
@@ -43,16 +88,26 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         }
 
         this.destroyed = true;
+        this.outputTelemetryUnsubscribe();
+        this.telemetryListeners.clear();
         this.destroyPromise = this.destroyResources();
         return this.destroyPromise;
     }
 
     public getTelemetry(): AudioWorkletTelemetry | null {
-        return this.output.getTelemetry();
+        const telemetry = this.output.getTelemetry();
+        return telemetry ? this.mapOutputTelemetry(telemetry) : null;
     }
 
     public onTelemetry(listener: AudioTelemetryListener): () => void {
-        return this.output.onTelemetry(listener);
+        if (this.destroyed) {
+            throw new Error('Browser audio output is destroyed');
+        }
+
+        this.telemetryListeners.add(listener);
+        return (): void => {
+            this.telemetryListeners.delete(listener);
+        };
     }
 
     public setMuted(muted: boolean): void {
@@ -69,7 +124,10 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
             return this.resumePromise;
         }
 
-        const resumePromise = this.audioContext.resume().finally((): void => {
+        const resumePromise = waitForBrowserAudioOperation(
+            this.audioContext.resume(),
+            'AudioContext resume'
+        ).finally((): void => {
             if (this.resumePromise === resumePromise) {
                 this.resumePromise = null;
             }
@@ -80,6 +138,147 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
     public setVolume(volume: number): void {
         this.output.setVolume(volume);
+    }
+
+    private readonly handleOutputTelemetry = (telemetry: AudioWorkletTelemetry): void => {
+        if (this.destroyed) {
+            return;
+        }
+
+        this.observeTelemetryState(telemetry);
+        const mappedTelemetry = this.mapOutputTelemetry(telemetry);
+        for (const listener of this.telemetryListeners) {
+            listener({ ...mappedTelemetry });
+        }
+    };
+
+    private mapOutputTelemetry(telemetry: AudioWorkletTelemetry): AudioWorkletTelemetry {
+        const fallbackTelemetry = this.createFallbackTelemetry(telemetry);
+        const mediaContextTimeMicroseconds = telemetry.mediaTimeContextTimeMicroseconds;
+        if (mediaContextTimeMicroseconds === null
+            || !Number.isSafeInteger(mediaContextTimeMicroseconds)
+            || mediaContextTimeMicroseconds < 0
+            || !Number.isSafeInteger(telemetry.mediaTimeMicroseconds)) {
+            return fallbackTelemetry;
+        }
+
+        const getOutputTimestamp = this.audioContext.getOutputTimestamp;
+        if (typeof getOutputTimestamp !== 'function') {
+            return fallbackTelemetry;
+        }
+
+        let outputTimestamp: AudioTimestamp;
+        try {
+            outputTimestamp = getOutputTimestamp.call(this.audioContext);
+        } catch {
+            return fallbackTelemetry;
+        }
+        const outputContextTimeSeconds = outputTimestamp.contextTime;
+        const outputPerformanceTimeMilliseconds = outputTimestamp.performanceTime;
+        if (typeof outputContextTimeSeconds !== 'number'
+            || !Number.isFinite(outputContextTimeSeconds)
+            || outputContextTimeSeconds <= 0
+            || typeof outputPerformanceTimeMilliseconds !== 'number'
+            || !Number.isFinite(outputPerformanceTimeMilliseconds)
+            || outputPerformanceTimeMilliseconds <= 0
+            || !Number.isFinite(this.audioContext.currentTime)
+            || this.audioContext.currentTime <= 0) {
+            return fallbackTelemetry;
+        }
+
+        let outputContextTimeMicroseconds: number;
+        let currentContextTimeMicroseconds: number;
+        try {
+            outputContextTimeMicroseconds = secondsToMicroseconds(outputContextTimeSeconds);
+            currentContextTimeMicroseconds = secondsToMicroseconds(this.audioContext.currentTime);
+        } catch {
+            return fallbackTelemetry;
+        }
+        if (outputContextTimeMicroseconds > currentContextTimeMicroseconds) {
+            return fallbackTelemetry;
+        }
+
+        const correctionMicroseconds = mediaContextTimeMicroseconds
+            - outputContextTimeMicroseconds;
+        if (correctionMicroseconds <= 0) {
+            // The latest rendered media point is the safe forward bound
+            this.physicalCorrelationGeneration = telemetry.generation;
+            return this.clampTelemetryToMediaFloor({
+                ...telemetry,
+                hasPhysicalOutputTimeCorrelation: true
+            });
+        }
+        if (!Number.isSafeInteger(correctionMicroseconds)
+            || correctionMicroseconds > MAX_OUTPUT_TIMESTAMP_CORRECTION_MICROSECONDS) {
+            return fallbackTelemetry;
+        }
+
+        let physicalMediaTimeMicroseconds: Microseconds;
+        try {
+            physicalMediaTimeMicroseconds = requireMicroseconds(
+                telemetry.mediaTimeMicroseconds - correctionMicroseconds,
+                'Physical audio output media time'
+            );
+        } catch {
+            return fallbackTelemetry;
+        }
+        this.physicalCorrelationGeneration = telemetry.generation;
+        return this.clampTelemetryToMediaFloor({
+            ...telemetry,
+            hasPhysicalOutputTimeCorrelation: true,
+            mediaTimeMicroseconds: physicalMediaTimeMicroseconds
+        });
+    }
+
+    private clampTelemetryToMediaFloor(
+        telemetry: AudioWorkletTelemetry
+    ): AudioWorkletTelemetry {
+        const mediaFloorMicroseconds = this.getMediaFloor(telemetry.generation);
+        return {
+            ...telemetry,
+            mediaTimeMicroseconds: mediaFloorMicroseconds !== null
+                && telemetry.mediaTimeMicroseconds < mediaFloorMicroseconds ?
+                mediaFloorMicroseconds :
+                telemetry.mediaTimeMicroseconds
+        };
+    }
+
+    private createFallbackTelemetry(
+        telemetry: AudioWorkletTelemetry
+    ): AudioWorkletTelemetry {
+        const uncorrelatedTelemetry: AudioWorkletTelemetry = {
+            ...telemetry,
+            hasPhysicalOutputTimeCorrelation: false
+        };
+        const mediaFloorMicroseconds = this.getMediaFloor(telemetry.generation);
+        if (mediaFloorMicroseconds === null) {
+            return uncorrelatedTelemetry;
+        }
+        if (this.physicalCorrelationGeneration !== telemetry.generation) {
+            return {
+                ...uncorrelatedTelemetry,
+                mediaTimeMicroseconds: mediaFloorMicroseconds
+            };
+        }
+        return this.clampTelemetryToMediaFloor(uncorrelatedTelemetry);
+    }
+
+    private getMediaFloor(generation: number): Microseconds | null {
+        return this.mediaFloorGeneration === generation ? this.mediaFloorMicroseconds : null;
+    }
+
+    private observeTelemetryState(telemetry: AudioWorkletTelemetry): void {
+        if (this.mediaFloorGeneration !== telemetry.generation) {
+            this.mediaFloorGeneration = telemetry.generation;
+            this.mediaFloorMicroseconds = null;
+            this.physicalCorrelationGeneration = null;
+        }
+        if (telemetry.reason !== 'flush') {
+            return;
+        }
+
+        this.mediaFloorMicroseconds = telemetry.mediaTimeMicroseconds;
+        this.physicalCorrelationGeneration = null;
     }
 
     private async destroyResources(): Promise<void> {
@@ -94,7 +293,10 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
         try {
             if (this.audioContext.state !== 'closed') {
-                await this.audioContext.close();
+                await waitForBrowserAudioOperation(
+                    this.audioContext.close(),
+                    'AudioContext close'
+                );
             }
         } catch (error) {
             if (!outputDestroyFailed) {
@@ -121,6 +323,15 @@ async function createOutput(
     configuration: DecodeWorkerAudioConfiguration,
     prewarmedAudioContext: BrowserAudioContextPrewarmLease | null
 ): Promise<CustomAudioOutputBinding> {
+    try {
+        assertSupportedCustomAudioOutputLayout(
+            configuration.channelCount,
+            configuration.sampleRate
+        );
+    } catch (error) {
+        await prewarmedAudioContext?.close().catch((): void => undefined);
+        throw error;
+    }
     const consumedPrewarm = prewarmedAudioContext ?
         takePrewarmedBrowserAudioContext(prewarmedAudioContext, configuration.sampleRate) :
         null;
@@ -143,14 +354,23 @@ async function createOutput(
             throw new RangeError('The browser did not create the requested audio sample rate');
         }
         if (consumedPrewarm) {
-            await consumedPrewarm.resumePromise;
+            await waitForBrowserAudioOperation(
+                consumedPrewarm.resumePromise,
+                'Prewarmed AudioContext resume'
+            );
         } else {
-            await audioContext.resume();
+            await waitForBrowserAudioOperation(
+                audioContext.resume(),
+                'AudioContext resume'
+            );
         }
-        output = await AudioWorkletController.create(audioContext, {
-            channelCount: configuration.channelCount,
-            maxBufferedFrames: configuration.sampleRate * MAX_BUFFERED_AUDIO_SECONDS
-        });
+        output = await waitForBrowserAudioOperation(
+            AudioWorkletController.create(audioContext, {
+                channelCount: configuration.channelCount,
+                maxBufferedFrames: configuration.sampleRate * MAX_BUFFERED_AUDIO_SECONDS
+            }),
+            'AudioWorklet output creation'
+        );
         const managedOutput = new BrowserCustomAudioOutput(audioContext, output);
         return {
             bridge: new CustomDecodeAudioBridge(output),
@@ -159,7 +379,10 @@ async function createOutput(
         };
     } catch (error) {
         output?.destroy();
-        await audioContext.close().catch(() => undefined);
+        await waitForBrowserAudioOperation(
+            audioContext.close(),
+            'AudioContext close after setup failure'
+        ).catch(() => undefined);
         throw error;
     }
 }

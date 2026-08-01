@@ -141,23 +141,13 @@ fn encodeSRGB(linearValue: f32) -> f32 {
     return 1.055 * pow(linearValue, 1.0 / 2.4) - 0.055;
 }
 
-fn encodeBT709(linearValue: f32) -> f32 {
-    if (linearValue < 0.018) {
-        return 4.5 * linearValue;
-    }
-    return 1.099 * pow(linearValue, 0.45) - 0.099;
-}
-
 fn encodeOutputComponent(componentNits: f32) -> f32 {
     let linearValue = clamp(
         componentNits / renderSettings.outputPeakNits,
         0.0,
         1.0
     );
-    if (renderSettings.outputTransfer == 1u) {
-        return encodeSRGB(linearValue);
-    }
-    return encodeBT709(linearValue);
+    return encodeSRGB(linearValue);
 }
 
 fn toneMapToSDR(linearBT709Nits: vec3f) -> vec3f {

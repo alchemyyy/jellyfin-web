@@ -187,6 +187,51 @@ describe('copyVideoFrameToRawPlanes', () => {
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });
 
+    it('reuses an exact-size non-detached frame buffer', async () => {
+        const frameHarness = createFrameHarness();
+        const reusableBuffer = new ArrayBuffer(1_024);
+
+        const result = await copyVideoFrameToRawPlanes(
+            frameHarness.frame,
+            { reusableBuffer }
+        );
+
+        expect(result.data).toBe(reusableBuffer);
+        expect(frameHarness.copyTo).toHaveBeenCalledWith(
+            reusableBuffer,
+            expect.any(Object)
+        );
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('allocates a correctly sized buffer instead of reusing a mismatched buffer', async () => {
+        const frameHarness = createFrameHarness();
+        const mismatchedBuffer = new ArrayBuffer(512);
+
+        const result = await copyVideoFrameToRawPlanes(
+            frameHarness.frame,
+            { reusableBuffer: mismatchedBuffer }
+        );
+
+        expect(result.data).not.toBe(mismatchedBuffer);
+        expect(result.data.byteLength).toBe(1_024);
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('does not allocate past a fixed pool when a recycled buffer size changes', async () => {
+        const frameHarness = createFrameHarness();
+
+        await expect(copyVideoFrameToRawPlanes(
+            frameHarness.frame,
+            {
+                requireReusableBuffer: true,
+                reusableBuffer: new ArrayBuffer(512)
+            }
+        )).rejects.toMatchObject({ code: 'allocation-failed' });
+        expect(frameHarness.copyTo).not.toHaveBeenCalled();
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
+
     it('copies odd-sized NV12 into luma and interleaved chroma planes', async () => {
         const frameHarness = createFrameHarness({
             codedHeight: 3,
@@ -240,6 +285,45 @@ describe('copyVideoFrameToRawPlanes', () => {
             expect(frameHarness.close).toHaveBeenCalledOnce();
         }
     );
+
+    it('copies a null-format hardware frame into the explicitly requested raw format', async () => {
+        const frameHarness = createFrameHarness({ format: null });
+
+        const result = await copyVideoFrameToRawPlanes(frameHarness.frame, {
+            format: 'I420P10'
+        });
+
+        const copyOptions = frameHarness.copyTo.mock.calls[0]?.[1] as (
+            VideoFrameCopyToOptions & { format?: string }
+        );
+        expect(copyOptions.format).toBe('I420P10');
+        expect(result).toMatchObject({ bitDepth: 10, format: 'I420P10' });
+        expect(result.planes.map(plane => plane.bytesPerComponent)).toEqual([ 2, 2, 2 ]);
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('retries a matching software format without the explicit legacy option', async () => {
+        const copyTo = vi.fn(async (
+            _destination: AllowSharedBufferSource,
+            copyOptions?: VideoFrameCopyToOptions & { format?: string }
+        ): Promise<PlaneLayout[]> => {
+            if (copyOptions?.format) {
+                throw new DOMException('Explicit planar formats are unavailable', 'NotSupportedError');
+            }
+            return copyOptions?.layout ?? [];
+        });
+        const frameHarness = createFrameHarness({ copyTo, format: 'I420P10' });
+
+        const result = await copyVideoFrameToRawPlanes(frameHarness.frame, {
+            format: 'I420P10'
+        });
+
+        expect(result.format).toBe('I420P10');
+        expect(frameHarness.copyTo).toHaveBeenCalledTimes(2);
+        expect(frameHarness.copyTo.mock.calls[0]?.[1]).toMatchObject({ format: 'I420P10' });
+        expect(frameHarness.copyTo.mock.calls[1]?.[1]).not.toHaveProperty('format');
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
 
     it('preserves display, crop, timing, and nullable color metadata', async () => {
         const frameHarness = createFrameHarness({
@@ -320,9 +404,13 @@ describe('copyVideoFrameToRawPlanes', () => {
 
     it.each([
         { codedWidth: 0 },
+        { codedWidth: 3_841 },
         { codedHeight: Number.NaN },
+        { codedHeight: 2_161 },
         { displayWidth: Number.POSITIVE_INFINITY },
+        { displayWidth: 3_841 },
         { displayHeight: 0 },
+        { displayHeight: 2_161 },
         { duration: -1 },
         { timestamp: Number.MAX_SAFE_INTEGER + 1 },
         { visibleRectangle: null },
@@ -344,6 +432,21 @@ describe('copyVideoFrameToRawPlanes', () => {
             'invalid-dimensions'
         );
 
+        expect(frameHarness.copyTo).not.toHaveBeenCalled();
+        expect(frameHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('rejects frame geometry that differs from the negotiated track before copying', async () => {
+        const frameHarness = createFrameHarness();
+
+        await expectCopyFailure(copyVideoFrameToRawPlanes(frameHarness.frame, {
+            expectedGeometry: {
+                codedHeight: 2,
+                codedWidth: 4,
+                displayHeight: 2,
+                displayWidth: 8
+            }
+        }), 'invalid-dimensions');
         expect(frameHarness.copyTo).not.toHaveBeenCalled();
         expect(frameHarness.close).toHaveBeenCalledOnce();
     });

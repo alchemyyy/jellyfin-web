@@ -1,8 +1,14 @@
-export const RENDER_SETTINGS_VERSION = 3;
+export const RENDER_SETTINGS_VERSION = 4;
 export const RENDER_SETTINGS_UNIFORM_BYTE_LENGTH = 48;
 
+const MAXIMUM_LUMINANCE_NITS = 10_000;
+const MINIMUM_LUMINANCE_NITS = 1;
+const MAXIMUM_EXPOSURE_STOPS = 16;
+const MINIMUM_EXPOSURE_STOPS = -16;
+
 export type RenderMode = 'hdr-to-sdr' | 'identity-sdr';
-export type OutputTransfer = 'bt709' | 'srgb';
+// The configured WebGPU canvas uses the sRGB output color space
+export type OutputTransfer = 'srgb';
 export type ToneMapOperator = 'aces' | 'reinhard';
 
 export type ToneMappingSettings = {
@@ -58,7 +64,6 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
 
 const ACES_OPERATOR_CODE = 0;
 const REINHARD_OPERATOR_CODE = 1;
-const BT709_OUTPUT_TRANSFER_CODE = 0;
 const SRGB_OUTPUT_TRANSFER_CODE = 1;
 
 const UNIFORM_VERSION_INDEX = 0;
@@ -88,12 +93,8 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
             throw new RangeError('Unsupported render mode');
     }
 
-    switch (settings.outputTransfer) {
-        case 'bt709':
-        case 'srgb':
-            break;
-        default:
-            throw new RangeError('Unsupported output transfer');
+    if (settings.outputTransfer !== 'srgb') {
+        throw new RangeError('Unsupported output transfer');
     }
     switch (settings.toneMapping.operator) {
         case 'aces':
@@ -120,12 +121,24 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
     if (!numericSettings.every(Number.isFinite)) {
         throw new RangeError('Tone mapping settings must be finite');
     }
-    if (toneMapping.inputPeakNits <= 0 || toneMapping.outputPeakNits <= 0) {
-        throw new RangeError('Tone mapping peak luminance must be positive');
+    if (
+        toneMapping.inputPeakNits < MINIMUM_LUMINANCE_NITS
+        || toneMapping.inputPeakNits > MAXIMUM_LUMINANCE_NITS
+        || toneMapping.outputPeakNits < MINIMUM_LUMINANCE_NITS
+        || toneMapping.outputPeakNits > MAXIMUM_LUMINANCE_NITS
+    ) {
+        throw new RangeError('Tone mapping peak luminance must be from 1 through 10000 nits');
     }
-    if (toneMapping.paperWhiteNits <= 0
+    if (toneMapping.paperWhiteNits < MINIMUM_LUMINANCE_NITS
+        || toneMapping.paperWhiteNits > MAXIMUM_LUMINANCE_NITS
         || toneMapping.paperWhiteNits > toneMapping.inputPeakNits) {
         throw new RangeError('Paper white must be within the input luminance range');
+    }
+    if (
+        toneMapping.exposure < MINIMUM_EXPOSURE_STOPS
+        || toneMapping.exposure > MAXIMUM_EXPOSURE_STOPS
+    ) {
+        throw new RangeError('Exposure must be from negative 16 through 16 stops');
     }
     if (toneMapping.desaturationStrength < 0 || toneMapping.desaturationStrength > 1) {
         throw new RangeError('Desaturation strength must be between zero and one');
@@ -182,12 +195,10 @@ function getToneMapOperatorCode(operator: ToneMapOperator): number {
 }
 
 function getOutputTransferCode(outputTransfer: OutputTransfer): number {
-    switch (outputTransfer) {
-        case 'bt709':
-            return BT709_OUTPUT_TRANSFER_CODE;
-        case 'srgb':
-            return SRGB_OUTPUT_TRANSFER_CODE;
+    if (outputTransfer !== 'srgb') {
+        throw new RangeError('Unsupported output transfer');
     }
+    return SRGB_OUTPUT_TRANSFER_CODE;
 }
 
 /** Serializes adjustable renderer controls into the versioned WGSL layout. */

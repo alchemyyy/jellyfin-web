@@ -14,7 +14,13 @@ import type {
     CustomDecodeSessionStartOptions,
     CustomDecodeSessionTelemetry
 } from './CustomDecodeSession';
-import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
+import type {
+    CustomDecodeFailureKind,
+    CustomDecodeRawVideoFrameFormat,
+    CustomDecodeVideoDecoderBackend,
+    CustomDecodeVideoOutputMode,
+    DecodeWorkerAudioConfiguration
+} from './DecodeWorkerProtocol';
 import type { MediaClockSnapshot, MonotonicTimeSource } from './MediaClock';
 
 export type CustomPlaybackState =
@@ -29,19 +35,28 @@ export type CustomPlaybackState =
     | 'stopping';
 
 export type CustomPlaybackFallbackReason =
-    | 'audio-output-failed'
+    | CustomDecodeFailureKind
     | 'audio-output-unavailable'
-    | 'decode-failed'
     | 'ended-before-ready'
     | 'lifecycle-failed'
+    | 'playback-stalled'
     | 'playback-rate-unsupported'
     | 'startup-timeout';
+
+export type CustomPlaybackFallbackDisposition =
+    | 'renegotiate-source'
+    | 'same-session-native';
 
 export type CustomPlaybackPlayOptions = {
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds | null
+    maximumCodedHeight: number
+    maximumCodedWidth: number
+    rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     url: string
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    videoOutputMode: CustomDecodeVideoOutputMode
     videoTrackIndex: number
 };
 
@@ -52,6 +67,7 @@ export type CustomPlaybackStartResult = {
 };
 
 export type CustomPlaybackFallbackRequest = {
+    disposition: CustomPlaybackFallbackDisposition
     generation: number
     mediaTimeMicroseconds: Microseconds
     preserveHTMLSession: true
@@ -65,6 +81,7 @@ export type CustomPlaybackHTMLFallbackHook = (
 export type CustomAudioOutput = {
     readonly generation: number
     destroy: () => Promise<void> | void
+    getEstimatedOutputLatencyMicroseconds?: () => Microseconds | null
     getTelemetry: () => AudioWorkletTelemetry | null
     onTelemetry: (listener: AudioTelemetryListener) => () => void
     setMuted: (muted: boolean) => void
@@ -83,6 +100,8 @@ export type CustomAudioOutputFactory = (
 ) => CustomAudioOutputBinding | Promise<CustomAudioOutputBinding>;
 
 export type CustomVideoDecodeSession = {
+    acknowledgeFrame: (presentationFrame: DecodedPresentationFrame) => boolean
+    discardFrame: (presentationFrame: DecodedPresentationFrame) => boolean
     getTelemetry: () => CustomDecodeSessionTelemetry
     start: (options: CustomDecodeSessionStartOptions) => void
     stop: () => Promise<void>
@@ -187,7 +206,9 @@ export type CustomPlaybackControllerOptions = {
     eventHandler?: CustomPlaybackControllerEventHandler
     fallbackHook?: CustomPlaybackHTMLFallbackHook
     monotonicTimeSource?: MonotonicTimeSource
+    maximumVideoDecodeLagMicroseconds?: Microseconds
     pipelineStopTimeoutMicroseconds?: Microseconds
+    playbackStallTimeoutMicroseconds?: Microseconds
     startupTimeoutMicroseconds?: Microseconds
     timeUpdateIntervalMicroseconds?: Microseconds
     videoDecodeSessionFactory?: CustomVideoDecodeSessionFactory

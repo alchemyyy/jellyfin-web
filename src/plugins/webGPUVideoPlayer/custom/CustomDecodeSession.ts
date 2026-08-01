@@ -5,28 +5,53 @@ import type {
     DecodedPresentationFrame
 } from '../WebGPUPresenter';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
+import {
+    DecodedVideoGeometryError,
+    requireConsistentDecodedVideoGeometry
+} from './DecodedVideoGeometry';
 import { requireMicroseconds } from './TimeMath';
 import {
     isDecodeWorkerResponse,
     MAX_DECODED_FRAME_CREDITS,
+    MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
+    type CustomDecodeRawVideoFrameFormat,
+    type CustomDecodeVideoDecoderBackend,
+    type CustomDecodeVideoOutputMode,
     type DecodeWorkerAudioConfiguration,
     type DecodeWorkerAudioResponse,
     type DecodeWorkerFrameResponse,
+    type DecodeWorkerReadyResponse,
     type DecodeWorkerRequest
 } from './DecodeWorkerProtocol';
+import {
+    MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
+    MAXIMUM_RAW_VIDEO_CODED_WIDTH,
+    type RawVideoFrameGeometry
+} from './RawVideoFrameCopy';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 
 export type CustomDecodeSessionStartOptions = {
     audioTrackIndex?: number | null
     generation: number
+    maximumCodedHeight: number
+    maximumCodedWidth: number
+    rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     url: string
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    videoOutputMode: CustomDecodeVideoOutputMode
     videoTrackIndex: number
 };
 
 export type CustomDecodeSessionEvent =
+    | {
+        audio: DecodeWorkerAudioConfiguration | null
+        codec: string
+        generation: number
+        type: 'configured'
+    }
     | {
         audio: DecodeWorkerAudioConfiguration | null
         codec: string
@@ -46,19 +71,23 @@ export type CustomDecodeSessionEvent =
 
 export type CustomDecodeSessionTelemetry = {
     activeGeneration: number | null
+    abandonedRawFrameCount: number
     audioCodec: string | null
     droppedFrameCount: number
     failureKind: CustomDecodeFailureKind | null
     firstFrameMediaTimeMicroseconds: Microseconds | null
     lastAudioMediaTimeMicroseconds: Microseconds | null
     lastFrameMediaTimeMicroseconds: Microseconds | null
+    peakFrameCount: number
+    pendingFrameCount: number
     queuedFrameCount: number
     receivedAudioFrameCount: number
     receivedAudioSampleCount: number
     receivedFrameCount: number
+    recycledRawFrameCount: number
     staleAudioSampleCount: number
     staleFrameCount: number
-    state: 'ended' | 'error' | 'idle' | 'ready' | 'starting'
+    state: 'configured' | 'ended' | 'error' | 'idle' | 'ready' | 'starting'
     submittedAudioFrameCount: number
     submittedAudioSampleCount: number
     takenFrameCount: number
@@ -71,39 +100,49 @@ export type CustomDecodeAudioBridgeFactory = (
 ) => CustomDecodeAudioBridge | Promise<CustomDecodeAudioBridge>;
 
 type QueuedFrame = {
-    durationMicroseconds: Microseconds
-    frame: VideoFrame
-    mediaTimeMicroseconds: Microseconds
+    presentationFrame: DecodedPresentationFrame
+    workerRecord: WorkerRecord
 };
 
 type WorkerRecord = {
     audioConfiguration: DecodeWorkerAudioConfiguration | null
+    audioMediaReady: boolean
     audioRequested: boolean
+    configurationReceived: boolean
+    decodedVideoGeometry: RawVideoFrameGeometry | null
     errorHandler: (event: ErrorEvent) => void
     generation: number
+    maximumCodedHeight: number
+    maximumCodedWidth: number
     messageHandler: (event: MessageEvent<unknown>) => void
     resolveRetirement: (() => void) | null
     retirementPromise: Promise<void> | null
     retirementTimer: ReturnType<typeof globalThis.setTimeout> | null
-    readyPending: boolean
     startTimeMicroseconds: Microseconds
+    videoGeometry: RawVideoFrameGeometry | null
     videoCodec: string | null
+    videoMediaReady: boolean
+    videoOutputMode: CustomDecodeVideoOutputMode
     worker: Worker
 };
 
 function createTelemetry(): CustomDecodeSessionTelemetry {
     return {
         activeGeneration: null,
+        abandonedRawFrameCount: 0,
         audioCodec: null,
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
         lastAudioMediaTimeMicroseconds: null,
         lastFrameMediaTimeMicroseconds: null,
+        peakFrameCount: 0,
+        pendingFrameCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
         receivedFrameCount: 0,
+        recycledRawFrameCount: 0,
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
@@ -121,6 +160,36 @@ function isValidGeneration(generation: number): boolean {
     return Number.isSafeInteger(generation) && generation > 0;
 }
 
+function isValidCodedDimension(value: number, maximum: number): boolean {
+    return Number.isSafeInteger(value) && value > 0 && value <= maximum;
+}
+
+function isValidTrackIndex(value: number): boolean {
+    return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isValidOptionalTrackIndex(value: number | null | undefined): boolean {
+    return value == null || isValidTrackIndex(value);
+}
+
+function isValidVideoOutputMode(value: string): value is CustomDecodeVideoOutputMode {
+    return value === 'raw-planes' || value === 'video-frame';
+}
+
+function isValidVideoDecoderBackend(value: string): value is CustomDecodeVideoDecoderBackend {
+    return value === 'bundled-hevc' || value === 'native';
+}
+
+function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): boolean {
+    switch (options.videoOutputMode) {
+        case 'raw-planes':
+            return options.rawVideoFrameFormat === 'I420P10'
+                || options.rawVideoFrameFormat === 'I420P12';
+        case 'video-frame':
+            return options.rawVideoFrameFormat === null;
+    }
+}
+
 function closeFrameFromUnknownMessage(value: unknown): void {
     if (!value || typeof value !== 'object') {
         return;
@@ -129,6 +198,18 @@ function closeFrameFromUnknownMessage(value: unknown): void {
     const frame = (value as { frame?: unknown }).frame;
     if (frame && typeof frame === 'object' && typeof (frame as { close?: unknown }).close === 'function') {
         (frame as { close: () => void }).close();
+    }
+}
+
+function closePresentationFrame(presentationFrame: DecodedPresentationFrame): void {
+    if (presentationFrame.outputMode !== 'video-frame') {
+        return;
+    }
+
+    try {
+        presentationFrame.frame.close();
+    } catch {
+        // Ownership ends even if a platform implementation throws while closing
     }
 }
 
@@ -141,6 +222,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
     private readonly retiringWorkers = new Set<WorkerRecord>();
     private readonly workerFactory: CustomDecodeWorkerFactory;
     private readonly queuedFrames: QueuedFrame[] = [];
+    private readonly pendingFrames = new Map<DecodedPresentationFrame, WorkerRecord>();
 
     private activeWorker: WorkerRecord | null = null;
     private telemetry = createTelemetry();
@@ -172,6 +254,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             void this.beginWorkerRetirement(previousWorker);
         }
         this.closeQueuedFrames();
+        this.clearPendingFrames();
 
         this.telemetry = createTelemetry();
         this.telemetry.activeGeneration = options.generation;
@@ -189,7 +272,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             worker,
             options.generation,
             options.startTimeMicroseconds,
-            options.audioTrackIndex != null
+            options.audioTrackIndex != null,
+            options.videoOutputMode,
+            options.maximumCodedWidth,
+            options.maximumCodedHeight
         );
         this.activeWorker = workerRecord;
         worker.addEventListener('message', workerRecord.messageHandler);
@@ -199,11 +285,18 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             this.postRequest(workerRecord, {
                 audioSampleCredits: 0,
                 audioTrackIndex: options.audioTrackIndex ?? null,
-                frameCredits: MAX_DECODED_FRAME_CREDITS,
+                frameCredits: options.videoOutputMode === 'raw-planes' ?
+                    MAX_DECODED_RAW_FRAME_CREDITS :
+                    MAX_DECODED_FRAME_CREDITS,
                 generation: options.generation,
+                maximumCodedHeight: options.maximumCodedHeight,
+                maximumCodedWidth: options.maximumCodedWidth,
+                rawVideoFrameFormat: options.rawVideoFrameFormat,
                 startTimeMicroseconds: options.startTimeMicroseconds,
                 type: 'start',
                 url: options.url,
+                videoDecoderBackend: options.videoDecoderBackend,
+                videoOutputMode: options.videoOutputMode,
                 videoTrackIndex: options.videoTrackIndex
             });
         } catch {
@@ -220,6 +313,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         this.activeAudioBridge?.stop(workerRecord?.generation ?? null);
         this.activeAudioBridge = null;
         this.closeQueuedFrames();
+        this.clearPendingFrames();
         this.telemetry.activeGeneration = null;
         this.telemetry.state = 'idle';
 
@@ -251,7 +345,8 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         let selectedFrameIndex = -1;
         for (let frameIndex = 0; frameIndex < this.queuedFrames.length; frameIndex += 1) {
-            if (this.queuedFrames[frameIndex].mediaTimeMicroseconds > targetTimeMicroseconds) {
+            if (this.queuedFrames[frameIndex].presentationFrame.mediaTimeMicroseconds
+                > targetTimeMicroseconds) {
                 break;
             }
             selectedFrameIndex = frameIndex;
@@ -261,19 +356,62 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return null;
         }
 
-        for (let frameIndex = 0; frameIndex < selectedFrameIndex; frameIndex += 1) {
-            this.queuedFrames[frameIndex].frame.close();
-            this.telemetry.droppedFrameCount += 1;
+        const consumedFrames = this.queuedFrames.splice(0, selectedFrameIndex + 1);
+        const selectedQueuedFrame = consumedFrames.pop();
+        if (!selectedQueuedFrame) {
+            return null;
+        }
+        this.telemetry.queuedFrameCount = this.queuedFrames.length;
+        this.telemetry.droppedFrameCount += consumedFrames.length;
+        for (let frameIndex = 0; frameIndex < consumedFrames.length; frameIndex += 1) {
+            const droppedFrame = consumedFrames[frameIndex];
+            if (droppedFrame.presentationFrame.outputMode === 'video-frame') {
+                closePresentationFrame(droppedFrame.presentationFrame);
+                continue;
+            }
+            if (!this.recycleFrameBuffer(
+                droppedFrame.workerRecord,
+                droppedFrame.presentationFrame.frame.data
+            )) {
+                this.abandonPresentationFrame(droppedFrame.presentationFrame);
+                for (
+                    let abandonedFrameIndex = frameIndex + 1;
+                    abandonedFrameIndex < consumedFrames.length;
+                    abandonedFrameIndex += 1
+                ) {
+                    this.abandonPresentationFrame(
+                        consumedFrames[abandonedFrameIndex].presentationFrame
+                    );
+                }
+                this.abandonPresentationFrame(selectedQueuedFrame.presentationFrame);
+                return null;
+            }
         }
 
-        const releasedFrameCount = selectedFrameIndex + 1;
-        const selectedFrame = this.queuedFrames[selectedFrameIndex];
-        this.queuedFrames.splice(0, releasedFrameCount);
-        this.telemetry.queuedFrameCount = this.queuedFrames.length;
         this.telemetry.takenFrameCount += 1;
-        this.requestReplacementFrames(releasedFrameCount);
+        this.pendingFrames.set(
+            selectedQueuedFrame.presentationFrame,
+            selectedQueuedFrame.workerRecord
+        );
+        this.telemetry.pendingFrameCount = this.pendingFrames.size;
+        if (selectedQueuedFrame.presentationFrame.outputMode === 'video-frame') {
+            this.requestReplacementFrames(
+                selectedQueuedFrame.workerRecord,
+                consumedFrames.length
+            );
+        }
 
-        return selectedFrame;
+        return selectedQueuedFrame.presentationFrame;
+    }
+
+    /** Releases one selected frame credit after successful GPU submission. */
+    public acknowledgeFrame(presentationFrame: DecodedPresentationFrame): boolean {
+        return this.releasePendingFrame(presentationFrame);
+    }
+
+    /** Releases one selected frame credit after the presentation owner discards it. */
+    public discardFrame(presentationFrame: DecodedPresentationFrame): boolean {
+        return this.releasePendingFrame(presentationFrame);
     }
 
     private validateStartOptions(options: CustomDecodeSessionStartOptions): void {
@@ -284,14 +422,22 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         if (typeof options.url !== 'string' || !options.url) {
             throw new TypeError('Custom decode URL must be a non-empty string');
         }
-        if (!Number.isSafeInteger(options.videoTrackIndex) || options.videoTrackIndex < 0) {
+        if (
+            !isValidCodedDimension(
+                options.maximumCodedWidth,
+                MAXIMUM_RAW_VIDEO_CODED_WIDTH
+            )
+            || !isValidCodedDimension(
+                options.maximumCodedHeight,
+                MAXIMUM_RAW_VIDEO_CODED_HEIGHT
+            )
+        ) {
+            throw new RangeError('Custom decode coded dimensions exceed the absolute route bound');
+        }
+        if (!isValidTrackIndex(options.videoTrackIndex)) {
             throw new RangeError('Custom decode video track index must be a non-negative safe integer');
         }
-        if (
-            options.audioTrackIndex !== undefined
-            && options.audioTrackIndex !== null
-            && (!Number.isSafeInteger(options.audioTrackIndex) || options.audioTrackIndex < 0)
-        ) {
+        if (!isValidOptionalTrackIndex(options.audioTrackIndex)) {
             throw new RangeError('Custom decode audio track index must be a non-negative safe integer');
         }
         if (
@@ -301,26 +447,48 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         ) {
             throw new Error('Custom audio decode requires an AudioWorklet bridge');
         }
+        if (!isValidVideoOutputMode(options.videoOutputMode)) {
+            throw new TypeError('Custom decode video output mode is invalid');
+        }
+        if (!isValidVideoDecoderBackend(options.videoDecoderBackend)) {
+            throw new TypeError('Custom decode video decoder backend is invalid');
+        }
+        if (!hasValidRawVideoFrameFormat(options)) {
+            const message = options.videoOutputMode === 'raw-planes' ?
+                'Raw custom decode requires a requested raw frame format' :
+                'VideoFrame custom decode cannot request a raw frame format';
+            throw new TypeError(message);
+        }
     }
 
     private createWorkerRecord(
         worker: Worker,
         generation: number,
         startTimeMicroseconds: Microseconds,
-        audioRequested: boolean
+        audioRequested: boolean,
+        videoOutputMode: CustomDecodeVideoOutputMode,
+        maximumCodedWidth: number,
+        maximumCodedHeight: number
     ): WorkerRecord {
         const workerRecord: WorkerRecord = {
             audioConfiguration: null,
+            audioMediaReady: false,
             audioRequested,
+            configurationReceived: false,
+            decodedVideoGeometry: null,
             errorHandler: (): void => undefined,
             generation,
+            maximumCodedHeight,
+            maximumCodedWidth,
             messageHandler: (): void => undefined,
             resolveRetirement: null,
             retirementPromise: null,
             retirementTimer: null,
-            readyPending: false,
             startTimeMicroseconds,
             videoCodec: null,
+            videoGeometry: null,
+            videoMediaReady: false,
+            videoOutputMode,
             worker
         };
 
@@ -342,6 +510,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 this.activeAudioBridge?.stop(workerRecord.generation);
                 this.activeAudioBridge = null;
                 this.closeQueuedFrames();
+                this.clearPendingFrames();
                 void this.beginWorkerRetirement(workerRecord);
                 this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode worker sent an invalid message');
             }
@@ -359,7 +528,11 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             || this.telemetry.activeGeneration !== workerRecord.generation
         ) {
             if (messageValue.type === 'frame') {
-                messageValue.frame.close();
+                if (messageValue.outputMode === 'video-frame') {
+                    messageValue.frame.close();
+                } else {
+                    this.telemetry.abandonedRawFrameCount += 1;
+                }
                 this.telemetry.staleFrameCount += 1;
             } else if (messageValue.type === 'audio') {
                 this.telemetry.staleAudioSampleCount += 1;
@@ -369,7 +542,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         switch (messageValue.type) {
             case 'ready':
-                this.handleReadyResponse(workerRecord, messageValue.audio, messageValue.codec);
+                this.handleReadyResponse(workerRecord, messageValue);
                 break;
             case 'frame':
                 this.enqueueFrame(workerRecord, messageValue);
@@ -386,6 +559,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 this.activeAudioBridge?.stop(workerRecord.generation);
                 this.activeAudioBridge = null;
                 this.closeQueuedFrames();
+                this.clearPendingFrames();
                 void this.beginWorkerRetirement(workerRecord);
                 this.failSession(
                     messageValue.generation,
@@ -398,19 +572,46 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
     private handleReadyResponse(
         workerRecord: WorkerRecord,
-        audioConfiguration: DecodeWorkerAudioConfiguration | null,
-        videoCodec: string
+        message: DecodeWorkerReadyResponse
     ): void {
-        if (workerRecord.readyPending || this.telemetry.state !== 'starting') {
+        if (workerRecord.configurationReceived || this.telemetry.state !== 'starting') {
             this.handleDecodeProtocolFailure(workerRecord, 'The custom decode worker sent duplicate readiness');
             return;
         }
-        workerRecord.readyPending = true;
+        if (
+            message.codedWidth > workerRecord.maximumCodedWidth
+            || message.codedHeight > workerRecord.maximumCodedHeight
+        ) {
+            this.handleDecodeProtocolFailure(
+                workerRecord,
+                'The selected video track exceeds its negotiated decode route'
+            );
+            return;
+        }
+        const audioConfiguration = message.audio;
+        const videoCodec = message.codec;
+        workerRecord.configurationReceived = true;
         workerRecord.audioConfiguration = audioConfiguration;
+        workerRecord.videoGeometry = {
+            codedHeight: message.codedHeight,
+            codedWidth: message.codedWidth,
+            displayHeight: message.displayHeight,
+            displayWidth: message.displayWidth
+        };
         if (workerRecord.audioRequested !== Boolean(audioConfiguration)) {
             this.handleAudioOutputFailure(workerRecord, 'Decoded audio configuration did not match the request');
             return;
         }
+
+        workerRecord.videoCodec = videoCodec;
+        workerRecord.audioMediaReady = audioConfiguration === null;
+        this.telemetry.state = 'configured';
+        this.emitEvent({
+            audio: audioConfiguration,
+            codec: videoCodec,
+            generation: workerRecord.generation,
+            type: 'configured'
+        });
 
         if (!audioConfiguration) {
             this.completeReady(workerRecord, videoCodec, null, null);
@@ -464,7 +665,6 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         if (!this.isWorkerCurrent(workerRecord)) {
             return;
         }
-        workerRecord.videoCodec = videoCodec;
 
         if (audioConfiguration && audioBridge) {
             this.activeAudioBridge = audioBridge;
@@ -497,16 +697,22 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return;
         }
 
-        this.emitReadyEvent(workerRecord);
+        this.emitReadyEventIfMediaReady(workerRecord);
     }
 
-    private emitReadyEvent(workerRecord: WorkerRecord): void {
+    private emitReadyEventIfMediaReady(workerRecord: WorkerRecord): void {
         const videoCodec = workerRecord.videoCodec;
-        if (!this.isWorkerCurrent(workerRecord) || !videoCodec) {
+        if (
+            !this.isWorkerCurrent(workerRecord)
+            || this.telemetry.state !== 'configured'
+            || !workerRecord.configurationReceived
+            || !workerRecord.audioMediaReady
+            || !workerRecord.videoMediaReady
+            || !videoCodec
+        ) {
             return;
         }
 
-        workerRecord.readyPending = false;
         this.telemetry.audioCodec = workerRecord.audioConfiguration?.codec ?? null;
         this.telemetry.state = 'ready';
         this.emitEvent({
@@ -531,40 +737,113 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         this.activeAudioBridge?.stop(workerRecord.generation);
         this.activeAudioBridge = null;
         this.closeQueuedFrames();
+        this.clearPendingFrames();
         void this.beginWorkerRetirement(workerRecord);
         this.failSession(workerRecord.generation, 'decode-failed', message);
     }
 
     private enqueueFrame(workerRecord: WorkerRecord, message: DecodeWorkerFrameResponse): void {
-        if (this.queuedFrames.length >= MAX_DECODED_FRAME_CREDITS) {
-            message.frame.close();
+        if (!this.validateRawFrameGeometry(workerRecord, message)) {
+            return;
+        }
+        const maximumQueuedFrames = workerRecord.videoOutputMode === 'raw-planes' ?
+            MAX_DECODED_RAW_FRAME_CREDITS :
+            MAX_DECODED_FRAME_CREDITS;
+        const boundedFrameCount = workerRecord.videoOutputMode === 'raw-planes' ?
+            this.queuedFrames.length + this.pendingFrames.size :
+            this.queuedFrames.length;
+        if (
+            message.outputMode !== workerRecord.videoOutputMode
+            || boundedFrameCount >= maximumQueuedFrames
+        ) {
+            if (message.outputMode === 'video-frame') {
+                message.frame.close();
+            } else {
+                this.telemetry.abandonedRawFrameCount += 1;
+            }
             this.activeWorker = null;
             this.activeAudioBridge?.stop(workerRecord.generation);
             this.activeAudioBridge = null;
             this.closeQueuedFrames();
+            this.clearPendingFrames();
             void this.beginWorkerRetirement(workerRecord);
-            this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode frame queue exceeded its bound');
+            const messageText = message.outputMode === workerRecord.videoOutputMode ?
+                'The custom decode frame queue exceeded its bound' :
+                'The custom decode worker returned an unexpected video output mode';
+            this.failSession(workerRecord.generation, 'decode-failed', messageText);
             return;
         }
 
-        const queuedFrame: QueuedFrame = {
+        const presentationFrame: DecodedPresentationFrame = {
             durationMicroseconds: message.durationMicroseconds,
             frame: message.frame,
-            mediaTimeMicroseconds: message.mediaTimeMicroseconds
+            mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+            outputMode: message.outputMode
+        } as DecodedPresentationFrame;
+        const queuedFrame: QueuedFrame = {
+            presentationFrame,
+            workerRecord
         };
         let insertionIndex = this.queuedFrames.length;
         while (
             insertionIndex > 0
-            && this.queuedFrames[insertionIndex - 1].mediaTimeMicroseconds > queuedFrame.mediaTimeMicroseconds
+            && this.queuedFrames[insertionIndex - 1].presentationFrame.mediaTimeMicroseconds
+                > presentationFrame.mediaTimeMicroseconds
         ) {
             insertionIndex -= 1;
         }
         this.queuedFrames.splice(insertionIndex, 0, queuedFrame);
 
-        this.telemetry.firstFrameMediaTimeMicroseconds ??= queuedFrame.mediaTimeMicroseconds;
-        this.telemetry.lastFrameMediaTimeMicroseconds = queuedFrame.mediaTimeMicroseconds;
+        workerRecord.videoMediaReady = true;
+        this.telemetry.firstFrameMediaTimeMicroseconds ??= presentationFrame.mediaTimeMicroseconds;
+        this.telemetry.lastFrameMediaTimeMicroseconds = presentationFrame.mediaTimeMicroseconds;
         this.telemetry.queuedFrameCount = this.queuedFrames.length;
+        this.telemetry.peakFrameCount = Math.max(
+            this.telemetry.peakFrameCount,
+            this.queuedFrames.length + this.pendingFrames.size
+        );
         this.telemetry.receivedFrameCount += 1;
+        this.emitReadyEventIfMediaReady(workerRecord);
+    }
+
+    private validateRawFrameGeometry(
+        workerRecord: WorkerRecord,
+        message: DecodeWorkerFrameResponse
+    ): boolean {
+        if (message.outputMode !== 'raw-planes') {
+            return true;
+        }
+        const videoGeometry = workerRecord.videoGeometry;
+        if (!videoGeometry) {
+            this.telemetry.abandonedRawFrameCount += 1;
+            this.handleDecodeProtocolFailure(
+                workerRecord,
+                'Decoded raw frame arrived before video track configuration'
+            );
+            return false;
+        }
+        try {
+            workerRecord.decodedVideoGeometry = requireConsistentDecodedVideoGeometry(
+                {
+                    codedHeight: message.frame.codedHeight,
+                    codedWidth: message.frame.codedWidth,
+                    displayHeight: message.frame.displayHeight,
+                    displayWidth: message.frame.displayWidth
+                },
+                videoGeometry,
+                workerRecord.maximumCodedWidth,
+                workerRecord.maximumCodedHeight,
+                workerRecord.decodedVideoGeometry
+            );
+            return true;
+        } catch (error) {
+            this.telemetry.abandonedRawFrameCount += 1;
+            const messageText = error instanceof DecodedVideoGeometryError ?
+                error.message :
+                'Decoded raw frame geometry is invalid';
+            this.handleDecodeProtocolFailure(workerRecord, messageText);
+            return false;
+        }
     }
 
     private enqueueAudioSample(
@@ -591,9 +870,8 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             case 'submitted':
                 this.telemetry.submittedAudioFrameCount += enqueueResult.frameCount;
                 this.telemetry.submittedAudioSampleCount += 1;
-                if (this.telemetry.state === 'starting') {
-                    this.emitReadyEvent(workerRecord);
-                }
+                workerRecord.audioMediaReady = true;
+                this.emitReadyEventIfMediaReady(workerRecord);
                 break;
             case 'stale-generation':
                 this.telemetry.staleAudioSampleCount += 1;
@@ -603,14 +881,17 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 break;
             case 'controller-rejected':
             case 'output-capacity':
+            case 'timestamp-discontinuity':
                 // The bridge synchronously reports these failures through its callback
                 break;
         }
     }
 
-    private requestReplacementFrames(frameCredits: number): void {
-        const workerRecord = this.activeWorker;
-        if (!workerRecord || frameCredits <= 0) {
+    private requestReplacementFrames(
+        workerRecord: WorkerRecord,
+        frameCredits: number
+    ): void {
+        if (!this.isWorkerCurrent(workerRecord) || frameCredits <= 0) {
             return;
         }
 
@@ -625,6 +906,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             this.activeAudioBridge?.stop(workerRecord.generation);
             this.activeAudioBridge = null;
             this.closeQueuedFrames();
+            this.clearPendingFrames();
             this.failSession(workerRecord.generation, 'decode-failed', 'Unable to request more decoded frames');
             this.finishWorker(workerRecord);
         }
@@ -662,6 +944,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         this.activeAudioBridge?.stop(workerRecord.generation);
         this.activeAudioBridge = null;
         this.closeQueuedFrames();
+        this.clearPendingFrames();
         void this.beginWorkerRetirement(workerRecord);
         this.failSession(workerRecord.generation, 'audio-output-failed', message);
     }
@@ -672,6 +955,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             this.activeAudioBridge?.stop(workerRecord.generation);
             this.activeAudioBridge = null;
             this.closeQueuedFrames();
+            this.clearPendingFrames();
             this.failSession(workerRecord.generation, 'decode-failed', 'The custom decode worker crashed');
         }
         this.finishWorker(workerRecord);
@@ -696,16 +980,84 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
     }
 
-    private postRequest(workerRecord: WorkerRecord, request: DecodeWorkerRequest): void {
-        workerRecord.worker.postMessage(request);
+    private postRequest(
+        workerRecord: WorkerRecord,
+        request: DecodeWorkerRequest,
+        transfer?: Transferable[]
+    ): void {
+        workerRecord.worker.postMessage(request, transfer ?? []);
+    }
+
+    private abandonPresentationFrame(presentationFrame: DecodedPresentationFrame): void {
+        if (presentationFrame.outputMode === 'raw-planes') {
+            this.telemetry.abandonedRawFrameCount += 1;
+            return;
+        }
+
+        closePresentationFrame(presentationFrame);
     }
 
     private closeQueuedFrames(): void {
         for (const queuedFrame of this.queuedFrames) {
-            queuedFrame.frame.close();
+            this.abandonPresentationFrame(queuedFrame.presentationFrame);
         }
         this.queuedFrames.length = 0;
         this.telemetry.queuedFrameCount = 0;
+    }
+
+    private clearPendingFrames(): void {
+        for (const presentationFrame of this.pendingFrames.keys()) {
+            this.abandonPresentationFrame(presentationFrame);
+        }
+        this.pendingFrames.clear();
+        this.telemetry.pendingFrameCount = 0;
+    }
+
+    private releasePendingFrame(presentationFrame: DecodedPresentationFrame): boolean {
+        const workerRecord = this.pendingFrames.get(presentationFrame);
+        if (!workerRecord) {
+            return false;
+        }
+
+        this.pendingFrames.delete(presentationFrame);
+        this.telemetry.pendingFrameCount = this.pendingFrames.size;
+        if (presentationFrame.outputMode === 'raw-planes') {
+            if (!this.recycleFrameBuffer(workerRecord, presentationFrame.frame.data)) {
+                this.abandonPresentationFrame(presentationFrame);
+            }
+        } else {
+            this.requestReplacementFrames(workerRecord, 1);
+        }
+        return true;
+    }
+
+    private recycleFrameBuffer(workerRecord: WorkerRecord, buffer: ArrayBuffer): boolean {
+        if (!this.isWorkerCurrent(workerRecord)) {
+            return false;
+        }
+
+        try {
+            this.postRequest(workerRecord, {
+                buffer,
+                generation: workerRecord.generation,
+                type: 'recycle-frame'
+            }, [ buffer ]);
+            this.telemetry.recycledRawFrameCount += 1;
+            return true;
+        } catch {
+            this.activeWorker = null;
+            this.activeAudioBridge?.stop(workerRecord.generation);
+            this.activeAudioBridge = null;
+            this.closeQueuedFrames();
+            this.clearPendingFrames();
+            this.failSession(
+                workerRecord.generation,
+                'decode-failed',
+                'Unable to recycle the decoded raw frame buffer'
+            );
+            this.finishWorker(workerRecord);
+            return false;
+        }
     }
 
     private beginWorkerRetirement(workerRecord: WorkerRecord): Promise<void> {
@@ -729,6 +1081,9 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         workerRecord.retirementTimer = globalThis.setTimeout(() => {
+            console.warn(
+                `Custom decode worker generation ${workerRecord.generation} did not acknowledge shutdown`
+            );
             this.finishWorker(workerRecord);
         }, WORKER_STOP_TIMEOUT_MILLISECONDS);
         return workerRecord.retirementPromise;

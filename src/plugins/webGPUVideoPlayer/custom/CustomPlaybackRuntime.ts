@@ -29,6 +29,12 @@ export type CustomPlaybackRuntimeAvailability = {
     reason: CustomPlaybackRuntimeFailureReason | null
 };
 
+export type CustomPlaybackRuntimeRequirements = {
+    audioOutput?: boolean
+    nativeAudioDecoder?: boolean
+    nativeVideoDecoder?: boolean
+};
+
 type WebkitAudioContextGlobal = typeof globalThis & {
     webkitAudioContext?: typeof AudioContext
 };
@@ -52,27 +58,39 @@ function getDefaultEnvironment(): CustomPlaybackRuntimeEnvironment {
 }
 
 function getFailureReason(
-    environment: CustomPlaybackRuntimeEnvironment
+    environment: Readonly<CustomPlaybackRuntimeEnvironment>,
+    requirements: CustomPlaybackRuntimeRequirements
 ): CustomPlaybackRuntimeFailureReason | null {
     if (!environment.secureContext) return 'insecure-context';
     if (!environment.animationFrame) return 'animation-frame-unavailable';
     if (!environment.worker) return 'worker-unavailable';
     if (!environment.webGPU) return 'webgpu-unavailable';
-    if (!environment.videoDecoder) return 'video-decoder-unavailable';
     if (!environment.videoFrame) return 'video-frame-unavailable';
-    if (!environment.audioDecoder) return 'audio-decoder-unavailable';
-    if (!environment.audioData) return 'audio-data-unavailable';
-    if (!environment.audioContext) return 'audio-context-unavailable';
-    if (!environment.audioWorklet) return 'audio-worklet-unavailable';
+    if (requirements.nativeVideoDecoder === true && !environment.videoDecoder) {
+        return 'video-decoder-unavailable';
+    }
+    if (requirements.nativeAudioDecoder === true && !environment.audioDecoder) {
+        return 'audio-decoder-unavailable';
+    }
+    if (requirements.nativeAudioDecoder === true && !environment.audioData) {
+        return 'audio-data-unavailable';
+    }
+    if (requirements.audioOutput === true && !environment.audioContext) {
+        return 'audio-context-unavailable';
+    }
+    if (requirements.audioOutput === true && !environment.audioWorklet) {
+        return 'audio-worklet-unavailable';
+    }
     return null;
 }
 
-/** Reports whether every mandatory custom A/V playback primitive is present. */
+/** Reports whether the common and requested source-path primitives are present. */
 export function getCustomPlaybackRuntimeAvailability(
-    environment: CustomPlaybackRuntimeEnvironment = getDefaultEnvironment()
+    environment: Readonly<CustomPlaybackRuntimeEnvironment> = getDefaultEnvironment(),
+    requirements: CustomPlaybackRuntimeRequirements = {}
 ): CustomPlaybackRuntimeAvailability {
     const environmentSnapshot = Object.freeze({ ...environment });
-    const reason = getFailureReason(environmentSnapshot);
+    const reason = getFailureReason(environmentSnapshot, requirements);
     return Object.freeze({
         available: reason === null,
         environment: environmentSnapshot,

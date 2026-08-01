@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const webSettingsMockState = vi.hoisted(() => ({
     hdrToneMappingEnabled: false
 }));
+const rawHDRAuthorizationMockState = vi.hoisted(() => ({
+    authorized: true,
+    prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
+}));
 
 vi.mock('scripts/settings/webSettings', () => ({
     getWebGPUHDRToneMappingEnabled: vi.fn(
@@ -10,11 +14,54 @@ vi.mock('scripts/settings/webSettings', () => ({
     )
 }));
 
+vi.mock('./validation/RawHDRPresentationAuthorization', () => ({
+    getRawHDRAuthorizationRouteKey: vi.fn(() => (
+        'I420P10:bt2020-ncl:bt2020:limited:pq'
+    )),
+    RawHDRPresentationAuthorizationRegistry: class MockRawHDRAuthorizationRegistry {
+        authorize = vi.fn(async () => ({
+            status: rawHDRAuthorizationMockState.authorized ? 'authorized' : 'rejected'
+        }));
+
+        prewarm = vi.fn((device: GPUDevice, targetFormat: GPUTextureFormat): void => {
+            rawHDRAuthorizationMockState.prewarmCalls.push({ device, targetFormat });
+        });
+
+        isAuthorized = vi.fn((): boolean => rawHDRAuthorizationMockState.authorized);
+
+        getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
+            authorizedRouteKeys: rawHDRAuthorizationMockState.authorized ?
+                [
+                    'I420P10:bt2020-ncl:bt2020:limited:pq',
+                    'I420P10:bt2020-ncl:bt2020:limited:hlg'
+                ] :
+                [],
+            failureReasons: {},
+            fixtureVersion: 1,
+            pendingRouteKeys: [],
+            rejectedRouteKeys: rawHDRAuthorizationMockState.authorized ? [] :
+                [
+                    'I420P10:bt2020-ncl:bt2020:limited:pq',
+                    'I420P10:bt2020-ncl:bt2020:limited:hlg'
+                ],
+            renderSettingsVersion: 4,
+            status: rawHDRAuthorizationMockState.authorized ? 'authorized' : 'rejected',
+            targetFormat
+        }));
+    }
+}));
+
 import { createPQColorMetadata, type InputColorMetadata } from './color/ColorMetadata';
-import { secondsToMicroseconds } from './MediaTime';
+import {
+    type SupportedRawVideoFrameFormat,
+    type TransferableRawVideoFrame
+} from './custom/RawVideoFrameCopy';
+import { microsecondsToMilliseconds, secondsToMicroseconds } from './MediaTime';
 import { createHDRToSDRRenderSettings } from './RenderSettings';
-import { type ColorValidationCapabilityDecision } from './validation/ColorValidationHarness';
-import WebGPUPresenter, { type PresentationSurface } from './WebGPUPresenter';
+import WebGPUPresenter, {
+    type PresentationSurface,
+    WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
+} from './WebGPUPresenter';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -34,6 +81,7 @@ type DeviceHarness = {
     createBindGroup: MockFunction
     createBuffer: MockFunction
     createShaderModule: MockFunction
+    createTexture: MockFunction
     createRenderPipelineAsync: MockFunction
     device: GPUDevice
     dispatchUncapturedError: (error: GPUError) => boolean
@@ -44,7 +92,9 @@ type DeviceHarness = {
     pushErrorScope: MockFunction
     queueSubmit: MockFunction
     queueWriteBuffer: MockFunction
+    queueWriteTexture: MockFunction
     renderPassSetViewport: MockFunction
+    textureDestroy: MockFunction
 };
 
 type GPUHarness = {
@@ -65,8 +115,10 @@ const originalCanvasGetContext = Object.getOwnPropertyDescriptor(
     HTMLCanvasElement.prototype,
     'getContext'
 );
+const originalDevicePixelRatio = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
 const originalGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu');
 const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
+const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
 const originalGPUValidationError = Object.getOwnPropertyDescriptor(globalThis, 'GPUValidationError');
 const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
 const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
@@ -116,11 +168,18 @@ function createDeviceHarness(): DeviceHarness {
     };
     const queueSubmit = vi.fn();
     const queueWriteBuffer = vi.fn();
+    const queueWriteTexture = vi.fn();
     const importExternalTexture = vi.fn(() => ({}));
     const createRenderPipelineAsync = vi.fn(() => Promise.resolve(pipeline));
     const createShaderModule = vi.fn(() => ({}));
     const createBindGroup = vi.fn(() => ({}));
     const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => ({
+        label: descriptor.label
+    }));
+    const textureDestroy = vi.fn();
+    const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => ({
+        createView: vi.fn(() => ({ label: descriptor.label })),
+        destroy: textureDestroy,
         label: descriptor.label
     }));
     const destroy = vi.fn();
@@ -134,6 +193,7 @@ function createDeviceHarness(): DeviceHarness {
         createRenderPipelineAsync,
         createSampler: vi.fn(() => ({})),
         createShaderModule,
+        createTexture,
         destroy,
         features: new Set<GPUFeatureName>(),
         importExternalTexture,
@@ -144,7 +204,8 @@ function createDeviceHarness(): DeviceHarness {
         pushErrorScope,
         queue: {
             submit: queueSubmit,
-            writeBuffer: queueWriteBuffer
+            writeBuffer: queueWriteBuffer,
+            writeTexture: queueWriteTexture
         },
         removeEventListener: deviceEventTarget.removeEventListener.bind(deviceEventTarget)
     } as unknown as GPUDevice;
@@ -158,6 +219,7 @@ function createDeviceHarness(): DeviceHarness {
         createBindGroup,
         createBuffer,
         createShaderModule,
+        createTexture,
         createRenderPipelineAsync,
         device,
         dispatchUncapturedError,
@@ -168,7 +230,9 @@ function createDeviceHarness(): DeviceHarness {
         pushErrorScope,
         queueSubmit,
         queueWriteBuffer,
-        renderPassSetViewport
+        queueWriteTexture,
+        renderPassSetViewport,
+        textureDestroy
     };
 }
 
@@ -257,63 +321,90 @@ function createFrameMetadata(mediaTime = 1.234567): VideoFrameCallbackMetadata {
     };
 }
 
-function createAcceptedColorValidation(
-    metadata: InputColorMetadata
-): ColorValidationCapabilityDecision {
-    const timestampMicroseconds = secondsToMicroseconds(0);
+type RawPlaneDefinition = {
+    bytesPerComponent: 1 | 2
+    componentsPerTexel: 1 | 2
+    heightDivisor: 1 | 2
+    kind: 'u' | 'uv' | 'v' | 'y'
+    widthDivisor: 1 | 2
+};
+
+function createRawFrame(
+    format: SupportedRawVideoFrameFormat,
+    metadata: InputColorMetadata,
+    codedWidth = 8,
+    codedHeight = 4,
+    visibleRectangle = { height: codedHeight, width: codedWidth, x: 0, y: 0 }
+): TransferableRawVideoFrame {
+    const planeDefinitions: RawPlaneDefinition[] = [];
+    switch (format) {
+        case 'I420':
+            planeDefinitions.push(
+                { bytesPerComponent: 1, componentsPerTexel: 1, heightDivisor: 1, kind: 'y', widthDivisor: 1 },
+                { bytesPerComponent: 1, componentsPerTexel: 1, heightDivisor: 2, kind: 'u', widthDivisor: 2 },
+                { bytesPerComponent: 1, componentsPerTexel: 1, heightDivisor: 2, kind: 'v', widthDivisor: 2 }
+            );
+            break;
+        case 'I420P10':
+        case 'I420P12':
+            planeDefinitions.push(
+                { bytesPerComponent: 2, componentsPerTexel: 1, heightDivisor: 1, kind: 'y', widthDivisor: 1 },
+                { bytesPerComponent: 2, componentsPerTexel: 1, heightDivisor: 2, kind: 'u', widthDivisor: 2 },
+                { bytesPerComponent: 2, componentsPerTexel: 1, heightDivisor: 2, kind: 'v', widthDivisor: 2 }
+            );
+            break;
+        case 'NV12':
+            planeDefinitions.push(
+                { bytesPerComponent: 1, componentsPerTexel: 1, heightDivisor: 1, kind: 'y', widthDivisor: 1 },
+                { bytesPerComponent: 1, componentsPerTexel: 2, heightDivisor: 2, kind: 'uv', widthDivisor: 2 }
+            );
+            break;
+    }
+
+    const planes: TransferableRawVideoFrame['planes'][number][] = [];
+    let byteOffset = 0;
+    for (const definition of planeDefinitions) {
+        const width = Math.ceil(codedWidth / definition.widthDivisor);
+        const height = Math.ceil(codedHeight / definition.heightDivisor);
+        const rowByteLength = width
+            * definition.componentsPerTexel
+            * definition.bytesPerComponent;
+        const bytesPerRow = Math.ceil(rowByteLength / 256) * 256;
+        const byteLength = bytesPerRow * height;
+        planes.push({
+            byteLength,
+            byteOffset,
+            bytesPerComponent: definition.bytesPerComponent,
+            bytesPerRow,
+            componentsPerTexel: definition.componentsPerTexel,
+            height,
+            kind: definition.kind,
+            rowByteLength,
+            width
+        });
+        byteOffset += byteLength;
+    }
+
+    const durationMicroseconds = secondsToMicroseconds(1 / 24);
+    const timestampMicroseconds = secondsToMicroseconds(2);
     return {
-        browser: {
-            colorGamut: 'rec2020',
-            dynamicRange: 'high',
-            language: 'en',
-            secureContext: true,
-            userAgent: 'WebGPU presenter test'
+        bitDepth: metadata.bitDepth as 8 | 10 | 12,
+        codedHeight,
+        codedWidth,
+        colorSpace: {
+            fullRange: metadata.range === 'full',
+            matrix: metadata.matrix,
+            primaries: metadata.primaries,
+            transfer: metadata.transfer === 'pq' ? 'smpte2084' : 'arib-std-b67'
         },
-        canvas: {
-            alphaMode: 'opaque',
-            colorSpace: 'srgb',
-            format: 'rgba16float',
-            height: 1,
-            toneMappingMode: 'standard',
-            width: 1
-        },
-        capability: 'supported',
-        classification: 'valid',
-        frames: [{
-            codedHeight: 1,
-            codedWidth: 1,
-            displayHeight: 1,
-            displayWidth: 1,
-            inputColorMetadata: { ...metadata },
-            timestampMicroseconds,
-            videoColorSpace: {
-                fullRange: false,
-                matrix: metadata.matrix,
-                primaries: metadata.primaries,
-                transfer: metadata.transfer
-            }
-        }],
-        gpu: {
-            architecture: '',
-            description: '',
-            device: '',
-            deviceLabel: '',
-            features: [],
-            maximumTextureDimension2D: 8_192,
-            vendor: ''
-        },
-        observations: [{
-            linearRGB: [ 0, 0, 0 ],
-            timestampMicroseconds
-        }],
-        readbackFailure: null,
-        validation: {
-            accepted: true,
-            classification: 'valid',
-            maximumAbsoluteError: 0,
-            rootMeanSquareError: 0,
-            sampleCount: 1
-        }
+        data: new ArrayBuffer(byteOffset),
+        displayHeight: visibleRectangle.height,
+        displayWidth: visibleRectangle.width,
+        durationMicroseconds,
+        format,
+        planes,
+        timestampMicroseconds,
+        visibleRectangle
     };
 }
 
@@ -348,9 +439,15 @@ const VIDEO_READY_STATE_CURRENT_DATA = 2;
 describe('WebGPUPresenter', () => {
     beforeEach(() => {
         webSettingsMockState.hdrToneMappingEnabled = false;
+        rawHDRAuthorizationMockState.authorized = true;
+        rawHDRAuthorizationMockState.prewarmCalls = [];
         Object.defineProperty(window, 'isSecureContext', {
             configurable: true,
             value: true
+        });
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            value: 1
         });
         Object.defineProperty(globalThis, 'GPUBufferUsage', {
             configurable: true,
@@ -361,6 +458,12 @@ describe('WebGPUPresenter', () => {
         Object.defineProperty(globalThis, 'GPUValidationError', {
             configurable: true,
             value: class extends Error {}
+        });
+        Object.defineProperty(globalThis, 'GPUTextureUsage', {
+            configurable: true,
+            // WebGPU defines these external names
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            value: { COPY_DST: 2, TEXTURE_BINDING: 4 }
         });
         Object.defineProperty(globalThis, 'ResizeObserver', {
             configurable: true,
@@ -373,14 +476,17 @@ describe('WebGPUPresenter', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         while (document.body.firstChild) {
             document.body.removeChild(document.body.firstChild);
         }
         restoreProperty(HTMLCanvasElement.prototype, 'getContext', originalCanvasGetContext);
         restoreProperty(navigator, 'gpu', originalGPU);
         restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
+        restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
         restoreProperty(globalThis, 'GPUValidationError', originalGPUValidationError);
         restoreProperty(globalThis, 'ResizeObserver', originalResizeObserver);
+        restoreProperty(window, 'devicePixelRatio', originalDevicePixelRatio);
         restoreProperty(window, 'isSecureContext', originalSecureContext);
     });
 
@@ -410,6 +516,25 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable');
+        expect(gpuHarness.requestDevice).not.toHaveBeenCalled();
+        expect(presenter.getTelemetry().state).toBe('fallback');
+    });
+
+    it('bounds an adapter request that never settles', async () => {
+        vi.useFakeTimers();
+        const gpuHarness = createGPUHarness();
+        gpuHarness.requestAdapter.mockReturnValue(new Promise<GPUAdapter | null>(() => undefined));
+        installGPU(gpuHarness.gpu);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
+        );
+
+        expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'adapter-unavailable');
         expect(gpuHarness.requestDevice).not.toHaveBeenCalled();
         expect(presenter.getTelemetry().state).toBe('fallback');
@@ -580,7 +705,8 @@ describe('WebGPUPresenter', () => {
         const takeFrame = vi.fn(() => ({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
             frame: decodedFrame,
-            mediaTimeMicroseconds: secondsToMicroseconds(1.2)
+            mediaTimeMicroseconds: secondsToMicroseconds(1.2),
+            outputMode: 'video-frame' as const
         }));
 
         presenter.startSession(1);
@@ -631,7 +757,8 @@ describe('WebGPUPresenter', () => {
         const submitted = presenter.presentDecodedFrame({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
             frame,
-            mediaTimeMicroseconds: secondsToMicroseconds(2)
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
         }, 1);
 
         expect(submitted).toBe(true);
@@ -648,6 +775,409 @@ describe('WebGPUPresenter', () => {
             lastPresentedMediaTimeMicroseconds: 2_000_000,
             presentationSource: 'decoded'
         });
+    });
+
+    it('requests one generation-safe pushed-frame refresh after device recovery', async () => {
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        gpuHarness.devices[0].lost.resolve({
+            message: 'simulated pushed-frame device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+
+        await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(refreshHandler).toHaveBeenCalledOnce());
+        expect(refreshHandler).toHaveBeenCalledWith(1);
+        expect(surfaceHarness.requestVideoFrameCallback).not.toHaveBeenCalled();
+
+        presenter.endSession(2);
+        gpuHarness.devices[1].lost.resolve({
+            message: 'stale pushed-frame device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(refreshHandler).toHaveBeenCalledOnce();
+    });
+
+    it('refreshes pushed frames only for changed layout and current object-fit state', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        window.dispatchEvent(new Event('resize'));
+        expect(refreshHandler).not.toHaveBeenCalled();
+
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, value: 600 },
+            clientWidth: { configurable: true, value: 800 }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, 800, 600)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, 800, 600)
+        );
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            value: 1.5
+        });
+        window.dispatchEvent(new Event('resize'));
+        window.dispatchEvent(new Event('resize'));
+
+        expect(refreshHandler).toHaveBeenCalledOnce();
+        expect(refreshHandler).toHaveBeenCalledWith(1);
+
+        surfaceHarness.surface.video.style.objectFit = 'cover';
+        presenter.refresh(1);
+        presenter.refresh(1);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+        presenter.seek(2);
+        presenter.refresh(1);
+        presenter.endSession(3);
+        window.dispatchEvent(new Event('resize'));
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        [ 'I420', 8, [ 'r8uint', 'r8uint', 'r8uint' ], [ 0, 1, 2, 3, 4 ] ],
+        [ 'I420P10', 10, [ 'r16uint', 'r16uint', 'r16uint' ], [ 0, 1, 2, 3, 4 ] ],
+        [ 'I420P12', 12, [ 'r16uint', 'r16uint', 'r16uint' ], [ 0, 1, 2, 3, 4 ] ],
+        [ 'NV12', 8, [ 'r8uint', 'rg8uint' ], [ 0, 1, 2, 3 ] ]
+    ] as const)(
+        'uploads and binds %s raw planes without importing an external texture',
+        async (format, bitDepth, expectedTextureFormats, expectedBindings) => {
+            webSettingsMockState.hdrToneMappingEnabled = true;
+            const gpuHarness = createGPUHarness();
+            const contextHarness = createCanvasContextHarness();
+            const surfaceHarness = createSurfaceHarness();
+            installGPU(gpuHarness.gpu);
+            installCanvasContext(contextHarness.context);
+            const presenter = new WebGPUPresenter(vi.fn());
+            const metadata = createPQColorMetadata({ bitDepth });
+
+            presenter.startSession(1);
+            presenter.setDecodedFramePushMode(true, 1);
+            presenter.attach(surfaceHarness.surface, 1);
+            await vi.waitFor(() => expect(
+                surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            ).toBeInstanceOf(HTMLCanvasElement));
+            await expect(presenter.configureColorPipeline({
+                inputMode: 'raw-yuv',
+                metadata,
+                rawFrameFormat: format,
+                settings: createHDRToSDRRenderSettings()
+            }, 1)).resolves.toBe(true);
+
+            const rawFrame = createRawFrame(format, metadata);
+            const submitted = presenter.presentDecodedFrame({
+                durationMicroseconds: rawFrame.durationMicroseconds
+                    ?? secondsToMicroseconds(0),
+                frame: rawFrame,
+                mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+                outputMode: 'raw-planes'
+            }, 1);
+
+            expect(submitted).toBe(true);
+            const deviceHarness = gpuHarness.devices[0];
+            expect(deviceHarness.importExternalTexture).not.toHaveBeenCalled();
+            expect(deviceHarness.createTexture.mock.calls.map(call => (
+                call[0] as GPUTextureDescriptor
+            ).format)).toEqual(expectedTextureFormats);
+            expect(deviceHarness.queueWriteTexture).toHaveBeenCalledTimes(
+                rawFrame.planes.length
+            );
+            for (let planeIndex = 0; planeIndex < rawFrame.planes.length; planeIndex += 1) {
+                const plane = rawFrame.planes[planeIndex];
+                const upload = deviceHarness.queueWriteTexture.mock.calls[planeIndex];
+                expect(upload[1]).toBe(rawFrame.data);
+                expect(upload[2]).toEqual({
+                    bytesPerRow: plane.bytesPerRow,
+                    offset: plane.byteOffset,
+                    rowsPerImage: plane.height
+                });
+                expect(upload[3]).toEqual({
+                    depthOrArrayLayers: 1,
+                    height: plane.height,
+                    width: plane.width
+                });
+            }
+            const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
+                entries: GPUBindGroupEntry[]
+            };
+            expect(bindGroupDescriptor.entries.map(entry => entry.binding))
+                .toEqual(expectedBindings);
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        }
+    );
+
+    it('composes the visible rectangle, reuses matching plane textures, and releases them', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1);
+        const deviceHarness = gpuHarness.devices[0];
+        deviceHarness.queueWriteBuffer.mockClear();
+
+        const firstFrame = createRawFrame(
+            'I420P10',
+            metadata,
+            8,
+            4,
+            { height: 4, width: 4, x: 2, y: 0 }
+        );
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: firstFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: firstFrame,
+            mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+
+        expect(deviceHarness.queueWriteBuffer).toHaveBeenCalledOnce();
+        const presentationUniforms = deviceHarness.queueWriteBuffer.mock.calls[0][2] as
+            Float32Array<ArrayBuffer>;
+        expect(Array.from(presentationUniforms)).toEqual([ 0.5, 1, 0.25, 0 ]);
+        expect(deviceHarness.createTexture).toHaveBeenCalledTimes(3);
+
+        const recycleChannel = new MessageChannel();
+        recycleChannel.port1.postMessage(firstFrame.data, [ firstFrame.data ]);
+        recycleChannel.port1.close();
+        recycleChannel.port2.close();
+        expect(firstFrame.data.byteLength).toBe(0);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        const secondFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: secondFrame,
+            mediaTimeMicroseconds: secondFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        expect(deviceHarness.createTexture).toHaveBeenCalledTimes(3);
+        expect(deviceHarness.queueWriteTexture).toHaveBeenCalledTimes(6);
+
+        const resizedFrame = createRawFrame('I420P10', metadata, 10, 6);
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: resizedFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: resizedFrame,
+            mediaTimeMicroseconds: resizedFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        expect(deviceHarness.createTexture).toHaveBeenCalledTimes(6);
+        expect(deviceHarness.textureDestroy).toHaveBeenCalledTimes(3);
+
+        presenter.endSession(2);
+        expect(deviceHarness.textureDestroy).toHaveBeenCalledTimes(6);
+    });
+
+    it('rejects malformed raw frame layouts before creating or uploading textures', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1);
+        const rawFrame = createRawFrame('I420P10', metadata);
+        const firstPlane = rawFrame.planes[0];
+        rawFrame.planes = [{ ...firstPlane, bytesPerRow: 128 }, ...rawFrame.planes.slice(1) ];
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: rawFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: rawFrame,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(false);
+        expect(gpuHarness.devices[0].createTexture).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
+    });
+
+    it('does not inspect or upload a raw frame from a stale generation', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1);
+        presenter.seek(2);
+        const rawFrame = createRawFrame('I420P10', metadata);
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: rawFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: rawFrame,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(false);
+        expect(rawFrame.data.byteLength).toBeGreaterThan(0);
+        expect(gpuHarness.devices[0].createTexture).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
+        expect(fallbackHandler).not.toHaveBeenCalled();
+    });
+
+    it('reauthorizes raw HDR presentation on one replacement device', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1);
+        const firstFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: firstFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: firstFrame,
+            mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        gpuHarness.devices[0].lost.resolve({
+            message: 'first raw device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1));
+        expect(gpuHarness.devices[0].textureDestroy).toHaveBeenCalledTimes(3);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+
+        const recoveredFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: recoveredFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: recoveredFrame,
+            mediaTimeMicroseconds: recoveredFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+
+        gpuHarness.devices[1].lost.resolve({
+            message: 'second raw device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
     });
 
     it('closes but never imports a pushed decoded frame from a stale generation', async () => {
@@ -674,7 +1204,8 @@ describe('WebGPUPresenter', () => {
         const submitted = presenter.presentDecodedFrame({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
             frame,
-            mediaTimeMicroseconds: secondsToMicroseconds(2)
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
         }, 1);
 
         expect(submitted).toBe(false);
@@ -693,13 +1224,17 @@ describe('WebGPUPresenter', () => {
         const metadata = createPQColorMetadata();
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
 
         const configured = await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1);
 
         expect(configured).toBe(false);
@@ -713,8 +1248,9 @@ describe('WebGPUPresenter', () => {
         });
     });
 
-    it('keeps HDR input on native video when validation has not accepted the path', async () => {
+    it('fails closed when the exact current-device raw route is not authorized', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
+        rawHDRAuthorizationMockState.authorized = false;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
@@ -722,31 +1258,29 @@ describe('WebGPUPresenter', () => {
         installCanvasContext(contextHarness.context);
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
-        const metadata = createPQColorMetadata();
-        const validation = createAcceptedColorValidation(metadata);
-        validation.capability = 'unsupported';
-        validation.classification = 'clamped';
-        if (validation.validation) {
-            validation.validation.accepted = false;
-            validation.validation.classification = 'clamped';
-        }
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
 
-        const configured = await presenter.configureColorPipeline({
-            metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation
-        }, 1);
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata: createPQColorMetadata(),
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(false);
 
-        expect(configured).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-color-validation-failed');
-        expect(surfaceHarness.surface.container.children).toHaveLength(1);
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable');
+        expect(presenter.getTelemetry()).toMatchObject({
+            fallbackReason: 'hdr-authorization-unavailable',
+            state: 'fallback'
+        });
     });
 
-    it('rejects an HDR decision measured on a different GPUDevice identity', async () => {
+    it('atomically installs a raw PQ-to-SDR shader and resumes presentation', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
@@ -758,37 +1292,16 @@ describe('WebGPUPresenter', () => {
         const metadata = createPQColorMetadata();
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
         const configured = await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata),
-            validationDevice: { label: 'different-device' } as GPUDevice
-        }, 1);
-
-        expect(configured).toBe(false);
-        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-color-validation-failed');
-    });
-
-    it('atomically installs a validated PQ-to-SDR shader and resumes presentation', async () => {
-        webSettingsMockState.hdrToneMappingEnabled = true;
-        const gpuHarness = createGPUHarness();
-        const contextHarness = createCanvasContextHarness();
-        const surfaceHarness = createSurfaceHarness();
-        installGPU(gpuHarness.gpu);
-        installCanvasContext(contextHarness.context);
-        const fallbackHandler = vi.fn();
-        const presenter = new WebGPUPresenter(fallbackHandler);
-        const metadata = createPQColorMetadata();
-
-        presenter.startSession(1);
-        presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
-        const configured = await presenter.configureColorPipeline({
-            metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1);
 
         expect(configured).toBe(true);
@@ -799,26 +1312,88 @@ describe('WebGPUPresenter', () => {
         };
         expect(hdrShaderDescriptor.code).toContain('fn applyPQEOTF');
         expect(hdrShaderDescriptor.code).toContain('fn toneMapToSDR');
-        expect(surfaceHarness.cancelVideoFrameCallback).toHaveBeenCalledWith(1);
-        expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
+        expect(surfaceHarness.requestVideoFrameCallback).not.toHaveBeenCalled();
         expect(presenter.getTelemetry()).toMatchObject({
             fallbackReason: null,
             mode: 'hdr-to-sdr',
             state: 'initializing'
         });
 
-        surfaceHarness.callbacks.get(2)?.(performance.now(), createFrameMetadata(2));
+        const rawFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: rawFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: rawFrame,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
         await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
         const hdrBindGroupDescriptor = gpuHarness.devices[0].createBindGroup.mock.calls[0][0] as {
             entries: GPUBindGroupEntry[]
         };
         expect(hdrBindGroupDescriptor.entries.map(entry => entry.binding))
-            .toEqual([ 0, 1, 2, 3 ]);
+            .toEqual([ 0, 1, 2, 3, 4 ]);
         expect(presenter.getTelemetry()).toMatchObject({
-            lastPresentedMediaTimeMicroseconds: 2_000_000,
+            lastPresentedMediaTimeMicroseconds: rawFrame.timestampMicroseconds,
             mode: 'hdr-to-sdr',
             state: 'presenting'
         });
+    });
+
+    it('bounds a retained-device pipeline rebuild and rejects its late result', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        const deviceHarness = gpuHarness.devices[0];
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+        const retainedPipeline = (
+            presenter as unknown as { pipeline: GPURenderPipeline | null }
+        ).pipeline;
+        const latePipeline = {
+            getBindGroupLayout: vi.fn(() => ({}))
+        } as unknown as GPURenderPipeline;
+        const pipelineResult = createDeferred<GPURenderPipeline>();
+        deviceHarness.createRenderPipelineAsync.mockImplementationOnce(
+            () => pipelineResult.promise
+        );
+
+        presenter.endSession(2);
+        vi.useFakeTimers();
+        presenter.startSession(3);
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
+        );
+
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
+        expect(fallbackHandler).toHaveBeenCalledOnce();
+        expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed');
+        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline)
+            .toBe(retainedPipeline);
+
+        pipelineResult.resolve(latePipeline);
+        await pipelineResult.promise;
+        await Promise.resolve();
+        expect((presenter as unknown as { pipeline: GPURenderPipeline | null }).pipeline)
+            .toBe(retainedPipeline);
+        expect(fallbackHandler).toHaveBeenCalledOnce();
     });
 
     it('updates live HDR controls through one uniform write without recompiling', async () => {
@@ -832,12 +1407,16 @@ describe('WebGPUPresenter', () => {
         const metadata = createPQColorMetadata();
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1);
 
         const deviceHarness = gpuHarness.devices[0];
@@ -850,7 +1429,6 @@ describe('WebGPUPresenter', () => {
                     contrast: 1.5,
                     saturation: 0.75
                 },
-                outputTransfer: 'bt709',
                 toneMapping: {
                     exposure: 0.5,
                     operator: 'reinhard',
@@ -872,7 +1450,7 @@ describe('WebGPUPresenter', () => {
         const integerValues = new Uint32Array(uniformData.buffer);
         const floatValues = new Float32Array(uniformData.buffer);
         expect(integerValues[1]).toBe(1);
-        expect(integerValues[2]).toBe(0);
+        expect(integerValues[2]).toBe(1);
         expect(floatValues[5]).toBeCloseTo(0.5);
         expect(floatValues[7]).toBeCloseTo(120);
         expect(floatValues[9]).toBeCloseTo(0.25);
@@ -880,7 +1458,7 @@ describe('WebGPUPresenter', () => {
         expect(floatValues[11]).toBeCloseTo(0.75);
     });
 
-    it('rejects a decoded frame whose color description contradicts validated HDR input', async () => {
+    it('rejects a raw frame whose color description contradicts HDR input', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
@@ -890,20 +1468,6 @@ describe('WebGPUPresenter', () => {
         const fallbackHandler = vi.fn();
         const presenter = new WebGPUPresenter(fallbackHandler);
         const metadata = createPQColorMetadata();
-        const closeFrame = vi.fn();
-        const frame = {
-            close: closeFrame,
-            codedHeight: 1_080,
-            codedWidth: 1_920,
-            colorSpace: {
-                fullRange: false,
-                matrix: 'bt709',
-                primaries: 'bt709',
-                transfer: 'bt709'
-            },
-            displayHeight: 1_080,
-            displayWidth: 1_920
-        } as unknown as VideoFrame;
 
         presenter.startSession(1);
         presenter.setDecodedFramePushMode(true, 1);
@@ -912,18 +1476,23 @@ describe('WebGPUPresenter', () => {
             surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1)).resolves.toBe(true);
+        const frame = createRawFrame('I420P10', metadata);
+        frame.colorSpace.primaries = 'bt709';
 
         expect(presenter.presentDecodedFrame({
-            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            durationMicroseconds: frame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
             frame,
-            mediaTimeMicroseconds: secondsToMicroseconds(2)
+            mediaTimeMicroseconds: frame.timestampMicroseconds,
+            outputMode: 'raw-planes'
         }, 1)).toBe(false);
-        expect(closeFrame).toHaveBeenCalledOnce();
         expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'decoded-frame-color-mismatch');
     });
 
@@ -938,12 +1507,16 @@ describe('WebGPUPresenter', () => {
         const metadata = createPQColorMetadata();
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1);
         presenter.seek(2);
         gpuHarness.devices[0].queueWriteBuffer.mockClear();
@@ -964,12 +1537,16 @@ describe('WebGPUPresenter', () => {
         const metadata = createPQColorMetadata();
 
         presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
-        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
         const configuration = presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
             metadata,
-            settings: createHDRToSDRRenderSettings(),
-            validation: createAcceptedColorValidation(metadata)
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
         }, 1);
         presenter.seek(2);
 
@@ -1010,6 +1587,44 @@ describe('WebGPUPresenter', () => {
             presentedFrameCount: 0,
             state: 'fallback'
         });
+    });
+
+    it('bounds initial submission validation and ignores its late result', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        const validationResult = createDeferred<GPUError | null>();
+        const deviceHarness = gpuHarness.devices[0];
+        deviceHarness.popErrorScope.mockImplementationOnce(() => validationResult.promise);
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        vi.useFakeTimers();
+        surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
+        );
+        expect(fallbackHandler).toHaveBeenCalledOnce();
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
+        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(presenter.getTelemetry()).toMatchObject({
+            fallbackReason: 'frame-render-failed',
+            presentedFrameCount: 0,
+            state: 'fallback'
+        });
+
+        validationResult.resolve(null);
+        await validationResult.promise;
+        await Promise.resolve();
+        expect(fallbackHandler).toHaveBeenCalledOnce();
+        expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
+        expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
     });
 
     it('latches fallback for an uncaptured validation error on the active device', async () => {
@@ -1179,6 +1794,39 @@ describe('WebGPUPresenter', () => {
         expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
     });
 
+    it('bounds a device recovery request that never settles', async () => {
+        vi.useFakeTimers();
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
+        gpuHarness.requestDevice.mockImplementationOnce(() => (
+            new Promise<GPUDevice>(() => undefined)
+        ));
+        gpuHarness.devices[0].lost.resolve({
+            message: 'simulated deferred loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2);
+
+        await vi.advanceTimersByTimeAsync(
+            microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS)
+        );
+
+        expect(fallbackHandler).toHaveBeenCalledOnce();
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+    });
+
     it('reveals direct video and rejects stale work while device recovery is pending', async () => {
         const gpuHarness = createGPUHarness(2);
         const contextHarness = createCanvasContextHarness();
@@ -1260,6 +1908,68 @@ describe('WebGPUPresenter', () => {
         );
     });
 
+    it('recomputes positioned scale-down geometry across DPR and resize changes', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness(1_000, 1_000);
+        surfaceHarness.surface.video.style.objectFit = 'scale-down';
+        surfaceHarness.surface.video.style.objectPosition = '25% 75%';
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            value: 2
+        });
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+        await vi.waitFor(() => {
+            expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
+        });
+
+        expect(gpuHarness.devices[0].renderPassSetViewport).toHaveBeenLastCalledWith(
+            0,
+            656.25,
+            2_000,
+            1_125,
+            0,
+            1
+        );
+        const canvas = surfaceHarness.surface.container.querySelector('canvas');
+        expect(canvas).toMatchObject({ height: 2_000, width: 2_000 });
+
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, value: 600 },
+            clientWidth: { configurable: true, value: 800 }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, 800, 600)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, 800, 600)
+        );
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            value: 1.5
+        });
+        window.dispatchEvent(new Event('resize'));
+
+        expect(gpuHarness.devices[0].renderPassSetViewport).toHaveBeenLastCalledWith(
+            0,
+            168.75,
+            1_200,
+            675,
+            0,
+            1
+        );
+        expect(canvas).toMatchObject({ height: 900, width: 1_200 });
+        expect(canvas?.style.height).toBe('600px');
+        expect(canvas?.style.width).toBe('800px');
+    });
+
     it('reuses layout across frames and recomputes it after resize', async () => {
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
@@ -1283,6 +1993,31 @@ describe('WebGPUPresenter', () => {
         window.dispatchEvent(new Event('resize'));
         expect(containerRectangle).toHaveBeenCalledTimes(2);
         expect(videoRectangle).toHaveBeenCalledTimes(2);
+    });
+
+    it('destroys reusable GPU resources and reacquires them for a later session', async () => {
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+
+        presenter.destroy();
+
+        expect(gpuHarness.devices[0].destroy).toHaveBeenCalledOnce();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(presenter.getTelemetry().state).toBe('idle');
+
+        presenter.startSession(3);
+        presenter.attach(surfaceHarness.surface, 3);
+        await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2));
+        expect(gpuHarness.devices[1].destroy).not.toHaveBeenCalled();
     });
 
     it('falls back if a WebGPU canvas context cannot be acquired', async () => {

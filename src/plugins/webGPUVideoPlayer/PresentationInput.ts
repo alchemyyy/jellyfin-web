@@ -46,7 +46,7 @@ const HDR_COLOR_TRANSFERS = new Set([
     'SMPTEST2084',
     'SMPTE2084'
 ]);
-const PQ_VIDEO_RANGE_TYPES = new Set([ 'HDR10', 'HDR10PLUS' ]);
+const PQ_VIDEO_RANGE_TYPES = new Set([ 'HDR10' ]);
 const HLG_VIDEO_RANGE_TYPES = new Set([ 'HLG' ]);
 const SDR_VIDEO_RANGE_TYPES = new Set([ SDR_VIDEO_RANGE ]);
 const DOLBY_VISION_PREFIX = 'DOVI';
@@ -283,7 +283,8 @@ export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetada
     if (!transfer) {
         return null;
     }
-    if (transfer !== 'pq' && hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag)) {
+    // Dynamic HDR10+ metadata is not consumed by the current static tone mapper
+    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag)) {
         return null;
     }
 
@@ -352,8 +353,7 @@ export function getPresentationInputColorMetadata(options: unknown): InputColorM
 function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
     if (
         hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag)
-        || hasEnabledMetadataFlag(videoStream.RpuPresentFlag)
-        || hasDolbyVisionProfile(videoStream.DvProfile)
+        || hasDolbyVisionMetadata(videoStream)
     ) {
         return false;
     }

@@ -23,6 +23,7 @@ import {
     WebGPUExternalTextureValidationRunner,
     type ExternalTextureReferenceFrameRequest
 } from './WebGPUExternalTextureValidationRunner';
+import { isMeasuredExternalTextureDiagnosticDecision } from './RuntimeColorValidationRegistry';
 
 type MockFunction = ReturnType<typeof vi.fn>;
 
@@ -42,9 +43,12 @@ type GPUHarness = {
     createRenderPipelineAsync: MockFunction
     createSampler: MockFunction
     createShaderModule: MockFunction
+    createTexture: MockFunction
     device: GPUDevice
+    destroyTexture: MockFunction
     draw: MockFunction
     getBindGroupLayout: MockFunction
+    getCurrentTexture: MockFunction
     importExternalTexture: MockFunction
     onSubmittedWorkDone: MockFunction
     popErrorScope: MockFunction
@@ -91,16 +95,19 @@ function createGPUHarness(): GPUHarness {
     const configure = vi.fn();
     const unconfigure = vi.fn();
     const removeCanvas = vi.fn();
+    const destroyTexture = vi.fn();
     const texture = {
         createView: vi.fn(() => ({})),
+        destroy: destroyTexture,
         format: 'rgba16float',
         height: 1,
         usage: COPY_SOURCE_USAGE | RENDER_ATTACHMENT_USAGE,
         width: 1
     } as unknown as GPUTexture;
+    const getCurrentTexture = vi.fn(() => texture);
     const context = {
         configure,
-        getCurrentTexture: vi.fn(() => texture),
+        getCurrentTexture,
         unconfigure
     } as unknown as GPUCanvasContext;
     const canvas = {
@@ -133,6 +140,7 @@ function createGPUHarness(): GPUHarness {
         return {} as GPUShaderModule;
     });
     const createSampler = vi.fn(() => ({} as GPUSampler));
+    const createTexture = vi.fn(() => texture);
     const createBindGroup = vi.fn(() => ({} as GPUBindGroup));
     const importExternalTexture = vi.fn(() => ({} as GPUExternalTexture));
     const queueSubmit = vi.fn();
@@ -145,6 +153,7 @@ function createGPUHarness(): GPUHarness {
         createRenderPipelineAsync,
         createSampler,
         createShaderModule,
+        createTexture,
         features: new Set<GPUFeatureName>(),
         importExternalTexture,
         label: 'exact-test-device',
@@ -168,9 +177,12 @@ function createGPUHarness(): GPUHarness {
         createRenderPipelineAsync,
         createSampler,
         createShaderModule,
+        createTexture,
         device,
+        destroyTexture,
         draw,
         getBindGroupLayout,
+        getCurrentTexture,
         importExternalTexture,
         onSubmittedWorkDone,
         popErrorScope,
@@ -206,6 +218,11 @@ function createDecision(
         },
         capability: 'supported',
         classification: 'valid',
+        diagnostic: {
+            kind: options.diagnosticKind ?? 'gpu-texture-readback',
+            productionAuthorization: false,
+            rampIdentity: { ...options.ramp.identity }
+        },
         frames,
         gpu: {
             architecture: options.adapterInfo?.architecture ?? '',
@@ -369,7 +386,7 @@ describe('WebGPUExternalTextureValidationRunner', () => {
         });
         const metadata = createPQColorMetadata();
 
-        const decision = await runner.validate({
+        const decision = await runner.runDiagnostic({
             adapterInfo: {
                 architecture: 'test-architecture',
                 description: 'test-description',
@@ -382,6 +399,16 @@ describe('WebGPUExternalTextureValidationRunner', () => {
         });
 
         expect(decision?.capability).toBe('supported');
+        expect(decision?.diagnostic).toMatchObject({
+            kind: 'external-texture-conversion',
+            productionAuthorization: false,
+            rampIdentity: {
+                kind: 'canonical-transfer',
+                version: 1
+            }
+        });
+        expect(decision && isMeasuredExternalTextureDiagnosticDecision(decision, metadata))
+            .toBe(true);
         expect(getFrame).toHaveBeenCalledTimes(5);
         for (let sampleIndex = 0; sampleIndex < getFrame.mock.calls.length; sampleIndex += 1) {
             const frameRequest = getFrame.mock.calls[sampleIndex][0];
@@ -390,20 +417,24 @@ describe('WebGPUExternalTextureValidationRunner', () => {
             expect(frameRequest.inputColorMetadata).toEqual(metadata);
             expect(frames[sampleIndex].close).toHaveBeenCalledOnce();
         }
-        expect(gpuHarness.configure).toHaveBeenCalledWith({
-            alphaMode: 'opaque',
-            colorSpace: 'srgb',
-            device: gpuHarness.device,
+        expect(gpuHarness.createTexture).toHaveBeenCalledWith({
             format: 'rgba16float',
-            toneMapping: { mode: 'extended' },
+            label: 'WebGPU external texture diagnostic output',
+            size: {
+                depthOrArrayLayers: 1,
+                height: 1,
+                width: 1
+            },
             usage: COPY_SOURCE_USAGE | RENDER_ATTACHMENT_USAGE
         });
+        expect(gpuHarness.configure).not.toHaveBeenCalled();
+        expect(gpuHarness.getCurrentTexture).not.toHaveBeenCalled();
         expect(fakeHarness.options[0]).toMatchObject({
             canvas: gpuHarness.canvas,
             configureCanvas: false,
-            context: gpuHarness.context,
             device: gpuHarness.device
         });
+        expect(fakeHarness.options[0].context).toBeUndefined();
         expect(gpuHarness.importExternalTexture).toHaveBeenCalledTimes(5);
         expect(gpuHarness.queueSubmit).toHaveBeenCalledTimes(5);
         expect(gpuHarness.onSubmittedWorkDone).toHaveBeenCalledTimes(5);
@@ -412,7 +443,8 @@ describe('WebGPUExternalTextureValidationRunner', () => {
             captureRequest.sourceTexture === gpuHarness.texture
         )).toBe(true);
         expect(fakeHarness.destroyHarness).toHaveBeenCalledOnce();
-        expect(gpuHarness.unconfigure).toHaveBeenCalledOnce();
+        expect(gpuHarness.unconfigure).not.toHaveBeenCalled();
+        expect(gpuHarness.destroyTexture).toHaveBeenCalledOnce();
         expect(gpuHarness.removeCanvas).toHaveBeenCalledOnce();
         expect(gpuHarness.canvas.width).toBe(0);
         expect(gpuHarness.canvas.height).toBe(0);
@@ -466,7 +498,8 @@ describe('WebGPUExternalTextureValidationRunner', () => {
         expect(frameState.returnedFrame?.close).toHaveBeenCalledOnce();
         expect(gpuHarness.importExternalTexture).not.toHaveBeenCalled();
         expect(fakeHarness.destroyHarness).toHaveBeenCalledOnce();
-        expect(gpuHarness.unconfigure).toHaveBeenCalledOnce();
+        expect(gpuHarness.unconfigure).not.toHaveBeenCalled();
+        expect(gpuHarness.destroyTexture).toHaveBeenCalledOnce();
     });
 
     it('rejects and closes a frame with mismatched color metadata', async () => {
@@ -564,7 +597,8 @@ describe('WebGPUExternalTextureValidationRunner', () => {
         expect(frameState.returnedFrame?.close).toHaveBeenCalledOnce();
         expect(gpuHarness.importExternalTexture).not.toHaveBeenCalled();
         expect(fakeHarness.destroyHarness).toHaveBeenCalledOnce();
-        expect(gpuHarness.unconfigure).toHaveBeenCalledOnce();
+        expect(gpuHarness.unconfigure).not.toHaveBeenCalled();
+        expect(gpuHarness.destroyTexture).toHaveBeenCalledOnce();
     });
 
     it('cleans up without requesting frames when pipeline creation fails', async () => {
@@ -586,14 +620,17 @@ describe('WebGPUExternalTextureValidationRunner', () => {
         })).resolves.toBeNull();
         expect(getFrame).not.toHaveBeenCalled();
         expect(fakeHarness.destroyHarness).toHaveBeenCalledOnce();
-        expect(gpuHarness.unconfigure).toHaveBeenCalledOnce();
+        expect(gpuHarness.unconfigure).not.toHaveBeenCalled();
+        expect(gpuHarness.destroyTexture).toHaveBeenCalledOnce();
         expect(gpuHarness.removeCanvas).toHaveBeenCalledOnce();
     });
 
-    it('releases the dedicated canvas when a WebGPU context is unavailable', async () => {
+    it('destroys the owned output texture when harness construction fails', async () => {
         const gpuHarness = createGPUHarness();
         const fakeHarness = createFakeHarnessCollection();
-        (gpuHarness.canvas.getContext as MockFunction).mockReturnValue(null);
+        fakeHarness.createHarness.mockImplementation(() => {
+            throw new Error('harness failed');
+        });
         const getFrame = vi.fn(async (frameRequest: ExternalTextureReferenceFrameRequest) =>
             createVideoFrame(frameRequest));
         const runner = new WebGPUExternalTextureValidationRunner({
@@ -602,13 +639,41 @@ describe('WebGPUExternalTextureValidationRunner', () => {
             isEnabled: async () => true
         });
 
-        await expect(runner.validate({
+        await expect(runner.runDiagnostic({
             device: gpuHarness.device,
             getFrame,
             metadata: createPQColorMetadata()
         })).resolves.toBeNull();
-        expect(fakeHarness.createHarness).not.toHaveBeenCalled();
+        expect(gpuHarness.createTexture).toHaveBeenCalledOnce();
+        expect(gpuHarness.destroyTexture).toHaveBeenCalledOnce();
+        expect(gpuHarness.getCurrentTexture).not.toHaveBeenCalled();
+        expect(gpuHarness.removeCanvas).toHaveBeenCalledOnce();
         expect(getFrame).not.toHaveBeenCalled();
+    });
+
+    it('does not acquire a canvas current texture or WebGPU canvas context', async () => {
+        const gpuHarness = createGPUHarness();
+        const fakeHarness = createFakeHarnessCollection();
+        (gpuHarness.canvas.getContext as MockFunction).mockImplementation(() => {
+            throw new Error('Canvas context must not be requested');
+        });
+        const getFrame = vi.fn(async (frameRequest: ExternalTextureReferenceFrameRequest) =>
+            createVideoFrame(frameRequest));
+        const runner = new WebGPUExternalTextureValidationRunner({
+            createCanvas: () => gpuHarness.canvas,
+            createHarness: fakeHarness.createHarness,
+            isEnabled: async () => true
+        });
+
+        await expect(runner.runDiagnostic({
+            device: gpuHarness.device,
+            getFrame,
+            metadata: createPQColorMetadata()
+        })).resolves.toMatchObject({ capability: 'supported' });
+        expect(gpuHarness.canvas.getContext).not.toHaveBeenCalled();
+        expect(gpuHarness.getCurrentTexture).not.toHaveBeenCalled();
+        expect(fakeHarness.createHarness).toHaveBeenCalledOnce();
+        expect(getFrame).toHaveBeenCalledTimes(5);
         expect(gpuHarness.removeCanvas).toHaveBeenCalledOnce();
         expect(gpuHarness.canvas.width).toBe(0);
         expect(gpuHarness.canvas.height).toBe(0);

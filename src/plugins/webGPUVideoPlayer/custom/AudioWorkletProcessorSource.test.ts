@@ -40,8 +40,25 @@ type ProcessorConstructor = new (options: {
 type WorkletModuleEvaluator = (
     processorBase: typeof MockAudioWorkletProcessor,
     registerProcessor: (name: string, constructor: ProcessorConstructor) => void,
-    sampleRate: number
+    sampleRate: number,
+    currentFrame: number
 ) => void;
+
+function evaluateWorkletModule(
+    registerProcessor: (name: string, constructor: ProcessorConstructor) => void,
+    sampleRate: number,
+    currentFrame: number
+): void {
+    // eslint-disable-next-line sonarjs/code-eval -- Validates the generated standalone module
+    const evaluateModule = Function(
+        'AudioWorkletProcessor',
+        'registerProcessor',
+        'sampleRate',
+        'currentFrame',
+        getCustomAudioWorkletSource()
+    ) as WorkletModuleEvaluator;
+    evaluateModule(MockAudioWorkletProcessor, registerProcessor, sampleRate, currentFrame);
+}
 
 function requireProcessorConstructor(
     constructor: ProcessorConstructor | null
@@ -60,14 +77,7 @@ describe('AudioWorkletProcessorSource', () => {
             registeredName = name;
             Processor = constructor;
         };
-        // eslint-disable-next-line sonarjs/code-eval -- Validates the generated standalone module
-        const evaluateModule = Function(
-            'AudioWorkletProcessor',
-            'registerProcessor',
-            'sampleRate',
-            getCustomAudioWorkletSource()
-        ) as WorkletModuleEvaluator;
-        evaluateModule(MockAudioWorkletProcessor, registerProcessor, 1_000);
+        evaluateWorkletModule(registerProcessor, 1_000, 10_000);
 
         expect(registeredName).toBe(CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME);
         const ProcessorConstructor = requireProcessorConstructor(Processor);
@@ -100,6 +110,8 @@ describe('AudioWorkletProcessorSource', () => {
         expect(Array.from(firstOutput[0])).toEqual([ 1, 2, 3, 4 ]);
         expect(Array.from(firstOutput[1])).toEqual([ 5, 6, 7, 8 ]);
         expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            hasPhysicalOutputTimeCorrelation: false,
+            mediaTimeContextTimeMicroseconds: null,
             overflowEvents: 1,
             overflowFrames: 1,
             reason: 'overflow',
@@ -110,6 +122,8 @@ describe('AudioWorkletProcessorSource', () => {
         processor.process([], [ underflowOutput ]);
         expect(Array.from(underflowOutput[0])).toEqual([ 0, 0, 0, 0 ]);
         expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            hasPhysicalOutputTimeCorrelation: false,
+            mediaTimeContextTimeMicroseconds: 10_004_000,
             mediaTimeMicroseconds: -996_000,
             reason: 'underflow',
             underflowEvents: 1,
@@ -138,9 +152,45 @@ describe('AudioWorkletProcessorSource', () => {
         });
         expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
             generation: 2,
+            hasPhysicalOutputTimeCorrelation: false,
+            mediaTimeContextTimeMicroseconds: null,
             mediaTimeMicroseconds: -5_000_000,
             queuedFrames: 0,
             reason: 'flush'
+        }));
+    });
+
+    it('correlates media time to the exact sample before a partial underflow', () => {
+        let Processor: ProcessorConstructor | null = null;
+        evaluateWorkletModule((_name, constructor): void => {
+            Processor = constructor;
+        }, 1_000, 20_000);
+        const ProcessorConstructor = requireProcessorConstructor(Processor);
+        const processor = Reflect.construct(ProcessorConstructor, [ {
+            processorOptions: {
+                channelCount: 1,
+                maxBufferedFrames: 4,
+                maxChunks: 2,
+                telemetryIntervalFrames: 4
+            }
+        } ]) as ProcessorHarness;
+        processor.port.deliver({
+            channelData: [ new Float32Array([ 1, 2 ]) ],
+            generation: 1,
+            sequence: 1,
+            timestampMicroseconds: 3_000_000,
+            type: 'enqueue'
+        });
+        processor.port.deliver({ playing: true, type: 'playback' });
+
+        processor.process([], [ [ new Float32Array(4) ] ]);
+
+        expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            hasPhysicalOutputTimeCorrelation: false,
+            mediaTimeContextTimeMicroseconds: 20_002_000,
+            mediaTimeMicroseconds: 3_002_000,
+            reason: 'underflow',
+            underflowFrames: 2
         }));
     });
 });

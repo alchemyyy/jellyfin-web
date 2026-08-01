@@ -6,7 +6,11 @@ import {
     type DecodeWorkerAudioConfiguration,
     type DecodeWorkerAudioResponse
 } from './DecodeWorkerProtocol';
-import { requireMicroseconds } from './TimeMath';
+import {
+    addMicroseconds,
+    audioFramesToMicroseconds,
+    requireMicroseconds
+} from './TimeMath';
 
 export type CustomDecodeAudioBridgeCallbacks = {
     onCreditsReleased: (audioSampleCredits: number) => void
@@ -22,7 +26,12 @@ export type CustomDecodeAudioBridgeStartOptions = {
 
 export type CustomDecodeAudioBridgeEnqueueResult = {
     frameCount: number
-    status: 'controller-rejected' | 'output-capacity' | 'stale-generation' | 'submitted'
+    status:
+        | 'controller-rejected'
+        | 'output-capacity'
+        | 'stale-generation'
+        | 'submitted'
+        | 'timestamp-discontinuity'
 };
 
 export type CustomDecodeAudioBridgeTelemetry = {
@@ -32,6 +41,7 @@ export type CustomDecodeAudioBridgeTelemetry = {
     pendingSampleCount: number
     releasedSampleCredits: number
     staleSampleCount: number
+    submittedEndMediaTimeMicroseconds: Microseconds | null
     submittedFrameCount: number
     submittedSampleCount: number
     workletGeneration: number | null
@@ -59,6 +69,7 @@ export default class CustomDecodeAudioBridge {
     private callbacks: CustomDecodeAudioBridgeCallbacks | null = null;
     private consumptionBaselineReady = false;
     private failed = false;
+    private expectedNextMediaTimeMicroseconds: Microseconds | null = null;
     private lastConsumedFrameCount = 0;
     private lastMediaTimeMicroseconds: Microseconds = requireMicroseconds(0);
     private readonly maximumPendingSampleCount: number;
@@ -100,6 +111,7 @@ export default class CustomDecodeAudioBridge {
         this.callbacks = options.callbacks;
         this.consumptionBaselineReady = false;
         this.failed = false;
+        this.expectedNextMediaTimeMicroseconds = null;
         this.lastConsumedFrameCount = 0;
         this.lastMediaTimeMicroseconds = startTimeMicroseconds;
         this.releasedSampleCredits = 0;
@@ -125,6 +137,11 @@ export default class CustomDecodeAudioBridge {
         ) {
             this.notifyFailure('Decoded audio exceeded the bounded worklet queue');
             return { frameCount: message.frameCount, status: 'output-capacity' };
+        }
+        const nextMediaTimeMicroseconds = this.getNextContinuousMediaTime(message);
+        if (nextMediaTimeMicroseconds === null) {
+            this.notifyFailure('Decoded audio timestamps contain a gap or overlap');
+            return { frameCount: message.frameCount, status: 'timestamp-discontinuity' };
         }
 
         const workletGeneration = this.workletGeneration;
@@ -154,6 +171,7 @@ export default class CustomDecodeAudioBridge {
             sequence: submission.sequence
         });
         this.pendingFrameCount += message.frameCount;
+        this.expectedNextMediaTimeMicroseconds = nextMediaTimeMicroseconds;
         this.submittedFrameCount += message.frameCount;
         this.submittedSampleCount += 1;
         return { frameCount: message.frameCount, status: 'submitted' };
@@ -178,6 +196,7 @@ export default class CustomDecodeAudioBridge {
         this.activeDecodeGeneration = null;
         this.callbacks = null;
         this.consumptionBaselineReady = false;
+        this.expectedNextMediaTimeMicroseconds = null;
         this.workletGeneration = null;
         try {
             this.controller.setPlaying(false);
@@ -196,6 +215,7 @@ export default class CustomDecodeAudioBridge {
             pendingSampleCount: this.pendingSamples.length,
             releasedSampleCredits: this.releasedSampleCredits,
             staleSampleCount: this.staleSampleCount,
+            submittedEndMediaTimeMicroseconds: this.expectedNextMediaTimeMicroseconds,
             submittedFrameCount: this.submittedFrameCount,
             submittedSampleCount: this.submittedSampleCount,
             workletGeneration: this.workletGeneration
@@ -291,6 +311,41 @@ export default class CustomDecodeAudioBridge {
             this.callbacks?.onFailure(message);
         } catch {
             // Session callbacks must not escape the audio telemetry task
+        }
+    }
+
+    private getNextContinuousMediaTime(
+        message: DecodeWorkerAudioResponse
+    ): Microseconds | null {
+        const expectedMediaTimeMicroseconds = this.expectedNextMediaTimeMicroseconds;
+        if (message.sampleRate !== this.controller.configuration.sampleRate) {
+            return null;
+        }
+        const timestampToleranceMicroseconds = Math.ceil(
+            1_000_000 / message.sampleRate
+        );
+        if (expectedMediaTimeMicroseconds !== null && Math.abs(
+            message.mediaTimeMicroseconds - expectedMediaTimeMicroseconds
+        ) > timestampToleranceMicroseconds) {
+            return null;
+        }
+
+        try {
+            const calculatedDurationMicroseconds = audioFramesToMicroseconds(
+                message.frameCount,
+                message.sampleRate
+            );
+            if (Math.abs(
+                message.durationMicroseconds - calculatedDurationMicroseconds
+            ) > timestampToleranceMicroseconds) {
+                return null;
+            }
+            return addMicroseconds(
+                message.mediaTimeMicroseconds,
+                calculatedDurationMicroseconds
+            );
+        } catch {
+            return null;
         }
     }
 

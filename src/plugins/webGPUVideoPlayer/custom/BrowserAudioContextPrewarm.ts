@@ -1,3 +1,5 @@
+import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
+
 type AudioContextConstructor = new (options?: AudioContextOptions) => AudioContext;
 
 type AudioContextRuntime = typeof globalThis & {
@@ -52,7 +54,10 @@ function closeLease(state: BrowserAudioContextPrewarmState): Promise<void> {
 
     state.closePromise = state.audioContext.state === 'closed' ?
         Promise.resolve() :
-        state.audioContext.close();
+        waitForBrowserAudioOperation(
+            state.audioContext.close(),
+            'AudioContext prewarm close'
+        );
     return state.closePromise;
 }
 
@@ -72,7 +77,10 @@ export function prewarmBrowserAudioContext(
     try {
         resumePromise = audioContext.resume();
     } catch (error) {
-        audioContext.close().catch((): void => undefined);
+        void waitForBrowserAudioOperation(
+            audioContext.close(),
+            'AudioContext prewarm close'
+        ).catch((): void => undefined);
         throw error;
     }
     // Keep the original rejection observable without reporting it as unhandled before consumption

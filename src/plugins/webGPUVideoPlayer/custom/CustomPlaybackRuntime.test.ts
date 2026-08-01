@@ -24,7 +24,7 @@ function createEnvironment(
 }
 
 describe('CustomPlaybackRuntime', () => {
-    it('requires the complete client-side A/V pipeline before profile widening', () => {
+    it('requires common presentation and worker primitives for every path', () => {
         expect(getCustomPlaybackRuntimeAvailability(createEnvironment())).toMatchObject({
             available: true,
             reason: null
@@ -34,9 +34,52 @@ describe('CustomPlaybackRuntime', () => {
             available: false,
             reason: 'webgpu-unavailable'
         });
-        expect(getCustomPlaybackRuntimeAvailability(createEnvironment({ audioWorklet: false }))).toMatchObject({
+        expect(getCustomPlaybackRuntimeAvailability(createEnvironment({ videoFrame: false }))).toMatchObject({
             available: false,
-            reason: 'audio-worklet-unavailable'
+            reason: 'video-frame-unavailable'
+        });
+    });
+
+    it('requires native decoder APIs only for paths which use them', () => {
+        const bundledDecoderEnvironment = createEnvironment({
+            audioData: false,
+            audioDecoder: false,
+            videoDecoder: false
+        });
+
+        expect(getCustomPlaybackRuntimeAvailability(bundledDecoderEnvironment)).toMatchObject({
+            available: true,
+            reason: null
+        });
+        expect(getCustomPlaybackRuntimeAvailability(bundledDecoderEnvironment, {
+            nativeVideoDecoder: true
+        })).toMatchObject({
+            available: false,
+            reason: 'video-decoder-unavailable'
+        });
+        expect(getCustomPlaybackRuntimeAvailability(bundledDecoderEnvironment, {
+            nativeAudioDecoder: true
+        })).toMatchObject({
+            available: false,
+            reason: 'audio-decoder-unavailable'
+        });
+    });
+
+    it('requires browser audio output only when a source selects audio', () => {
+        const silentEnvironment = createEnvironment({
+            audioContext: false,
+            audioWorklet: false
+        });
+
+        expect(getCustomPlaybackRuntimeAvailability(silentEnvironment)).toMatchObject({
+            available: true,
+            reason: null
+        });
+        expect(getCustomPlaybackRuntimeAvailability(silentEnvironment, {
+            audioOutput: true
+        })).toMatchObject({
+            available: false,
+            reason: 'audio-context-unavailable'
         });
     });
 

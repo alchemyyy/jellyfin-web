@@ -1,5 +1,6 @@
 import type { Microseconds } from '../MediaTime';
 import {
+    type AudioWorkletTelemetryReason,
     type AudioWorkletTelemetry,
     type CustomAudioWorkletMessage,
     type TransferablePlanarPCM
@@ -8,6 +9,8 @@ import {
     createCustomAudioWorkletModuleURL,
     CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME
 } from './AudioWorkletProcessorSource';
+import { waitForBrowserAudioOperation } from './BrowserAudioOperation';
+import { CUSTOM_AUDIO_OUTPUT_CHANNEL_INTERPRETATION } from './CustomAudioOutputPolicy';
 import { requireMicroseconds } from './TimeMath';
 
 export const DEFAULT_AUDIO_TELEMETRY_INTERVAL_FRAMES = 4_096;
@@ -42,6 +45,25 @@ function requirePositiveInteger(value: number, label: string): number {
         throw new RangeError(`${label} must be a positive safe integer`);
     }
     return value;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isTelemetryReason(value: unknown): value is AudioWorkletTelemetryReason {
+    switch (value) {
+        case 'enqueue':
+        case 'flush':
+        case 'overflow':
+        case 'periodic':
+        case 'stale-generation':
+        case 'underflow':
+        case 'underflow-recovered':
+            return true;
+        default:
+            return false;
+    }
 }
 
 function createConfiguration(
@@ -82,7 +104,7 @@ async function loadAudioWorkletModule(audioContext: AudioContext): Promise<void>
         .finally(() => URL.revokeObjectURL(moduleURL));
     moduleLoadPromises.set(audioContext, loadPromise);
     try {
-        await loadPromise;
+        await waitForBrowserAudioOperation(loadPromise, 'AudioWorklet module load');
     } catch (error) {
         moduleLoadPromises.delete(audioContext);
         throw error;
@@ -143,6 +165,7 @@ export default class AudioWorkletController {
         const node = new AudioWorkletNode(audioContext, CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME, {
             channelCount: configuration.channelCount,
             channelCountMode: 'explicit',
+            channelInterpretation: CUSTOM_AUDIO_OUTPUT_CHANNEL_INTERPRETATION,
             numberOfInputs: 0,
             numberOfOutputs: 1,
             outputChannelCount: [ configuration.channelCount ],
@@ -284,8 +307,33 @@ export default class AudioWorkletController {
         const candidate = value as Partial<AudioWorkletTelemetry>;
         return candidate.type === 'telemetry'
             && typeof candidate.generation === 'number'
+            && Number.isSafeInteger(candidate.generation)
+            && candidate.generation > 0
+            && candidate.hasPhysicalOutputTimeCorrelation === false
+            && (candidate.mediaTimeContextTimeMicroseconds === null
+                || isNonNegativeSafeInteger(candidate.mediaTimeContextTimeMicroseconds))
             && typeof candidate.mediaTimeMicroseconds === 'number'
-            && typeof candidate.queuedFrames === 'number';
+            && Number.isSafeInteger(candidate.mediaTimeMicroseconds)
+            && isNonNegativeSafeInteger(candidate.consumedFrames)
+            && isNonNegativeSafeInteger(candidate.droppedFrames)
+            && isNonNegativeSafeInteger(candidate.outputFrames)
+            && isNonNegativeSafeInteger(candidate.overflowEvents)
+            && isNonNegativeSafeInteger(candidate.overflowFrames)
+            && typeof candidate.muted === 'boolean'
+            && typeof candidate.playing === 'boolean'
+            && isNonNegativeSafeInteger(candidate.queuedFrames)
+            && isTelemetryReason(candidate.reason)
+            && (candidate.sequence === null
+                || (typeof candidate.sequence === 'number'
+                    && Number.isSafeInteger(candidate.sequence)
+                    && candidate.sequence > 0))
+            && isNonNegativeSafeInteger(candidate.staleChunks)
+            && isNonNegativeSafeInteger(candidate.underflowEvents)
+            && isNonNegativeSafeInteger(candidate.underflowFrames)
+            && typeof candidate.volume === 'number'
+            && Number.isFinite(candidate.volume)
+            && candidate.volume >= 0
+            && candidate.volume <= 1;
     }
 
     private postGain(): void {
