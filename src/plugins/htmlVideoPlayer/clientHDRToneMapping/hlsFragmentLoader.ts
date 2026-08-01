@@ -18,8 +18,21 @@ export interface HlsConstructorWithDefaultConfig {
     readonly DefaultConfig: HlsConfig;
 }
 
+/**
+ * Reports initialization success and later media failures that invalidate it.
+ */
+export type InitializationSegmentTransformStateCallback = (
+    transformed: boolean
+) => void;
+
 type DefaultLoaderConstructor = HlsConfig['loader'];
 type FragmentLoaderConstructor = NonNullable<HlsConfig['fLoader']>;
+
+interface FragmentTransformationResult {
+    initializationSegmentTransformed: boolean | null;
+    mediaSegmentTransformed: boolean | null;
+    responseData: ArrayBuffer;
+}
 
 /**
  * Creates an hls.js fragment loader whose transformer state is shared across
@@ -27,13 +40,16 @@ type FragmentLoaderConstructor = NonNullable<HlsConfig['fLoader']>;
  */
 export function createClientHDRToneMappingFragmentLoader(
     hlsConstructor: HlsConstructorWithDefaultConfig,
-    agtmPayload: Uint8Array
+    agtmPayload: Uint8Array,
+    onInitializationSegmentTransformState?:
+    InitializationSegmentTransformStateCallback
 ): FragmentLoaderConstructor {
     const transformer = new FMP4AGTMTransformer(agtmPayload);
 
     return createTransformingFragmentLoader(
         hlsConstructor.DefaultConfig.loader,
-        transformer
+        transformer,
+        onInitializationSegmentTransformState
     );
 }
 
@@ -43,8 +59,12 @@ export function createClientHDRToneMappingFragmentLoader(
  */
 export function createTransformingFragmentLoader(
     DefaultLoader: DefaultLoaderConstructor,
-    transformer: FMP4SegmentTransformer
+    transformer: FMP4SegmentTransformer,
+    onInitializationSegmentTransformState?:
+    InitializationSegmentTransformStateCallback
 ): FragmentLoaderConstructor {
+    let initializationSegmentTransformActive = false;
+
     return class ClientHDRToneMappingFragmentLoader implements Loader<FragmentLoaderContext> {
         public context: FragmentLoaderContext | null = null;
         public readonly stats: LoaderStats;
@@ -67,18 +87,42 @@ export function createTransformingFragmentLoader(
                 ...callbacks,
                 onSuccess: (response, responseStats, responseContext, networkDetails) => {
                     const responseData = response.data;
+                    let initializationSegmentTransformed: boolean | null =
+                        isMainInitializationSegment(responseContext) ? false : null;
+                    let mediaSegmentTransformed: boolean | null =
+                        isMainMediaSegment(responseContext) ? false : null;
 
                     if (responseData instanceof ArrayBuffer) {
-                        const transformedData = transformResponseData(
+                        const transformationResult = transformResponseData(
                             transformer,
                             responseContext,
                             responseData
                         );
+                        initializationSegmentTransformed =
+                            transformationResult.initializationSegmentTransformed;
+                        mediaSegmentTransformed =
+                            transformationResult.mediaSegmentTransformed;
 
-                        if (transformedData !== responseData) {
-                            response.data = transformedData;
+                        if (transformationResult.responseData !== responseData) {
+                            response.data = transformationResult.responseData;
                         }
                     }
+
+                    if (initializationSegmentTransformed !== null) {
+                        initializationSegmentTransformActive =
+                            initializationSegmentTransformed;
+                    } else if (
+                        initializationSegmentTransformActive
+                        && mediaSegmentTransformed === false
+                    ) {
+                        initializationSegmentTransformActive = false;
+                        initializationSegmentTransformed = false;
+                    }
+
+                    notifyInitializationSegmentTransformState(
+                        onInitializationSegmentTransformState,
+                        initializationSegmentTransformed
+                    );
 
                     callbacks.onSuccess(
                         response,
@@ -115,22 +159,67 @@ function transformResponseData(
     transformer: FMP4SegmentTransformer,
     context: FragmentLoaderContext,
     responseData: ArrayBuffer
-): ArrayBuffer {
+): FragmentTransformationResult {
     if (context.frag.type !== 'main') {
-        return responseData;
+        return {
+            initializationSegmentTransformed: null,
+            mediaSegmentTransformed: null,
+            responseData
+        };
     }
 
     const sourcePayload = new Uint8Array(responseData);
+    const isInitializationSegment = context.frag.sn === 'initSegment';
 
     try {
-        const transformedPayload = context.frag.sn === 'initSegment' ?
+        const transformedPayload = isInitializationSegment ?
             transformer.transformInitializationSegment(sourcePayload) :
             transformer.transformMediaSegment(sourcePayload);
 
-        return getArrayBuffer(transformedPayload, responseData);
+        return {
+            initializationSegmentTransformed: isInitializationSegment ?
+                transformedPayload !== sourcePayload : null,
+            mediaSegmentTransformed: isInitializationSegment ? null :
+                transformedPayload !== sourcePayload,
+            responseData: getArrayBuffer(transformedPayload, responseData)
+        };
     } catch (error) {
         console.warn('Client-side HDR tone mapping skipped an unsupported fragment', error);
-        return responseData;
+        return {
+            initializationSegmentTransformed: isInitializationSegment ? false : null,
+            mediaSegmentTransformed: isInitializationSegment ? null : false,
+            responseData
+        };
+    }
+}
+
+function isMainInitializationSegment(
+    context: FragmentLoaderContext
+): boolean {
+    return context.frag.type === 'main'
+        && context.frag.sn === 'initSegment';
+}
+
+function isMainMediaSegment(context: FragmentLoaderContext): boolean {
+    return context.frag.type === 'main'
+        && context.frag.sn !== 'initSegment';
+}
+
+function notifyInitializationSegmentTransformState(
+    callback: InitializationSegmentTransformStateCallback | undefined,
+    transformed: boolean | null
+): void {
+    if (!callback || transformed === null) {
+        return;
+    }
+
+    try {
+        callback(transformed);
+    } catch (error) {
+        console.warn(
+            'Client-side HDR tone-mapping state callback failed',
+            error
+        );
     }
 }
 

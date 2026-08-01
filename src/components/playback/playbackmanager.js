@@ -40,17 +40,38 @@ import {
     configureClientHDRToneMappingPlaybackOptions,
     isClientHDRToneMappingRuntimeAvailable
 } from 'plugins/htmlVideoPlayer/clientHDRToneMapping';
+import {
+    configureClientHDRToneMappingSubtitleProfiles
+} from 'plugins/htmlVideoPlayer/clientHDRToneMapping/playbackOptions';
 
 const UNLIMITED_ITEMS = -1;
 
-function configureClientHDRToneMappingPlayback(player, options, mediaSource) {
-    return configureClientHDRToneMappingPlaybackOptions(
+function supportsCanvas2D() {
+    return document.createElement('canvas').getContext('2d') !== null;
+}
+
+function configureClientHDRToneMappingPlayback(player, options, mediaSource, deviceProfile, deviceProfileOptions = {}) {
+    const isClientHDRToneMappingPlayback = configureClientHDRToneMappingPlaybackOptions(
         options,
         player?.isLocalPlayer === true,
         userSettings.enableClientHDRToneMapping(),
         isClientHDRToneMappingRuntimeAvailable(),
         mediaSource
     );
+
+    configureClientHDRToneMappingSubtitleProfiles(
+        deviceProfile,
+        {
+            alwaysBurnInSubtitleWhenTranscoding: appSettings.alwaysBurnInSubtitleWhenTranscoding(),
+            canvas2DSupported: isClientHDRToneMappingPlayback && supportsCanvas2D(),
+            enablePgsRender: deviceProfileOptions.enablePgsRender,
+            isClientHDRToneMappingPlayback,
+            isRetry: deviceProfileOptions.isRetry,
+            subtitleBurnInSetting: appSettings.get('subtitleburnin')
+        }
+    );
+
+    return isClientHDRToneMappingPlayback;
 }
 
 function enableLocalPlaylistManagement(player) {
@@ -1730,9 +1751,11 @@ export class PlaybackManager {
 
             const currentItem = self.currentItem(player);
 
-            player.getDeviceProfile(currentItem, {
+            const deviceProfileOptions = {
                 isRetry: params.EnableDirectPlay === false
-            }).then(function (deviceProfile) {
+            };
+
+            player.getDeviceProfile(currentItem, deviceProfileOptions).then(function (deviceProfile) {
                 const audioStreamIndex = params.AudioStreamIndex == null ? getPlayerData(player).audioStreamIndex : params.AudioStreamIndex;
                 const subtitleStreamIndex = params.SubtitleStreamIndex == null ? getPlayerData(player).subtitleStreamIndex : params.SubtitleStreamIndex;
                 const secondarySubtitleStreamIndex = params.SecondarySubtitleStreamIndex == null ? getPlayerData(player).secondarySubtitleStreamIndex : params.SecondarySubtitleStreamIndex;
@@ -1763,7 +1786,9 @@ export class PlaybackManager {
                 configureClientHDRToneMappingPlayback(
                     player,
                     options,
-                    currentMediaSource
+                    currentMediaSource,
+                    deviceProfile,
+                    deviceProfileOptions
                 );
 
                 getPlaybackInfo(player, apiClient, currentItem, deviceProfile, currentMediaSource.Id, liveStreamId, options).then(function (result) {
@@ -2992,7 +3017,8 @@ export class PlaybackManager {
                         && configureClientHDRToneMappingPlayback(
                             player,
                             options,
-                            mediaSource
+                            mediaSource,
+                            deviceProfile
                         )
                     ) {
                         return getPlaybackInfo(

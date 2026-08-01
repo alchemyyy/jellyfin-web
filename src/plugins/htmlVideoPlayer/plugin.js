@@ -601,13 +601,35 @@ export class HtmlVideoPlayer {
                     sourcePeakNits: userSettings.clientHDRToneMappingBT2390SourcePeakNits(),
                     targetPeakNits: userSettings.clientHDRToneMappingBT2390TargetPeakNits()
                 };
+                const clientHDRToneMappingSession = {
+                    hlsPlayer: null
+                };
                 const clientHDRToneMappingConfig = createClientHDRToneMappingHlsConfig(
                     Hls,
                     options.mediaSource,
                     userSettings.enableClientHDRToneMapping()
                         && isClientHDRToneMappingRuntimeAvailable(),
                     clientHDRToneMappingPreset,
-                    clientHDRToneMappingBT2390Parameters
+                    clientHDRToneMappingBT2390Parameters,
+                    (initializationSegmentTransformed) => {
+                        if (
+                            !clientHDRToneMappingSession.hlsPlayer
+                            || this._hlsPlayer
+                                !== clientHDRToneMappingSession.hlsPlayer
+                        ) {
+                            return;
+                        }
+
+                        if (initializationSegmentTransformed) {
+                            this.#startClientHDRToneMappingPostProcessing(
+                                elem,
+                                clientHDRToneMappingPreset,
+                                clientHDRToneMappingBT2390Parameters
+                            );
+                        } else {
+                            this.#stopClientHDRToneMappingPostProcessing();
+                        }
+                    }
                 );
 
                 const hls = new Hls({
@@ -623,23 +645,18 @@ export class HtmlVideoPlayer {
                     ...clientHDRToneMappingConfig
                 });
                 if (clientHDRToneMappingConfig.fLoader) {
-                    this.#startClientHDRToneMappingPostProcessing(
-                        elem,
-                        clientHDRToneMappingPreset,
-                        clientHDRToneMappingBT2390Parameters
-                    );
                     // Chrome cannot re-register one timed metadata track on a
                     // SourceBuffer, so keep this HLS session on one level.
                     hls.on(Hls.Events.MANIFEST_PARSED, () => {
                         hls.loadLevel = hls.firstLevel;
                     });
                 }
+                clientHDRToneMappingSession.hlsPlayer = hls;
+                this._hlsPlayer = hls;
                 hls.loadSource(url);
                 hls.attachMedia(elem);
 
                 bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject);
-
-                this._hlsPlayer = hls;
 
                 // This is needed in setCurrentTrackElement
                 this.#currentSrc = url;
