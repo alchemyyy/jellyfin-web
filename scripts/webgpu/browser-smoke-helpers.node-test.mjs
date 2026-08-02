@@ -990,6 +990,22 @@ test('validates actual generated-media canvas pixels and motion', () => {
         ),
         []
     );
+    assert.deepEqual(validatePresentedFrameEvidence(
+        createPresentedFrameEvidence(123, {
+            horizontalSamples: [
+                [ 220, 40, 30 ],
+                [ 230, 90, 70 ],
+                [ 190, 170, 20 ],
+                [ 230, 220, 20 ],
+                [ 15, 30, 230 ],
+                [ 60, 80, 235 ],
+                [ 10, 180, 200 ],
+                [ 220, 40, 30 ]
+            ]
+        }),
+        laterEvidence,
+        'testsrc2-motion'
+    ), []);
     assert.deepEqual(validatePresentedFrameEvidence(null, null, 'none'), []);
     assert.ok(validatePresentedFrameEvidence(
         initialEvidence,

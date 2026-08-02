@@ -85,10 +85,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.1.6.L120.B0',
                 decodeMilliseconds: 20,
                 format: 'I420',
+                framesPerSecond: 40,
                 maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
+                minimumFramesPerSecond: 30,
                 profile: 'main',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -99,10 +101,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.2.4.L120.B0',
                 decodeMilliseconds: 25,
                 format: 'I420P10',
+                framesPerSecond: 40,
                 maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
+                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -113,10 +117,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.2.4.L153.B0',
                 decodeMilliseconds: 30,
                 format: 'I420P10',
+                framesPerSecond: 40,
                 maximumBitrate: 40_000_000,
                 maximumCodedHeight: 2_160,
                 maximumCodedWidth: 3_840,
                 maximumLevel: 153,
+                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -251,6 +257,8 @@ function createCapabilities(
             format: 'I420P10',
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 30,
+            measuredFramesPerSecond: 40,
             reason: capabilityReason,
             status: supported ? 'supported' : 'unsupported'
         };
@@ -849,7 +857,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                         Condition: 'LessThanEqual',
                         IsRequired: true,
                         Property: 'VideoFramerate',
-                        Value: '24'
+                        Value: '30'
                     },
                     {
                         Condition: 'LessThanEqual',
@@ -871,6 +879,82 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.CodecProfiles?.[2].Conditions?.[0].Value).not.toContain('DOVI');
         expect(result.profile.CodecProfiles?.[2].Conditions?.[0].Value).not.toContain('HDR10Plus');
         expect(result.telemetry.widenedHDRCodecProfileCount).toBe(1);
+    });
+
+    it.each([ 24 as const, 30 as const, 60 as const ])(
+        'advertises the measured %i fps raw HDR tier',
+        maximumFramesPerSecond => {
+            const original = createBaseProfile();
+            original.CodecProfiles = [ {
+                Codec: 'vp9',
+                Conditions: [ {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                } ],
+                Type: 'Video'
+            } ];
+            const capabilities = createCapabilities(
+                [ 'vp9' ],
+                [ 'opus' ],
+                [ 'vp9' ]
+            );
+            capabilities.rawHDRVideo = {
+                ...capabilities.rawHDRVideo,
+                vp9: {
+                    ...capabilities.rawHDRVideo.vp9,
+                    maximumFramesPerSecond,
+                    measuredFramesPerSecond: maximumFramesPerSecond * 1.25
+                }
+            };
+
+            const result = augmentDeviceProfileForCustomDecode(
+                original,
+                capabilities,
+                RAW_HDR_PROFILE_OPTIONS
+            );
+
+            expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+                Codec: 'vp9',
+                Conditions: expect.arrayContaining([
+                    expect.objectContaining({
+                        Property: 'VideoRangeType',
+                        Value: 'HDR10|HLG'
+                    }),
+                    expect.objectContaining({
+                        Property: 'VideoFramerate',
+                        Value: String(maximumFramesPerSecond)
+                    })
+                ])
+            }));
+        }
+    );
+
+    it('does not advertise a supported raw HDR capability with an invalid frame-rate tier', () => {
+        const capabilities = createCapabilities([ 'vp9' ], [ 'opus' ], [ 'vp9' ]);
+        capabilities.rawHDRVideo = {
+            ...capabilities.rawHDRVideo,
+            vp9: {
+                ...capabilities.rawHDRVideo.vp9,
+                maximumFramesPerSecond: 0,
+                measuredFramesPerSecond: null
+            }
+        };
+
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            capabilities,
+            RAW_HDR_PROFILE_OPTIONS
+        );
+
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'vp9'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR10')
+            ))
+        ))).toBe(false);
     });
 
     it('advertises only settled authorized HDR range types and exact progressive metadata', () => {
@@ -1137,12 +1221,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'Width', Value: '3840' }),
             expect.objectContaining({ Property: 'Height', Value: '2160' }),
+            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
             expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '153' })
         ]));
         expect(rawProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'Width', Value: '1920' }),
             expect.objectContaining({ Property: 'Height', Value: '1080' }),
+            expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
             expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
         ]));
@@ -1194,7 +1280,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                         Condition: 'LessThanEqual',
                         IsRequired: true,
                         Property: 'VideoFramerate',
-                        Value: '24'
+                        Value: '30'
                     },
                     {
                         Condition: 'LessThanEqual',
@@ -1486,7 +1572,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Conditions: expect.arrayContaining([
                 expect.objectContaining({ Property: 'VideoRangeType', Value: 'HDR10|HLG' }),
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
+                expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
                 expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
                 expect.objectContaining({ Property: 'Width', Value: '3840' }),
@@ -1532,7 +1618,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Codec: 'hevc',
             Conditions: expect.arrayContaining([
                 expect.objectContaining({ Property: 'VideoRangeType', Value: 'HDR10|HLG' }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
+                expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
                 expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
                 expect.objectContaining({ Property: 'Width', Value: '1920' }),

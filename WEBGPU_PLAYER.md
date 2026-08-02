@@ -93,6 +93,15 @@ Eligibility remains narrower than the decoder's theoretical support:
   64-pixel vertical alignment. Every output frame is closed, and missing,
   duplicate, malformed, timed-out, or rejected output keeps that native route
   unadvertised.
+- Native HEVC Main10, VP9 Profile 2, and AV1 Main raw HDR qualification decodes
+  one warm-up frame and measures seven exact 3840x2160 10-bit frames. Every
+  frame must copy as `I420P10` and match its pinned plane fingerprint. Measured
+  decode-and-copy throughput is quantized to a 24, 30, or 60 fps playback tier
+  only with 1.25x headroom, requiring at least 30, 37.5, or 75 measured fps.
+  The selected per-codec tier is used by both Jellyfin device-profile
+  advertisement and local playback eligibility. Bundled HEVC Main10 uses the
+  same quantization from its exact worker throughput evidence. Missing or
+  inconsistent evidence fails closed.
 - Native 8-bit HEVC Main, VP9 Profile 0, and AV1 Main expand from the baseline
   1920x1080 limit to 3840x2160 only when a second codec-specific configuration
   decodes a pinned exact 3840x2160 keyframe with bounded hardware-surface
@@ -117,7 +126,8 @@ Eligibility remains narrower than the decoder's theoretical support:
 - Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
   access-unit fixture under its production `hev1.2.4.H150.B0` configuration
   and requires a correctly sized owned `VideoFrame`. Configuration support
-  alone does not authorize that route.
+  alone does not authorize that route. This single-frame probe does not prove
+  throughput, so native Profile 5 remains capped at 24 fps.
 - Config-only results never authorize native audio, H.264, ordinary native
   HEVC/VP8/VP9/AV1, native 5.1 audio, native Ultra HD expansion, raw HDR,
   Dolby Vision Profile 5, or bundled HEVC.
@@ -307,8 +317,15 @@ Generate short Jellyfin library items for end-to-end PQ and HLG route testing:
 
 The default files are six-second, 1920x1080p24, HEVC Main10 Level 4,
 limited-range BT.2020 PQ and HLG streams with stereo 48 kHz AAC. Add
+`-FrameRates 24,30,60` to generate both transfers at every runtime-qualified
+playback tier. The file names include the selected frame rate and FFprobe
+validation requires that exact rate. A conforming 1080p60 HEVC fixture uses
+Level 4.1. Use `-Resolution 720p -FrameRates 60` for a Level 4 fixture that
+can exercise a 60 fps bundled 1080p capability without exceeding its exact
+Level 4 bound. Add
 `-IncludeAC3` to also generate a PQ live stream-switch fixture for an
-explicitly enabled local AC-3 build:
+explicitly enabled local AC-3 build. The AC-3 fixture requires `24` to be
+present in `-FrameRates`:
 
 ```powershell
 ./scripts/webgpu/generate-playback-smoke-media.ps1 `

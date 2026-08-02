@@ -11,6 +11,8 @@ import CustomDecodeCapabilityProbe, {
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    getQualifiedRawHDRMaximumFramesPerSecond,
+    type RawHDRVideoOutputProbeResult,
     type WebCodecsCapabilityEnvironment
 } from './CustomDecodeCapabilities';
 import type {
@@ -36,6 +38,27 @@ type NativeSurroundAudioSupport = Readonly<{
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 
+describe('raw HDR frame-rate qualification', () => {
+    it.each([
+        { expected: 60, measuredFramesPerSecond: 75 },
+        { expected: 30, measuredFramesPerSecond: 74.999 },
+        { expected: 30, measuredFramesPerSecond: 37.5 },
+        { expected: 24, measuredFramesPerSecond: 37.499 },
+        { expected: 24, measuredFramesPerSecond: 30 },
+        { expected: null, measuredFramesPerSecond: 29.999 },
+        { expected: null, measuredFramesPerSecond: 0 },
+        { expected: null, measuredFramesPerSecond: Number.NaN },
+        { expected: null, measuredFramesPerSecond: Number.POSITIVE_INFINITY }
+    ])(
+        'maps $measuredFramesPerSecond measured fps to $expected',
+        ({ expected, measuredFramesPerSecond }) => {
+            expect(getQualifiedRawHDRMaximumFramesPerSecond(
+                measuredFramesPerSecond
+            )).toBe(expected);
+        }
+    );
+});
+
 function getBundledHEVCCodecString(
     tier: HEVCExactCapabilityTier
 ): BundledHEVCExactTierCapability['codecString'] {
@@ -60,10 +83,12 @@ function createBundledHEVCTier(
         codecString: getBundledHEVCCodecString(tier),
         decodeMilliseconds: supported ? 100 : null,
         format: main10 ? 'I420P10' : 'I420',
+        framesPerSecond: supported ? 40 : null,
         maximumBitrate: ultraHD ? 40_000_000 : 12_000_000,
         maximumCodedHeight: ultraHD ? 2_160 : 1_080,
         maximumCodedWidth: ultraHD ? 3_840 : 1_920,
         maximumLevel: ultraHD ? 153 : 120,
+        minimumFramesPerSecond: 30,
         profile: main10 ? 'main10' : 'main',
         reason: supported ? 'decode-output-verified' : 'decode-error',
         status: supported ? 'supported' : 'unsupported',
@@ -125,7 +150,14 @@ function createEnvironment(
     }));
     const rawHDRVideoOutputProbe = vi.fn(async (probeRequest: {
         codec: string
-    }): Promise<boolean> => rawHDRVideoOutputSupport.has(probeRequest.codec));
+    }): Promise<RawHDRVideoOutputProbeResult> => {
+        const outputCopySupported = rawHDRVideoOutputSupport.has(probeRequest.codec);
+        return {
+            maximumFramesPerSecond: outputCopySupported ? 60 : null,
+            measuredFramesPerSecond: outputCopySupported ? 80 : null,
+            outputCopySupported
+        };
+    });
     const nativeDolbyVisionVideoOutputProbe = vi.fn(
         async (): Promise<boolean> => nativeDolbyVisionVideoOutputSupported
     );
@@ -266,8 +298,18 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         expect(capabilities.rawHDRVideo).toMatchObject({
             av1: { reason: 'config-unsupported', status: 'unsupported' },
-            hevc: { reason: 'bundled-software-decoder', status: 'supported' },
-            vp9: { reason: 'output-copy-supported', status: 'supported' }
+            hevc: {
+                maximumFramesPerSecond: 30,
+                measuredFramesPerSecond: 40,
+                reason: 'bundled-software-decoder',
+                status: 'supported'
+            },
+            vp9: {
+                maximumFramesPerSecond: 60,
+                measuredFramesPerSecond: 80,
+                reason: 'output-copy-supported',
+                status: 'supported'
+            }
         });
         expect(harness.rawHDRVideoOutputProbe).toHaveBeenCalledOnce();
         expect(harness.rawHDRVideoOutputProbe.mock.calls[0][0]).toMatchObject({
@@ -787,7 +829,9 @@ describe('CustomDecodeCapabilityProbe', () => {
         vi.useFakeTimers();
         const videoProbe = vi.fn(() => new Promise<VideoDecoderSupport>(() => undefined));
         const audioProbe = vi.fn(() => new Promise<AudioDecoderSupport>(() => undefined));
-        const rawHDRVideoOutputProbe = vi.fn(() => new Promise<boolean>(() => undefined));
+        const rawHDRVideoOutputProbe = vi.fn(() => (
+            new Promise<RawHDRVideoOutputProbeResult>(() => undefined)
+        ));
         const probePromise = new CustomDecodeCapabilityProbe({
             audioDecoder: { isConfigSupported: audioProbe },
             bundledHEVCExactProbe: {
@@ -923,12 +967,16 @@ describe('CustomDecodeCapabilityProbe', () => {
             codecString: 'hvc1.2.4.L120.B0',
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            maximumFramesPerSecond: 30,
+            measuredFramesPerSecond: 40,
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
         expect(bothTiers.rawHDRVideo.hevc).toMatchObject({
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 30,
+            measuredFramesPerSecond: 40,
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
@@ -947,6 +995,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             codecString: 'hvc1.2.4.L153.B0',
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 60,
+            measuredFramesPerSecond: 80,
             reason: 'output-copy-supported',
             status: 'supported'
         });
@@ -956,6 +1006,27 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840,
             expectedFormat: 'I420P10'
+        });
+    });
+
+    it('records copyable raw HDR output below the minimum throughput as unsupported', async () => {
+        const harness = createEnvironment(
+            new Set([ 'vp09.02.10.10' ]),
+            new Set()
+        );
+        harness.environment.rawHDRVideoOutputProbe = vi.fn(async () => ({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: 29,
+            outputCopySupported: true
+        }));
+
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        expect(capabilities.rawHDRVideo.vp9).toMatchObject({
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: 29,
+            reason: 'throughput-insufficient',
+            status: 'unsupported'
         });
     });
 
@@ -1506,30 +1577,48 @@ describe('CustomDecodeCapabilityProbe', () => {
 
     it.each([
         {
-            elapsedMilliseconds: 100,
+            elapsedMilliseconds: 90,
+            expectedMaximumFramesPerSecond: 60,
             expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 5,
-            supported: true
+            expectedFrameCopyCount: 8,
+            outputCopySupported: true
         },
         {
-            elapsedMilliseconds: 100,
+            elapsedMilliseconds: 140,
+            expectedMaximumFramesPerSecond: 30,
+            expectedDecodedFrameFingerprint: 667_501_752,
+            expectedFrameCopyCount: 8,
+            outputCopySupported: true
+        },
+        {
+            elapsedMilliseconds: 210,
+            expectedMaximumFramesPerSecond: 24,
+            expectedDecodedFrameFingerprint: 667_501_752,
+            expectedFrameCopyCount: 8,
+            outputCopySupported: true
+        },
+        {
+            elapsedMilliseconds: 240,
+            expectedMaximumFramesPerSecond: null,
+            expectedDecodedFrameFingerprint: 667_501_752,
+            expectedFrameCopyCount: 8,
+            outputCopySupported: true
+        },
+        {
+            elapsedMilliseconds: 90,
+            expectedMaximumFramesPerSecond: null,
             expectedDecodedFrameFingerprint: 667_501_753,
             expectedFrameCopyCount: 1,
-            supported: false
-        },
-        {
-            elapsedMilliseconds: 200,
-            expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 5,
-            supported: false
+            outputCopySupported: false
         }
     ])(
         'requires multi-frame raw HDR decode and copy throughput: $elapsedMilliseconds ms',
         async ({
             elapsedMilliseconds,
+            expectedMaximumFramesPerSecond,
             expectedDecodedFrameFingerprint,
             expectedFrameCopyCount,
-            supported
+            outputCopySupported
         }) => {
             const closeFrame = vi.fn();
             const copyFrame = vi.fn(async (): Promise<readonly PlaneLayout[]> => ([
@@ -1583,7 +1672,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             vi.stubGlobal('performance', { now });
             const outputProbe = createRawHDRVideoOutputProbe();
 
-            await expect(outputProbe?.({
+            const result = await outputProbe?.({
                 codec: 'vp9',
                 configuration: {
                     codec: 'vp09.02.10.10',
@@ -1595,7 +1684,18 @@ describe('CustomDecodeCapabilityProbe', () => {
                 expectedCodedWidth: 3_840,
                 expectedDecodedFrameFingerprint,
                 expectedFormat: 'I420P10'
-            })).resolves.toBe(supported);
+            });
+            expect(result).toMatchObject({
+                maximumFramesPerSecond: expectedMaximumFramesPerSecond,
+                outputCopySupported
+            });
+            if (outputCopySupported) {
+                expect(result?.measuredFramesPerSecond).toBeCloseTo(
+                    7_000 / elapsedMilliseconds
+                );
+            } else {
+                expect(result?.measuredFramesPerSecond).toBeNull();
+            }
             expect(copyFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
             expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
         }

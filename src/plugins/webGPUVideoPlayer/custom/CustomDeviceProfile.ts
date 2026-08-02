@@ -5,12 +5,14 @@ import type { ProfileCondition } from '@jellyfin/sdk/lib/generated-client/models
 
 import {
     CUSTOM_AUDIO_CODECS,
+    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
+    CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
-    CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_VIDEO_CODECS,
+    isCustomRawHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeSurroundAudioCodecCapability,
@@ -319,7 +321,11 @@ function getSupportedVideoCodecs(
         const rawPresentationAllowed = allowRawHDR
             || (allowDolbyVision && codec === 'hevc');
         if (supportsNativeVideoCodec(codec, capabilities)
-            || (rawPresentationAllowed && rawCapability?.status === 'supported')
+            || (rawPresentationAllowed
+                && rawCapability?.status === 'supported'
+                && isCustomRawHDRVideoMaximumFramesPerSecond(
+                    rawCapability.maximumFramesPerSecond
+                ))
             || (allowNativeDolbyVision
                 && codec === 'hevc'
                 && capabilities.nativeDolbyVisionHEVC?.status === 'supported')) {
@@ -351,7 +357,10 @@ function getSupportedRawHDRVideoCodecs(
     const rawHDRVideoCapabilities = capabilities.rawHDRVideo;
 
     for (const codec of CUSTOM_RAW_HDR_VIDEO_CODECS) {
-        if (rawHDRVideoCapabilities[codec].status === 'supported') {
+        if (rawHDRVideoCapabilities[codec].status === 'supported'
+            && isCustomRawHDRVideoMaximumFramesPerSecond(
+                rawHDRVideoCapabilities[codec].maximumFramesPerSecond
+            )) {
             supportedCodecs.push(codec);
         }
     }
@@ -542,13 +551,18 @@ function numericConditionCapsAt(
     }
 }
 
+type RawHDRCapabilityLimits = {
+    maximumBitrate: number | null
+    maximumCodedHeight: number
+    maximumCodedWidth: number
+    maximumFramesPerSecond: number
+    maximumLevel: number | null
+};
+
 function createRawHDRConditions(
     conditions: NonNullable<CodecProfile['Conditions']>,
     includeSDR: boolean,
-    maximumBitrate: number | null,
-    maximumCodedHeight: number,
-    maximumCodedWidth: number,
-    maximumLevel: number | null,
+    limits: RawHDRCapabilityLimits,
     rawHDRVideoRangeTypes: readonly string[]
 ): NonNullable<CodecProfile['Conditions']> | null {
     if (conditions.some(condition => !bitDepthConditionAllowsTenBit(condition))) {
@@ -590,15 +604,16 @@ function createRawHDRConditions(
     if (!conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_FRAMERATE_PROPERTY,
-        CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND
+        limits.maximumFramesPerSecond
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
             IsRequired: true,
             Property: VIDEO_FRAMERATE_PROPERTY,
-            Value: String(CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND)
+            Value: String(limits.maximumFramesPerSecond)
         });
     }
+    const maximumLevel = limits.maximumLevel;
     if (maximumLevel !== null && !conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_LEVEL_PROPERTY,
@@ -611,6 +626,7 @@ function createRawHDRConditions(
             Value: String(maximumLevel)
         });
     }
+    const maximumBitrate = limits.maximumBitrate;
     if (maximumBitrate !== null && !conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_BITRATE_PROPERTY,
@@ -626,25 +642,25 @@ function createRawHDRConditions(
     if (!conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_WIDTH_PROPERTY,
-        maximumCodedWidth
+        limits.maximumCodedWidth
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
             IsRequired: true,
             Property: VIDEO_WIDTH_PROPERTY,
-            Value: String(maximumCodedWidth)
+            Value: String(limits.maximumCodedWidth)
         });
     }
     if (!conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_HEIGHT_PROPERTY,
-        maximumCodedHeight
+        limits.maximumCodedHeight
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
             IsRequired: true,
             Property: VIDEO_HEIGHT_PROPERTY,
-            Value: String(maximumCodedHeight)
+            Value: String(limits.maximumCodedHeight)
         });
     }
     return widenedConditions;
@@ -656,13 +672,6 @@ type RawHDRCodecProfilePlan = {
     nonRawHDRCodecs: string[]
     rawHDRCodecs: string[]
     widenedConditions: NonNullable<CodecProfile['Conditions']>
-};
-
-type RawHDRCapabilityLimits = {
-    maximumBitrate: number | null
-    maximumCodedHeight: number
-    maximumCodedWidth: number
-    maximumLevel: number | null
 };
 
 function isMeasuredVideoRouteProfile(codecProfile: CodecProfile): boolean {
@@ -681,11 +690,17 @@ function getRawHDRCapabilityLimits(
     let maximumBitrate: number | null = null;
     let maximumCodedHeight = Number.MAX_SAFE_INTEGER;
     let maximumCodedWidth = Number.MAX_SAFE_INTEGER;
+    let maximumFramesPerSecond = Number.MAX_SAFE_INTEGER;
     let maximumLevel: number | null = null;
     for (const rawHDRCodec of rawHDRCodecs) {
         const capability = capabilities.rawHDRVideo[
             rawHDRCodec as 'av1' | 'hevc' | 'vp9'
         ];
+        if (!isCustomRawHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )) {
+            return null;
+        }
         maximumCodedHeight = Math.min(
             maximumCodedHeight,
             capability.maximumCodedHeight
@@ -693,6 +708,10 @@ function getRawHDRCapabilityLimits(
         maximumCodedWidth = Math.min(
             maximumCodedWidth,
             capability.maximumCodedWidth
+        );
+        maximumFramesPerSecond = Math.min(
+            maximumFramesPerSecond,
+            capability.maximumFramesPerSecond
         );
         if (capability.reason !== 'bundled-software-decoder') {
             continue;
@@ -714,6 +733,7 @@ function getRawHDRCapabilityLimits(
         maximumBitrate,
         maximumCodedHeight,
         maximumCodedWidth,
+        maximumFramesPerSecond,
         maximumLevel
     };
 }
@@ -733,6 +753,8 @@ function getNativeDolbyVisionCapabilityLimits(
         maximumBitrate: capability.maximumBitrate,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
+        maximumFramesPerSecond:
+            CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
         maximumLevel: capability.maximumLevel
     };
 }
@@ -752,6 +774,10 @@ function combineAlternativeCapabilityLimits(
         maximumCodedWidth: Math.max(
             first.maximumCodedWidth,
             second.maximumCodedWidth
+        ),
+        maximumFramesPerSecond: Math.max(
+            first.maximumFramesPerSecond,
+            second.maximumFramesPerSecond
         ),
         maximumLevel: first.maximumLevel === null || second.maximumLevel === null ?
             null :
@@ -796,10 +822,7 @@ function createRawHDRCodecProfilePlan(
     const widenedConditions = createRawHDRConditions(
         conditions,
         rawHDRCodecs.every(codec => supportedNativeVideoCodecs.has(codec as CustomVideoCodec)),
-        limits.maximumBitrate,
-        limits.maximumCodedHeight,
-        limits.maximumCodedWidth,
-        limits.maximumLevel,
+        limits,
         rawHDRVideoRangeTypes
     );
     const conditionsChanged = widenedConditions?.length !== conditions.length
@@ -1049,7 +1072,7 @@ function createNativeMeasuredVideoRoute(
         codec,
         maximumBitrate: bundledMain?.maximumBitrate ?? null,
         maximumFrameRate: bundledMain ?
-            CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND :
+            CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND :
             null,
         maximumHeight: bundledMain?.maximumCodedHeight ?? nativeDimensions.maximumHeight,
         maximumLevel: bundledMain?.maximumLevel ?? null,
@@ -1070,7 +1093,10 @@ function createRawHDRMeasuredVideoRoute(
     }
 
     const rawCapability = capabilities.rawHDRVideo[codec];
-    if (rawCapability.status !== 'supported') {
+    if (rawCapability.status !== 'supported'
+        || !isCustomRawHDRVideoMaximumFramesPerSecond(
+            rawCapability.maximumFramesPerSecond
+        )) {
         return null;
     }
     const bundledTier = rawCapability.reason === 'bundled-software-decoder' ?
@@ -1083,7 +1109,7 @@ function createRawHDRMeasuredVideoRoute(
         bitDepth: rawCapability.bitDepth,
         codec,
         maximumBitrate: bundledTier?.maximumBitrate ?? null,
-        maximumFrameRate: CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
+        maximumFrameRate: rawCapability.maximumFramesPerSecond,
         maximumHeight: rawCapability.maximumCodedHeight,
         maximumLevel: bundledTier?.maximumLevel ?? null,
         maximumWidth: rawCapability.maximumCodedWidth,
@@ -1111,7 +1137,8 @@ function createDolbyVisionMeasuredVideoRoute(
         bitDepth: capability.bitDepth,
         codec,
         maximumBitrate: capability.maximumBitrate,
-        maximumFrameRate: CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
+        maximumFrameRate:
+            CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
         maximumHeight: capability.maximumCodedHeight,
         maximumLevel: capability.maximumLevel,
         maximumWidth: capability.maximumCodedWidth,

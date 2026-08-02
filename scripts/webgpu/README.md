@@ -131,6 +131,24 @@ FFprobe and fails unless the codec, profile, level, geometry, frame rate, pixel
 format, range, matrix, transfer, primaries, channel count, and sample rate are
 exact.
 
+Generate PQ and HLG fixtures for every qualified playback frame-rate tier:
+
+```powershell
+./scripts/webgpu/generate-playback-smoke-media.ps1 `
+    -FfmpegPath ffmpeg `
+    -FfprobePath ffprobe `
+    -FrameRates 24,30,60 `
+    -Overwrite
+```
+
+The generator accepts only 24, 30, and 60 fps. These correspond to the
+production raw HDR playback tiers; production enables each codec tier only
+after its measured decode-and-copy throughput passes with 1.25x headroom.
+A 1080p60 fixture is correctly signaled as HEVC Level 4.1. Use
+`-Resolution 720p -FrameRates 60` to generate a Level 4 route fixture for a
+bundled tier that is qualified for 60 fps throughput but retains its exact
+Level 4 stream bound.
+
 Optionally add a PQ stream-switch fixture:
 
 ```powershell
@@ -147,6 +165,7 @@ stereo 48 kHz AAC track from the PQ fixture and appends a non-default stereo
 AAC route and then validate a live switch to the opt-in AC-3 decoder without
 changing the video route. It is not an AC-3-only file. The AC-3 track requires
 the explicitly enabled local, non-distributable AC-3 build described below.
+The switch fixture requires `24` to be included in `-FrameRates`.
 Generation requires FFmpeg and FFprobe, an FFmpeg build with `libx265`, and
 the requested audio encoders.
 
@@ -161,6 +180,8 @@ being tested, set `WEBGPU_SMOKE_EXPECTED_AUDIO=ready`, and set
 `WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE=testsrc2-motion`. The evidence option
 captures the actual presentation canvas twice, checks the generated testsrc2
 color signature and channel ranges, and requires a changing pixel checksum.
+The signature accepts three of four fixed bar samples because testsrc2's moving
+overlay can legitimately cover one sample while the two captures are taken.
 It therefore rejects black, static, or grossly misordered decoded output that
 would otherwise satisfy frame counters. Leave it at its default `none` for
 ordinary media whose pixels do not follow this generated pattern.

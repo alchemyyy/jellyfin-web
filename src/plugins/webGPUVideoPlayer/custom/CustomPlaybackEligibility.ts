@@ -9,10 +9,12 @@ import {
 } from '../MediaTime';
 import {
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
+    CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
-    CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
+    isCustomRawHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeSurroundAudioCodecCapability,
@@ -525,11 +527,12 @@ function getEffectiveVideoFrameRate(stream: MediaStream): number | null {
 
 function matchesBundledHEVCTier(
     stream: MediaStream,
-    tier: BundledHEVCExactTierCapability
+    tier: BundledHEVCExactTierCapability,
+    maximumFramesPerSecond: number
 ): boolean {
     const frameRate = getEffectiveVideoFrameRate(stream);
     return frameRate !== null
-        && frameRate <= CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND
+        && frameRate <= maximumFramesPerSecond
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= tier.maximumLevel
         && isPositiveSafeInteger(stream.BitRate)
@@ -664,7 +667,11 @@ function getSDRVideoSelection(
         if (capabilities.video.hevc.status !== 'supported') {
             const bundledMain = capabilities.bundledHEVC?.tiers['main-1080p'];
             if (bundledMain?.status !== 'supported'
-                || !matchesBundledHEVCTier(stream, bundledMain)) {
+                || !matchesBundledHEVCTier(
+                    stream,
+                    bundledMain,
+                    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND
+                )) {
                 return null;
             }
             videoDecoderBackend = 'bundled-hevc';
@@ -708,8 +715,11 @@ function supportsRawHDRVideo(
         || capability.format !== format
         || capability.bitDepth !== stream.BitDepth
         || !hasSupportedRawVideoProfile(codec, stream)
+        || !isCustomRawHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )
         || frameRate === null
-        || frameRate > CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND
+        || frameRate > capability.maximumFramesPerSecond
         || !isPositiveSafeInteger(stream.Width)
         || !isPositiveSafeInteger(stream.Height)) {
         return false;
@@ -723,7 +733,11 @@ function supportsRawHDRVideo(
     }
 
     const bundledTier = getBundledRawHEVCTier(capabilities, capability);
-    return bundledTier !== null && matchesBundledHEVCTier(stream, bundledTier);
+    return bundledTier !== null && matchesBundledHEVCTier(
+        stream,
+        bundledTier,
+        capability.maximumFramesPerSecond
+    );
 }
 
 function supportsNativeDolbyVisionProfile5(
@@ -738,7 +752,7 @@ function supportsNativeDolbyVisionProfile5(
         && stream.BitDepth === capability.bitDepth
         && hasSupportedRawVideoProfile(videoCodec, stream)
         && frameRate !== null
-        && frameRate <= CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND
+        && frameRate <= CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= capability.maximumLevel
         && isPositiveSafeInteger(stream.BitRate)

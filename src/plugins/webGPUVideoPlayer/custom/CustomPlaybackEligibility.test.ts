@@ -97,10 +97,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.1.6.L120.B0',
                 decodeMilliseconds: 20,
                 format: 'I420',
+                framesPerSecond: 40,
                 maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
+                minimumFramesPerSecond: 30,
                 profile: 'main',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -111,10 +113,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.2.4.L120.B0',
                 decodeMilliseconds: 25,
                 format: 'I420P10',
+                framesPerSecond: 40,
                 maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
+                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -125,10 +129,12 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 codecString: 'hvc1.2.4.L153.B0',
                 decodeMilliseconds: 30,
                 format: 'I420P10',
+                framesPerSecond: 40,
                 maximumBitrate: 40_000_000,
                 maximumCodedHeight: 2_160,
                 maximumCodedWidth: 3_840,
                 maximumLevel: 153,
+                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
                 status: 'supported',
@@ -148,6 +154,8 @@ function createCapabilities(): CustomDecodeCapabilities {
         format: 'I420P10',
         maximumCodedHeight: 2_160,
         maximumCodedWidth: 3_840,
+        maximumFramesPerSecond: 30,
+        measuredFramesPerSecond: 40,
         reason: codec === 'hevc' ? 'bundled-software-decoder' : 'output-copy-supported',
         status: 'supported'
     });
@@ -982,10 +990,10 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ 'missing rate', undefined, undefined, false ],
         [ 'non-finite real rate', Number.NaN, 24, false ],
-        [ 'excessive real rate', 25, undefined, false ],
-        [ 'numeric average fallback', undefined, 24, true ],
+        [ 'excessive real rate', 31, undefined, false ],
+        [ 'numeric average fallback', undefined, 30, true ],
         [ 'string average fallback', undefined, '24', false ],
-        [ 'real rate preference', 24, 60, true ]
+        [ 'real rate preference', 30, 60, true ]
     ])(
         'requires bounded numeric raw HDR frame rate: %s',
         (_label, realFrameRate, averageFrameRate, expectedEligible) => {
@@ -1017,6 +1025,62 @@ describe('CustomPlaybackEligibility', () => {
                 createCapabilities(),
                 PQ_AUTHORIZATION
             );
+            expect(result.eligible).toBe(expectedEligible);
+            if (!expectedEligible) {
+                expect(result).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+            }
+        }
+    );
+
+    it.each([
+        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
+        { expectedEligible: false, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
+        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
+        { expectedEligible: false, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
+        { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
+    ])(
+        'enforces the qualified $maximumFramesPerSecond fps raw HDR tier at $streamFrameRate fps',
+        ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
+            const capabilities = createCapabilities();
+            capabilities.rawHDRVideo = {
+                ...capabilities.rawHDRVideo,
+                vp9: {
+                    ...capabilities.rawHDRVideo.vp9,
+                    maximumFramesPerSecond,
+                    measuredFramesPerSecond: maximumFramesPerSecond > 0 ?
+                        maximumFramesPerSecond * 1.25 :
+                        null
+                }
+            };
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    MediaStreams: [ {
+                        AverageFrameRate: streamFrameRate,
+                        BitDepth: 10,
+                        Codec: 'vp9',
+                        ColorPrimaries: 'bt2020',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Profile: 'Profile 2',
+                        Type: 'Video',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    } ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+
+            const result = getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                PQ_AUTHORIZATION
+            );
+
             expect(result.eligible).toBe(expectedEligible);
             if (!expectedEligible) {
                 expect(result).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });

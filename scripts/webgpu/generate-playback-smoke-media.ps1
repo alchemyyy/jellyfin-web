@@ -10,6 +10,14 @@ param(
     [string] $OutputDirectory = (Join-Path $PSScriptRoot 'playback-smoke-media'),
 
     [Parameter()]
+    [ValidateSet(24, 30, 60)]
+    [int[]] $FrameRates = @(24),
+
+    [Parameter()]
+    [ValidateSet('720p', '1080p')]
+    [string] $Resolution = '1080p',
+
+    [Parameter()]
     [switch] $IncludeAC3,
 
     [Parameter()]
@@ -19,11 +27,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-[int] $Width = 1920
-[int] $Height = 1080
-[int] $FrameRate = 24
+[int] $Width = if ($Resolution -eq '720p') { 1280 } else { 1920 }
+[int] $Height = if ($Resolution -eq '720p') { 720 } else { 1080 }
 [int] $DurationSeconds = 6
-[int] $HEVCLevel = 120
 [int] $TargetVideoBitRateKilobits = 6000
 [int] $MaximumVideoBitRateKilobits = 8000
 [int] $AudioSampleRate = 48000
@@ -38,7 +44,11 @@ function Assert-PlaybackSmokeFixture {
         [string] $Transfer,
 
         [Parameter(Mandatory)]
-        [string] $AudioCodec
+        [string] $AudioCodec,
+
+        [Parameter(Mandatory)]
+        [ValidateSet(24, 30, 60)]
+        [int] $FrameRate
     )
 
     [string[]] $probeOutput = & $FfprobePath @(
@@ -65,9 +75,15 @@ function Assert-PlaybackSmokeFixture {
         throw "The expected HEVC/$AudioCodec streams are missing from $Path"
     }
 
+    [int] $expectedHEVCLevel = if ($Resolution -eq '1080p' -and $FrameRate -eq 60) {
+        123
+    } else {
+        120
+    }
+
     [System.Collections.Specialized.OrderedDictionary] $expectedVideo = [ordered] @{
         profile = 'Main 10'
-        level = $HEVCLevel
+        level = $expectedHEVCLevel
         width = $Width
         height = $Height
         pix_fmt = 'yuv420p10le'
@@ -113,7 +129,11 @@ function New-PlaybackSmokeFixture {
         [int] $AudioBitRate,
 
         [Parameter(Mandatory)]
-        [int] $AudioFrequency
+        [int] $AudioFrequency,
+
+        [Parameter(Mandatory)]
+        [ValidateSet(24, 30, 60)]
+        [int] $FrameRate
     )
 
     [string] $outputPath = Join-Path $OutputDirectory "$Name.mkv"
@@ -123,11 +143,17 @@ function New-PlaybackSmokeFixture {
 
     [string] $videoInput = "testsrc2=size=${Width}x${Height}:rate=${FrameRate}:duration=${DurationSeconds},format=yuv420p10le"
     [string] $audioInput = "sine=frequency=${AudioFrequency}:sample_rate=${AudioSampleRate}:duration=${DurationSeconds}"
+    [int] $keyFrameInterval = $FrameRate * 2
+    [string] $levelIDC = if ($Resolution -eq '1080p' -and $FrameRate -eq 60) {
+        '4.1'
+    } else {
+        '4'
+    }
     [string] $x265Parameters = [string]::Join(':', @(
-        'level-idc=4',
+        "level-idc=$levelIDC",
         'high-tier=0',
-        'keyint=48',
-        'min-keyint=24',
+        "keyint=$keyFrameInterval",
+        "min-keyint=$FrameRate",
         'scenecut=0',
         'repeat-headers=1',
         'range=limited',
@@ -170,7 +196,8 @@ function New-PlaybackSmokeFixture {
     Assert-PlaybackSmokeFixture `
         -Path $outputPath `
         -Transfer $Transfer `
-        -AudioCodec $AudioCodec
+        -AudioCodec $AudioCodec `
+        -FrameRate $FrameRate
 
     return Get-Item -LiteralPath $outputPath
 }
@@ -178,10 +205,15 @@ function New-PlaybackSmokeFixture {
 function New-AC3SwitchFixture {
     param(
         [Parameter(Mandatory)]
-        [string] $VideoAndAACInputPath
+        [string] $VideoAndAACInputPath,
+
+        [Parameter(Mandatory)]
+        [ValidateSet(24, 30, 60)]
+        [int] $FrameRate
     )
 
-    [string] $outputPath = Join-Path $OutputDirectory 'pq-main10-1080p24-aac-ac3.mkv'
+    [string] $outputPath = Join-Path $OutputDirectory `
+        "pq-main10-${Resolution}${FrameRate}-aac-ac3.mkv"
     if ((Test-Path -LiteralPath $outputPath) -and !$Overwrite) {
         throw "$outputPath already exists; pass -Overwrite to replace it"
     }
@@ -217,35 +249,49 @@ function New-AC3SwitchFixture {
     Assert-PlaybackSmokeFixture `
         -Path $outputPath `
         -Transfer 'smpte2084' `
-        -AudioCodec 'aac'
+        -AudioCodec 'aac' `
+        -FrameRate $FrameRate
     Assert-PlaybackSmokeFixture `
         -Path $outputPath `
         -Transfer 'smpte2084' `
-        -AudioCodec 'ac3'
+        -AudioCodec 'ac3' `
+        -FrameRate $FrameRate
 
     return Get-Item -LiteralPath $outputPath
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 [System.Collections.Generic.List[System.IO.FileInfo]] $generatedFiles = @()
-[System.IO.FileInfo] $pqAACFixture = New-PlaybackSmokeFixture `
-    -Name 'pq-main10-1080p24-aac' `
-    -TransferCode '16' `
-    -Transfer 'smpte2084' `
-    -AudioCodec 'aac' `
-    -AudioBitRate 128 `
-    -AudioFrequency 440
-$generatedFiles.Add($pqAACFixture)
-$generatedFiles.Add((New-PlaybackSmokeFixture `
-    -Name 'hlg-main10-1080p24-aac' `
-    -TransferCode '18' `
-    -Transfer 'arib-std-b67' `
-    -AudioCodec 'aac' `
-    -AudioBitRate 128 `
-    -AudioFrequency 660))
+[System.IO.FileInfo] $pqAACFixtureForAC3 = $null
+foreach ($fixtureFrameRate in ($FrameRates | Sort-Object -Unique)) {
+    [System.IO.FileInfo] $pqAACFixture = New-PlaybackSmokeFixture `
+        -Name "pq-main10-${Resolution}${fixtureFrameRate}-aac" `
+        -TransferCode '16' `
+        -Transfer 'smpte2084' `
+        -AudioCodec 'aac' `
+        -AudioBitRate 128 `
+        -AudioFrequency 440 `
+        -FrameRate $fixtureFrameRate
+    $generatedFiles.Add($pqAACFixture)
+    $generatedFiles.Add((New-PlaybackSmokeFixture `
+        -Name "hlg-main10-${Resolution}${fixtureFrameRate}-aac" `
+        -TransferCode '18' `
+        -Transfer 'arib-std-b67' `
+        -AudioCodec 'aac' `
+        -AudioBitRate 128 `
+        -AudioFrequency 660 `
+        -FrameRate $fixtureFrameRate))
+    if ($fixtureFrameRate -eq 24) {
+        $pqAACFixtureForAC3 = $pqAACFixture
+    }
+}
 if ($IncludeAC3) {
+    if ($null -eq $pqAACFixtureForAC3) {
+        throw '-IncludeAC3 requires 24 in -FrameRates'
+    }
     $generatedFiles.Add((New-AC3SwitchFixture `
-        -VideoAndAACInputPath $pqAACFixture.FullName))
+        -VideoAndAACInputPath $pqAACFixtureForAC3.FullName `
+        -FrameRate 24))
 }
 
 $generatedFiles |

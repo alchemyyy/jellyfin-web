@@ -914,6 +914,8 @@ function validateTestSourceFrame(failures, evidence, label) {
     const expectedPixelCount = expectedSampleWidth * expectedSampleHeight;
     const minimumChannelRange = 32;
     const dominanceThreshold = 12;
+    // testsrc2's moving overlay can cover one fixed bar sample
+    const minimumSignatureMatchCount = 3;
     const horizontalSamples = evidence?.horizontalSamples;
 
     addFailure(failures, evidence?.status === 'captured', `${label}-capture-failed`);
@@ -952,14 +954,16 @@ function validateTestSourceFrame(failures, evidence, label) {
             )),
         `${label}-channel-range-insufficient`
     );
+    const signatureMatches = Array.isArray(horizontalSamples)
+        && horizontalSamples.length === 8 ? [
+            hasRedDominance(horizontalSamples[0], dominanceThreshold),
+            hasYellowDominance(horizontalSamples[3], dominanceThreshold),
+            hasBlueDominance(horizontalSamples[4], dominanceThreshold),
+            hasCyanDominance(horizontalSamples[7], dominanceThreshold)
+        ] : [];
     addFailure(
         failures,
-        Array.isArray(horizontalSamples)
-            && horizontalSamples.length === 8
-            && hasRedDominance(horizontalSamples[0], dominanceThreshold)
-            && hasYellowDominance(horizontalSamples[3], dominanceThreshold)
-            && hasBlueDominance(horizontalSamples[4], dominanceThreshold)
-            && hasCyanDominance(horizontalSamples[7], dominanceThreshold),
+        signatureMatches.filter(Boolean).length >= minimumSignatureMatchCount,
         `${label}-testsrc2-signature-mismatch`
     );
 }

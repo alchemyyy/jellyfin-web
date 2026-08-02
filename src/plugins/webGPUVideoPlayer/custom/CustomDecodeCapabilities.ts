@@ -51,12 +51,16 @@ export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_BITRATE = 40_000_000;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_HEIGHT = 2_160;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_WIDTH = 3_840;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_LEVEL = 153;
-export const CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
+export const CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND = 24;
+export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND = 24;
+export const CUSTOM_RAW_HDR_VIDEO_FRAME_RATE_TIERS = [ 60, 30, 24 ] as const;
 
 export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
 export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
 export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
+export type CustomRawHDRVideoMaximumFramesPerSecond =
+    typeof CUSTOM_RAW_HDR_VIDEO_FRAME_RATE_TIERS[number];
 export type CustomNativeSurroundAudioCodec =
     typeof CUSTOM_NATIVE_SURROUND_AUDIO_CODECS[number];
 export type CustomNativeUltraHDVideoCodec =
@@ -155,6 +159,7 @@ export type CustomRawHDRVideoCapabilityReason =
     | 'output-copy-unsupported'
     | 'probe-exception'
     | 'probe-timeout'
+    | 'throughput-insufficient'
     | 'runtime-insufficient'
     | 'runtime-unavailable';
 
@@ -165,6 +170,8 @@ export type CustomRawHDRVideoCodecCapability = {
     format: 'I420P10'
     maximumCodedHeight: number
     maximumCodedWidth: number
+    maximumFramesPerSecond: CustomRawHDRVideoMaximumFramesPerSecond | 0
+    measuredFramesPerSecond: number | null
     reason: CustomRawHDRVideoCapabilityReason
     status: CustomDecodeCapabilityStatus
 };
@@ -181,7 +188,13 @@ export type RawHDRVideoOutputProbeRequest = {
 
 export type RawHDRVideoOutputProbe = (
     probeRequest: RawHDRVideoOutputProbeRequest
-) => Promise<boolean>;
+) => Promise<RawHDRVideoOutputProbeResult>;
+
+export type RawHDRVideoOutputProbeResult = Readonly<{
+    maximumFramesPerSecond: CustomRawHDRVideoMaximumFramesPerSecond | null
+    measuredFramesPerSecond: number | null
+    outputCopySupported: boolean
+}>;
 
 export type NativeDolbyVisionVideoOutputProbeRequest = {
     configuration: VideoDecoderConfig
@@ -311,9 +324,8 @@ const REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH = RAW_HDR_CAPABILITY_FIXTURE_CODED_WIDT
 const REPRESENTATIVE_RAW_HDR_VIDEO_HEIGHT = RAW_HDR_CAPABILITY_FIXTURE_CODED_HEIGHT;
 const RAW_HDR_OUTPUT_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 const RAW_HDR_OUTPUT_PROBE_WARMUP_FRAME_COUNT = 1;
-const RAW_HDR_OUTPUT_PROBE_MEASURED_FRAME_COUNT = 4;
-const RAW_HDR_OUTPUT_PROBE_MINIMUM_FRAMES_PER_SECOND =
-    CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND;
+const RAW_HDR_OUTPUT_PROBE_MEASURED_FRAME_COUNT = 7;
+const RAW_HDR_OUTPUT_PROBE_THROUGHPUT_HEADROOM_FACTOR = 1.25;
 const RAW_HDR_OUTPUT_PROBE_FRAME_INTERVAL_MICROSECONDS = 41_667;
 const RAW_HDR_FINGERPRINT_COLUMN_SAMPLE_COUNT = 64;
 const RAW_HDR_FINGERPRINT_ROW_SAMPLE_COUNT = 36;
@@ -351,6 +363,32 @@ const defaultH264ProfileCapabilityProbe = new H264ProfileCapabilityProbe();
 const defaultBundledHEVCExactProbe = {
     probe: probeBundledHEVCExactCapabilities
 };
+
+/** Returns whether a value is one of the measured raw HDR playback tiers. */
+export function isCustomRawHDRVideoMaximumFramesPerSecond(
+    value: unknown
+): value is CustomRawHDRVideoMaximumFramesPerSecond {
+    return CUSTOM_RAW_HDR_VIDEO_FRAME_RATE_TIERS.some(frameRate => frameRate === value);
+}
+
+/** Quantizes measured decode/copy throughput with conservative playback headroom. */
+export function getQualifiedRawHDRMaximumFramesPerSecond(
+    measuredFramesPerSecond: number | null | undefined
+): CustomRawHDRVideoMaximumFramesPerSecond | null {
+    if (typeof measuredFramesPerSecond !== 'number'
+        || !Number.isFinite(measuredFramesPerSecond)
+        || measuredFramesPerSecond <= 0) {
+        return null;
+    }
+    for (const frameRate of CUSTOM_RAW_HDR_VIDEO_FRAME_RATE_TIERS) {
+        if (measuredFramesPerSecond >= (
+            frameRate * RAW_HDR_OUTPUT_PROBE_THROUGHPUT_HEADROOM_FACTOR
+        )) {
+            return frameRate;
+        }
+    }
+    return null;
+}
 
 function waitForCapabilityProbe<Value>(
     promise: Promise<Value>
@@ -754,7 +792,14 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
         return null;
     }
 
-    return async (probeRequest: RawHDRVideoOutputProbeRequest): Promise<boolean> => {
+    return async (
+        probeRequest: RawHDRVideoOutputProbeRequest
+    ): Promise<RawHDRVideoOutputProbeResult> => {
+        const unsupportedResult: RawHDRVideoOutputProbeResult = Object.freeze({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputCopySupported: false
+        });
         let acceptingFrame = true;
         let pendingFrameReject: ((reason: unknown) => void) | null = null;
         let pendingFrameResolve: ((frame: VideoFrame) => void) | null = null;
@@ -775,7 +820,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
         let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
         try {
             decoder.configure({ ...probeRequest.configuration });
-            const runThroughputProbe = async (): Promise<boolean> => {
+            const runThroughputProbe = async (): Promise<RawHDRVideoOutputProbeResult> => {
                 const totalFrameCount = RAW_HDR_OUTPUT_PROBE_WARMUP_FRAME_COUNT
                     + RAW_HDR_OUTPUT_PROBE_MEASURED_FRAME_COUNT;
                 let destination: Uint8Array | null = null;
@@ -798,7 +843,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                             decodedFrame.codedHeight !== probeRequest.expectedCodedHeight
                             || decodedFrame.codedWidth !== probeRequest.expectedCodedWidth
                         ) {
-                            return false;
+                            return unsupportedResult;
                         }
                         const copiedFrame = await copyDecodedRawHDRFrame(
                             decodedFrame,
@@ -806,7 +851,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                             destination
                         );
                         if (!copiedFrame) {
-                            return false;
+                            return unsupportedResult;
                         }
                         destination = copiedFrame.destination;
                         if (createRawHDRFrameFingerprint(
@@ -815,7 +860,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                             probeRequest.expectedCodedWidth,
                             probeRequest.expectedCodedHeight
                         ) !== probeRequest.expectedDecodedFrameFingerprint) {
-                            return false;
+                            return unsupportedResult;
                         }
                     } finally {
                         decodedFrame.close();
@@ -826,16 +871,23 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
                 }
                 const measuredMilliseconds = globalThis.performance.now()
                     - measurementStartMilliseconds;
-                const maximumMeasuredMilliseconds = (
-                    RAW_HDR_OUTPUT_PROBE_MEASURED_FRAME_COUNT * 1_000
-                ) / RAW_HDR_OUTPUT_PROBE_MINIMUM_FRAMES_PER_SECOND;
-                return measuredMilliseconds <= maximumMeasuredMilliseconds;
+                const measuredFramesPerSecond = measuredMilliseconds > 0 ?
+                    (RAW_HDR_OUTPUT_PROBE_MEASURED_FRAME_COUNT * 1_000)
+                        / measuredMilliseconds :
+                    null;
+                return Object.freeze({
+                    maximumFramesPerSecond: getQualifiedRawHDRMaximumFramesPerSecond(
+                        measuredFramesPerSecond
+                    ),
+                    measuredFramesPerSecond,
+                    outputCopySupported: true
+                });
             };
             return await Promise.race([
                 runThroughputProbe(),
-                new Promise<boolean>(resolve => {
+                new Promise<RawHDRVideoOutputProbeResult>(resolve => {
                     timeout = globalThis.setTimeout(
-                        () => resolve(false),
+                        () => resolve(unsupportedResult),
                         RAW_HDR_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
                     );
                 })
@@ -1156,10 +1208,20 @@ function createBundledHEVCRawHDRCapability(
 ): CustomRawHDRVideoCodecCapability {
     const main10FullHDTier = exactCapabilities?.tiers['main10-1080p'];
     const main10UltraHDTier = exactCapabilities?.tiers['main10-4k'];
-    let supportedTier = main10UltraHDTier?.status === 'supported' ?
-        main10UltraHDTier : null;
-    supportedTier ??= main10FullHDTier?.status === 'supported' ?
-        main10FullHDTier : null;
+    const ultraHDMaximumFramesPerSecond = main10UltraHDTier?.status === 'supported' ?
+        getQualifiedRawHDRMaximumFramesPerSecond(main10UltraHDTier.framesPerSecond) :
+        null;
+    const fullHDMaximumFramesPerSecond = main10FullHDTier?.status === 'supported' ?
+        getQualifiedRawHDRMaximumFramesPerSecond(main10FullHDTier.framesPerSecond) :
+        null;
+    let supportedTier = ultraHDMaximumFramesPerSecond !== null ?
+        main10UltraHDTier ?? null :
+        null;
+    let maximumFramesPerSecond = ultraHDMaximumFramesPerSecond;
+    if (!supportedTier && fullHDMaximumFramesPerSecond !== null) {
+        supportedTier = main10FullHDTier ?? null;
+        maximumFramesPerSecond = fullHDMaximumFramesPerSecond;
+    }
     const representativeTier = supportedTier ?? main10UltraHDTier ?? main10FullHDTier;
     const baseCapability = {
         bitDepth: 10 as const,
@@ -1172,6 +1234,8 @@ function createBundledHEVCRawHDRCapability(
             ...baseCapability,
             maximumCodedHeight: 0,
             maximumCodedWidth: 0,
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: null,
             reason: 'runtime-unavailable',
             status: 'unknown'
         });
@@ -1181,6 +1245,8 @@ function createBundledHEVCRawHDRCapability(
             ...baseCapability,
             maximumCodedHeight: 0,
             maximumCodedWidth: 0,
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: representativeTier.framesPerSecond ?? null,
             reason: 'runtime-insufficient',
             status: 'unsupported'
         });
@@ -1189,6 +1255,8 @@ function createBundledHEVCRawHDRCapability(
         ...baseCapability,
         maximumCodedHeight: supportedTier.maximumCodedHeight,
         maximumCodedWidth: supportedTier.maximumCodedWidth,
+        maximumFramesPerSecond: maximumFramesPerSecond ?? 0,
+        measuredFramesPerSecond: supportedTier.framesPerSecond ?? null,
         reason: 'bundled-software-decoder',
         status: 'supported'
     });
@@ -1304,7 +1372,9 @@ async function probeRawHDRVideoConfig(
         codecString: definition.config.codec,
         format: 'I420P10' as const,
         maximumCodedHeight: REPRESENTATIVE_RAW_HDR_VIDEO_HEIGHT,
-        maximumCodedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH
+        maximumCodedWidth: REPRESENTATIVE_RAW_HDR_VIDEO_WIDTH,
+        maximumFramesPerSecond: 0 as const,
+        measuredFramesPerSecond: null
     };
     if (!decoder || !outputProbe) {
         return Object.freeze({
@@ -1332,7 +1402,7 @@ async function probeRawHDRVideoConfig(
                 status: 'unsupported'
             });
         }
-        const outputCopySupported = await waitForCapabilityProbe(outputProbe({
+        const outputProbeResult = await waitForCapabilityProbe(outputProbe({
             codec: definition.codec,
             configuration: definition.config,
             encodedKeyFrame: definition.encodedKeyFrame.slice(),
@@ -1341,17 +1411,41 @@ async function probeRawHDRVideoConfig(
             expectedDecodedFrameFingerprint: definition.expectedDecodedFrameFingerprint,
             expectedFormat: 'I420P10'
         }));
-        if (outputCopySupported === CAPABILITY_PROBE_TIMEOUT) {
+        if (outputProbeResult === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 ...baseCapability,
                 reason: 'probe-timeout',
                 status: 'unknown'
             });
         }
+        if (!outputProbeResult.outputCopySupported) {
+            return Object.freeze({
+                ...baseCapability,
+                reason: 'output-copy-unsupported',
+                status: 'unsupported'
+            });
+        }
+        const qualifiedMaximumFramesPerSecond =
+            getQualifiedRawHDRMaximumFramesPerSecond(
+                outputProbeResult.measuredFramesPerSecond
+            );
+        if (!isCustomRawHDRVideoMaximumFramesPerSecond(
+            outputProbeResult.maximumFramesPerSecond
+        ) || outputProbeResult.maximumFramesPerSecond
+            !== qualifiedMaximumFramesPerSecond) {
+            return Object.freeze({
+                ...baseCapability,
+                measuredFramesPerSecond: outputProbeResult.measuredFramesPerSecond,
+                reason: 'throughput-insufficient',
+                status: 'unsupported'
+            });
+        }
         return Object.freeze({
             ...baseCapability,
-            reason: outputCopySupported ? 'output-copy-supported' : 'output-copy-unsupported',
-            status: outputCopySupported ? 'supported' : 'unsupported'
+            maximumFramesPerSecond: qualifiedMaximumFramesPerSecond,
+            measuredFramesPerSecond: outputProbeResult.measuredFramesPerSecond,
+            reason: 'output-copy-supported',
+            status: 'supported'
         });
     } catch {
         return Object.freeze({
