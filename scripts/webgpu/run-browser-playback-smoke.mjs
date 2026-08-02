@@ -1126,6 +1126,7 @@ function createPlayerSnapshotExpression(accessKey) {
                     : null
             } : null,
             customDecodeCapabilities: customDecodeCapabilities ? {
+                audio: customDecodeCapabilities.audio,
                 bundledHEVC: customDecodeCapabilities.bundledHEVC,
                 nativeDolbyVisionHEVC: customDecodeCapabilities.nativeDolbyVisionHEVC,
                 rawHDRHEVC: customDecodeCapabilities.rawHDRVideo?.hevc ?? null,

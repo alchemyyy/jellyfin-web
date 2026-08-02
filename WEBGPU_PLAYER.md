@@ -93,12 +93,19 @@ Eligibility remains narrower than the decoder's theoretical support:
   64-pixel vertical alignment. Every output frame is closed, and missing,
   duplicate, malformed, timed-out, or rejected output keeps that native route
   unadvertised.
+- AAC LC, Opus, FLAC, MP3, and Vorbis each require their exact 48 kHz stereo
+  decoder initialization data and one or two pinned silence packets to produce
+  exactly one owned `AudioData`. The probe verifies timestamp, channel count,
+  frame count, sample rate, duration, finite planar `f32` copying, and a tight
+  silence bound before closing the output and decoder. Configuration-only,
+  missing, duplicate, malformed, non-silent, or timed-out output remains
+  unadvertised.
 - Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
   access-unit fixture under its production `hev1.2.4.H150.B0` configuration
   and requires a correctly sized owned `VideoFrame`. Configuration support
   alone does not authorize that route.
-- Config-only results never authorize H.264, raw HDR, Dolby Vision Profile 5,
-  or bundled HEVC.
+- Config-only results never authorize native audio, H.264, ordinary native
+  HEVC/VP8/VP9/AV1, raw HDR, Dolby Vision Profile 5, or bundled HEVC.
   Unknown, timed-out, failed exact-output, interlaced, oversized, or ambiguous
   streams remain on the HTML player or server-selected fallback.
 

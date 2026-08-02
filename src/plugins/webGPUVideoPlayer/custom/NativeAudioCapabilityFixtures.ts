@@ -1,0 +1,190 @@
+export const NATIVE_AUDIO_CAPABILITY_FIXTURE_VERSION = 1;
+export const NATIVE_AUDIO_CAPABILITY_FIXTURE_CHANNEL_COUNT = 2;
+export const NATIVE_AUDIO_CAPABILITY_FIXTURE_SAMPLE_RATE = 48_000;
+
+export type NativeAudioCapabilityFixtureCodec =
+    | 'aac'
+    | 'flac'
+    | 'mp3'
+    | 'opus'
+    | 'vorbis';
+
+export type NativeAudioCapabilityFixtureChunk = Readonly<{
+    data: Uint8Array
+    duration: number
+    timestamp: number
+}>;
+
+export type NativeAudioCapabilityFixture = Readonly<{
+    codec: NativeAudioCapabilityFixtureCodec
+    codecString: string
+    description: Uint8Array | null
+    encodedChunks: readonly NativeAudioCapabilityFixtureChunk[]
+    expectedOutputFrameCount: number
+    expectedOutputTimestamp: number
+    numberOfChannels: number
+    sampleRate: number
+}>;
+
+// Generated with FFmpeg git-862338fe31 from 48 kHz stereo digital silence.
+// Container metadata and packets were extracted through Mediabunny 1.52.2.
+// Common input: -f lavfi -i "anullsrc=r=48000:cl=stereo" -t 0.12
+// Encoders: aac -b:a 128k; libopus -b:a 96k -vbr off -frame_duration 20;
+// flac -compression_level 5; libmp3lame -b:a 128k -write_xing 0;
+// and libvorbis -q:a -1
+const AAC_DESCRIPTION_BASE64 = 'EZBW5QA=';
+const AAC_PACKET_BASE64 = '3gIATGF2YzYyLjI0LjEwMABCIAjBGDg=';
+const OPUS_DESCRIPTION_BASE64 = 'T3B1c0hlYWQBAjgBgLsAAAAAAA==';
+const OPUS_PACKET_BASE64 = [
+    '/P/+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAA'
+].join('');
+const FLAC_DESCRIPTION_BASE64 =
+    'ZkxhQ4AAACISABIAAAAOAAAOC7gC8AAAFoC8JDKwwIUUKtcH7S7yDT0P';
+const FLAC_PACKET_BASE64 = '//haGADWAAAAAAAABmY=';
+const MP3_PACKET_BASE64 = [
+    '//uUZAAP8AAAaQAAAAgAAA0gAAABAAABpAAAACAAADSAAAAETEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVMQU1F',
+    'My4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
+    'VVVVVVVVVVVV'
+].join('');
+const VORBIS_DESCRIPTION_BASE64 = [
+    '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',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAABAAABDgAAAQYCEUGrIiAIgTAHBIEiQJkgTNA0iWBU2DpsE0AZJlQdOgaTBNAAAAAAAAAAAAACRNg6ZB0yCKAEnToGnQNIgi',
+    'AAAAAAAAAAAAAJKmQdOgaRBFgKRp0DRoGkQRAAAAAAAAAAAAAM80IYoQRZgmwDNNiCJEEaYJAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAgAABhwAAAIMKEMFBqyIgCIEwBwOIplAQCA4ziWBQAAjuNYFgAAWJYligAAYFmaKAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAGHAAAAgwoQwUGrISAIgCAHAoimUBx7Es4DiWBSTJsgCW',
+    'BdA8gKYBRBEACAAAKHAAAAiwQVNicYBCQ1YCAFEAAAbFsSxNE0WSpGmaJ4okSdM8TxRpmud5nmnC8zzPNCGKomiaEEVRNE2Ypmmq',
+    'KjBNVRUAAFDgAAAQYIOmxOIAhYasBABCAgAcimJZmuZ5nieKpqmaJEnTPE8URdE0TVNVSZKmeZ4oiqJpmqaqsixN8zxRFEXTVFVV',
+    'haZ5niiKommqqurC8zxPFEXRNFXVdeF5nieKomiaquq6EEVRNE3TVE1VdV0giqZpmqqqqq4LRE8UTVNVXdd1geeJommqqqu6LhBN',
+    '01RVVXVdWQaYpmmqquvKMkBVVdV1XVeWAaqqqq7rurIMUFXXdV1ZlmUAruu6sizLAgAADhwAAAKMoJOMKouw0YQLD0ChISsCgCgA',
+    'AMAYphRTyjAmIaQQGsYkhBRCJiWl0lKqIKRSUikVhFRKKiWjlFJqKVUQUimplApCKiWVUgAA2IEDANiBhVBoyEoAIA8AgDBGKcYY',
+    'c04ipBRjzjknEVKKMeeck0ox5pxzzkkpGXPMOeeklM4555xzUkrmnHPOOSmlc84555yUUkrnnHNOSiklhM5BJ6WU0jnnnBMAAFTg',
+    'AAAQYKPI5gQjQYWGrAQAUgEADI5jWZrmeaJompYkaZrneZ4omqYmSZrmeZ4niqrJ8zxPFEXRNFWV53meKIqiaaoq1xVF0zRNVVVd',
+    'siyKpmmaquq6ME3TVFXXdV2Ypmmqquu6LmxbVVXVdWUZtq2qquq6sgxc13Vl2ZaBLLuu7NqyAADwBAcAoAIbVkc4KRoLLDRkJQCQ',
+    'AQBAGIOQQgghZRBCCiGElFIICQAAGHAAAAgwoQwUGrISAEgFAACMsdZaa6211kBnrbXWWmutgMxaa6211lprrbXWWmuttdZSa621',
+    '1lprrbXWWmuttdZaa6211lprrbXWWmuttdZaa6211lprrbXWWmuttdZaa6211lprLaWUUkoppZRSSimllFJKKaWUUkoFAPpVOAD4',
+    'P9iwOsJJ0VhgoSErAYBwAADAGKUYcwxCKaVUCDHmnHRUWouxQogx5ySk1FpsxXPOQSghldZiLJ5zDkIpKcVWY1EphFJSSi22WItK',
+    'oaOSUkqt1ViMMamk1lqLrcZijEkptNRaizEWI2xNqbXYaquxGGNrKi20GGOMxQhfZGwtptpqDcYII1ssLdVaazDGGN1bi6W2mosx',
+    'PvjaUiwx1lwAAHeDAwBEgo0zrCSdFY4GFxqyEgAICQAgEFKKMcYYc84556RSjDnmnHMOQgihVIoxxpxzDkIIIZSMMeaccxBCCCGE',
+    'UkrGnHMQQgghhJBS6pxzEEIIIYQQSimdcw5CCCGEEEIppYMQQgghhBBKKKWkFEIIIYQQQgippJRCCCGEUkIoIZWUUgghhBBCKSWk',
+    'lFIKIYRSQgihhJRSSimFEEIIpZSSUkoppRJKCSWEElIpKaUUSgghlFJKSimlVEoJoYQSSiklpZRSSiGEEEopBQAAHDgAAAQYQScZ',
+    'VRZhowkXHoBCQ1YCAGQAAJCilFIpLUWCIqUYpBhLRhVzUFqKqHIMUs2pUs4g5iSWiDGElJNUMuYUQgxC6hx1TCkGLZUYQsYYpNhy',
+    'S6FzDgAAAEEAgICQAAADBAUzAMDgAOFzEHQCBEcbAIAgRGaIRMNCcHhQCRARUwFAYoJCLgBUWFykXVxAlwEu6OKuAyEEIQhBLA6g',
+    'gAQcnHDDE294wg1O0CkqdSAAAAAAAAwA8AAAkFwAERHRzGFkaGxwdHh8gISIjJAIAAAAAAAXAHwAACQlQERENHMYGRobHB0eHyAh',
+    'IiMkAQCAAAIAAAAAIIAABAQEAAAAAAACAAAABAQ='
+].join('');
+const VORBIS_FIRST_PACKET_BASE64 = 'AA==';
+const VORBIS_SECOND_PACKET_BASE64 = 'Cg==';
+
+function decodeBase64(base64: string): Uint8Array {
+    const decoded: string = globalThis.atob(base64);
+    const bytes: Uint8Array = new Uint8Array(decoded.length);
+    for (let byteIndex = 0; byteIndex < decoded.length; byteIndex += 1) {
+        bytes[byteIndex] = decoded.charCodeAt(byteIndex);
+    }
+    return bytes;
+}
+
+function createChunk(base64: string, duration: number): NativeAudioCapabilityFixtureChunk {
+    return {
+        data: decodeBase64(base64),
+        duration,
+        timestamp: 0
+    };
+}
+
+/** Returns fresh exact encoded audio packets and decoder initialization bytes. */
+export function createNativeAudioCapabilityFixture(
+    codec: NativeAudioCapabilityFixtureCodec
+): NativeAudioCapabilityFixture {
+    const common: Readonly<{
+        codec: NativeAudioCapabilityFixtureCodec
+        expectedOutputTimestamp: number
+        numberOfChannels: number
+        sampleRate: number
+    }> = {
+        codec,
+        expectedOutputTimestamp: 0,
+        numberOfChannels: NATIVE_AUDIO_CAPABILITY_FIXTURE_CHANNEL_COUNT,
+        sampleRate: NATIVE_AUDIO_CAPABILITY_FIXTURE_SAMPLE_RATE
+    };
+    switch (codec) {
+        case 'aac':
+            return {
+                ...common,
+                codecString: 'mp4a.40.2',
+                description: decodeBase64(AAC_DESCRIPTION_BASE64),
+                encodedChunks: [ createChunk(AAC_PACKET_BASE64, 21_333) ],
+                expectedOutputFrameCount: 1_024
+            };
+        case 'flac':
+            return {
+                ...common,
+                codecString: 'flac',
+                description: decodeBase64(FLAC_DESCRIPTION_BASE64),
+                encodedChunks: [ createChunk(FLAC_PACKET_BASE64, 96_000) ],
+                expectedOutputFrameCount: 4_608
+            };
+        case 'mp3':
+            return {
+                ...common,
+                codecString: 'mp3',
+                description: null,
+                encodedChunks: [ createChunk(MP3_PACKET_BASE64, 24_000) ],
+                expectedOutputFrameCount: 1_152
+            };
+        case 'opus':
+            return {
+                ...common,
+                codecString: 'opus',
+                description: decodeBase64(OPUS_DESCRIPTION_BASE64),
+                encodedChunks: [ createChunk(OPUS_PACKET_BASE64, 20_000) ],
+                expectedOutputFrameCount: 648
+            };
+        case 'vorbis':
+            return {
+                ...common,
+                codecString: 'vorbis',
+                description: decodeBase64(VORBIS_DESCRIPTION_BASE64),
+                encodedChunks: [
+                    createChunk(VORBIS_FIRST_PACKET_BASE64, 0),
+                    createChunk(VORBIS_SECOND_PACKET_BASE64, 12_000)
+                ],
+                expectedOutputFrameCount: 576
+            };
+    }
+}

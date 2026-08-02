@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
+    createNativeAudioOutputProbe,
     createNativeDolbyVisionVideoOutputProbe,
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
@@ -19,6 +20,7 @@ import type { HEVCExactCapabilityTier } from './HEVCExactCapabilityProtocol';
 type CapabilityEnvironmentHarness = {
     audioProbe: ReturnType<typeof vi.fn>
     environment: WebCodecsCapabilityEnvironment
+    nativeAudioOutputProbe: ReturnType<typeof vi.fn>
     nativeDolbyVisionVideoOutputProbe: ReturnType<typeof vi.fn>
     nativeVideoOutputProbe: ReturnType<typeof vi.fn>
     rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
@@ -96,7 +98,8 @@ function createEnvironment(
     audioSupport: ReadonlySet<string>,
     rawHDRVideoOutputSupport: ReadonlySet<string> = new Set<string>(),
     nativeDolbyVisionVideoOutputSupported = false,
-    nativeVideoOutputSupport: ReadonlySet<string> = videoSupport
+    nativeVideoOutputSupport: ReadonlySet<string> = videoSupport,
+    nativeAudioOutputSupport: ReadonlySet<string> = audioSupport
 ): CapabilityEnvironmentHarness {
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
@@ -115,6 +118,9 @@ function createEnvironment(
     const nativeVideoOutputProbe = vi.fn(async (probeRequest: {
         configuration: VideoDecoderConfig
     }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
+    const nativeAudioOutputProbe = vi.fn(async (probeRequest: {
+        configuration: AudioDecoderConfig
+    }): Promise<boolean> => nativeAudioOutputSupport.has(probeRequest.configuration.codec));
     return {
         audioProbe,
         environment: {
@@ -123,11 +129,13 @@ function createEnvironment(
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
+            nativeAudioOutputProbe,
             nativeDolbyVisionVideoOutputProbe,
             nativeVideoOutputProbe,
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         },
+        nativeAudioOutputProbe,
         nativeDolbyVisionVideoOutputProbe,
         nativeVideoOutputProbe,
         rawHDRVideoOutputProbe,
@@ -139,6 +147,16 @@ describe('CustomDecodeCapabilityProbe', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
+    });
+
+    it('does not create a native audio output probe without both WebCodecs APIs', () => {
+        vi.stubGlobal('AudioDecoder', undefined);
+        vi.stubGlobal('EncodedAudioChunk', class FakeEncodedAudioChunk {});
+        expect(createNativeAudioOutputProbe()).toBeNull();
+
+        vi.stubGlobal('AudioDecoder', class FakeAudioDecoder {});
+        vi.stubGlobal('EncodedAudioChunk', undefined);
+        expect(createNativeAudioOutputProbe()).toBeNull();
     });
 
     it('probes every representative WebCodecs configuration and records support', async () => {
@@ -261,6 +279,142 @@ describe('CustomDecodeCapabilityProbe', () => {
             CUSTOM_VIDEO_CODECS.length + CUSTOM_RAW_HDR_VIDEO_CODECS.length + 1
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
+    });
+
+    it.each([
+        {
+            chunkByteLengths: [ 23 ],
+            codec: 'aac',
+            codecString: 'mp4a.40.2',
+            descriptionByteLength: 5,
+            expectedNumberOfFrames: 1_024
+        },
+        {
+            chunkByteLengths: [ 240 ],
+            codec: 'opus',
+            codecString: 'opus',
+            descriptionByteLength: 19,
+            expectedNumberOfFrames: 648
+        },
+        {
+            chunkByteLengths: [ 14 ],
+            codec: 'flac',
+            codecString: 'flac',
+            descriptionByteLength: 42,
+            expectedNumberOfFrames: 4_608
+        },
+        {
+            chunkByteLengths: [ 384 ],
+            codec: 'mp3',
+            codecString: 'mp3',
+            descriptionByteLength: null,
+            expectedNumberOfFrames: 1_152
+        },
+        {
+            chunkByteLengths: [ 1, 1 ],
+            codec: 'vorbis',
+            codecString: 'vorbis',
+            descriptionByteLength: 3_929,
+            expectedNumberOfFrames: 576
+        }
+    ] as const)(
+        'requires exact decoded native $codec audio output',
+        async ({
+            chunkByteLengths,
+            codec,
+            codecString,
+            descriptionByteLength,
+            expectedNumberOfFrames
+        }) => {
+            const harness = createEnvironment(
+                new Set(),
+                new Set([ codecString ])
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(
+                harness.environment
+            ).probe();
+
+            expect(capabilities.audio[codec]).toMatchObject({
+                reason: 'decode-output-verified',
+                status: 'supported'
+            });
+            expect(harness.nativeAudioOutputProbe).toHaveBeenCalledOnce();
+            const request = harness.nativeAudioOutputProbe.mock.calls[0][0];
+            expect(request).toMatchObject({
+                codec,
+                configuration: {
+                    codec: codecString,
+                    numberOfChannels: 2,
+                    sampleRate: 48_000
+                },
+                expectedNumberOfChannels: 2,
+                expectedNumberOfFrames,
+                expectedSampleRate: 48_000,
+                expectedTimestamp: 0
+            });
+            if (descriptionByteLength === null) {
+                expect(request.configuration.description).toBeUndefined();
+            } else {
+                expect(request.configuration.description).toHaveLength(descriptionByteLength);
+            }
+            expect(request.encodedChunks.map((chunk: { data: Uint8Array }) => (
+                chunk.data.byteLength
+            ))).toEqual(chunkByteLengths);
+        }
+    );
+
+    it('rejects audio config support without matching decoded output', async () => {
+        const harness = createEnvironment(
+            new Set(),
+            new Set([ 'opus' ]),
+            new Set(),
+            false,
+            new Set(),
+            new Set()
+        );
+
+        const capabilities = await new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        expect(capabilities.audio.opus).toMatchObject({
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
+    });
+
+    it('does not claim native audio when the decoded-output probe is unavailable', async () => {
+        const harness = createEnvironment(new Set(), new Set([ 'opus' ]));
+        harness.environment.nativeAudioOutputProbe = null;
+
+        const capabilities = await new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        expect(capabilities.audio.opus).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+    });
+
+    it('bounds a native audio decoded-output probe that never settles', async () => {
+        vi.useFakeTimers();
+        const harness = createEnvironment(new Set(), new Set([ 'opus' ]));
+        harness.environment.nativeAudioOutputProbe = vi.fn(
+            () => new Promise<boolean>(() => undefined)
+        );
+        const probePromise = new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        const capabilities = await probePromise;
+
+        expect(capabilities.audio.opus).toMatchObject({
+            reason: 'probe-timeout',
+            status: 'unknown'
+        });
     });
 
     it.each([
@@ -643,6 +797,270 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
         }
     );
+
+    it.each([
+        {
+            outputs: [ {
+                duration: 21_333,
+                numberOfChannels: 2,
+                numberOfFrames: 1_024,
+                sampleRate: 48_000,
+                sampleValue: 0,
+                timestamp: 0
+            } ],
+            supported: true
+        },
+        {
+            outputs: [ {
+                duration: 21_333,
+                numberOfChannels: 1,
+                numberOfFrames: 1_024,
+                sampleRate: 48_000,
+                sampleValue: 0,
+                timestamp: 0
+            } ],
+            supported: false
+        },
+        {
+            outputs: [ {
+                duration: 21_333,
+                numberOfChannels: 2,
+                numberOfFrames: 1_023,
+                sampleRate: 48_000,
+                sampleValue: 0,
+                timestamp: 0
+            } ],
+            supported: false
+        },
+        {
+            outputs: [ {
+                duration: 20_000,
+                numberOfChannels: 2,
+                numberOfFrames: 1_024,
+                sampleRate: 48_000,
+                sampleValue: 0,
+                timestamp: 0
+            } ],
+            supported: false
+        },
+        {
+            outputs: [ {
+                duration: 21_333,
+                numberOfChannels: 2,
+                numberOfFrames: 1_024,
+                sampleRate: 48_000,
+                sampleValue: 0.001,
+                timestamp: 0
+            } ],
+            supported: false
+        },
+        {
+            outputs: [
+                {
+                    duration: 21_333,
+                    numberOfChannels: 2,
+                    numberOfFrames: 1_024,
+                    sampleRate: 48_000,
+                    sampleValue: 0,
+                    timestamp: 0
+                },
+                {
+                    duration: 21_333,
+                    numberOfChannels: 2,
+                    numberOfFrames: 1_024,
+                    sampleRate: 48_000,
+                    sampleValue: 0,
+                    timestamp: 0
+                }
+            ],
+            supported: false
+        }
+    ] as const)(
+        'requires one exact silent native audio output: $supported',
+        async ({ outputs, supported }) => {
+            const closeAudioData = vi.fn();
+            const closeDecoder = vi.fn();
+            const encodedChunkInitializations: EncodedAudioChunkInit[] = [];
+            class FakeAudioDecoder {
+                public state: CodecState = 'unconfigured';
+
+                public constructor(private readonly callbacks: AudioDecoderInit) {}
+
+                public close(): void {
+                    this.state = 'closed';
+                    closeDecoder();
+                }
+
+                public configure(): void {
+                    this.state = 'configured';
+                }
+
+                public decode(): void {
+                    for (const output of outputs) {
+                        const audioData = {
+                            close: closeAudioData,
+                            copyTo: (destination: AllowSharedBufferSource): void => {
+                                (destination as Float32Array).fill(output.sampleValue);
+                            },
+                            duration: output.duration,
+                            numberOfChannels: output.numberOfChannels,
+                            numberOfFrames: output.numberOfFrames,
+                            sampleRate: output.sampleRate,
+                            timestamp: output.timestamp
+                        } as unknown as AudioData;
+                        this.callbacks.output(audioData);
+                    }
+                }
+
+                public flush(): Promise<void> {
+                    return Promise.resolve();
+                }
+            }
+            class FakeEncodedAudioChunk {
+                public constructor(initialization: EncodedAudioChunkInit) {
+                    encodedChunkInitializations.push(initialization);
+                }
+            }
+            vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+            vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+            const outputProbe = createNativeAudioOutputProbe();
+
+            await expect(outputProbe?.({
+                codec: 'aac',
+                configuration: {
+                    codec: 'mp4a.40.2',
+                    numberOfChannels: 2,
+                    sampleRate: 48_000
+                },
+                encodedChunks: [ {
+                    data: new Uint8Array([ 1, 2, 3 ]),
+                    duration: 21_333,
+                    timestamp: 0
+                } ],
+                expectedNumberOfChannels: 2,
+                expectedNumberOfFrames: 1_024,
+                expectedSampleRate: 48_000,
+                expectedTimestamp: 0
+            })).resolves.toBe(supported);
+            expect(encodedChunkInitializations).toEqual([ {
+                data: new Uint8Array([ 1, 2, 3 ]),
+                duration: 21_333,
+                timestamp: 0,
+                type: 'key'
+            } ]);
+            expect(closeAudioData).toHaveBeenCalledTimes(outputs.length);
+            expect(closeDecoder).toHaveBeenCalledOnce();
+        }
+    );
+
+    it('rejects and closes native audio whose planar copy fails', async () => {
+        const closeAudioData = vi.fn();
+        class FakeAudioDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public constructor(private readonly callbacks: AudioDecoderInit) {}
+
+            public close(): void {
+                this.state = 'closed';
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                this.callbacks.output({
+                    close: closeAudioData,
+                    copyTo: (): void => {
+                        throw new DOMException('Copy failed', 'OperationError');
+                    },
+                    duration: 21_333,
+                    numberOfChannels: 2,
+                    numberOfFrames: 1_024,
+                    sampleRate: 48_000,
+                    timestamp: 0
+                } as unknown as AudioData);
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedAudioChunk {}
+        vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+        vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+        const outputProbe = createNativeAudioOutputProbe();
+
+        await expect(outputProbe?.({
+            codec: 'aac',
+            configuration: {
+                codec: 'mp4a.40.2',
+                numberOfChannels: 2,
+                sampleRate: 48_000
+            },
+            encodedChunks: [ {
+                data: new Uint8Array([ 1 ]),
+                duration: 21_333,
+                timestamp: 0
+            } ],
+            expectedNumberOfChannels: 2,
+            expectedNumberOfFrames: 1_024,
+            expectedSampleRate: 48_000,
+            expectedTimestamp: 0
+        })).resolves.toBe(false);
+        expect(closeAudioData).toHaveBeenCalledOnce();
+    });
+
+    it('closes a native audio decoder whose flush never settles', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        class FakeAudioDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public close(): void {
+                this.state = 'closed';
+                closeDecoder();
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                return;
+            }
+
+            public flush(): Promise<void> {
+                return new Promise<void>(() => undefined);
+            }
+        }
+        class FakeEncodedAudioChunk {}
+        vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+        vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+        const outputProbe = createNativeAudioOutputProbe();
+        const probePromise = outputProbe?.({
+            codec: 'aac',
+            configuration: {
+                codec: 'mp4a.40.2',
+                numberOfChannels: 2,
+                sampleRate: 48_000
+            },
+            encodedChunks: [ {
+                data: new Uint8Array([ 1 ]),
+                duration: 21_333,
+                timestamp: 0
+            } ],
+            expectedNumberOfChannels: 2,
+            expectedNumberOfFrames: 1_024,
+            expectedSampleRate: 48_000,
+            expectedTimestamp: 0
+        });
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toBe(false);
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
 
     it.each([
         { codedHeight: 2_160, codedWidth: 3_840, supported: true },

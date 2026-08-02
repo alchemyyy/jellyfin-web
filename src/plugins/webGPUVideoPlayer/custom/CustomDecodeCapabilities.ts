@@ -12,6 +12,10 @@ import {
 } from './HEVCExactCapabilityProbe';
 import { createHEVCExactCapabilityAccessUnit } from './HEVCExactCapabilityFixtures';
 import { getCustomDecodeHardwareAcceleration } from './DecodeWorkerProtocol';
+import {
+    createNativeAudioCapabilityFixture,
+    type NativeAudioCapabilityFixture
+} from './NativeAudioCapabilityFixtures';
 import { createNativeVideoCapabilityFixture } from './NativeVideoCapabilityFixtures';
 
 export const CUSTOM_VIDEO_CODECS = [ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ] as const;
@@ -156,6 +160,24 @@ export type NativeVideoOutputProbe = (
     probeRequest: NativeVideoOutputProbeRequest
 ) => Promise<boolean>;
 
+export type NativeAudioOutputProbeRequest = {
+    codec: Exclude<CustomAudioCodec, CustomBundledAudioCodec>
+    configuration: AudioDecoderConfig
+    encodedChunks: readonly Readonly<{
+        data: Uint8Array
+        duration: number
+        timestamp: number
+    }>[]
+    expectedNumberOfChannels: number
+    expectedNumberOfFrames: number
+    expectedSampleRate: number
+    expectedTimestamp: number
+};
+
+export type NativeAudioOutputProbe = (
+    probeRequest: NativeAudioOutputProbeRequest
+) => Promise<boolean>;
+
 type RawHDRVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
     format: 'I420P10'
 };
@@ -165,6 +187,7 @@ export type WebCodecsCapabilityEnvironment = {
     bundledAC3SoftwareDecoder?: boolean
     bundledHEVCExactProbe?: { probe: () => Promise<BundledHEVCExactCapabilities> } | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
+    nativeAudioOutputProbe?: NativeAudioOutputProbe | null
     nativeDolbyVisionVideoOutputProbe?: NativeDolbyVisionVideoOutputProbe | null
     nativeVideoOutputProbe?: NativeVideoOutputProbe | null
     rawHDRVideoOutputProbe?: RawHDRVideoOutputProbe | null
@@ -196,6 +219,13 @@ function hasDecodedVideoOutputFixture(
 type AudioProbeDefinition = {
     codec: Exclude<CustomAudioCodec, CustomBundledAudioCodec>
     config: AudioDecoderConfig
+    outputFixture: {
+        encodedChunks: NativeAudioCapabilityFixture['encodedChunks']
+        expectedNumberOfChannels: number
+        expectedNumberOfFrames: number
+        expectedSampleRate: number
+        expectedTimestamp: number
+    }
 };
 
 type BundledAudioCodecDefinition = {
@@ -233,6 +263,7 @@ const RAW_HDR_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const RAW_HDR_FNV1A_PRIME = 16_777_619;
 const NATIVE_VIDEO_MAXIMUM_HORIZONTAL_CODED_ALIGNMENT = 256;
 const NATIVE_VIDEO_MAXIMUM_VERTICAL_CODED_ALIGNMENT = 64;
+const NATIVE_AUDIO_MAXIMUM_ABSOLUTE_SILENCE_SAMPLE = 0.000_001;
 const HEVC_MAIN10_BLACK_DECODED_FRAME_FINGERPRINT = 3_873_342_648;
 const NATIVE_HEVC_SDR_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit('main-1080p');
 const NATIVE_DOLBY_VISION_HEVC_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit(
@@ -241,6 +272,16 @@ const NATIVE_DOLBY_VISION_HEVC_ACCESS_UNIT = createHEVCExactCapabilityAccessUnit
 const NATIVE_AV1_SDR_FIXTURE = createNativeVideoCapabilityFixture('av1');
 const NATIVE_VP8_SDR_FIXTURE = createNativeVideoCapabilityFixture('vp8');
 const NATIVE_VP9_SDR_FIXTURE = createNativeVideoCapabilityFixture('vp9');
+const NATIVE_AAC_AUDIO_FIXTURE: NativeAudioCapabilityFixture =
+    createNativeAudioCapabilityFixture('aac');
+const NATIVE_OPUS_AUDIO_FIXTURE: NativeAudioCapabilityFixture =
+    createNativeAudioCapabilityFixture('opus');
+const NATIVE_FLAC_AUDIO_FIXTURE: NativeAudioCapabilityFixture =
+    createNativeAudioCapabilityFixture('flac');
+const NATIVE_MP3_AUDIO_FIXTURE: NativeAudioCapabilityFixture =
+    createNativeAudioCapabilityFixture('mp3');
+const NATIVE_VORBIS_AUDIO_FIXTURE: NativeAudioCapabilityFixture =
+    createNativeAudioCapabilityFixture('vorbis');
 const CAPABILITY_PROBE_TIMEOUT = Symbol('custom-decode-capability-probe-timeout');
 const defaultH264ProfileCapabilityProbe = new H264ProfileCapabilityProbe();
 const defaultBundledHEVCExactProbe = {
@@ -276,10 +317,6 @@ function waitForCapabilityProbe<Value>(
         });
     });
 }
-const REPRESENTATIVE_AUDIO_SAMPLE_RATE = 48_000;
-const REPRESENTATIVE_AUDIO_CHANNEL_COUNT = 2;
-const REPRESENTATIVE_FLAC_STREAM_INFO_BYTES = 34;
-
 const VIDEO_PROBE_DEFINITIONS: readonly VideoProbeDefinition[] = [
     {
         codec: 'h264',
@@ -372,52 +409,33 @@ const NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION = {
     }
 } as const satisfies VideoProbeDefinition;
 
+function createAudioProbeDefinition(
+    fixture: NativeAudioCapabilityFixture
+): AudioProbeDefinition {
+    return {
+        codec: fixture.codec,
+        config: {
+            codec: fixture.codecString,
+            ...(fixture.description ? { description: fixture.description.slice() } : {}),
+            numberOfChannels: fixture.numberOfChannels,
+            sampleRate: fixture.sampleRate
+        },
+        outputFixture: {
+            encodedChunks: fixture.encodedChunks,
+            expectedNumberOfChannels: fixture.numberOfChannels,
+            expectedNumberOfFrames: fixture.expectedOutputFrameCount,
+            expectedSampleRate: fixture.sampleRate,
+            expectedTimestamp: fixture.expectedOutputTimestamp
+        }
+    };
+}
+
 const AUDIO_PROBE_DEFINITIONS: readonly AudioProbeDefinition[] = [
-    {
-        codec: 'aac',
-        config: {
-            codec: 'mp4a.40.2',
-            numberOfChannels: REPRESENTATIVE_AUDIO_CHANNEL_COUNT,
-            sampleRate: REPRESENTATIVE_AUDIO_SAMPLE_RATE
-        }
-    },
-    {
-        codec: 'opus',
-        config: {
-            codec: 'opus',
-            numberOfChannels: REPRESENTATIVE_AUDIO_CHANNEL_COUNT,
-            sampleRate: REPRESENTATIVE_AUDIO_SAMPLE_RATE
-        }
-    },
-    {
-        codec: 'flac',
-        config: {
-            codec: 'flac',
-            // WebCodecs requires a STREAMINFO description to probe FLAC
-            description: new Uint8Array(REPRESENTATIVE_FLAC_STREAM_INFO_BYTES),
-            numberOfChannels: REPRESENTATIVE_AUDIO_CHANNEL_COUNT,
-            sampleRate: REPRESENTATIVE_AUDIO_SAMPLE_RATE
-        }
-    },
-    {
-        codec: 'mp3',
-        config: {
-            codec: 'mp3',
-            numberOfChannels: REPRESENTATIVE_AUDIO_CHANNEL_COUNT,
-            sampleRate: REPRESENTATIVE_AUDIO_SAMPLE_RATE
-        }
-    },
-    {
-        codec: 'vorbis',
-        config: {
-            codec: 'vorbis',
-            // Decoder availability can be probed with a non-empty description;
-            // the selected track supplies its exact private data before decode
-            description: new Uint8Array([0]),
-            numberOfChannels: REPRESENTATIVE_AUDIO_CHANNEL_COUNT,
-            sampleRate: REPRESENTATIVE_AUDIO_SAMPLE_RATE
-        }
-    }
+    createAudioProbeDefinition(NATIVE_AAC_AUDIO_FIXTURE),
+    createAudioProbeDefinition(NATIVE_OPUS_AUDIO_FIXTURE),
+    createAudioProbeDefinition(NATIVE_FLAC_AUDIO_FIXTURE),
+    createAudioProbeDefinition(NATIVE_MP3_AUDIO_FIXTURE),
+    createAudioProbeDefinition(NATIVE_VORBIS_AUDIO_FIXTURE)
 ];
 const BUNDLED_AUDIO_CODEC_DEFINITIONS: readonly BundledAudioCodecDefinition[] = [
     { codec: 'ac3', codecString: 'ac-3' },
@@ -724,6 +742,117 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
     };
 }
 
+function nativeAudioDataMatchesRequest(
+    audioData: AudioData,
+    probeRequest: NativeAudioOutputProbeRequest
+): boolean {
+    const expectedDuration: number = Math.round(
+        (probeRequest.expectedNumberOfFrames * 1_000_000)
+        / probeRequest.expectedSampleRate
+    );
+    if (
+        audioData.numberOfChannels !== probeRequest.expectedNumberOfChannels
+        || audioData.numberOfFrames !== probeRequest.expectedNumberOfFrames
+        || audioData.sampleRate !== probeRequest.expectedSampleRate
+        || audioData.timestamp !== probeRequest.expectedTimestamp
+        || audioData.duration !== expectedDuration
+    ) {
+        return false;
+    }
+
+    try {
+        for (
+            let channelIndex = 0;
+            channelIndex < probeRequest.expectedNumberOfChannels;
+            channelIndex += 1
+        ) {
+            const samples: Float32Array = new Float32Array(
+                probeRequest.expectedNumberOfFrames
+            );
+            audioData.copyTo(samples, {
+                format: 'f32-planar',
+                planeIndex: channelIndex
+            });
+            for (const sample of samples) {
+                if (!Number.isFinite(sample)
+                    || Math.abs(sample) > NATIVE_AUDIO_MAXIMUM_ABSOLUTE_SILENCE_SAMPLE) {
+                    return false;
+                }
+            }
+        }
+    } catch {
+        return false;
+    }
+    return true;
+}
+
+/** Creates the exact decoded AudioData probe for native WebCodecs audio. */
+export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
+    if (typeof globalThis.AudioDecoder !== 'function'
+        || typeof globalThis.EncodedAudioChunk !== 'function') {
+        return null;
+    }
+
+    return async (probeRequest: NativeAudioOutputProbeRequest): Promise<boolean> => {
+        let acceptingOutput = true;
+        let decoderError: DOMException | null = null;
+        let outputCount = 0;
+        let outputMatches = true;
+        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+        const decoder: AudioDecoder = new AudioDecoder({
+            error: (error: DOMException): void => {
+                decoderError = error;
+            },
+            output: (audioData: AudioData): void => {
+                try {
+                    if (!acceptingOutput) {
+                        return;
+                    }
+                    outputCount += 1;
+                    outputMatches = outputMatches
+                        && nativeAudioDataMatchesRequest(audioData, probeRequest);
+                } finally {
+                    audioData.close();
+                }
+            }
+        });
+        let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+        try {
+            decoder.configure({ ...probeRequest.configuration });
+            const runOutputProbe = async (): Promise<boolean> => {
+                for (const chunk of probeRequest.encodedChunks) {
+                    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+                    decoder.decode(new EncodedAudioChunk({
+                        data: chunk.data,
+                        duration: chunk.duration,
+                        timestamp: chunk.timestamp,
+                        type: 'key'
+                    }));
+                }
+                await decoder.flush();
+                return decoderError === null && outputCount === 1 && outputMatches;
+            };
+            return await Promise.race([
+                runOutputProbe(),
+                new Promise<boolean>(resolve => {
+                    timeout = globalThis.setTimeout(
+                        () => resolve(false),
+                        RAW_HDR_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
+                    );
+                })
+            ]);
+        } finally {
+            acceptingOutput = false;
+            if (timeout !== null) {
+                globalThis.clearTimeout(timeout);
+            }
+            if (decoder.state !== 'closed') {
+                decoder.close();
+            }
+        }
+    };
+}
+
 function nativeVideoFrameMatchesRequest(
     frame: VideoFrame,
     probeRequest: NativeVideoOutputProbeRequest
@@ -891,6 +1020,7 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
         bundledAC3SoftwareDecoder: __ENABLE_BUNDLED_AC3_SOFTWARE_DECODER__,
         bundledHEVCExactProbe: defaultBundledHEVCExactProbe,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
+        nativeAudioOutputProbe: createNativeAudioOutputProbe(),
         nativeDolbyVisionVideoOutputProbe: createNativeDolbyVisionVideoOutputProbe(),
         nativeVideoOutputProbe: createNativeVideoOutputProbe(),
         rawHDRVideoOutputProbe: createRawHDRVideoOutputProbe(),
@@ -1158,6 +1288,85 @@ async function probeConfig<Codec extends CustomDecodeCodec, Config extends { cod
     }
 }
 
+async function probeNativeAudioConfig(
+    definition: AudioProbeDefinition,
+    decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
+    outputProbe: NativeAudioOutputProbe | null | undefined
+): Promise<CustomDecodeCodecCapability<Exclude<CustomAudioCodec, CustomBundledAudioCodec>>> {
+    if (!decoder) {
+        return createUnavailableCapability(definition.codec, definition.config.codec);
+    }
+
+    try {
+        const support = await waitForCapabilityProbe(
+            decoder.isConfigSupported({ ...definition.config })
+        );
+        if (support === CAPABILITY_PROBE_TIMEOUT) {
+            return Object.freeze({
+                codec: definition.codec,
+                codecString: definition.config.codec,
+                reason: 'probe-timeout',
+                status: 'unknown'
+            });
+        }
+        if (support.supported !== true) {
+            return Object.freeze({
+                codec: definition.codec,
+                codecString: definition.config.codec,
+                reason: 'config-unsupported',
+                status: 'unsupported'
+            });
+        }
+        if (!outputProbe) {
+            return createUnavailableCapability(definition.codec, definition.config.codec);
+        }
+
+        const fixture: AudioProbeDefinition['outputFixture'] = definition.outputFixture;
+        const encodedChunks: Array<{
+            data: Uint8Array
+            duration: number
+            timestamp: number
+        }> = [];
+        for (const chunk of fixture.encodedChunks) {
+            encodedChunks.push({
+                data: chunk.data.slice(),
+                duration: chunk.duration,
+                timestamp: chunk.timestamp
+            });
+        }
+        const outputSupported = await waitForCapabilityProbe(outputProbe({
+            codec: definition.codec,
+            configuration: { ...definition.config },
+            encodedChunks,
+            expectedNumberOfChannels: fixture.expectedNumberOfChannels,
+            expectedNumberOfFrames: fixture.expectedNumberOfFrames,
+            expectedSampleRate: fixture.expectedSampleRate,
+            expectedTimestamp: fixture.expectedTimestamp
+        }));
+        if (outputSupported === CAPABILITY_PROBE_TIMEOUT) {
+            return Object.freeze({
+                codec: definition.codec,
+                codecString: definition.config.codec,
+                reason: 'probe-timeout',
+                status: 'unknown'
+            });
+        }
+        return Object.freeze({
+            codec: definition.codec,
+            codecString: definition.config.codec,
+            reason: outputSupported ? 'decode-output-verified' : 'decode-output-missing',
+            status: outputSupported ? 'supported' : 'unsupported'
+        });
+    } catch {
+        return Object.freeze({
+            codec: definition.codec,
+            codecString: definition.config.codec,
+            reason: 'probe-exception',
+            status: 'unknown'
+        });
+    }
+}
+
 async function probeNativeVideoConfig(
     definition: DecodedVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
@@ -1381,7 +1590,11 @@ export default class CustomDecodeCapabilityProbe {
         }
         const audioProbePromises: Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> = [];
         for (const definition of AUDIO_PROBE_DEFINITIONS) {
-            audioProbePromises.push(probeConfig(definition, environment.audioDecoder));
+            audioProbePromises.push(probeNativeAudioConfig(
+                definition,
+                environment.audioDecoder,
+                environment.nativeAudioOutputProbe
+            ));
         }
         const rawHDRVideoProbePromises: Array<Promise<CustomRawHDRVideoCodecCapability>> = [];
         for (const definition of RAW_HDR_VIDEO_PROBE_DEFINITIONS) {
