@@ -131,6 +131,57 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         queue.requireDrained();
     });
 
+    it('associates an RPU carried by a separate enhancement track with the base picture', async () => {
+        const basePicture = createNALUnit(19, [ 1, 2 ]);
+        const enhancementPicture = createNALUnit(19, [ 3, 4 ]);
+        const rpu = createNALUnit(62, [ 5, 6 ]);
+        const rpuParser = createRPUParser(
+            createDolbyVisionAuthorizationRPUFixture(7, 'fel')
+        );
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            rpuParser
+        );
+
+        const processedPacket = await queue.processSeparatePackets(
+            createPacket(encodeAnnexBNALUnits([ basePicture ]), 1.75),
+            createPacket(encodeAnnexBNALUnits([ rpu, enhancementPicture ]), 1.75),
+            { kind: 'annex-b' }
+        );
+        const metadata = queue.takeFrameMetadata(1_750_000);
+
+        expect(getAnnexBNALUnitTypes(
+            processedPacket.baseLayerPacket?.data ?? new Uint8Array()
+        )).toEqual([ 19 ]);
+        expect(getAnnexBNALUnitTypes(
+            processedPacket.enhancementLayerPacket?.data ?? new Uint8Array()
+        )).toEqual([ 19 ]);
+        expect(metadata).toMatchObject({
+            enhancementLayerDisposition: 'discarded-fel',
+            hasEnhancementLayerVCL: true,
+            rpuNALUnits: [ rpu ]
+        });
+        expect(rpuParser.parse).toHaveBeenCalledWith(rpu);
+        queue.requireDrained();
+    });
+
+    it('rejects separate packets outside the one-microsecond timestamp tolerance', async () => {
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const enhancementPicture = createNALUnit(19, [ 2 ]);
+        const rpu = createNALUnit(62, [ 3 ]);
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser(createDolbyVisionAuthorizationRPUFixture(7, 'mel'))
+        );
+
+        await expect(queue.processSeparatePackets(
+            createPacket(encodeAnnexBNALUnits([ basePicture ]), 2),
+            createPacket(encodeAnnexBNALUnits([ rpu, enhancementPicture ]), 2.000_002),
+            { kind: 'annex-b' }
+        )).rejects.toThrow('mismatched timestamps');
+        queue.requireDrained();
+    });
+
     it('rejects enhancement data paired with a single-layer RPU', async () => {
         const basePicture = createNALUnit(19, [ 1 ]);
         const rpu = createNALUnit(62, [ 2 ]);

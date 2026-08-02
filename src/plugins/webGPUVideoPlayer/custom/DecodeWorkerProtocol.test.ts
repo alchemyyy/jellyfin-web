@@ -116,6 +116,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_FRAME_CREDITS,
             generation: 1,
@@ -192,6 +193,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionProfile: 7,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 2,
@@ -213,6 +215,40 @@ describe('DecodeWorkerProtocol', () => {
             outputMode: 'raw-planes',
             type: 'frame'
         })).toBe(true);
+    });
+
+    it('accepts only supported Dolby Vision profile values', () => {
+        const baseRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 2,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        } as const;
+        const supportedProfiles: readonly unknown[] = [ null, 5, 7, 8 ];
+        const unsupportedProfiles: readonly unknown[] = [ undefined, 0, 6, '7' ];
+
+        for (const supportedProfile of supportedProfiles) {
+            expect(isDecodeWorkerRequest({
+                ...baseRequest,
+                dolbyVisionProfile: supportedProfile
+            })).toBe(true);
+        }
+        for (const unsupportedProfile of unsupportedProfiles) {
+            expect(isDecodeWorkerRequest({
+                ...baseRequest,
+                dolbyVisionProfile: unsupportedProfile
+            })).toBe(false);
+        }
     });
 
     it('accepts one shared and bounded BL/EL raw-frame ownership unit', () => {
@@ -350,6 +386,7 @@ describe('DecodeWorkerProtocol', () => {
         const baseRequest = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 2,
@@ -533,6 +570,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             audioTrackIndex: 1,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 2,
@@ -565,6 +603,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: 1,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 2,
@@ -634,6 +673,7 @@ describe('DecodeWorkerProtocol', () => {
             audioOutputMode: 'native-media',
             audioSampleCredits: 2,
             audioTrackIndex: 1,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 4,

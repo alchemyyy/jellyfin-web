@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     readMatroskaDolbyVisionHVCE,
+    readMatroskaDolbyVisionTrackConfiguration,
     type MatroskaByteRangeReader
 } from './MatroskaDolbyVisionHVCE';
 
@@ -153,6 +154,20 @@ function createHVCE(seed = 0x30): Uint8Array {
     return data;
 }
 
+function createDVCC(
+    options: { enhancementLayerPresent?: boolean; profile?: number; rpuPresent?: boolean } = {}
+): Uint8Array {
+    const data = new Uint8Array(24);
+    data[0] = 1;
+    const configurationBits = ((options.profile ?? 7) << 9)
+        | (6 << 3)
+        | ((options.rpuPresent ?? true) ? 4 : 0)
+        | ((options.enhancementLayerPresent ?? true) ? 2 : 0);
+    data[2] = configurationBits >> 8;
+    data[3] = configurationBits & 0xFF;
+    return data;
+}
+
 describe('readMatroskaDolbyVisionHVCE', () => {
     it('extracts hvcE from the selected Matroska HEVC video track', async () => {
         const selectedHVCE = createHVCE();
@@ -291,5 +306,131 @@ describe('readMatroskaDolbyVisionHVCE', () => {
         await expect(readMatroskaDolbyVisionHVCE(reader, 1)).resolves.toBeNull();
         expect(reader).toHaveBeenCalledTimes(1);
         expect(reader).toHaveBeenCalledWith(0, 12);
+    });
+});
+
+describe('readMatroskaDolbyVisionTrackConfiguration', () => {
+    it('finds one separate Profile 7 enhancement track for the selected base track', async () => {
+        const data = createMatroska([
+            createTrack({ number: 1 }),
+            createTrack({
+                mappings: [ createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, createDVCC()) ],
+                number: 2
+            })
+        ]);
+
+        await expect(readMatroskaDolbyVisionTrackConfiguration(
+            createReader(data),
+            1
+        )).resolves.toEqual({
+            enhancementConfiguration: null,
+            separateEnhancementTrackNumber: 2
+        });
+    });
+
+    it('does not treat the selected enhancement track as a base track', async () => {
+        const data = createMatroska([
+            createTrack({ number: 1 }),
+            createTrack({
+                mappings: [ createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, createDVCC()) ],
+                number: 2
+            })
+        ]);
+
+        await expect(readMatroskaDolbyVisionTrackConfiguration(
+            createReader(data),
+            2
+        )).resolves.toEqual({
+            enhancementConfiguration: null,
+            separateEnhancementTrackNumber: null
+        });
+    });
+
+    it.each([
+        {
+            label: 'multiple base candidates',
+            tracks: [
+                createTrack({ number: 1 }),
+                createTrack({ number: 2 }),
+                createTrack({
+                    mappings: [
+                        createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, createDVCC())
+                    ],
+                    number: 3
+                })
+            ]
+        },
+        {
+            label: 'multiple enhancement candidates',
+            tracks: [
+                createTrack({ number: 1 }),
+                createTrack({
+                    mappings: [
+                        createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, createDVCC())
+                    ],
+                    number: 2
+                }),
+                createTrack({
+                    mappings: [
+                        createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, createDVCC())
+                    ],
+                    number: 3
+                })
+            ]
+        },
+        {
+            label: 'Profile 8 metadata',
+            tracks: [
+                createTrack({ number: 1 }),
+                createTrack({
+                    mappings: [
+                        createBlockAdditionMapping(
+                            DVCC_BLOCK_ADD_ID_TYPE,
+                            createDVCC({ profile: 8 })
+                        )
+                    ],
+                    number: 2
+                })
+            ]
+        },
+        {
+            label: 'missing RPU flag',
+            tracks: [
+                createTrack({ number: 1 }),
+                createTrack({
+                    mappings: [
+                        createBlockAdditionMapping(
+                            DVCC_BLOCK_ADD_ID_TYPE,
+                            createDVCC({ rpuPresent: false })
+                        )
+                    ],
+                    number: 2
+                })
+            ]
+        }
+    ])('rejects an ambiguous or unsupported pairing with $label', async ({ tracks }) => {
+        const result = await readMatroskaDolbyVisionTrackConfiguration(
+            createReader(createMatroska(tracks)),
+            1
+        );
+
+        expect(result?.separateEnhancementTrackNumber).toBeNull();
+    });
+
+    it('rejects a malformed Dolby Vision configuration without throwing', async () => {
+        const data = createMatroska([
+            createTrack({ number: 1 }),
+            createTrack({
+                mappings: [
+                    createBlockAdditionMapping(DVCC_BLOCK_ADD_ID_TYPE, new Uint8Array(3))
+                ],
+                number: 2
+            })
+        ]);
+
+        await expect(readMatroskaDolbyVisionTrackConfiguration(
+            createReader(data),
+            1
+        )).resolves.toBeNull();
     });
 });

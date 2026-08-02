@@ -18,6 +18,7 @@ import type {
 import type {
     CustomDecodeFailureKind,
     CustomDecodeAudioOutputMode,
+    CustomDecodeDolbyVisionProfile,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode,
@@ -53,6 +54,7 @@ export type CustomPlaybackPlayOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds | null
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     maximumCodedHeight: number
     maximumCodedWidth: number
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null

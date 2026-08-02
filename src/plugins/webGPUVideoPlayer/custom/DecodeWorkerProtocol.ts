@@ -31,6 +31,7 @@ export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
 export type CustomDecodeVideoDecoderBackend = 'bundled-hevc' | 'native';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
+export type CustomDecodeDolbyVisionProfile = 5 | 7 | 8 | null;
 export type CustomDecodeWorkerProgressPhase =
     | 'video-decoder-ready'
     | 'video-key-packet-ready'
@@ -66,6 +67,7 @@ export type DecodeWorkerStartRequest = {
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
     frameCredits: number
     generation: number
@@ -571,6 +573,10 @@ function hasValidOptionalDolbyVisionMetadata(value: Record<string, unknown>): bo
         );
 }
 
+function isDolbyVisionProfile(value: unknown): value is CustomDecodeDolbyVisionProfile {
+    return value === null || value === 5 || value === 7 || value === 8;
+}
+
 /** Validates a message before the decode worker acts on it. */
 export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequest {
     if (!isRecord(value) || !isGeneration(value.generation)) {
@@ -589,6 +595,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     && value.rawVideoFrameFormat === null;
             return typeof value.url === 'string'
                 && value.url.length > 0
+                && isDolbyVisionProfile(value.dolbyVisionProfile)
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
                 && isTrackIndex(value.videoTrackIndex)

@@ -1726,6 +1726,8 @@ export default class WebGPUPlayer {
                 audioOutputMode: eligibility.audioOutputMode ?? undefined,
                 audioTrackIndex: eligibility.audioTrackIndex,
                 durationMicroseconds: eligibility.durationMicroseconds,
+                dolbyVisionProfile:
+                    this.currentDolbyVisionPresentationDescriptor?.profile ?? null,
                 maximumCodedHeight: eligibility.maximumCodedHeight,
                 maximumCodedWidth: eligibility.maximumCodedWidth,
                 rawVideoFrameFormat: eligibility.rawVideoFrameFormat,

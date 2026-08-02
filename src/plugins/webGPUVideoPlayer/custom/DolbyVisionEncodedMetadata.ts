@@ -21,6 +21,7 @@ import { parseHEVCDecoderConfiguration } from './HEVCSoftwareVideoDecoder';
 export const MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT = 64;
 export const MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH = 64 * 1_024 * 1_024;
 export const MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH = 32 * 1_024 * 1_024;
+const DOLBY_VISION_PACKET_PAIR_TOLERANCE_MICROSECONDS = 1;
 
 export type ProcessedDolbyVisionHEVCPacket = {
     baseLayerPacket: EncodedPacket | null
@@ -190,6 +191,81 @@ export default class DolbyVisionEncodedMetadataQueue {
             hasBaseLayerVCL: splitResult.hasBaseLayerVCL,
             hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL
         };
+    }
+
+    /** Associates an ordinary HEVC BL packet with one separate-track EL packet. */
+    public async processSeparatePackets(
+        baseLayerPacket: EncodedPacket,
+        enhancementLayerPacket: EncodedPacket,
+        enhancementInputFormat: HEVCNALFormat
+    ): Promise<ProcessedDolbyVisionHEVCPacket> {
+        const baseTimestampMicroseconds = requireMicroseconds(
+            baseLayerPacket.microsecondTimestamp,
+            'Encoded HEVC base-layer packet timestamp'
+        );
+        const enhancementTimestampMicroseconds = requireMicroseconds(
+            enhancementLayerPacket.microsecondTimestamp,
+            'Encoded HEVC enhancement-layer packet timestamp'
+        );
+        if (Math.abs(enhancementTimestampMicroseconds - baseTimestampMicroseconds)
+            > DOLBY_VISION_PACKET_PAIR_TOLERANCE_MICROSECONDS) {
+            throw new TypeError('Separate Dolby Vision packets have mismatched timestamps');
+        }
+
+        const baseSplit = splitDolbyVisionHEVCAccessUnit(
+            baseLayerPacket.data,
+            this.inputFormat,
+            this.inputFormat
+        );
+        const enhancementSplit = splitDolbyVisionHEVCAccessUnit(
+            enhancementLayerPacket.data,
+            enhancementInputFormat,
+            enhancementInputFormat
+        );
+        if (
+            !baseSplit.hasBaseLayerVCL
+            || !enhancementSplit.hasBaseLayerVCL
+            || baseSplit.hasEnhancementLayerVCL
+            || enhancementSplit.hasEnhancementLayerVCL
+        ) {
+            throw new TypeError('Separate Dolby Vision packets do not contain one BL and one EL picture');
+        }
+
+        const rpuNALUnits = [
+            ...baseSplit.rpuNALUnits,
+            ...enhancementSplit.rpuNALUnits
+        ];
+        const parsedRPUData: ArrayBuffer[] = [];
+        for (const rpuNALUnit of rpuNALUnits) {
+            parsedRPUData.push(await this.rpuParser.parse(rpuNALUnit));
+        }
+        const enhancementLayerData = enhancementSplit.baseLayerData;
+        const metadataByteLength = getMetadataByteLength(rpuNALUnits, parsedRPUData);
+        const enhancementLayerDisposition = getEnhancementLayerDisposition(
+            enhancementLayerData,
+            parsedRPUData
+        );
+        const processedPacket: ProcessedDolbyVisionHEVCPacket = {
+            baseLayerPacket: baseSplit.baseLayerData ?
+                baseLayerPacket.clone({ data: baseSplit.baseLayerData }) :
+                null,
+            enhancementLayerPacket: enhancementLayerData ?
+                enhancementLayerPacket.clone({ data: enhancementLayerData }) :
+                null,
+            hasBaseLayerVCL: true,
+            hasEnhancementLayerVCL: true
+        };
+        this.enqueueFrame(baseTimestampMicroseconds, {
+            byteLength: metadataByteLength,
+            metadata: {
+                enhancementLayerDisposition,
+                hasEnhancementLayerVCL: true,
+                parsedRPUData,
+                rpuNALUnits,
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        });
+        return processedPacket;
     }
 
     /** Takes the unique metadata entry associated with one decoded frame. */

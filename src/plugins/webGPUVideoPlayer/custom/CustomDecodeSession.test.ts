@@ -14,7 +14,8 @@ import CustomDecodeSession, {
 } from './CustomDecodeSession';
 import {
     MAX_DECODED_FRAME_CREDITS,
-    MAX_DECODED_RAW_FRAME_CREDITS
+    MAX_DECODED_RAW_FRAME_CREDITS,
+    type CustomDecodeDolbyVisionProfile
 } from './DecodeWorkerProtocol';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
@@ -217,10 +218,12 @@ function startSession(
     session: CustomDecodeSession,
     generation: number,
     audioTrackIndex?: number,
-    videoOutputMode: 'raw-planes' | 'video-frame' = 'video-frame'
+    videoOutputMode: 'raw-planes' | 'video-frame' = 'video-frame',
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile = null
 ): void {
     session.start({
         audioTrackIndex,
+        dolbyVisionProfile,
         generation,
         maximumCodedHeight: videoOutputMode === 'raw-planes' ? 2_160 : 1_080,
         maximumCodedWidth: videoOutputMode === 'raw-planes' ? 3_840 : 1_920,
@@ -290,6 +293,23 @@ function emitRawFrame(
 }
 
 describe('CustomDecodeSession', () => {
+    it('forwards the selected Dolby Vision profile to the worker', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 6, undefined, 'raw-planes', 7);
+
+        expect(worker.postedMessages[0]).toMatchObject({
+            dolbyVisionProfile: 7,
+            generation: 6,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
     it('records bounded owned-video startup progress without emitting player events', () => {
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];
@@ -367,6 +387,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages).toEqual([ {
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
             frameCredits: MAX_DECODED_FRAME_CREDITS,
             generation: 7,
@@ -637,6 +658,7 @@ describe('CustomDecodeSession', () => {
             () => worker as unknown as Worker
         );
         session.start({
+            dolbyVisionProfile: null,
             generation: 18,
             maximumCodedHeight: 720,
             maximumCodedWidth: 1_280,
@@ -759,6 +781,7 @@ describe('CustomDecodeSession', () => {
             () => worker as unknown as Worker
         );
         session.start({
+            dolbyVisionProfile: null,
             generation: 21,
             maximumCodedHeight: 2,
             maximumCodedWidth: 4,
@@ -1196,6 +1219,7 @@ describe('CustomDecodeSession', () => {
         session.start({
             audioOutputMode: 'native-media',
             audioTrackIndex: 0,
+            dolbyVisionProfile: null,
             durationMicroseconds: secondsToMicroseconds(10),
             generation: 30,
             maximumCodedHeight: 1_080,

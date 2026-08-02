@@ -159,6 +159,14 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
 
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
+    if (
+        options.dolbyVisionProfile !== null
+        && options.dolbyVisionProfile !== 5
+        && options.dolbyVisionProfile !== 7
+        && options.dolbyVisionProfile !== 8
+    ) {
+        throw new TypeError('Custom playback Dolby Vision profile is invalid');
+    }
     if (options.durationMicroseconds !== null) {
         requireMicroseconds(options.durationMicroseconds, 'Playback duration');
         if (options.durationMicroseconds < 0) {
@@ -210,6 +218,7 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         durationMicroseconds: options.durationMicroseconds,
+        dolbyVisionProfile: options.dolbyVisionProfile,
         maximumCodedHeight: options.maximumCodedHeight,
         maximumCodedWidth: options.maximumCodedWidth,
         rawVideoFrameFormat: options.rawVideoFrameFormat,
@@ -880,6 +889,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
                 audioOutputMode: options.audioOutputMode,
                 audioTrackIndex: options.audioTrackIndex,
                 durationMicroseconds: options.durationMicroseconds,
+                dolbyVisionProfile: options.dolbyVisionProfile,
                 generation,
                 maximumCodedHeight: options.maximumCodedHeight,
                 maximumCodedWidth: options.maximumCodedWidth,

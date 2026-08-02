@@ -1,9 +1,10 @@
 # WebGPU Dolby Vision Implementation Record
 
 Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
-interleaved Profile 7 FEL decode/residual path are implemented with separate
-exact-device authorization. Interleaved Profile 7 also supports container
-`hvcE` initialization when a selected key access unit omits EL parameter sets.
+interleaved and separate-track Matroska Profile 7 FEL decode/residual paths are
+implemented with separate exact-device authorization. Interleaved Profile 7
+also supports container `hvcE` initialization when a selected key access unit
+omits EL parameter sets.
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -114,14 +115,15 @@ cannot authorize another. Device recovery repeats the applicable authorization
 and creates a new per-frame storage buffer before presentation resumes.
 
 Profile 7 MEL applies RPU reconstruction to the HDR10-compatible base image.
-For an interleaved Profile 7 FEL key access unit containing in-band EL
-VPS/SPS/PPS, the worker removes the NAL type 63 wrapper, feeds a second bundled
-HEVC decoder, pairs BL/EL output within one microsecond, uploads both planar
-images, applies LINEAR_DZ residual composition after reshape and before the
-nonlinear matrix, and then enters the ordinary BT.2020/PQ tone-mapping path.
-Missing, late, or failed EL degrades that frame/session to the HDR10 base
-without restarting playback. Presentation telemetry counts MEL, full FEL, and
-FEL base-fallback frames separately.
+For interleaved Profile 7 FEL, the worker removes the NAL type 63 wrapper and
+feeds a second bundled HEVC decoder. For a conservatively identified Matroska
+BL/EL track pair, it instead aligns ordinary HEVC packets from a second demux
+iterator and accepts the RPU from either track. Both routes pair BL/EL output
+within one microsecond, upload both planar images, apply LINEAR_DZ residual
+composition after reshape and before the nonlinear matrix, and then enter the
+ordinary BT.2020/PQ tone-mapping path. Missing, late, or failed EL degrades that
+frame/session to the HDR10 base without restarting playback. Presentation
+telemetry counts MEL, full FEL, and FEL base-fallback frames separately.
 
 ## Profile support matrix
 
@@ -129,7 +131,7 @@ FEL base-fallback frames separately.
 | --- | --- | --- | --- |
 | 5 | Full RPU reshape | Full RPU reshape | No generic base-layer fallback. Use a qualified native HTML path or server transcode |
 | 7 MEL | HDR10 base; optional L1-assisted generic tone mapping | RPU reshape; trivial NLQ means no useful EL residual | HDR10 base |
-| 7 FEL | HDR10 base; FEL fidelity is lost | BL plus second EL decode, LINEAR_DZ residual merge, and RPU reshape | Full reconstruction for qualified interleaved EL; otherwise HDR10 base with explicit telemetry |
+| 7 FEL | HDR10 base; FEL fidelity is lost | BL plus second EL decode, LINEAR_DZ residual merge, and RPU reshape | Full reconstruction for qualified interleaved or separate-track EL; otherwise HDR10 base with explicit telemetry |
 | 8.1 | Full RPU reshape | Full RPU reshape | HDR10 base |
 | 8.4 | Full RPU reshape | Full RPU reshape | HLG base |
 | Other 8.x | Generic 8.x implementation exists | Same | Depends on the BL signal compatibility ID; do not advertise without fixtures |
@@ -413,6 +415,15 @@ passed the same worker smoke with full `decoded-fel` output. That route cannot
 initialize from the access unit and therefore proves container-derived `hvcE`
 decoder setup rather than merely exercising the in-band path.
 
+[`create-separate-track-dolby-vision-fixture.mjs`](./scripts/webgpu/create-separate-track-dolby-vision-fixture.mjs)
+also transforms that source into a deterministic three-access-unit Matroska
+with independent 3840x2160 BL and 1920x1080 EL/RPU HEVC tracks. The generated
+validation-only file, SHA-256
+`d17456a94378165ff5312f46424819dd6bcd056d80d7841f62377abbdcd4fdb1`,
+passed the same worker smoke with exact packet and decoded-frame PTS pairing,
+one parsed EL-side RPU per frame, one shared compound raw buffer, full
+`decoded-fel` output, natural EOF, and acknowledged shutdown.
+
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
 imports it through `GPUExternalTexture`, executes the production Profile 5 RPU
@@ -507,19 +518,28 @@ the latter as EL HEVC configuration:
 [FFmpeg matroskadec.c](https://github.com/FFmpeg/FFmpeg/blob/406c5a37aa666d648928a142d367483fe1acdd17/libavformat/matroskadec.c#L2507-L2571).
 
 [`MatroskaDolbyVisionHVCE.ts`](./src/plugins/webGPUVideoPlayer/custom/MatroskaDolbyVisionHVCE.ts)
-works around only the missing `hvcE` boundary. It performs bounded random-access
-EBML reads, limits `Tracks` metadata to 4 MiB, matches the selected Mediabunny
-`TrackNumber`, requires an HEVC video track, and copies one unambiguous `hvcE`
-record. The worker validates that record as Main10 4:2:0 HVCC with VPS/SPS/PPS,
-the expected coded EL geometry, and bounded display geometry before configuring
-the second decoder. Malformed,
-missing, ambiguous, or unreachable metadata leaves the existing HDR10 BL
-session running.
+works around the missing `dvcC`, `dvvC`, and `hvcE` boundaries. It performs
+bounded random-access EBML reads, limits `Tracks` metadata to 4 MiB, matches the
+selected Mediabunny `TrackNumber`, and requires HEVC video tracks. It copies one
+unambiguous selected-track `hvcE` record, or recognizes a separate-track pair
+only when there are exactly two HEVC video tracks, exactly one other track has
+Profile 7 with RPU and EL flags, and the selected track is the remaining BL.
+Duplicate track numbers and ambiguous topologies fail closed.
+
+The worker validates an `hvcE` or separate-track decoder description as Main10
+4:2:0 HVCC with VPS/SPS/PPS, expected coded EL geometry, and bounded display
+geometry before configuring the second decoder. Separate-track packets come
+from an owned Mediabunny `EncodedPacketSink` and are consumed in lockstep decode
+order with no retained packet queue. Each EL packet must align to its BL PTS
+within one microsecond. RPU NAL units may arrive on either track and are
+attached to the BL presentation timestamp. Malformed, missing, ambiguous,
+unreachable, or mismatched metadata retires the EL route while the existing
+HDR10 BL session continues.
 
 Mediabunny remains the packet demuxer. The local reader does not parse clusters,
 rewrite access units, alter source negotiation, or expose general Matroska
-metadata. `dvcC`, `dvvC`, block-additional EL data, and separate-track Profile 7
-remain outside this narrow workaround.
+metadata. Block-additional EL payloads and non-Matroska dependency-stream
+representations remain outside this narrow workaround.
 
 ## Browser and WebGPU constraints
 
@@ -660,26 +680,32 @@ the parsed NLQ values.
 ### Stage 4: Profile 7 FEL
 
 Status: implemented for interleaved NAL type 63 streams using either in-band EL
-parameter sets or a validated Matroska `hvcE` record. Full residual presentation
-has separate exact-device authorization and retains explicit HDR10-base
-degradation.
+parameter sets or a validated Matroska `hvcE` record, and for conservative
+two-track Matroska BL/EL topology. Full residual presentation has separate
+exact-device authorization and retains explicit HDR10-base degradation.
 
 Implemented behavior:
 
-1. Split NAL type 63 and remove its two-byte outer header.
-2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS or the
-   selected Matroska track's bounded `hvcE` record.
+1. Split interleaved NAL type 63 and remove its two-byte outer header, or pair a
+   conservatively identified separate HEVC EL track with the selected BL track.
+2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS, the
+   selected Matroska track's bounded `hvcE` record, or the separate EL track's
+   validated decoder description.
 3. Convert wrapped EL NAL units to the framing declared by the selected decoder
-   configuration.
-4. Pair BL and EL outputs by exact integer-microsecond PTS with a 16-frame bound.
-5. Transfer and recycle one atomic compound raw-frame buffer.
-6. Upload the EL planes and left-site/upscale them to the BL grid.
-7. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
-8. On EL decode, pairing, upload, metadata, or sample failure, release EL resources and
-   continue BL-only without renegotiating or restarting playback.
+   configuration while leaving ordinary separate-track HEVC framing intact.
+4. Pair separate encoded packets and decoded BL/EL outputs by exact
+   integer-microsecond PTS. Encoded packets are verified in lockstep decode
+   order with no queue, and decoded pairing has a 16-frame bound.
+5. Parse RPU NAL units from either the BL or separate EL packet and associate
+   the immutable result with the BL PTS.
+6. Transfer and recycle one atomic compound raw-frame buffer.
+7. Upload the EL planes and left-site/upscale them to the BL grid.
+8. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
+9. On EL decode, pairing, upload, metadata, or sample failure, release EL
+   resources and continue BL-only without renegotiating or restarting playback.
 
-Remaining Profile 7 container work is separate-track BL/EL pairing and any
-future block-additional representation demonstrated by real fixtures.
+Remaining Profile 7 container work is a block-additional representation backed
+by real fixtures, plus dependency-stream discovery for MP4 and MPEG-TS.
 
 If later evidence contradicts the left-siting assumption for a fixture, reject
 that route rather than silently presenting a misaligned residual.
@@ -790,11 +816,12 @@ The minimum playback matrix is:
 3. Profile 8.4 with both DV reconstruction and HLG fallback.
 4. Profile 7 MEL.
 5. Profile 7 FEL with interleaved NAL type 63.
-6. Profile 7 with missing or malformed EL configuration.
-7. Missing, malformed, reused, and scene-refresh RPU data.
-8. B-frames and duplicate-nearby timestamps.
-9. Seek to multiple random-access points.
-10. Rapid seek, stop, source replacement, and next-item generation changes.
+6. Profile 7 FEL with separate Matroska BL and EL/RPU tracks.
+7. Profile 7 with missing or malformed EL configuration.
+8. Missing, malformed, reused, and scene-refresh RPU data.
+9. B-frames and duplicate-nearby timestamps.
+10. Seek to multiple random-access points.
+11. Rapid seek, stop, source replacement, and next-item generation changes.
 
 Dolby's official browser test kit can provide licensed Profile 5 and 8.4
 coverage:

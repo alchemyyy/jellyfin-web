@@ -356,6 +356,7 @@ function createWorkerValidationExpression(configuration) {
             worker.postMessage({
                 audioSampleCredits: 0,
                 audioTrackIndex: null,
+                dolbyVisionProfile: 7,
                 dolbyVisionRPUParserWASMURL: ${JSON.stringify(parserURL)},
                 frameCredits: 2,
                 generation,

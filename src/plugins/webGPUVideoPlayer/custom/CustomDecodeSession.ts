@@ -18,6 +18,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
     type CustomDecodeAudioOutputMode,
+    type CustomDecodeDolbyVisionProfile,
     type CustomDecodeWorkerProgressPhase,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
@@ -44,6 +45,7 @@ export type CustomDecodeSessionStartOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     durationMicroseconds?: Microseconds | null
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     generation: number
     maximumCodedHeight: number
     maximumCodedWidth: number
@@ -353,6 +355,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             const startRequest: DecodeWorkerRequest = {
                 audioSampleCredits: 0,
                 audioTrackIndex: options.audioTrackIndex ?? null,
+                dolbyVisionProfile: options.dolbyVisionProfile,
                 dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
                 frameCredits: options.videoOutputMode === 'raw-planes' ?
                     MAX_DECODED_RAW_FRAME_CREDITS :
@@ -520,6 +523,14 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
     private validateStartOptions(options: CustomDecodeSessionStartOptions): void {
         if (!isValidGeneration(options.generation)) {
             throw new RangeError('Custom decode generation must be a positive safe integer');
+        }
+        if (
+            options.dolbyVisionProfile !== null
+            && options.dolbyVisionProfile !== 5
+            && options.dolbyVisionProfile !== 7
+            && options.dolbyVisionProfile !== 8
+        ) {
+            throw new TypeError('Custom decode Dolby Vision profile is invalid');
         }
         requireMicroseconds(options.startTimeMicroseconds, 'Custom decode start time');
         if (typeof options.url !== 'string' || !options.url) {

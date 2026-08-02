@@ -299,6 +299,7 @@ type ControllerHarness = {
 function createPlayOptions(audioTrackIndex: number | null = null): CustomPlaybackPlayOptions {
     return {
         audioTrackIndex,
+        dolbyVisionProfile: null,
         durationMicroseconds: secondsToMicroseconds(120),
         maximumCodedHeight: 1_080,
         maximumCodedWidth: 1_920,
@@ -437,6 +438,42 @@ async function startReadyPlayback(harness: ControllerHarness, withAudio: boolean
 }
 
 describe('CustomPlaybackController', () => {
+    it('forwards the selected Dolby Vision profile to the decode session', async () => {
+        const harness = createControllerHarness(false);
+        const startPromise = harness.controller.play({
+            ...createPlayOptions(),
+            dolbyVisionProfile: 7,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        });
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0]?.generation;
+        if (!generation) {
+            throw new Error('Dolby Vision decode did not start');
+        }
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            dolbyVisionProfile: 7,
+            generation,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        });
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hev1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+        await expect(startPromise).resolves.toMatchObject({
+            generation,
+            status: 'started'
+        });
+        await harness.controller.destroy();
+    });
+
     it('owns decode, PCM output, clock controls, events, and telemetry', async () => {
         const harness = createControllerHarness(true);
         const generation = await startReadyPlayback(harness, true);

@@ -1458,7 +1458,9 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.prepareCustomPlayback).toHaveBeenCalledWith(options);
         expect(backend.play).not.toHaveBeenCalled();
         expect(customPlaybackController.play).toHaveBeenCalledWith({
+            audioOutputMode: undefined,
             audioTrackIndex: null,
+            dolbyVisionProfile: null,
             durationMicroseconds: 60_000_000,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
@@ -1531,6 +1533,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         }, 1);
         expect(customPlaybackController.play).toHaveBeenCalledWith(
             expect.objectContaining({
+                dolbyVisionProfile: null,
                 rawVideoFrameFormat: 'I420P10',
                 videoDecoderBackend: 'bundled-hevc',
                 videoOutputMode: 'raw-planes'
@@ -1573,6 +1576,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         }, 1);
         expect(customPlaybackController.play).toHaveBeenCalledWith(
             expect.objectContaining({
+                dolbyVisionProfile: 8,
                 rawVideoFrameFormat: 'I420P10',
                 videoDecoderBackend: 'bundled-hevc',
                 videoOutputMode: 'raw-planes'
@@ -1601,6 +1605,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         await player.play(createKnownProfile7DolbyVisionPlayOptions({
             playMethod: 'DirectPlay'
         }));
+        const customPlaybackController = getCustomPlaybackController();
 
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
@@ -1612,6 +1617,9 @@ describe('WebGPUPlayer HTML delegation', () => {
                 toneMapping: expect.objectContaining({ inputPeakNits: 4_000 })
             })
         }, 1);
+        expect(customPlaybackController.play).toHaveBeenCalledWith(
+            expect.objectContaining({ dolbyVisionProfile: 7 })
+        );
     });
 
     it('keeps HDR on native video when custom tone mapping is disabled', async () => {

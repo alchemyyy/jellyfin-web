@@ -386,6 +386,36 @@ Run the transformer's unit coverage with:
 node --test scripts/webgpu/create-container-only-hvce-fixture.node-test.mjs
 ```
 
+To prove the separate-track Matroska route, use MKVToolNix to split the same
+official interleaved FATE sample into independent BL and EL/RPU HEVC tracks:
+
+```powershell
+node scripts/webgpu/create-separate-track-dolby-vision-fixture.mjs `
+    "$env:TEMP\dovi-p7-hvce.mkv" `
+    "$env:TEMP\dovi-p7-separate-track.mkv" `
+    --mkvtoolnix-directory "C:\Program Files\MKVToolNix"
+
+Copy-Item "$env:TEMP\dovi-p7-separate-track.mkv" `
+    dist/webgpu-dovi-p7-separate-track.bin
+
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/webgpu-dovi-p7-separate-track.bin
+```
+
+The generator requires exactly one source HEVC track, removes the NAL type 63
+wrapper, places the RPU on the ordinary HEVC EL track, and repeats the access
+unit three times so MKVToolNix can identify and mux both raw streams. The smoke
+then exercises bounded container-topology discovery, independent packet
+iteration, decode-order PTS verification, RPU association, second decode, and
+compound-frame ownership. Remove the served `.bin` copy after validation. Run
+generator unit coverage with:
+
+```powershell
+node --test scripts/webgpu/create-separate-track-dolby-vision-fixture.node-test.mjs
+```
+
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely

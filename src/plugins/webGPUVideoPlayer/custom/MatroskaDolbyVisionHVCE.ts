@@ -10,6 +10,8 @@ const MATROSKA_BLOCK_ADD_ID_TYPE_ID = 0x41E7;
 const MATROSKA_BLOCK_ADD_ID_EXTRA_DATA_ID = 0x41ED;
 const MATROSKA_VIDEO_TRACK_TYPE = 1;
 const MATROSKA_HEVC_CODEC_ID = 'V_MPEGH/ISO/HEVC';
+const MATROSKA_DVCC_BLOCK_ADD_ID_TYPE = 0x6476_6343;
+const MATROSKA_DVVC_BLOCK_ADD_ID_TYPE = 0x6476_7643;
 const MATROSKA_HVCE_BLOCK_ADD_ID_TYPE = 0x6876_6345;
 const MAXIMUM_EBML_HEADER_BYTE_LENGTH = 12;
 const MAXIMUM_LEVEL_ZERO_ELEMENT_COUNT = 8;
@@ -19,16 +21,29 @@ const MAXIMUM_TRACK_ENTRY_COUNT = 1_024;
 const MAXIMUM_CODEC_ID_BYTE_LENGTH = 64;
 const MINIMUM_HVCE_BYTE_LENGTH = 23;
 const MAXIMUM_HVCE_BYTE_LENGTH = 1_024 * 1_024;
+const MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 4;
+const MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH = 1_024;
 
 export type MatroskaByteRangeReader = (
     offset: number,
     byteLength: number
 ) => Promise<Uint8Array | null>;
 
+export type MatroskaDolbyVisionTrackConfiguration = {
+    enhancementConfiguration: Uint8Array | null
+    separateEnhancementTrackNumber: number | null
+};
+
 type EBMLElementHeader = {
     dataOffset: number
     dataSize: number | null
     id: number
+};
+
+type DolbyVisionConfiguration = {
+    enhancementLayerPresent: boolean
+    profile: number
+    rpuPresent: boolean
 };
 
 function getVariableIntegerByteLength(firstByte: number, maximumByteLength: number): number {
@@ -163,11 +178,16 @@ function readASCIIString(
     return value;
 }
 
-function parseHVCEBlockAdditionMapping(
+type ParsedBlockAdditionMapping = {
+    extraData: Uint8Array | null
+    type: number | null
+};
+
+function parseBlockAdditionMapping(
     data: Uint8Array,
     startOffset: number,
     endOffset: number
-): Uint8Array | null {
+): ParsedBlockAdditionMapping {
     let blockAddIDType: number | null = null;
     let extraData: Uint8Array | null = null;
     let offset = startOffset;
@@ -195,21 +215,37 @@ function parseHVCEBlockAdditionMapping(
         offset = elementEndOffset;
     }
 
-    if (blockAddIDType !== MATROSKA_HVCE_BLOCK_ADD_ID_TYPE) {
-        return null;
-    }
-    if (
-        !extraData
+    return { extraData, type: blockAddIDType };
+}
+
+function requireHVCEExtraData(extraData: Uint8Array | null): Uint8Array {
+    if (!extraData
         || extraData.byteLength < MINIMUM_HVCE_BYTE_LENGTH
-        || extraData.byteLength > MAXIMUM_HVCE_BYTE_LENGTH
-    ) {
+        || extraData.byteLength > MAXIMUM_HVCE_BYTE_LENGTH) {
         throw new TypeError('The Matroska hvcE record size is unsupported');
     }
     return extraData;
 }
 
+function parseDolbyVisionConfiguration(
+    extraData: Uint8Array | null
+): DolbyVisionConfiguration {
+    if (!extraData
+        || extraData.byteLength < MINIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH
+        || extraData.byteLength > MAXIMUM_DOLBY_VISION_CONFIGURATION_BYTE_LENGTH) {
+        throw new TypeError('The Matroska Dolby Vision configuration size is unsupported');
+    }
+    const configurationBits = (extraData[2] * 256) + extraData[3];
+    return {
+        enhancementLayerPresent: ((configurationBits >> 1) & 1) === 1,
+        profile: (configurationBits >> 9) & 0x7F,
+        rpuPresent: ((configurationBits >> 2) & 1) === 1
+    };
+}
+
 type ParsedTrackEntry = {
     codecID: string | null
+    dolbyVisionConfiguration: DolbyVisionConfiguration | null
     enhancementConfiguration: Uint8Array | null
     trackNumber: number | null
     trackType: number | null
@@ -241,18 +277,30 @@ function parseTrackEntryElement(
             state.codecID = readASCIIString(data, header.dataOffset, elementEndOffset);
             break;
         case MATROSKA_BLOCK_ADDITION_MAPPING_ID: {
-            const candidate = parseHVCEBlockAdditionMapping(
+            const mapping = parseBlockAdditionMapping(
                 data,
                 header.dataOffset,
                 elementEndOffset
             );
-            if (!candidate) {
-                break;
+            switch (mapping.type) {
+                case MATROSKA_DVCC_BLOCK_ADD_ID_TYPE:
+                case MATROSKA_DVVC_BLOCK_ADD_ID_TYPE:
+                    if (state.dolbyVisionConfiguration) {
+                        throw new TypeError(
+                            'The Matroska track has multiple Dolby Vision configurations'
+                        );
+                    }
+                    state.dolbyVisionConfiguration = parseDolbyVisionConfiguration(
+                        mapping.extraData
+                    );
+                    break;
+                case MATROSKA_HVCE_BLOCK_ADD_ID_TYPE:
+                    if (state.enhancementConfiguration) {
+                        throw new TypeError('The Matroska track has multiple hvcE records');
+                    }
+                    state.enhancementConfiguration = requireHVCEExtraData(mapping.extraData);
+                    break;
             }
-            if (state.enhancementConfiguration) {
-                throw new TypeError('The Matroska track has multiple hvcE records');
-            }
-            state.enhancementConfiguration = candidate;
             break;
         }
     }
@@ -265,6 +313,7 @@ function parseTrackEntry(
 ): ParsedTrackEntry {
     const state: ParsedTrackEntry = {
         codecID: null,
+        dolbyVisionConfiguration: null,
         enhancementConfiguration: null,
         trackNumber: null,
         trackType: null
@@ -280,12 +329,48 @@ function parseTrackEntry(
     return state;
 }
 
+function isHEVCVideoTrack(trackEntry: ParsedTrackEntry): boolean {
+    return trackEntry.trackType === MATROSKA_VIDEO_TRACK_TYPE
+        && trackEntry.codecID === MATROSKA_HEVC_CODEC_ID
+        && trackEntry.trackNumber !== null
+        && trackEntry.trackNumber > 0;
+}
+
+function isSeparateDolbyVisionEnhancementTrack(trackEntry: ParsedTrackEntry): boolean {
+    const configuration = trackEntry.dolbyVisionConfiguration;
+    return isHEVCVideoTrack(trackEntry)
+        && configuration?.profile === 7
+        && configuration.enhancementLayerPresent
+        && configuration.rpuPresent;
+}
+
+function getSeparateEnhancementTrackNumber(
+    hevcVideoTracks: readonly ParsedTrackEntry[],
+    selectedTrackNumber: number
+): number | null {
+    const enhancementTracks = hevcVideoTracks.filter(
+        isSeparateDolbyVisionEnhancementTrack
+    );
+    if (enhancementTracks.length !== 1 || hevcVideoTracks.length !== 2) {
+        return null;
+    }
+    const enhancementTrack = enhancementTracks[0];
+    const baseTrack = hevcVideoTracks.find((trackEntry: ParsedTrackEntry): boolean => (
+        trackEntry !== enhancementTrack
+    ));
+    if (baseTrack?.trackNumber !== selectedTrackNumber) {
+        return null;
+    }
+    return enhancementTrack.trackNumber;
+}
+
 function parseTracks(
     data: Uint8Array,
     selectedTrackNumber: number
-): Uint8Array | null {
+): MatroskaDolbyVisionTrackConfiguration {
+    const hevcVideoTracks: ParsedTrackEntry[] = [];
+    const trackNumbers = new Set<number>();
     let trackEntryCount = 0;
-    let selectedTrackSeen = false;
     let selectedEnhancementConfiguration: Uint8Array | null = null;
     let offset = 0;
     while (offset < data.byteLength) {
@@ -305,21 +390,29 @@ function parseTracks(
             header.dataOffset,
             elementEndOffset
         );
-        if (trackEntry.trackNumber !== selectedTrackNumber) {
-            continue;
+        if (trackEntry.trackNumber !== null) {
+            if (trackNumbers.has(trackEntry.trackNumber)) {
+                throw new TypeError('A Matroska track number is duplicated');
+            }
+            trackNumbers.add(trackEntry.trackNumber);
         }
-        if (selectedTrackSeen) {
-            throw new TypeError('The selected Matroska track number is duplicated');
+        if (isHEVCVideoTrack(trackEntry)) {
+            hevcVideoTracks.push(trackEntry);
         }
-        selectedTrackSeen = true;
         if (
-            trackEntry.trackType === MATROSKA_VIDEO_TRACK_TYPE
-            && trackEntry.codecID === MATROSKA_HEVC_CODEC_ID
+            trackEntry.trackNumber === selectedTrackNumber
+            && isHEVCVideoTrack(trackEntry)
         ) {
             selectedEnhancementConfiguration = trackEntry.enhancementConfiguration;
         }
     }
-    return selectedEnhancementConfiguration;
+    return {
+        enhancementConfiguration: selectedEnhancementConfiguration,
+        separateEnhancementTrackNumber: getSeparateEnhancementTrackNumber(
+            hevcVideoTracks,
+            selectedTrackNumber
+        )
+    };
 }
 
 async function readElementHeaderAt(
@@ -431,10 +524,10 @@ async function findTracks(
     return null;
 }
 
-async function readMatroskaDolbyVisionHVCEStrict(
+async function readMatroskaDolbyVisionTrackConfigurationStrict(
     reader: MatroskaByteRangeReader,
     selectedTrackNumber: number
-): Promise<Uint8Array | null> {
+): Promise<MatroskaDolbyVisionTrackConfiguration | null> {
     const segment = await findSegment(reader);
     if (!segment) {
         return null;
@@ -455,17 +548,32 @@ async function readMatroskaDolbyVisionHVCEStrict(
     return parseTracks(tracksData, selectedTrackNumber);
 }
 
+/** Reads bounded Dolby Vision configuration for the selected Matroska HEVC track. */
+export async function readMatroskaDolbyVisionTrackConfiguration(
+    reader: MatroskaByteRangeReader,
+    selectedTrackNumber: number
+): Promise<MatroskaDolbyVisionTrackConfiguration | null> {
+    if (!Number.isSafeInteger(selectedTrackNumber) || selectedTrackNumber <= 0) {
+        return null;
+    }
+    try {
+        return await readMatroskaDolbyVisionTrackConfigurationStrict(
+            reader,
+            selectedTrackNumber
+        );
+    } catch {
+        return null;
+    }
+}
+
 /** Reads the selected Matroska HEVC track's bounded container hvcE record. */
 export async function readMatroskaDolbyVisionHVCE(
     reader: MatroskaByteRangeReader,
     selectedTrackNumber: number
 ): Promise<Uint8Array | null> {
-    if (!Number.isSafeInteger(selectedTrackNumber) || selectedTrackNumber <= 0) {
-        return null;
-    }
-    try {
-        return await readMatroskaDolbyVisionHVCEStrict(reader, selectedTrackNumber);
-    } catch {
-        return null;
-    }
+    const configuration = await readMatroskaDolbyVisionTrackConfiguration(
+        reader,
+        selectedTrackNumber
+    );
+    return configuration?.enhancementConfiguration ?? null;
 }
