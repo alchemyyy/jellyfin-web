@@ -1,6 +1,7 @@
 const MICROSECONDS_PER_SECOND = 1_000_000;
 const RETENTION_SNAPSHOT_SCHEMA_VERSION = 1;
-const CUSTOM_DECODE_WORKER_URL_PATTERN = /(?:^|[/\\])CustomDecode\.worker(?:\.bundle)?\.js(?:[?#]|$)/iu;
+const CUSTOM_DECODE_WORKER_URL_PATTERN =
+    /(?:^|[/\\])CustomDecode\.worker(?:\.[a-f0-9]{8,64})?(?:\.bundle)?\.js(?:[?#]|$)/iu;
 const PERFORMANCE_BYTE_METRICS = new Set([
     'JSHeapTotalSize',
     'JSHeapUsedSize'

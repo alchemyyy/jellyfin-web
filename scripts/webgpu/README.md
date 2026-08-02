@@ -362,6 +362,12 @@ agreement within one microsecond, schema-versioned `decoded-fel` metadata, one
 parsed RPU, and clean worker shutdown. Fixtures are not checked in; record their
 provenance and hashes in the validation result.
 
+The command discovers exactly one content-addressed `CustomDecode.worker`
+artifact in the local `dist` directory and uses that filename on the configured
+frontend origin. It fails closed if the build is missing or ambiguous. Use
+`--worker-url` only when validating a separately built frontend whose emitted
+worker is not present in the local `dist` directory.
+
 To prove the container-only `hvcE` route, transform the official FFmpeg
 `dovi-p7-hvce` FATE sample into a same-size validation copy. The tool preserves
 the Matroska `hvcE` mapping but replaces the wrapped EL VPS/SPS/PPS with valid

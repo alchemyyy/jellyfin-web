@@ -25,6 +25,14 @@ Failure during capability probing, demux, decode, audio output, WebGPU setup,
 presentation, or device recovery falls back to the owned HTML player. The
 custom path does not recursively request another player.
 
+All TypeScript worker entry artifacts use content-addressed filenames. The
+application therefore constructs the custom decoder and exact HEVC capability
+workers from the hash emitted by the same build instead of a stable URL that a
+browser can reuse after an upgrade. Worker-local chunks are content addressed
+as well. The browser smoke additionally clears Chromium's HTTP cache before a
+local rebuild validation so it also reloads the current top-level application
+artifacts.
+
 ## Conservative codec qualification
 
 Configuration support is not sufficient to advertise every codec route. The
@@ -226,6 +234,7 @@ npm test -- src/plugins/webGPUVideoPlayer
 npm run lint -- src/plugins/webGPUVideoPlayer scripts/webgpu
 node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
 node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
+node --test scripts/webgpu/worker-artifact-name.node-test.mjs
 node --test scripts/webgpu/release-validation-metrics.node-test.mjs
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs

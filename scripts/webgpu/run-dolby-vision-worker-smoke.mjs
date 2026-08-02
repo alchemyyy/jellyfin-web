@@ -1,5 +1,9 @@
 /* eslint-disable compat/compat -- This validation harness requires Node 24 */
 
+import { readdir } from 'node:fs/promises';
+
+import { selectCustomDecodeWorkerAssetName } from './worker-artifact-name.mjs';
+
 const DEFAULT_DEBUG_URL = 'http://127.0.0.1:9226';
 const DEFAULT_FRONTEND_URL = 'http://localhost:8096/web/';
 const DEFAULT_TIMEOUT_MILLISECONDS = 120_000;
@@ -7,6 +11,7 @@ const DEFAULT_EXPECTED_BASE_HEIGHT = 2_160;
 const DEFAULT_EXPECTED_BASE_WIDTH = 3_840;
 const DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH = 1_920;
 const EXPECTED_METADATA_SCHEMA_VERSION = 4;
+const LOCAL_DIST_DIRECTORY_URL = new URL('../../dist/', import.meta.url);
 const WEBSOCKET_OPEN_STATE = 1;
 
 const USAGE = `Usage:
@@ -16,6 +21,7 @@ Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
   --frontend-url <url>   Built Jellyfin Web frontend URL
   --media-url <url>      Same-origin Profile 7 FEL fixture URL
+  --worker-url <url>     Exact worker URL; defaults to the emitted dist artifact
   --expected-base-width <number>
                          Expected decoded BL width; defaults to 3840
   --expected-base-height <number>
@@ -143,7 +149,8 @@ function parseConfiguration(argumentsList) {
         expectedBaseWidth: DEFAULT_EXPECTED_BASE_WIDTH,
         frontendURL: DEFAULT_FRONTEND_URL,
         mediaURL: null,
-        timeoutMilliseconds: DEFAULT_TIMEOUT_MILLISECONDS
+        timeoutMilliseconds: DEFAULT_TIMEOUT_MILLISECONDS,
+        workerURL: null
     };
     for (let argumentIndex = 0; argumentIndex < argumentsList.length; argumentIndex += 1) {
         const option = argumentsList[argumentIndex];
@@ -164,6 +171,9 @@ function parseConfiguration(argumentsList) {
                 break;
             case '--media-url':
                 configuration.mediaURL = value;
+                break;
+            case '--worker-url':
+                configuration.workerURL = value;
                 break;
             case '--expected-base-width':
                 configuration.expectedBaseWidth = parsePositiveInteger(value, option);
@@ -189,12 +199,46 @@ function parseConfiguration(argumentsList) {
             'The fixture must share the frontend origin'
         );
     }
+    const workerURL = configuration.workerURL === null ?
+        null :
+        new URL(configuration.workerURL, frontendURL);
+    if (workerURL && frontendURL.origin !== workerURL.origin) {
+        throw new ValidationError(
+            'configuration-invalid',
+            'The worker must share the frontend origin'
+        );
+    }
     return {
         ...configuration,
         debugURL: new URL(configuration.debugURL).href.replace(/\/$/u, ''),
         frontendURL: frontendURL.href,
-        mediaURL: mediaURL.href
+        mediaURL: mediaURL.href,
+        workerURL: workerURL?.href ?? null
     };
+}
+
+async function resolveWorkerURL(configuration) {
+    if (configuration.workerURL) {
+        return configuration.workerURL;
+    }
+    let fileNames;
+    try {
+        fileNames = await readdir(LOCAL_DIST_DIRECTORY_URL);
+    } catch (error) {
+        throw new ValidationError(
+            'worker-artifact-unavailable',
+            'Unable to inspect the local dist worker artifacts',
+            error instanceof Error ? error.message : String(error)
+        );
+    }
+    const workerAssetName = selectCustomDecodeWorkerAssetName(fileNames);
+    if (!workerAssetName) {
+        throw new ValidationError(
+            'worker-artifact-unavailable',
+            'The local dist must contain exactly one custom decode worker artifact'
+        );
+    }
+    return new URL(workerAssetName, configuration.frontendURL).href;
 }
 
 function getExpectedEnhancementDimensions(configuration) {
@@ -240,14 +284,13 @@ async function getPageTarget(configuration) {
 
 function createWorkerValidationExpression(configuration) {
     const frontendURL = new URL(configuration.frontendURL);
-    const workerURL = new URL('CustomDecode.worker.bundle.js', frontendURL).href;
     const parserURL = new URL(
         'libraries/libdovi/dovi-rpu-parser.wasm',
         frontendURL
     ).href;
     return `(async () => {
         const generation = 1;
-        const worker = new Worker(${JSON.stringify(workerURL)});
+        const worker = new Worker(${JSON.stringify(configuration.workerURL)});
         const result = {
             ended: false,
             error: null,
@@ -462,11 +505,15 @@ function validateResult(result, configuration) {
 }
 
 async function main() {
-    const configuration = parseConfiguration(process.argv.slice(2));
-    if (configuration.help) {
+    const parsedConfiguration = parseConfiguration(process.argv.slice(2));
+    if (parsedConfiguration.help) {
         process.stdout.write(`${USAGE}\n`);
         return;
     }
+    const configuration = {
+        ...parsedConfiguration,
+        workerURL: await resolveWorkerURL(parsedConfiguration)
+    };
     const pageTarget = await getPageTarget(configuration);
     const client = await CDPClient.connect(
         pageTarget.webSocketDebuggerUrl,
@@ -497,7 +544,8 @@ async function main() {
             failures,
             result,
             schemaVersion: 1,
-            status: failures.length === 0 ? 'passed' : 'failed'
+            status: failures.length === 0 ? 'passed' : 'failed',
+            workerURL: configuration.workerURL
         };
         process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
         if (failures.length > 0) {

@@ -350,7 +350,13 @@ const config = {
                 test: /\.worker\.ts$/,
                 exclude: /node_modules/,
                 use: [
-                    'worker-loader',
+                    {
+                        loader: 'worker-loader',
+                        options: {
+                            chunkFilename: '[name].[contenthash].worker.chunk.js',
+                            filename: '[name].[contenthash].bundle.js'
+                        }
+                    },
                     {
                         loader: 'ts-loader',
                         options: {

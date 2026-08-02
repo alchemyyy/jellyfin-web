@@ -263,11 +263,15 @@ test('reports missing and throwing constructor expressions without querying obje
 test('filters custom decode workers from direct data and a target-query callback', async () => {
     const PuppeteerWorkerTarget = {
         type: () => 'worker',
-        url: () => 'https://frontend.test/CustomDecode.worker.bundle.js?hash=1'
+        url: () => 'https://frontend.test/CustomDecode.worker.0123456789abcdef.bundle.js'
     };
     const targetData = [
         PuppeteerWorkerTarget,
-        { title: 'CustomDecode.worker.bundle.js', type: 'worker', url: 'blob:opaque' },
+        {
+            title: 'CustomDecode.worker.fedcba9876543210.bundle.js',
+            type: 'worker',
+            url: 'blob:opaque'
+        },
         { type: 'worker', url: 'https://frontend.test/other.worker.js' },
         { type: 'page', url: 'https://frontend.test/CustomDecode.worker.bundle.js' }
     ];
