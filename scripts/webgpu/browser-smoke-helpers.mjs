@@ -121,8 +121,8 @@ Options:
                          Required decoded video output mode
   --expected-video-decoder <native|bundled-hevc>
                          Optional negotiated video decoder backend
-  --expected-audio <disabled|ready>
-                         Required custom audio path state
+  --expected-audio <disabled|ready|native-media>
+                         Required custom audio route
   --audio-stream-index <number>
                          Optional Jellyfin stream index to select during playback
   --expected-audio-codec <codec>
@@ -452,11 +452,11 @@ export function parseSmokeConfiguration(argumentList, environment) {
     const expectedAudioPath = parseExpectedValue(
         configuredValue('expectedAudioPath'),
         '--expected-audio',
-        [ 'disabled', 'ready' ]
+        [ 'disabled', 'ready', 'native-media' ]
     );
-    if (audioStreamIndex !== null && expectedAudioPath !== 'ready') {
+    if (audioStreamIndex !== null && expectedAudioPath === 'disabled') {
         throw new TypeError(
-            'Browser smoke audio stream selection requires --expected-audio ready'
+            'Browser smoke audio stream selection requires an enabled --expected-audio route'
         );
     }
     if (audioStreamIndex !== null && repeatSessionValue && parseRepeatSessionCount(repeatSessionValue) !== 1) {
@@ -633,6 +633,24 @@ export function hasConsumedCustomAudio(snapshot) {
         && audioBridge.submittedFrameCount > 0
         && Number.isSafeInteger(audioBridge?.submittedSampleCount)
         && audioBridge.submittedSampleCount > 0;
+}
+
+/** Requires an owned native audio element, qualified clock, and appended media. */
+export function hasReadyNativeMediaAudio(snapshot) {
+    const customPlayback = snapshot?.customPlayback;
+    const decodeTelemetry = customPlayback?.videoDecode;
+    return snapshot?.customPlaybackEligibility?.audioOutputMode === 'native-media'
+        && customPlayback?.audioPath === 'ready'
+        && customPlayback.audioBridge === null
+        && customPlayback.audioOutput === null
+        && decodeTelemetry?.nativeAudioClockReady === true
+        && Number.isSafeInteger(decodeTelemetry.receivedNativeAudioSegmentCount)
+        && decodeTelemetry.receivedNativeAudioSegmentCount > 0
+        && Number.isSafeInteger(customPlayback.currentTimeMicroseconds)
+        && customPlayback.currentTimeMicroseconds >= 0
+        && snapshot?.dom?.ownedNativeAudioCount === 1
+        && snapshot.dom.ownedNativeAudioPlaying === true
+        && snapshot.dom.ownedNativeAudioSourcedCount === 1;
 }
 
 /** Identifies the Mediabunny finalizer warning that invalidates a retention soak. */
@@ -917,6 +935,121 @@ function validateRawHDRAuthorizationSnapshot(failures, snapshot) {
     );
 }
 
+function getExpectedAudioOutputMode(expectedAudioPath) {
+    switch (expectedAudioPath) {
+        case 'ready':
+            return 'decoded-pcm';
+        case 'native-media':
+            return 'native-media';
+        case 'disabled':
+            return null;
+        default:
+            return undefined;
+    }
+}
+
+function validateDecodedAudioSnapshot(failures, initialSnapshot, laterSnapshot) {
+    const audioBridge = laterSnapshot.customPlayback?.audioBridge;
+    const audioOutput = laterSnapshot.customPlayback?.audioOutput;
+    addFailure(failures, audioBridge !== null, 'audio-bridge-telemetry-missing');
+    addFailure(failures, audioOutput !== null, 'audio-output-telemetry-missing');
+    addFailure(failures, audioBridge?.failed === false, 'audio-bridge-failed');
+    addFailure(failures, (audioOutput?.consumedFrames ?? 0) > 0, 'audio-not-consumed');
+    addFailure(failures, audioOutput?.playing === true, 'audio-output-not-playing');
+    addFailure(failures, audioOutput?.droppedFrames === 0, 'audio-frames-dropped');
+    addFailure(failures, audioOutput?.overflowEvents === 0, 'audio-overflow');
+    addFailure(failures, audioOutput?.staleChunks === 0, 'stale-audio-chunks');
+    const initialOutputFrames = initialSnapshot.customPlayback?.audioOutput?.outputFrames ?? 0;
+    const laterOutputFrames = audioOutput?.outputFrames;
+    const initialUnderflowFrames =
+        initialSnapshot.customPlayback?.audioOutput?.underflowFrames ?? 0;
+    const laterUnderflowFrames = audioOutput?.underflowFrames;
+    const outputFrameDelta = laterOutputFrames - initialOutputFrames;
+    const underflowFrameDelta = laterUnderflowFrames - initialUnderflowFrames;
+    addFailure(
+        failures,
+        Number.isSafeInteger(initialOutputFrames)
+            && initialOutputFrames >= 0
+            && Number.isSafeInteger(laterOutputFrames)
+            && laterOutputFrames >= 0
+            && Number.isSafeInteger(initialUnderflowFrames)
+            && initialUnderflowFrames >= 0
+            && Number.isSafeInteger(laterUnderflowFrames)
+            && laterUnderflowFrames >= 0
+            && outputFrameDelta >= 0
+            && underflowFrameDelta >= 0
+            && (
+                outputFrameDelta < MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO
+                || underflowFrameDelta / outputFrameDelta <= MAXIMUM_AUDIO_UNDERFLOW_RATIO
+            ),
+        'audio-underflow-ratio-exceeded'
+    );
+}
+
+function validateNativeAudioSnapshot(failures, laterSnapshot) {
+    const customPlayback = laterSnapshot.customPlayback;
+    addFailure(failures, customPlayback?.audioBridge === null, 'native-audio-bridge-active');
+    addFailure(failures, customPlayback?.audioOutput === null, 'native-audio-output-active');
+    addFailure(
+        failures,
+        customPlayback?.videoDecode?.nativeAudioClockReady === true,
+        'native-audio-clock-not-ready'
+    );
+    addFailure(
+        failures,
+        (customPlayback?.videoDecode?.receivedNativeAudioSegmentCount ?? 0) > 0,
+        'native-audio-segments-missing'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.dom?.ownedNativeAudioCount === 1,
+        'native-audio-element-count'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.dom?.ownedNativeAudioPlaying === true,
+        'native-audio-not-playing'
+    );
+    addFailure(
+        failures,
+        laterSnapshot.dom?.ownedNativeAudioSourcedCount === 1,
+        'native-audio-source-missing'
+    );
+}
+
+function validateExpectedAudioSnapshot(
+    failures,
+    initialSnapshot,
+    laterSnapshot,
+    expectedAudioPath
+) {
+    switch (expectedAudioPath) {
+        case 'ready':
+            validateDecodedAudioSnapshot(failures, initialSnapshot, laterSnapshot);
+            break;
+        case 'native-media':
+            validateNativeAudioSnapshot(failures, laterSnapshot);
+            break;
+        case 'disabled':
+            addFailure(
+                failures,
+                laterSnapshot.customPlayback?.audioBridge === null,
+                'disabled-audio-bridge-active'
+            );
+            addFailure(
+                failures,
+                laterSnapshot.customPlayback?.audioOutput === null,
+                'disabled-audio-output-active'
+            );
+            addFailure(
+                failures,
+                laterSnapshot.dom?.ownedNativeAudioCount === 0,
+                'disabled-native-audio-active'
+            );
+            break;
+    }
+}
+
 /** Returns stable failure codes for an active custom-decoded playback sample pair. */
 export function validateActivePlaybackSnapshot(
     initialSnapshot,
@@ -966,10 +1099,19 @@ export function validateActivePlaybackSnapshot(
             'unexpected-video-decoder-backend'
         );
     }
+    const expectedControllerAudioPath = expectedAudioPath === 'native-media' ?
+        'ready' :
+        expectedAudioPath;
+    const expectedAudioOutputMode = getExpectedAudioOutputMode(expectedAudioPath);
     addFailure(
         failures,
-        customTelemetry?.audioPath === expectedAudioPath,
+        customTelemetry?.audioPath === expectedControllerAudioPath,
         'unexpected-audio-path'
+    );
+    addFailure(
+        failures,
+        eligibility?.audioOutputMode === expectedAudioOutputMode,
+        'unexpected-audio-output-mode'
     );
     addFailure(
         failures,
@@ -1011,47 +1153,12 @@ export function validateActivePlaybackSnapshot(
         );
     }
     validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
-    if (expectedAudioPath === 'ready') {
-        const audioBridge = customTelemetry.audioBridge;
-        const audioOutput = customTelemetry.audioOutput;
-        addFailure(failures, audioBridge !== null, 'audio-bridge-telemetry-missing');
-        addFailure(failures, audioOutput !== null, 'audio-output-telemetry-missing');
-        addFailure(failures, audioBridge?.failed === false, 'audio-bridge-failed');
-        addFailure(failures, (audioOutput?.consumedFrames ?? 0) > 0, 'audio-not-consumed');
-        addFailure(failures, audioOutput?.playing === true, 'audio-output-not-playing');
-        addFailure(failures, audioOutput?.droppedFrames === 0, 'audio-frames-dropped');
-        addFailure(failures, audioOutput?.overflowEvents === 0, 'audio-overflow');
-        addFailure(failures, audioOutput?.staleChunks === 0, 'stale-audio-chunks');
-        const initialOutputFrames = initialSnapshot.customPlayback?.audioOutput?.outputFrames ?? 0;
-        const laterOutputFrames = audioOutput?.outputFrames;
-        const initialUnderflowFrames =
-            initialSnapshot.customPlayback?.audioOutput?.underflowFrames ?? 0;
-        const laterUnderflowFrames = audioOutput?.underflowFrames;
-        const outputFrameDelta = laterOutputFrames - initialOutputFrames;
-        const underflowFrameDelta = laterUnderflowFrames - initialUnderflowFrames;
-        addFailure(
-            failures,
-            Number.isSafeInteger(initialOutputFrames)
-                && initialOutputFrames >= 0
-                && Number.isSafeInteger(laterOutputFrames)
-                && laterOutputFrames >= 0
-                && Number.isSafeInteger(initialUnderflowFrames)
-                && initialUnderflowFrames >= 0
-                && Number.isSafeInteger(laterUnderflowFrames)
-                && laterUnderflowFrames >= 0
-                && outputFrameDelta >= 0
-                && underflowFrameDelta >= 0
-                && (
-                    outputFrameDelta < MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO
-                    || underflowFrameDelta / outputFrameDelta
-                        <= MAXIMUM_AUDIO_UNDERFLOW_RATIO
-                ),
-            'audio-underflow-ratio-exceeded'
-        );
-    } else {
-        addFailure(failures, customTelemetry?.audioBridge === null, 'disabled-audio-bridge-active');
-        addFailure(failures, customTelemetry?.audioOutput === null, 'disabled-audio-output-active');
-    }
+    validateExpectedAudioSnapshot(
+        failures,
+        initialSnapshot,
+        laterSnapshot,
+        expectedAudioPath
+    );
     addFailure(
         failures,
         (presentationTelemetry?.presentedFrameCount ?? 0)
@@ -1088,7 +1195,8 @@ export function validateActivePlaybackSnapshot(
 export function validateAudioStreamSwitchSnapshot(
     initialSnapshot,
     laterSnapshot,
-    expectedAudioCodec
+    expectedAudioCodec,
+    expectedAudioPath = 'ready'
 ) {
     const failures = [];
     const initialTelemetry = initialSnapshot.customPlayback;
@@ -1109,14 +1217,36 @@ export function validateAudioStreamSwitchSnapshot(
     addFailure(failures, laterTelemetry?.videoDecode?.failureKind === null, 'audio-switch-decode-failure');
     addFailure(
         failures,
-        laterTelemetry?.videoDecode?.audioCodec === expectedAudioCodec,
-        'unexpected-selected-audio-codec'
+        laterSnapshot.customPlaybackEligibility?.audioOutputMode === (
+            expectedAudioPath === 'native-media' ? 'native-media' : 'decoded-pcm'
+        ),
+        'unexpected-selected-audio-output-mode'
     );
     addFailure(
         failures,
-        (laterTelemetry?.videoDecode?.receivedAudioFrameCount ?? 0) > 0,
-        'selected-audio-not-decoded'
+        laterTelemetry?.videoDecode?.audioCodec === expectedAudioCodec,
+        'unexpected-selected-audio-codec'
     );
+    if (expectedAudioPath === 'native-media') {
+        addFailure(
+            failures,
+            laterTelemetry?.videoDecode?.nativeAudioClockReady === true,
+            'selected-native-audio-clock-not-ready'
+        );
+        addFailure(
+            failures,
+            (laterTelemetry?.videoDecode?.receivedNativeAudioSegmentCount ?? 0) > 0,
+            'selected-native-audio-segments-missing'
+        );
+        addFailure(failures, laterTelemetry?.audioBridge === null, 'selected-native-audio-bridge-active');
+        addFailure(failures, laterTelemetry?.audioOutput === null, 'selected-native-audio-output-active');
+    } else {
+        addFailure(
+            failures,
+            (laterTelemetry?.videoDecode?.receivedAudioFrameCount ?? 0) > 0,
+            'selected-audio-not-decoded'
+        );
+    }
     addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'audio-switch-presenter-not-active');
     addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
     validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
@@ -1436,6 +1566,23 @@ export function validateNaturalEndSnapshots(
                     >= submittedEndMediaTimeMicroseconds
                         - NATURAL_END_CLOCK_TOLERANCE_MICROSECONDS,
             'audio-physical-tail-not-reached'
+        );
+    } else if (expectedAudioPath === 'native-media') {
+        addFailure(
+            failures,
+            stableEndedSnapshot.customPlayback?.audioBridge === null,
+            'native-audio-bridge-active-at-end'
+        );
+        addFailure(
+            failures,
+            stableEndedSnapshot.customPlayback?.audioOutput === null,
+            'native-audio-output-active-at-end'
+        );
+        addFailure(
+            failures,
+            (stableEndedSnapshot.customPlayback?.videoDecode
+                ?.receivedNativeAudioSegmentCount ?? 0) > 0,
+            'native-audio-segments-missing-at-end'
         );
     }
     return failures;

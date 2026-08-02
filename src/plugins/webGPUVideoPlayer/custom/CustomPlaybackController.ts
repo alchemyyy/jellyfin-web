@@ -16,7 +16,10 @@ import CustomDecodeSession, {
     type CustomDecodeNativeAudioBridgeFactory,
     type CustomDecodeSessionEvent
 } from './CustomDecodeSession';
-import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
+import type {
+    CustomDecodeAudioOutputMode,
+    DecodeWorkerAudioConfiguration
+} from './DecodeWorkerProtocol';
 import MediaClock from './MediaClock';
 import {
     MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
@@ -542,16 +545,18 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         if (this.destroyed) {
             return false;
         }
-        return this.currentSource?.audioOutputMode === 'native-media' ?
-            this.nativeAudioBridgeFactory !== null :
-            this.audioOutputFactory !== null;
+        return this.audioOutputFactory !== null || this.nativeAudioBridgeFactory !== null;
     }
 
-    /** Restarts decode generations and flushes PCM at the current audio-master time. */
-    public setAudioStreamIndex(audioStreamIndex: number): Promise<CustomPlaybackStartResult> {
+    /** Restarts decode generations with the selected owned audio route. */
+    public setAudioStreamIndex(
+        audioStreamIndex: number,
+        audioOutputMode: CustomDecodeAudioOutputMode =
+        this.currentSource?.audioOutputMode ?? 'decoded-pcm'
+    ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
-        if (!this.canSetAudioStreamIndex() || !this.currentSource) {
+        if (!this.currentSource || !this.isAudioOutputModeAvailable(audioOutputMode)) {
             throw new Error('Client-side audio stream switching is unavailable');
         }
         if (this.state === 'fallback'
@@ -565,10 +570,20 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         const switchTimeMicroseconds = this.currentTimeMicroseconds;
         const switchOptions: CustomPlaybackPlayOptions = {
             ...this.currentSource,
+            audioOutputMode,
             audioTrackIndex: audioStreamIndex,
             startTimeMicroseconds: switchTimeMicroseconds
         };
         return this.beginPlayback(switchOptions, desiredPlaying, 'seeking');
+    }
+
+    private isAudioOutputModeAvailable(audioOutputMode: CustomDecodeAudioOutputMode): boolean {
+        switch (audioOutputMode) {
+            case 'decoded-pcm':
+                return this.audioOutputFactory !== null;
+            case 'native-media':
+                return this.nativeAudioBridgeFactory !== null;
+        }
     }
 
     /** Changes clock rate when the active audio adapter can supply rate-adjusted PCM. */

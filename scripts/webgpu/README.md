@@ -194,6 +194,28 @@ node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://local
 
 Use a `localhost` target so the page is a secure context.
 
+## Owned native AC-3 and E-AC-3 audio
+
+Before advertising AC-3 or E-AC-3, the player appends exact two-channel and
+six-channel 48 kHz CMAF fixtures to four muted owned audio elements and requires
+their media clocks to advance. MIME support alone never enables a route. The
+successful exact codec/layout results are cached for the page, added to the
+device profile, and selected ahead of bundled PCM decode. Unknown, rejected,
+or differently shaped routes remain unadvertised.
+
+Chrome 151.0.7922.72 on the current Windows validation host reports both MIME
+types unsupported, so all four routes correctly remain unadvertised there. This
+is a negative gating result, not evidence that the owned backend is broken;
+positive qualification still requires a browser/runtime that exposes one of
+the exact routes.
+
+Set `WEBGPU_SMOKE_EXPECTED_AUDIO=native-media` when qualifying this path. The
+harness then requires `audioOutputMode: native-media`, one sourced and playing
+`.webgpuOwnedNativeAudio` element, an advancing qualified native clock, appended
+native audio segments, and no PCM bridge or AudioWorklet output. For an
+in-session track switch, continue to set the exact worker-reported codec with
+`WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC`.
+
 ## Local AC-3 and E-AC-3 decoder build
 
 Ordinary builds exclude the bundled AC-3 software decoder and report AC-3 and
@@ -277,7 +299,7 @@ $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_ITEM_ID = '<video-item-id>'
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'video-frame' # or raw-planes
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'native' # or bundled-hevc
-$env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'disabled' # or ready
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'disabled' # ready or native-media
 $env:WEBGPU_SMOKE_COMPLETION_MODE = 'controlled-stop' # or natural-end
 $env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '3' # optional Jellyfin stream index
 $env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ac-3' # required with stream index
@@ -298,7 +320,8 @@ may instead point to a separately served development build such as
 video output and audio path are also required so the harness tests the intended
 pipeline rather than inferring intent from the observed telemetry. Use
 `video-frame` with `disabled` for a video-only SDR item, or `raw-planes` with
-`ready` for an HDR item with custom-decoded audio.
+`ready` for an HDR item with custom-decoded PCM, or `native-media` for an exact
+owned native-audio route that passed the runtime fixture probe.
 
 A `raw-planes` result is accepted only when
 `getRawHDRAuthorizationTelemetry()` reports `status: 'authorized'` on the
@@ -310,12 +333,14 @@ objects or source details.
 
 To exercise an in-session audio track change, set both
 `WEBGPU_SMOKE_AUDIO_STREAM_INDEX` and `WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC`. The
-harness requires a new decoder generation, decoded audio samples, the exact
-decoder codec, uninterrupted WebGPU presentation, and no fallback or terminal
-error. Audio stream selection is intentionally limited to one playback session
-per invocation so a later Jellyfin replay cannot silently restore the item's
-default track. The locally bundled AC-3 validation route additionally requires
-an enabled, non-distributable AC-3 build as described above.
+harness requires a new decoder generation, the exact audio codec, uninterrupted
+WebGPU presentation, and no fallback or terminal error. A `ready` route must
+produce decoded PCM samples; a `native-media` route must append native segments
+and qualify the owned element clock. Audio stream selection is intentionally
+limited to one playback session per invocation so a later Jellyfin replay cannot
+silently restore the item's default track. The locally bundled AC-3 validation
+route additionally requires an enabled, non-distributable AC-3 build as
+described above.
 
 The harness connects through the add-server form, signs in when the selected
 server does not already have a valid saved session, opens the details page, and
@@ -431,11 +456,13 @@ canvas-attach-to-frame median must be at most 100 milliseconds and p95 at most
 20 percent of paired HTML for the median gate and 500 milliseconds or 30
 percent for p95. A gate fails when the median or nearest-rank p95 of matched
 threshold excess is positive. Native audio uses the media element's first
-`playing` boundary; custom audio requires both submitted decoded PCM and a
-positive AudioWorklet consumed-frame count, so underflow silence cannot pass. A video-only run reports
-the audio gate as not applicable rather than inventing samples. All requested
-measured samples are mandatory. Startup mode requires controlled stop, repeat
-count one, no soak, fault injection, audio switch, seek storm, or
+`playing` boundary. Custom decoded PCM requires both submitted samples and a
+positive AudioWorklet consumed-frame count, so underflow silence cannot pass.
+Owned native audio requires appended media, a qualified native clock, and an
+observed increase in the element's integer-microsecond time. A video-only run
+reports the audio gate as not applicable rather than inventing samples. All
+requested measured samples are mandatory. Startup mode requires controlled
+stop, repeat count one, no soak, fault injection, audio switch, seek storm, or
 generated-frame evidence.
 
 Set `WEBGPU_SMOKE_SOAK_SESSIONS` to `10` through `100` for a lean repeated
@@ -465,7 +492,9 @@ object cannot hide an extra player allocation or cause a false failure.
   and a 0.1 object/session slope. A custom-audio run additionally requires
   exactly one more `AudioContext`, `AudioWorkletNode`, and
   `AudioWorkletProcessors` Performance object than the pre-playback snapshot
-  after every stop. An audio-disabled run requires no worklet node or processor
+  after every stop. An owned native-audio run requires the exact pre-playback
+  `AudioContext`, `AudioWorkletNode`, and processor counts after its unused PCM
+  prewarm closes. An audio-disabled run requires no worklet node or processor
   increase; its unused prewarm may leave one suspended `AudioContext`.
 - Available `AudioHandlers` and `WorkerGlobalScopes` Performance counts: no
   positive final, last-three-median, or Theil-Sen slope from the warmed

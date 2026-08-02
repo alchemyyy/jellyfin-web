@@ -1500,6 +1500,79 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('playing');
     });
 
+    it('switches between decoded PCM and owned native media audio routes', async () => {
+        const nativeAudioBridgeFactory = (
+            vi.fn() as unknown as CustomDecodeNativeAudioBridgeFactory
+        );
+        const harness = createControllerHarness(true, { nativeAudioBridgeFactory });
+        const firstGeneration = await startReadyPlayback(harness, true);
+        harness.audioOutput?.emitTelemetry(secondsToMicroseconds(33));
+
+        const nativeSwitchPromise = harness.controller.setAudioStreamIndex(4, 'native-media');
+        await flushAsyncWork();
+        const nativeGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!nativeGeneration) {
+            throw new Error('Native audio switch generation did not start');
+        }
+        expect(nativeGeneration).toBeGreaterThan(firstGeneration);
+        expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
+            audioOutputMode: 'native-media',
+            audioTrackIndex: 4,
+            startTimeMicroseconds: secondsToMicroseconds(33)
+        });
+        harness.videoDecodeSession.emit({
+            audio: {
+                channelCount: 6,
+                codec: 'ec-3',
+                mimeType: 'audio/mp4; codecs="ec-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000
+            },
+            codec: 'hvc1.2.4.L153.B0',
+            generation: nativeGeneration,
+            type: 'ready'
+        });
+        await expect(nativeSwitchPromise).resolves.toMatchObject({
+            generation: nativeGeneration,
+            status: 'started'
+        });
+
+        harness.videoDecodeSession.setNativeAudioTimeMicroseconds(secondsToMicroseconds(44));
+        const decodedSwitchPromise = harness.controller.setAudioStreamIndex(5, 'decoded-pcm');
+        await flushAsyncWork();
+        const decodedGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!decodedGeneration) {
+            throw new Error('Decoded audio switch generation did not start');
+        }
+        expect(decodedGeneration).toBeGreaterThan(nativeGeneration);
+        expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioTrackIndex: 5,
+            startTimeMicroseconds: secondsToMicroseconds(44)
+        });
+        const audioConfiguration: DecodeWorkerAudioConfiguration = {
+            channelCount: 2,
+            codec: 'opus',
+            sampleRate: 48_000
+        };
+        await harness.videoDecodeSession.prepareAudio(audioConfiguration);
+        if (!harness.audioOutput) {
+            throw new Error('Expected an audio output');
+        }
+        harness.audioBridge.activate(decodedGeneration, harness.audioOutput.generation);
+        harness.videoDecodeSession.emit({
+            audio: audioConfiguration,
+            codec: 'avc1.640028',
+            generation: decodedGeneration,
+            type: 'ready'
+        });
+        await expect(decodedSwitchPromise).resolves.toMatchObject({
+            generation: decodedGeneration,
+            status: 'started'
+        });
+        expect(harness.controller.audioStreamIndex).toBe(5);
+    });
+
     it('requests same-session HTML fallback when custom audio is unavailable', async () => {
         const harness = createControllerHarness(false);
         const result = await harness.controller.play(createPlayOptions(0));

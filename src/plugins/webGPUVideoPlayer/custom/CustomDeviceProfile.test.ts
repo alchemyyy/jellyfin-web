@@ -22,6 +22,13 @@ import {
     H264_PROFILES,
     type H264ProfileCapabilities
 } from './H264ProfileCapabilities';
+import type {
+    NativeMediaAudioCapabilities,
+    NativeMediaAudioChannelCount,
+    NativeMediaAudioCodec,
+    NativeMediaAudioCodecCapability,
+    NativeMediaAudioLayoutCapability
+} from './NativeMediaAudioCapabilities';
 
 const RAW_HDR_PROFILE_OPTIONS = {
     allowRawHDR: true,
@@ -175,6 +182,49 @@ function createCapabilities(
             videoProbeCount: CUSTOM_VIDEO_CODECS.length
         },
         video
+    };
+}
+
+function createNativeMediaAudioCapabilities(
+    supportedRoutes: ReadonlySet<string>
+): NativeMediaAudioCapabilities {
+    const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
+    for (const codec of [ 'ac3', 'eac3' ] as const) {
+        const codecString = codec === 'ac3' ? 'ac-3' : 'ec-3';
+        const mimeType = `audio/mp4; codecs="${codecString}"`;
+        const layouts = {} as Record<
+            NativeMediaAudioChannelCount,
+            NativeMediaAudioLayoutCapability
+        >;
+        let codecSupported = false;
+        for (const channelCount of [ 2, 6 ] as const) {
+            const supported = supportedRoutes.has(`${codec}:${channelCount}:48000`);
+            codecSupported ||= supported;
+            layouts[channelCount] = {
+                channelCount,
+                codec,
+                codecString,
+                mimeType,
+                reason: supported ? 'decoded-playback-advanced' : 'playback-not-advanced',
+                sampleRate: 48_000,
+                status: supported ? 'supported' : 'unsupported'
+            };
+        }
+        audio[codec] = {
+            codec,
+            codecString,
+            layouts,
+            mimeType,
+            status: codecSupported ? 'supported' : 'unsupported'
+        };
+    }
+    return {
+        audio,
+        telemetry: {
+            probeCount: 4,
+            supportedLayoutCount: supportedRoutes.size,
+            unknownLayoutCount: 0
+        }
     };
 }
 
@@ -380,6 +430,63 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
         expect(addedProfiles.some(profile => profile.Container === 'webm')).toBe(false);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'ac3', 'eac3' ]);
+    });
+
+    it('advertises native AC-3 routes only at their exact measured layouts', () => {
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities([ 'h264' ], []),
+            {
+                nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
+                    new Set([ 'ac3:2:48000', 'eac3:2:48000', 'eac3:6:48000' ])
+                )
+            }
+        );
+
+        expect(result.telemetry.supportedAudioCodecs).toEqual([ 'ac3', 'eac3' ]);
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'ac3',
+            Conditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'eac3',
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2|6'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.DirectPlayProfiles).toContainEqual(expect.objectContaining({
+            AudioCodec: 'ac3,eac3',
+            Container: 'mkv',
+            VideoCodec: 'h264'
+        }));
     });
 
     it('widens raw HDR ranges only for supported high-bit-depth codec families', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    default as NativeMediaAudioCapabilityProbe,
     getSupportedNativeMediaAudioRoute,
     probeNativeMediaAudioCapabilities,
     type NativeMediaAudioExactProbeRequest
@@ -110,6 +111,36 @@ describe('NativeMediaAudioCapabilities', () => {
             .toBeNull();
         expect(getSupportedNativeMediaAudioRoute(capabilities, 'eac3', 8, 48_000))
             .toBeNull();
+    });
+
+    it('starts exact layout probes concurrently and caches the aggregate result', async () => {
+        const pendingResolvers: Array<(result: {
+            reason: 'decoded-playback-advanced'
+            supported: true
+        }) => void> = [];
+        const exactPlaybackProbe = vi.fn(() => new Promise<{
+            reason: 'decoded-playback-advanced'
+            supported: true
+        }>(resolve => {
+            pendingResolvers.push(resolve);
+        }));
+        const probe = new NativeMediaAudioCapabilityProbe({
+            exactPlaybackProbe,
+            isTypeSupported: () => true
+        });
+
+        const firstResult = probe.probe();
+        const secondResult = probe.probe();
+        await vi.waitFor(() => expect(exactPlaybackProbe).toHaveBeenCalledTimes(4));
+        expect(firstResult).toBe(secondResult);
+        for (const resolve of pendingResolvers) {
+            resolve({ reason: 'decoded-playback-advanced', supported: true });
+        }
+
+        await expect(firstResult).resolves.toMatchObject({
+            telemetry: { probeCount: 4, supportedLayoutCount: 4 }
+        });
+        expect(probe.probe()).toBe(firstResult);
     });
 
     it('keeps probe exceptions unknown instead of advertising the route', async () => {

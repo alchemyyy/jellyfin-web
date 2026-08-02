@@ -36,7 +36,8 @@ import {
 import {
     getCustomPlaybackEligibility,
     type CustomPlaybackEligibility,
-    type CustomPlaybackIneligibilityReason
+    type CustomPlaybackIneligibilityReason,
+    type EligibleCustomPlayback
 } from './custom/CustomPlaybackEligibility';
 import {
     type CustomDecodeCapabilities,
@@ -52,10 +53,15 @@ import type {
 } from './custom/CustomPlaybackControllerTypes';
 import type { CustomDecodeSessionTelemetry } from './custom/CustomDecodeSession';
 import type {
+    CustomDecodeAudioOutputMode,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
 } from './custom/DecodeWorkerProtocol';
+import {
+    probeCachedNativeMediaAudioCapabilities,
+    type NativeMediaAudioCapabilities
+} from './custom/NativeMediaAudioCapabilities';
 import {
     augmentDeviceProfileForCustomDecode,
     type CustomDeviceProfileTelemetry
@@ -135,6 +141,7 @@ export type CustomPlaybackEligibilityTelemetry =
         reason: CustomPlaybackIneligibilityReason
     }
     | {
+        audioOutputMode: CustomDecodeAudioOutputMode | null
         eligible: true
         hdr: boolean
         videoDecoderBackend: CustomDecodeVideoDecoderBackend
@@ -371,6 +378,7 @@ export default class WebGPUPlayer {
     private lastCustomPlaybackTelemetry: CustomPlaybackTelemetry | null = null;
     private lastCustomDeviceProfileTelemetry: CustomDeviceProfileTelemetry | null = null;
     private lastCustomPlaybackRuntimeAvailability: CustomPlaybackRuntimeAvailability | null = null;
+    private lastNativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null = null;
     private pendingNativeDeviceProfileProof: NativeDeviceProfileProof | null = null;
     private customProfileAugmentationAvailable = false;
     private webGPUPresentationEnabled = false;
@@ -438,20 +446,23 @@ export default class WebGPUPlayer {
             this.lastCustomDecodeCapabilities = null;
             this.lastCustomDeviceProfileTelemetry = null;
             this.lastCustomPlaybackRuntimeAvailability = null;
+            this.lastNativeMediaAudioCapabilities = null;
             return profile;
         }
 
-        const runtimeAvailability = getCustomPlaybackRuntimeAvailability(undefined, {
-            audioOutput: true
-        });
+        const runtimeAvailability = getCustomPlaybackRuntimeAvailability();
         this.lastCustomPlaybackRuntimeAvailability = runtimeAvailability;
         if (!runtimeAvailability.available) {
             this.lastCustomDecodeCapabilities = null;
             this.lastCustomDeviceProfileTelemetry = null;
+            this.lastNativeMediaAudioCapabilities = null;
             return profile;
         }
 
-        const capabilities = await probeCustomDecodeCapabilities();
+        const [ capabilities, nativeMediaAudioCapabilities ] = await Promise.all([
+            probeCustomDecodeCapabilities(),
+            isRetry ? Promise.resolve(null) : probeCachedNativeMediaAudioCapabilities()
+        ]);
         const hdrToneMappingEnabled = !isRetry && await getWebGPUHDRToneMappingEnabled();
         if (hdrToneMappingEnabled) {
             await this.presenter.waitForRawHDRAuthorizationPrewarm();
@@ -463,9 +474,15 @@ export default class WebGPUPlayer {
         const profileResult = augmentDeviceProfileForCustomDecode(
             profile as DeviceProfile,
             capabilities,
-            { allowRawHDR, authorizedRawHDRRouteKeys, isRetry }
+            {
+                allowRawHDR,
+                authorizedRawHDRRouteKeys,
+                isRetry,
+                nativeMediaAudioCapabilities
+            }
         );
         this.lastCustomDecodeCapabilities = capabilities;
+        this.lastNativeMediaAudioCapabilities = nativeMediaAudioCapabilities;
         this.lastCustomDeviceProfileTelemetry = profileResult.telemetry;
         if (!isRetry && (
             profileResult.telemetry.addedProfileCount > 0
@@ -1213,6 +1230,7 @@ export default class WebGPUPlayer {
             };
         }
         return {
+            audioOutputMode: eligibility.audioOutputMode,
             eligible: true,
             hdr: eligibility.hdr,
             videoDecoderBackend: eligibility.videoDecoderBackend,
@@ -1223,6 +1241,18 @@ export default class WebGPUPlayer {
     /** Returns the last custom-codec capability snapshot used for negotiation. */
     getCustomDecodeCapabilities(): CustomDecodeCapabilities | null {
         return this.lastCustomDecodeCapabilities;
+    }
+
+    /** Returns the exact owned native-audio route probe used for negotiation. */
+    getNativeMediaAudioCapabilities(): NativeMediaAudioCapabilities | null {
+        const capabilities = this.lastNativeMediaAudioCapabilities;
+        if (!capabilities) {
+            return null;
+        }
+        return {
+            audio: capabilities.audio,
+            telemetry: { ...capabilities.telemetry }
+        };
     }
 
     /** Returns the last safe device-profile augmentation decision. */
@@ -1348,9 +1378,10 @@ export default class WebGPUPlayer {
 
     private getCustomPlaybackAudioPrewarmForTrack(
         audioTrackIndex: number | null,
+        audioOutputMode: CustomDecodeAudioOutputMode | null,
         backendGeneration: number
     ): BrowserAudioContextPrewarmLease | null {
-        if (audioTrackIndex !== null) {
+        if (audioTrackIndex !== null && audioOutputMode === 'decoded-pcm') {
             return this.getCustomPlaybackAudioPrewarm(backendGeneration);
         }
 
@@ -1406,6 +1437,53 @@ export default class WebGPUPlayer {
         return audioTrackIndex === null ?
             undefined :
             audioOutputModule.createBrowserCustomAudioOutputFactory(audioPrewarm);
+    }
+
+    private createCustomPlaybackController(
+        controllerModule: typeof import('./custom/CustomPlaybackController'),
+        audioOutputModule: typeof import('./custom/BrowserCustomAudioOutput'),
+        nativeAudioBridgeModule: typeof import('./custom/CustomDecodeNativeAudioBridge'),
+        eligibility: EligibleCustomPlayback,
+        audioPrewarm: BrowserAudioContextPrewarmLease | null,
+        backendGeneration: number
+    ): CustomPlaybackController {
+        const controllerReference: { controller: CustomPlaybackController | null } = {
+            controller: null
+        };
+        const nativeAudioBridgeFactory = eligibility.audioTrackIndex === null ?
+            undefined :
+            (): InstanceType<typeof nativeAudioBridgeModule.default> => (
+                new nativeAudioBridgeModule.default()
+            );
+        const customPlaybackController = new controllerModule.default({
+            audioOutputFactory: this.createCustomPlaybackAudioOutputFactory(
+                audioOutputModule,
+                eligibility.audioTrackIndex,
+                audioPrewarm
+            ),
+            eventHandler: (event: CustomPlaybackControllerEvent): void => {
+                if (controllerReference.controller) {
+                    this.handleCustomPlaybackEvent(
+                        controllerReference.controller,
+                        backendGeneration,
+                        event
+                    );
+                }
+            },
+            fallbackHook: (request: CustomPlaybackFallbackRequest): Promise<void> => {
+                if (!controllerReference.controller) {
+                    return Promise.resolve();
+                }
+                return this.requestCustomPlaybackFallback(
+                    controllerReference.controller,
+                    backendGeneration,
+                    request
+                ).then(() => undefined);
+            },
+            nativeAudioBridgeFactory
+        });
+        controllerReference.controller = customPlaybackController;
+        return customPlaybackController;
     }
 
     private async startCustomPlaybackBounded(
@@ -1473,12 +1551,13 @@ export default class WebGPUPlayer {
 
         const audioPrewarm = this.getCustomPlaybackAudioPrewarmForTrack(
             eligibility.audioTrackIndex,
+            eligibility.audioOutputMode,
             backendGeneration
         );
 
         let completedStartResult: CustomPlaybackStartResult | null = null;
         try {
-            const [ controllerModule, audioOutputModule ] = await Promise.all([
+            const [ controllerModule, audioOutputModule, nativeAudioBridgeModule ] = await Promise.all([
                 import(
                     /* webpackChunkName: "webgpu-custom-playback" */
                     './custom/CustomPlaybackController'
@@ -1486,6 +1565,10 @@ export default class WebGPUPlayer {
                 import(
                     /* webpackChunkName: "webgpu-custom-playback" */
                     './custom/BrowserCustomAudioOutput'
+                ),
+                import(
+                    /* webpackChunkName: "webgpu-custom-playback" */
+                    './custom/CustomDecodeNativeAudioBridge'
                 )
             ]);
             if (!this.isCustomPlaybackSetupCurrent(backendGeneration, setupRevision)) {
@@ -1526,36 +1609,14 @@ export default class WebGPUPlayer {
                 );
             }
 
-            const controllerReference: { controller: CustomPlaybackController | null } = {
-                controller: null
-            };
-            const customPlaybackController = new controllerModule.default({
-                audioOutputFactory: this.createCustomPlaybackAudioOutputFactory(
-                    audioOutputModule,
-                    eligibility.audioTrackIndex,
-                    audioPrewarm
-                ),
-                eventHandler: (event: CustomPlaybackControllerEvent): void => {
-                    if (controllerReference.controller) {
-                        this.handleCustomPlaybackEvent(
-                            controllerReference.controller,
-                            backendGeneration,
-                            event
-                        );
-                    }
-                },
-                fallbackHook: (request: CustomPlaybackFallbackRequest): Promise<void> => {
-                    if (!controllerReference.controller) {
-                        return Promise.resolve();
-                    }
-                    return this.requestCustomPlaybackFallback(
-                        controllerReference.controller,
-                        backendGeneration,
-                        request
-                    ).then(() => undefined);
-                }
-            });
-            controllerReference.controller = customPlaybackController;
+            const customPlaybackController = this.createCustomPlaybackController(
+                controllerModule,
+                audioOutputModule,
+                nativeAudioBridgeModule,
+                eligibility,
+                audioPrewarm,
+                backendGeneration
+            );
             this.customPlaybackController = customPlaybackController;
             this.customPlaybackBackendGeneration = backendGeneration;
             this.customPlaybackFrameGeneration = presentationGeneration;
@@ -1563,6 +1624,7 @@ export default class WebGPUPlayer {
             this.initializeCustomPlaybackGain(customPlaybackController);
 
             const startResult = await customPlaybackController.play({
+                audioOutputMode: eligibility.audioOutputMode ?? undefined,
                 audioTrackIndex: eligibility.audioTrackIndex,
                 durationMicroseconds: eligibility.durationMicroseconds,
                 maximumCodedHeight: eligibility.maximumCodedHeight,
@@ -1668,13 +1730,17 @@ export default class WebGPUPlayer {
 
         const runtimeAvailability = getCustomPlaybackRuntimeAvailability();
         this.lastCustomPlaybackRuntimeAvailability = runtimeAvailability;
-        const capabilities = this.lastCustomDecodeCapabilities
-            ?? await probeCustomDecodeCapabilities();
+        const [ capabilities, nativeMediaAudioCapabilities ] = await Promise.all([
+            this.lastCustomDecodeCapabilities ?? probeCustomDecodeCapabilities(),
+            this.lastNativeMediaAudioCapabilities
+                ?? probeCachedNativeMediaAudioCapabilities()
+        ]);
         if (!this.isRequestedSessionCurrent(backendGeneration)) {
             return null;
         }
 
         this.lastCustomDecodeCapabilities = capabilities;
+        this.lastNativeMediaAudioCapabilities = nativeMediaAudioCapabilities;
         const metadata = this.currentPresentationColorMetadata;
         let allowRawHDR = false;
         let authorizedRawHDRRouteKeys = this.presenter.getAuthorizedRawHDRRouteKeys();
@@ -1697,6 +1763,7 @@ export default class WebGPUPlayer {
         const eligibility = getCustomPlaybackEligibility(options, capabilities, {
             allowRawHDR,
             authorizedRawHDRRouteKeys,
+            nativeMediaAudioCapabilities,
             runtimeAvailability
         });
         this.lastCustomPlaybackEligibility = eligibility;
@@ -2157,7 +2224,8 @@ export default class WebGPUPlayer {
         }
 
         const result = await customPlaybackController.setAudioStreamIndex(
-            eligibility.audioTrackIndex
+            eligibility.audioTrackIndex,
+            eligibility.audioOutputMode ?? 'decoded-pcm'
         );
         if (!this.isCustomPlaybackAudioSelectionCurrent(
             customPlaybackController,

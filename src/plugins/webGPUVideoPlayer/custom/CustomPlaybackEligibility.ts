@@ -15,6 +15,11 @@ import {
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
+import {
+    getSupportedNativeMediaAudioRoute,
+    type NativeMediaAudioCapabilities,
+    type NativeMediaAudioCodec
+} from './NativeMediaAudioCapabilities';
 import type { BundledHEVCExactTierCapability } from './HEVCExactCapabilityProbe';
 import {
     getCustomPlaybackRuntimeAvailability,
@@ -28,6 +33,7 @@ import {
     type RawHDRAuthorizationRouteKey
 } from '../validation/RawHDRPresentationAuthorization';
 import type {
+    CustomDecodeAudioOutputMode,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
@@ -183,6 +189,16 @@ type TypedStreamCandidate = {
     stream: MediaStream
 };
 
+type AudioOutputSelection =
+    | {
+        outputMode: CustomDecodeAudioOutputMode
+        status: 'selected'
+    }
+    | {
+        reason: 'audio-codec-unsupported' | 'audio-layout-unsupported'
+        status: 'invalid'
+    };
+
 export type CustomPlaybackIneligibilityReason =
     | 'audio-codec-unsupported'
     | 'audio-layout-unsupported'
@@ -205,10 +221,12 @@ export type CustomPlaybackIneligibilityReason =
 export type CustomPlaybackEligibilityOptions = {
     allowRawHDR: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
+    nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
     runtimeAvailability: CustomPlaybackRuntimeAvailability
 };
 
 export type EligibleCustomPlayback = {
+    audioOutputMode: CustomDecodeAudioOutputMode | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds
@@ -396,6 +414,55 @@ function getRawVideoFrameFormat(bitDepth: number): CustomDecodeRawVideoFrameForm
 
 function isPositiveSafeInteger(value: unknown): value is number {
     return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function getNativeMediaAudioCodec(codec: CustomAudioCodec): NativeMediaAudioCodec | null {
+    switch (codec) {
+        case 'ac3':
+        case 'eac3':
+            return codec;
+        case 'aac':
+        case 'flac':
+        case 'mp3':
+        case 'opus':
+        case 'vorbis':
+            return null;
+    }
+}
+
+function selectAudioOutput(
+    codec: CustomAudioCodec,
+    stream: MediaStream,
+    capabilities: CustomDecodeCapabilities,
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+): AudioOutputSelection {
+    const nativeCodec = getNativeMediaAudioCodec(codec);
+    if (nativeCodec && nativeMediaAudioCapabilities) {
+        const nativeRoute = getSupportedNativeMediaAudioRoute(
+            nativeMediaAudioCapabilities,
+            nativeCodec,
+            Number(stream.Channels),
+            Number(stream.SampleRate)
+        );
+        if (nativeRoute) {
+            return { outputMode: 'native-media', status: 'selected' };
+        }
+    }
+
+    if (capabilities.audio[codec].status !== 'supported') {
+        const nativeCodecSupported = nativeCodec !== null
+            && nativeMediaAudioCapabilities?.audio[nativeCodec].status === 'supported';
+        return {
+            reason: nativeCodecSupported ?
+                'audio-layout-unsupported' :
+                'audio-codec-unsupported',
+            status: 'invalid'
+        };
+    }
+    if (!isSupportedCustomAudioOutputLayout(stream.Channels, stream.SampleRate)) {
+        return { reason: 'audio-layout-unsupported', status: 'invalid' };
+    }
+    return { outputMode: 'decoded-pcm', status: 'selected' };
 }
 
 function getEffectiveVideoFrameRate(stream: MediaStream): number | null {
@@ -796,19 +863,24 @@ export function getCustomPlaybackEligibility(
         return { eligible: false, reason: 'audio-track-invalid' };
     }
     let audioTrackIndex: number | null = null;
+    let audioOutputMode: CustomDecodeAudioOutputMode | null = null;
     let selectedAudioCodec: CustomAudioCodec | null = null;
     if (selectedAudio.status === 'selected') {
         const audioCodec = AUDIO_CODEC_ALIASES[normalizeMetadataValue(selectedAudio.stream.Codec) ?? ''];
-        if (!audioCodec || capabilities.audio[audioCodec].status !== 'supported') {
+        if (!audioCodec) {
             return { eligible: false, reason: 'audio-codec-unsupported' };
         }
-        if (!isSupportedCustomAudioOutputLayout(
-            selectedAudio.stream.Channels,
-            selectedAudio.stream.SampleRate
-        )) {
-            return { eligible: false, reason: 'audio-layout-unsupported' };
+        const audioOutput = selectAudioOutput(
+            audioCodec,
+            selectedAudio.stream,
+            capabilities,
+            eligibilityOptions.nativeMediaAudioCapabilities
+        );
+        if (audioOutput.status === 'invalid') {
+            return { eligible: false, reason: audioOutput.reason };
         }
         selectedAudioCodec = audioCodec;
+        audioOutputMode = audioOutput.outputMode;
         audioTrackIndex = selectedAudio.trackOrdinal;
     }
     if (!supportsContainerCodecCombination(
@@ -820,8 +892,9 @@ export function getCustomPlaybackEligibility(
     }
 
     const runtimeRequirements: CustomPlaybackRuntimeRequirements = {
-        audioOutput: selectedAudioCodec !== null,
-        nativeAudioDecoder: selectedAudioCodec !== null
+        audioOutput: audioOutputMode === 'decoded-pcm',
+        nativeAudioDecoder: audioOutputMode === 'decoded-pcm'
+            && selectedAudioCodec !== null
             && !BUNDLED_AUDIO_CODEC_SET.has(selectedAudioCodec),
         nativeVideoDecoder: videoOutput.nativeVideoDecoderRequired
     };
@@ -834,6 +907,7 @@ export function getCustomPlaybackEligibility(
     }
 
     return {
+        audioOutputMode,
         audioTrackIndex,
         durationMicroseconds: parsedSource.durationMicroseconds,
         eligible: true,

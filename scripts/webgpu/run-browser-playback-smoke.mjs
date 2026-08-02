@@ -9,6 +9,7 @@ import {
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
     hasConsumedCustomAudio,
+    hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
     isVideoSampleOwnershipWarning,
     parseSmokeConfiguration,
@@ -957,6 +958,10 @@ function createPlayerSnapshotExpression(accessKey) {
         const customEligibility = typeof player.getCustomPlaybackEligibility === 'function'
             ? player.getCustomPlaybackEligibility()
             : null;
+        const nativeMediaAudioCapabilities =
+            typeof player.getNativeMediaAudioCapabilities === 'function'
+                ? player.getNativeMediaAudioCapabilities()
+                : null;
         const presentation = typeof player.getPresentationTelemetry === 'function'
             ? player.getPresentationTelemetry()
             : null;
@@ -974,6 +979,9 @@ function createPlayerSnapshotExpression(accessKey) {
             activeRawColorMetadata
         );
         const videos = Array.from(document.querySelectorAll('.videoPlayerContainer video'));
+        const ownedNativeAudioElements = Array.from(document.querySelectorAll(
+            'audio.webgpuOwnedNativeAudio'
+        ));
         const canvases = Array.from(document.querySelectorAll(
             '.videoPlayerContainer .webgpuVideoPlayerCanvas'
         ));
@@ -1045,11 +1053,14 @@ function createPlayerSnapshotExpression(accessKey) {
                     audioCodec: custom.videoDecode.audioCodec,
                     droppedFrameCount: custom.videoDecode.droppedFrameCount,
                     failureKind: custom.videoDecode.failureKind,
+                    nativeAudioClockReady: custom.videoDecode.nativeAudioClockReady,
                     peakFrameCount: custom.videoDecode.peakFrameCount,
                     pendingFrameCount: custom.videoDecode.pendingFrameCount,
                     queuedFrameCount: custom.videoDecode.queuedFrameCount,
                     receivedAudioFrameCount: custom.videoDecode.receivedAudioFrameCount,
                     receivedFrameCount: custom.videoDecode.receivedFrameCount,
+                    receivedNativeAudioSegmentCount:
+                        custom.videoDecode.receivedNativeAudioSegmentCount,
                     recycledRawFrameCount: custom.videoDecode.recycledRawFrameCount,
                     staleAudioSampleCount: custom.videoDecode.staleAudioSampleCount,
                     staleFrameCount: custom.videoDecode.staleFrameCount,
@@ -1058,6 +1069,9 @@ function createPlayerSnapshotExpression(accessKey) {
                 } : null
             } : null,
             customPlaybackEligibility: customEligibility ? {
+                audioOutputMode: customEligibility.eligible
+                    ? customEligibility.audioOutputMode
+                    : null,
                 eligible: customEligibility.eligible,
                 hdr: customEligibility.eligible ? customEligibility.hdr : null,
                 reason: customEligibility.eligible ? null : customEligibility.reason,
@@ -1086,6 +1100,17 @@ function createPlayerSnapshotExpression(accessKey) {
                     && Number.isFinite(sourcedVideo.currentTime)
                     ? Math.round(sourcedVideo.currentTime * 1_000_000)
                     : null,
+                ownedNativeAudioCount: ownedNativeAudioElements.length,
+                ownedNativeAudioPlaying: ownedNativeAudioElements.some(audio => !audio.paused),
+                ownedNativeAudioSourcedCount: ownedNativeAudioElements.filter(
+                    audio => Boolean(audio.getAttribute('src') || audio.currentSrc)
+                ).length,
+                ownedNativeAudioTimeMicroseconds: (() => {
+                    const audio = ownedNativeAudioElements[0];
+                    return audio && Number.isFinite(audio.currentTime)
+                        ? Math.round(audio.currentTime * 1_000_000)
+                        : null;
+                })(),
                 sourceLessVideoCount: videos.filter(isSourceLess).length,
                 sourcedVideoCount: videos.filter(video => !isSourceLess(video)).length,
                 videoCount: videos.length,
@@ -1100,6 +1125,7 @@ function createPlayerSnapshotExpression(accessKey) {
                 : currentSource != null,
             isFetching: Boolean(fetchingValue),
             milestones: { ...(capture.milestones ?? {}) },
+            nativeMediaAudioCapabilities,
             performanceNowMilliseconds: performance.now(),
             playerID: String(player.id || ''),
             sessionGeneration: Number.isSafeInteger(player.backendSessionGeneration)
@@ -1666,6 +1692,23 @@ function hasAuthorizedRawHDRPlaybackRoute(snapshot) {
         && authorization.authorizedRouteKeys.includes(routeKey);
 }
 
+function getExpectedControllerAudioPath(expectedAudioPath) {
+    return expectedAudioPath === 'native-media' ? 'ready' : expectedAudioPath;
+}
+
+function hasExpectedCustomAudio(snapshot, expectedAudioPath) {
+    switch (expectedAudioPath) {
+        case 'disabled':
+            return snapshot?.customPlayback?.audioPath === 'disabled';
+        case 'ready':
+            return snapshot?.customPlayback?.audioPath === 'ready';
+        case 'native-media':
+            return hasReadyNativeMediaAudio(snapshot);
+        default:
+            return false;
+    }
+}
+
 function isExpectedCustomPlaybackActive(snapshot, configuration, previousGeneration = null) {
     const generationAdvanced = previousGeneration === null
         || (Number.isSafeInteger(snapshot?.sessionGeneration)
@@ -1674,7 +1717,7 @@ function isExpectedCustomPlaybackActive(snapshot, configuration, previousGenerat
         && snapshot.playerID === 'webgpuvideoplayer'
         && generationAdvanced
         && snapshot.customPlayback?.state === 'playing'
-        && snapshot.customPlayback?.audioPath === configuration.expectedAudioPath
+        && hasExpectedCustomAudio(snapshot, configuration.expectedAudioPath)
         && snapshot.customPlaybackEligibility?.videoOutputMode
             === configuration.expectedVideoOutputMode
         && (configuration.expectedVideoDecoderBackend === null
@@ -2099,7 +2142,7 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
         case 'html':
             return snapshot.playerID === 'htmlvideoplayer'
                 && Number.isFinite(snapshot.milestones.nativeVideoFrameAtMilliseconds)
-                && (configuration.expectedAudioPath !== 'ready'
+                && (configuration.expectedAudioPath === 'disabled'
                     || Number.isFinite(
                         snapshot.milestones.nativeMediaPlayingAtMilliseconds
                     ));
@@ -2118,14 +2161,15 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                 )
                 && Number.isFinite(snapshot.milestones.canvasAttachedAtMilliseconds)
                 && Number.isFinite(snapshot.milestones.nativeVideoFrameAtMilliseconds)
-                && (configuration.expectedAudioPath !== 'ready'
+                && (configuration.expectedAudioPath === 'disabled'
                     || Number.isFinite(
                         snapshot.milestones.nativeMediaPlayingAtMilliseconds
                     ));
         case 'custom':
             return snapshot.playerID === 'webgpuvideoplayer'
                 && snapshot.customPlayback?.state === 'playing'
-                && snapshot.customPlayback.audioPath === configuration.expectedAudioPath
+                && snapshot.customPlayback.audioPath
+                    === getExpectedControllerAudioPath(configuration.expectedAudioPath)
                 && snapshot.customPlayback.fallbackReason === null
                 && snapshot.customPlayback.videoDecode?.receivedFrameCount > 0
                 && snapshot.customPlaybackEligibility?.eligible === true
@@ -2145,8 +2189,14 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                     snapshot.presentation.sessionStartedMicroseconds
                 )
                 && Number.isFinite(snapshot.milestones.canvasAttachedAtMilliseconds)
-                && (configuration.expectedAudioPath !== 'ready'
-                    || hasConsumedCustomAudio(snapshot))
+                && (configuration.expectedAudioPath === 'disabled'
+                    || configuration.expectedAudioPath === 'ready'
+                        && hasConsumedCustomAudio(snapshot)
+                    || configuration.expectedAudioPath === 'native-media'
+                        && hasReadyNativeMediaAudio(snapshot)
+                        && Number.isFinite(
+                            snapshot.observedMilestones?.firstCustomAudioAtMilliseconds
+                        ))
                 && (configuration.expectedVideoOutputMode !== 'raw-planes'
                     || hasAuthorizedRawHDRPlaybackRoute(snapshot));
         default:
@@ -2460,6 +2510,7 @@ async function runStartupModeSample(options) {
             firstCustomAudioAtMilliseconds: null,
             firstCustomDecodedFrameAtMilliseconds: null
         };
+        let nativeAudioBaselineTimeMicroseconds = null;
         const activeSnapshot = await waitForValue({
             accept: snapshot => isExpectedStartupModeActive(
                 snapshot,
@@ -2478,6 +2529,18 @@ async function runStartupModeSample(options) {
                 if (hasConsumedCustomAudio(snapshot)) {
                     observedMilestones.firstCustomAudioAtMilliseconds
                         ??= snapshot.performanceNowMilliseconds;
+                } else if (hasReadyNativeMediaAudio(snapshot)) {
+                    const nativeAudioTimeMicroseconds =
+                        snapshot.dom?.ownedNativeAudioTimeMicroseconds;
+                    if (nativeAudioBaselineTimeMicroseconds === null) {
+                        nativeAudioBaselineTimeMicroseconds = nativeAudioTimeMicroseconds;
+                    } else if (
+                        Number.isSafeInteger(nativeAudioTimeMicroseconds)
+                        && nativeAudioTimeMicroseconds > nativeAudioBaselineTimeMicroseconds
+                    ) {
+                        observedMilestones.firstCustomAudioAtMilliseconds
+                            ??= snapshot.performanceNowMilliseconds;
+                    }
                 }
                 snapshot.observedMilestones = { ...observedMilestones };
                 return snapshot;
@@ -2490,7 +2553,7 @@ async function runStartupModeSample(options) {
             options.sampleNumber,
             options.orderPosition,
             options.measured,
-            options.configuration.expectedAudioPath === 'ready'
+            options.configuration.expectedAudioPath !== 'disabled'
         );
         await stopStartupSample(options.client, accessKey, options.configuration);
         playbackStarted = false;
@@ -2629,14 +2692,14 @@ async function runStartupComparison(configuration) {
             validationSamples.presentation,
             {
                 requiredSampleCount: configuration.startupSampleCount,
-                validateFirstAudio: configuration.expectedAudioPath === 'ready'
+                validateFirstAudio: configuration.expectedAudioPath !== 'disabled'
             }
         );
         const customValidation = validateHTMLVersusCustomStartupSamples(
             validationSamples.custom,
             {
                 requiredSampleCount: configuration.startupSampleCount,
-                validateFirstAudio: configuration.expectedAudioPath === 'ready'
+                validateFirstAudio: configuration.expectedAudioPath !== 'disabled'
             }
         );
         const failures = [];
@@ -2856,6 +2919,40 @@ function addExpectedRetentionCount(baselineCount, additionalCount) {
     return expectedCount;
 }
 
+function getExpectedRetentionAudioCounts(
+    expectedAudioPath,
+    baselineAudioContextCount,
+    baselineAudioWorkletNodeCount,
+    baselineAudioWorkletProcessorCount
+) {
+    let audioContextIncrement = null;
+    let workletIncrement = 0;
+    switch (expectedAudioPath) {
+        case 'ready':
+            audioContextIncrement = 1;
+            workletIncrement = 1;
+            break;
+        case 'native-media':
+            audioContextIncrement = 0;
+            break;
+        case 'disabled':
+            break;
+    }
+    return {
+        expectedAudioContextCount: audioContextIncrement === null ?
+            null :
+            addExpectedRetentionCount(baselineAudioContextCount, audioContextIncrement),
+        expectedAudioWorkletNodeCount: addExpectedRetentionCount(
+            baselineAudioWorkletNodeCount,
+            workletIncrement
+        ),
+        expectedAudioWorkletProcessorCount: addExpectedRetentionCount(
+            baselineAudioWorkletProcessorCount,
+            workletIncrement
+        )
+    };
+}
+
 function validateRetentionSoakObservations(
     sessionObservations,
     requiredSessionCount,
@@ -2981,18 +3078,15 @@ async function runRetentionSoak(options) {
         'retention-baseline:audio-worklet-processor-count-unavailable',
         failures
     );
-    const expectedCustomAudioResourceIncrement =
-        options.configuration.expectedAudioPath === 'ready' ? 1 : 0;
-    const expectedAudioContextCount = options.configuration.expectedAudioPath === 'ready' ?
-        addExpectedRetentionCount(baselineAudioContextCount, 1) :
-        null;
-    const expectedAudioWorkletNodeCount = addExpectedRetentionCount(
+    const {
+        expectedAudioContextCount,
+        expectedAudioWorkletNodeCount,
+        expectedAudioWorkletProcessorCount
+    } = getExpectedRetentionAudioCounts(
+        options.configuration.expectedAudioPath,
+        baselineAudioContextCount,
         baselineAudioWorkletNodeCount,
-        expectedCustomAudioResourceIncrement
-    );
-    const expectedAudioWorkletProcessorCount = addExpectedRetentionCount(
-        baselineAudioWorkletProcessorCount,
-        expectedCustomAudioResourceIncrement
+        baselineAudioWorkletProcessorCount
     );
     for (
         let sessionNumber = 1;
@@ -3826,7 +3920,8 @@ async function runPlaybackExercise(
                 validateAudioStreamSwitchSnapshot(
                     activeLater,
                     audioSwitchSnapshot,
-                    configuration.expectedAudioCodec
+                    configuration.expectedAudioCodec,
+                    configuration.expectedAudioPath
                 )
             );
         }

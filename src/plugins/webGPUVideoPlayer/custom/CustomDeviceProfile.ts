@@ -20,6 +20,13 @@ import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
 } from './CustomAudioOutputPolicy';
+import {
+    NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS,
+    NATIVE_MEDIA_AUDIO_SAMPLE_RATE,
+    type NativeMediaAudioCapabilities,
+    type NativeMediaAudioChannelCount,
+    type NativeMediaAudioCodec
+} from './NativeMediaAudioCapabilities';
 import { getSupportedH264JellyfinProfileNames } from './H264ProfileCapabilities';
 import type { BundledHEVCExactTierCapability } from './HEVCExactCapabilityProbe';
 import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
@@ -28,6 +35,7 @@ export type CustomDeviceProfileOptions = {
     allowRawHDR?: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     isRetry?: boolean
+    nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
 };
 
 export type CustomDeviceProfileReason =
@@ -261,10 +269,15 @@ function getSupportedVideoCodecs(
     return supportedCodecs;
 }
 
-function getSupportedAudioCodecs(capabilities: CustomDecodeCapabilities): CustomAudioCodec[] {
+function getSupportedAudioCodecs(
+    capabilities: CustomDecodeCapabilities,
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+): CustomAudioCodec[] {
     const supportedCodecs: CustomAudioCodec[] = [];
     for (const codec of CUSTOM_AUDIO_CODECS) {
-        if (capabilities.audio[codec].status === 'supported') {
+        const nativeMediaSupported = (codec === 'ac3' || codec === 'eac3')
+            && nativeMediaAudioCapabilities?.audio[codec].status === 'supported';
+        if (capabilities.audio[codec].status === 'supported' || nativeMediaSupported) {
             supportedCodecs.push(codec);
         }
     }
@@ -1019,38 +1032,128 @@ function appendMeasuredVideoRouteProfiles(
     }
 }
 
-function appendMeasuredAudioRouteProfile(
-    profile: DeviceProfile,
-    supportedAudioCodecs: readonly CustomAudioCodec[]
-): void {
-    if (supportedAudioCodecs.length === 0) {
-        return;
-    }
-
-    const codecProfiles = profile.CodecProfiles ?? [];
-    profile.CodecProfiles = codecProfiles;
-    const measuredProfile: CodecProfile = {
-        Codec: supportedAudioCodecs.join(','),
+function createMeasuredAudioRouteProfile(
+    codecs: readonly CustomAudioCodec[],
+    channelCounts: readonly number[],
+    sampleRate: number
+): CodecProfile {
+    return {
+        Codec: codecs.join(','),
         Conditions: [
             {
-                Condition: 'Equals',
+                Condition: channelCounts.length === 1 ? 'Equals' : EQUALS_ANY_CONDITION,
                 IsRequired: true,
                 Property: AUDIO_CHANNELS_PROPERTY,
-                Value: String(CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT)
+                Value: channelCounts.join('|')
             },
             {
                 Condition: 'Equals',
                 IsRequired: true,
                 Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE)
+                Value: String(sampleRate)
             }
         ],
         Container: CUSTOM_VIDEO_CONTAINER_VALUE,
         Type: 'VideoAudio'
     };
+}
+
+function getSupportedNativeMediaChannelCounts(
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities,
+    codec: NativeMediaAudioCodec
+): NativeMediaAudioChannelCount[] {
+    const channelCounts: NativeMediaAudioChannelCount[] = [];
+    for (const channelCount of NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS) {
+        if (nativeMediaAudioCapabilities.audio[codec].layouts[channelCount].status === 'supported') {
+            channelCounts.push(channelCount);
+        }
+    }
+    return channelCounts;
+}
+
+function appendMeasuredNativeAudioRouteProfiles(
+    measuredProfiles: CodecProfile[],
+    capabilities: CustomDecodeCapabilities,
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+): Set<NativeMediaAudioCodec> {
+    const nativeMediaCodecs = new Set<NativeMediaAudioCodec>();
+    if (!nativeMediaAudioCapabilities) {
+        return nativeMediaCodecs;
+    }
+
+    for (const codec of [ 'ac3', 'eac3' ] as const) {
+        const channelCounts = getSupportedNativeMediaChannelCounts(
+            nativeMediaAudioCapabilities,
+            codec
+        );
+        if (channelCounts.length === 0) {
+            continue;
+        }
+        nativeMediaCodecs.add(codec);
+        if (capabilities.audio[codec].status === 'supported'
+            && !channelCounts.includes(CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT)) {
+            channelCounts.push(CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT);
+            channelCounts.sort((left, right) => left - right);
+        }
+        measuredProfiles.push(createMeasuredAudioRouteProfile(
+            [ codec ],
+            channelCounts,
+            NATIVE_MEDIA_AUDIO_SAMPLE_RATE
+        ));
+    }
+    return nativeMediaCodecs;
+}
+
+function getDecodedAudioCodecsWithoutNativeProfile(
+    capabilities: CustomDecodeCapabilities,
+    nativeMediaCodecs: ReadonlySet<NativeMediaAudioCodec>
+): CustomAudioCodec[] {
+    const decodedAudioCodecs: CustomAudioCodec[] = [];
+    for (const codec of CUSTOM_AUDIO_CODECS) {
+        if (capabilities.audio[codec].status !== 'supported') {
+            continue;
+        }
+        if ((codec === 'ac3' || codec === 'eac3') && nativeMediaCodecs.has(codec)) {
+            continue;
+        }
+        decodedAudioCodecs.push(codec);
+    }
+    return decodedAudioCodecs;
+}
+
+function appendMeasuredAudioRouteProfiles(
+    profile: DeviceProfile,
+    capabilities: CustomDecodeCapabilities,
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+): void {
+    const codecProfiles = profile.CodecProfiles ?? [];
+    profile.CodecProfiles = codecProfiles;
     const existingProfileKeys = new Set(codecProfiles.map(getCodecProfileKey));
-    if (!existingProfileKeys.has(getCodecProfileKey(measuredProfile))) {
+    const measuredProfiles: CodecProfile[] = [];
+    const nativeMediaCodecs = appendMeasuredNativeAudioRouteProfiles(
+        measuredProfiles,
+        capabilities,
+        nativeMediaAudioCapabilities
+    );
+    const decodedAudioCodecs = getDecodedAudioCodecsWithoutNativeProfile(
+        capabilities,
+        nativeMediaCodecs
+    );
+    if (decodedAudioCodecs.length > 0) {
+        measuredProfiles.push(createMeasuredAudioRouteProfile(
+            decodedAudioCodecs,
+            [ CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT ],
+            CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+        ));
+    }
+
+    for (const measuredProfile of measuredProfiles) {
+        const profileKey = getCodecProfileKey(measuredProfile);
+        if (existingProfileKeys.has(profileKey)) {
+            continue;
+        }
         codecProfiles.push(measuredProfile);
+        existingProfileKeys.add(profileKey);
     }
 }
 
@@ -1070,7 +1173,10 @@ export function augmentDeviceProfileForCustomDecode(
     const allowRawHDR = rawHDRVideoRangeTypes.length > 0;
     const supportedNativeVideoCodecs = getSupportedVideoCodecs(capabilities, false);
     const supportedVideoCodecs = getSupportedVideoCodecs(capabilities, allowRawHDR);
-    const supportedAudioCodecs = getSupportedAudioCodecs(capabilities);
+    const supportedAudioCodecs = getSupportedAudioCodecs(
+        capabilities,
+        options.nativeMediaAudioCapabilities
+    );
     const supportedRawHDRVideoCodecs = getSupportedRawHDRVideoCodecs(capabilities);
     if (options.isRetry === true) {
         return {
@@ -1127,7 +1233,11 @@ export function augmentDeviceProfileForCustomDecode(
         supportedVideoCodecs,
         rawHDRVideoRangeTypes
     );
-    appendMeasuredAudioRouteProfile(clonedProfile, supportedAudioCodecs);
+    appendMeasuredAudioRouteProfiles(
+        clonedProfile,
+        capabilities,
+        options.nativeMediaAudioCapabilities
+    );
 
     const directPlayProfiles = clonedProfile.DirectPlayProfiles ?? [];
     clonedProfile.DirectPlayProfiles = directPlayProfiles;

@@ -391,38 +391,55 @@ export async function probeNativeMediaAudioCapabilities(
         getDefaultIsTypeSupported() :
         environment.isTypeSupported;
     const exactPlaybackProbe = environment.exactPlaybackProbe ?? runDefaultExactPlaybackProbe;
-    const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
+    const capabilityPromises: Array<Promise<NativeMediaAudioCodecCapability>> = [];
+    const probeOutcomes: NativeMediaAudioLayoutProbeOutcome[] = [];
     let probeCount = 0;
     let supportedLayoutCount = 0;
     let unknownLayoutCount = 0;
 
     for (const definition of DEFINITIONS) {
-        const layouts = {} as Record<
-            NativeMediaAudioChannelCount,
-            NativeMediaAudioLayoutCapability
-        >;
-        for (const channelCount of NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS) {
-            const outcome = await probeNativeMediaAudioLayout(
-                definition,
-                channelCount,
-                isTypeSupported,
-                exactPlaybackProbe
-            );
-            layouts[channelCount] = outcome.capability;
-            if (outcome.probed) {
-                probeCount += 1;
+        capabilityPromises.push((async (): Promise<NativeMediaAudioCodecCapability> => {
+            const layoutPromises: Array<Promise<NativeMediaAudioLayoutProbeOutcome>> = [];
+            for (const channelCount of NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS) {
+                layoutPromises.push(probeNativeMediaAudioLayout(
+                    definition,
+                    channelCount,
+                    isTypeSupported,
+                    exactPlaybackProbe
+                ));
             }
-            if (outcome.capability.status === 'supported') {
-                supportedLayoutCount += 1;
-            } else if (outcome.capability.status === 'unknown') {
-                unknownLayoutCount += 1;
+            const outcomes = await Promise.all(layoutPromises);
+            const layouts = {} as Record<
+                NativeMediaAudioChannelCount,
+                NativeMediaAudioLayoutCapability
+            >;
+            for (let layoutIndex = 0; layoutIndex < outcomes.length; layoutIndex += 1) {
+                const outcome = outcomes[layoutIndex];
+                layouts[NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS[layoutIndex]] = outcome.capability;
+                probeOutcomes.push(outcome);
             }
+            return {
+                ...definition,
+                layouts,
+                status: getCodecStatus(layouts)
+            };
+        })());
+    }
+
+    const codecCapabilities = await Promise.all(capabilityPromises);
+    const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
+    for (const capability of codecCapabilities) {
+        audio[capability.codec] = capability;
+    }
+    for (const outcome of probeOutcomes) {
+        if (outcome.probed) {
+            probeCount += 1;
         }
-        audio[definition.codec] = {
-            ...definition,
-            layouts,
-            status: getCodecStatus(layouts)
-        };
+        if (outcome.capability.status === 'supported') {
+            supportedLayoutCount += 1;
+        } else if (outcome.capability.status === 'unknown') {
+            unknownLayoutCount += 1;
+        }
     }
 
     return {
@@ -433,6 +450,31 @@ export async function probeNativeMediaAudioCapabilities(
             unknownLayoutCount
         }
     };
+}
+
+/** Performs one cached exact native-media audio capability probe. */
+export default class NativeMediaAudioCapabilityProbe {
+    private cachedProbe: Promise<NativeMediaAudioCapabilities> | null = null;
+    private readonly environment: NativeMediaAudioCapabilityEnvironment | null;
+
+    public constructor(environment: NativeMediaAudioCapabilityEnvironment | null = null) {
+        this.environment = environment;
+    }
+
+    /** Reuses one immutable route result for every negotiation in this page. */
+    public probe(): Promise<NativeMediaAudioCapabilities> {
+        if (!this.cachedProbe) {
+            this.cachedProbe = probeNativeMediaAudioCapabilities(this.environment ?? {});
+        }
+        return this.cachedProbe;
+    }
+}
+
+const defaultNativeMediaAudioCapabilityProbe = new NativeMediaAudioCapabilityProbe();
+
+/** Probes exact owned native-audio routes once for the current page. */
+export function probeCachedNativeMediaAudioCapabilities(): Promise<NativeMediaAudioCapabilities> {
+    return defaultNativeMediaAudioCapabilityProbe.probe();
 }
 
 /** Returns a route only when its exact codec, channel count, and sample rate passed. */

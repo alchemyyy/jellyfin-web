@@ -10,6 +10,13 @@ import type {
 } from './CustomDecodeCapabilities';
 import { getCustomPlaybackEligibility } from './CustomPlaybackEligibility';
 import type { CustomPlaybackRuntimeAvailability } from './CustomPlaybackRuntime';
+import type {
+    NativeMediaAudioCapabilities,
+    NativeMediaAudioChannelCount,
+    NativeMediaAudioCodec,
+    NativeMediaAudioCodecCapability,
+    NativeMediaAudioLayoutCapability
+} from './NativeMediaAudioCapabilities';
 import {
     H264_JELLYFIN_PROFILE_NAMES,
     H264_PROFILE_PROBE_CODED_HEIGHT,
@@ -173,6 +180,49 @@ function createCapabilities(): CustomDecodeCapabilities {
             hevc: createCapability('hevc', true),
             vp8: createCapability('vp8', true),
             vp9: createCapability('vp9', true)
+        }
+    };
+}
+
+function createNativeMediaAudioCapabilities(
+    supportedRoutes: ReadonlySet<string>
+): NativeMediaAudioCapabilities {
+    const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
+    for (const codec of [ 'ac3', 'eac3' ] as const) {
+        const codecString = codec === 'ac3' ? 'ac-3' : 'ec-3';
+        const mimeType = `audio/mp4; codecs="${codecString}"`;
+        const layouts = {} as Record<
+            NativeMediaAudioChannelCount,
+            NativeMediaAudioLayoutCapability
+        >;
+        let codecSupported = false;
+        for (const channelCount of [ 2, 6 ] as const) {
+            const supported = supportedRoutes.has(`${codec}:${channelCount}:48000`);
+            codecSupported ||= supported;
+            layouts[channelCount] = {
+                channelCount,
+                codec,
+                codecString,
+                mimeType,
+                reason: supported ? 'decoded-playback-advanced' : 'playback-not-advanced',
+                sampleRate: 48_000,
+                status: supported ? 'supported' : 'unsupported'
+            };
+        }
+        audio[codec] = {
+            codec,
+            codecString,
+            layouts,
+            mimeType,
+            status: codecSupported ? 'supported' : 'unsupported'
+        };
+    }
+    return {
+        audio,
+        telemetry: {
+            probeCount: 4,
+            supportedLayoutCount: supportedRoutes.size,
+            unknownLayoutCount: 0
         }
     };
 }
@@ -871,6 +921,78 @@ describe('CustomPlaybackEligibility', () => {
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: noAudioRuntime }
         )).toMatchObject({ audioTrackIndex: null, eligible: true });
+    });
+
+    it('selects only an exact qualified owned native-media audio route', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1] = {
+            Channels: 6,
+            Codec: 'eac3',
+            Index: 1,
+            SampleRate: 48_000,
+            Type: 'Audio'
+        };
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            audio: {
+                ...baseCapabilities.audio,
+                eac3: createCapability('eac3', false)
+            }
+        };
+        const nativeMediaAudioCapabilities = createNativeMediaAudioCapabilities(
+            new Set([ 'eac3:6:48000' ])
+        );
+        const nativeOnlyRuntime: CustomPlaybackRuntimeAvailability = {
+            available: true,
+            environment: {
+                ...AVAILABLE_RUNTIME.environment,
+                audioContext: false,
+                audioData: false,
+                audioDecoder: false,
+                audioWorklet: false
+            },
+            reason: null
+        };
+
+        expect(getCustomPlaybackEligibility(options, capabilities, {
+            allowRawHDR: false,
+            nativeMediaAudioCapabilities,
+            runtimeAvailability: nativeOnlyRuntime
+        })).toMatchObject({
+            audioOutputMode: 'native-media',
+            audioTrackIndex: 0,
+            eligible: true
+        });
+
+        mediaSource.MediaStreams[1].Channels = 2;
+        expect(getCustomPlaybackEligibility(options, capabilities, {
+            allowRawHDR: false,
+            nativeMediaAudioCapabilities,
+            runtimeAvailability: nativeOnlyRuntime
+        })).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+    });
+
+    it('prefers qualified native media over bundled PCM for the same layout', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Codec = 'ac3';
+
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), {
+            allowRawHDR: false,
+            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
+                new Set([ 'ac3:2:48000' ])
+            ),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toMatchObject({
+            audioOutputMode: 'native-media',
+            eligible: true
+        });
     });
 
     it.each([

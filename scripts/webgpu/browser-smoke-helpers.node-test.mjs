@@ -12,6 +12,7 @@ import {
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
     hasConsumedCustomAudio,
+    hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
     isVideoSampleOwnershipWarning,
     parseSmokeConfiguration,
@@ -64,15 +65,18 @@ function createActiveSnapshot(overrides = {}) {
                 activeGeneration: 1,
                 audioCodec: null,
                 failureKind: null,
+                nativeAudioClockReady: false,
                 peakFrameCount: 2,
                 pendingFrameCount: 0,
                 queuedFrameCount: 2,
                 receivedFrameCount: 12,
+                receivedNativeAudioSegmentCount: 0,
                 staleAudioSampleCount: 0,
                 staleFrameCount: 0
             }
         },
         customPlaybackEligibility: {
+            audioOutputMode: null,
             eligible: true,
             hdr: false,
             reason: null,
@@ -90,6 +94,10 @@ function createActiveSnapshot(overrides = {}) {
             fullscreenContainsCanvas: false,
             nativeVideoPlaying: false,
             nativeVideoTimeMicroseconds: null,
+            ownedNativeAudioCount: 0,
+            ownedNativeAudioPlaying: false,
+            ownedNativeAudioSourcedCount: 0,
+            ownedNativeAudioTimeMicroseconds: null,
             sourceLessVideoCount: 1,
             sourcedVideoCount: 0,
             viewportHeight: 1080,
@@ -183,7 +191,7 @@ test('parses CLI values before environment values', () => {
 test('documents the required output expectations in CLI and environment usage', () => {
     assert.match(SMOKE_USAGE, /--expected-video-output <video-frame\|raw-planes>/u);
     assert.match(SMOKE_USAGE, /--expected-video-decoder <native\|bundled-hevc>/u);
-    assert.match(SMOKE_USAGE, /--expected-audio <disabled\|ready>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio <disabled\|ready\|native-media>/u);
     assert.match(SMOKE_USAGE, /--audio-stream-index <number>/u);
     assert.match(SMOKE_USAGE, /--expected-audio-codec <codec>/u);
     assert.match(SMOKE_USAGE, /--expected-frame-evidence <none\|testsrc2-motion>/u);
@@ -279,6 +287,51 @@ test('requires submitted and consumed decoded PCM for custom audio startup', () 
                 submittedFrameCount: 0,
                 submittedSampleCount: 0
             }
+        }
+    }), false);
+});
+
+test('requires an advancing qualified owned native audio element', () => {
+    const snapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioPath: 'ready',
+            videoDecode: {
+                ...createActiveSnapshot().customPlayback.videoDecode,
+                audioCodec: 'ec-3',
+                nativeAudioClockReady: true,
+                receivedNativeAudioSegmentCount: 4
+            }
+        },
+        customPlaybackEligibility: {
+            ...createActiveSnapshot().customPlaybackEligibility,
+            audioOutputMode: 'native-media'
+        },
+        dom: {
+            ...createActiveSnapshot().dom,
+            ownedNativeAudioCount: 1,
+            ownedNativeAudioPlaying: true,
+            ownedNativeAudioSourcedCount: 1,
+            ownedNativeAudioTimeMicroseconds: 2_000_000
+        }
+    });
+
+    assert.equal(hasReadyNativeMediaAudio(snapshot), true);
+    assert.equal(hasReadyNativeMediaAudio({
+        ...snapshot,
+        customPlayback: {
+            ...snapshot.customPlayback,
+            videoDecode: {
+                ...snapshot.customPlayback.videoDecode,
+                nativeAudioClockReady: false
+            }
+        }
+    }), false);
+    assert.equal(hasReadyNativeMediaAudio({
+        ...snapshot,
+        dom: {
+            ...snapshot.dom,
+            ownedNativeAudioPlaying: false
         }
     }), false);
 });
@@ -605,7 +658,7 @@ test('requires valid independent video and audio expectations', () => {
             WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
             WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
         }),
-        /requires --expected-audio ready/u
+        /requires an enabled --expected-audio route/u
     );
     assert.throws(
         () => parseSmokeConfiguration([
@@ -663,6 +716,10 @@ test('validates an in-session audio decoder generation and codec change', () => 
                 audioCodec: 'ac-3',
                 receivedAudioFrameCount: 8
             }
+        },
+        customPlaybackEligibility: {
+            ...createActiveSnapshot().customPlaybackEligibility,
+            audioOutputMode: 'decoded-pcm'
         }
     });
 
@@ -679,6 +736,61 @@ test('validates an in-session audio decoder generation and codec change', () => 
     }, 'ac-3').includes('audio-generation-not-advanced'));
     assert.ok(validateAudioStreamSwitchSnapshot(initialSnapshot, switchedSnapshot, 'ec-3')
         .includes('unexpected-selected-audio-codec'));
+});
+
+test('validates an in-session switch to owned native media audio', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            activeGeneration: 4,
+            audioPath: 'ready'
+        }
+    });
+    const switchedSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...initialSnapshot.customPlayback,
+            activeGeneration: 5,
+            audioPath: 'ready',
+            videoDecode: {
+                ...initialSnapshot.customPlayback.videoDecode,
+                audioCodec: 'ec-3',
+                nativeAudioClockReady: true,
+                receivedNativeAudioSegmentCount: 8
+            }
+        },
+        customPlaybackEligibility: {
+            ...createActiveSnapshot().customPlaybackEligibility,
+            audioOutputMode: 'native-media'
+        },
+        dom: {
+            ...createActiveSnapshot().dom,
+            ownedNativeAudioCount: 1,
+            ownedNativeAudioPlaying: true,
+            ownedNativeAudioSourcedCount: 1
+        }
+    });
+
+    assert.deepEqual(validateAudioStreamSwitchSnapshot(
+        initialSnapshot,
+        switchedSnapshot,
+        'ec-3',
+        'native-media'
+    ), []);
+    assert.ok(validateAudioStreamSwitchSnapshot(
+        initialSnapshot,
+        {
+            ...switchedSnapshot,
+            customPlayback: {
+                ...switchedSnapshot.customPlayback,
+                videoDecode: {
+                    ...switchedSnapshot.customPlayback.videoDecode,
+                    receivedNativeAudioSegmentCount: 0
+                }
+            }
+        },
+        'ec-3',
+        'native-media'
+    ).includes('selected-native-audio-segments-missing'));
 });
 
 test('builds a hash route on the configured frontend', () => {
@@ -1177,6 +1289,63 @@ test('accepts advancing source-less custom playback', () => {
     assert.ok(expectationFailures.includes('unexpected-audio-path'));
 });
 
+test('accepts advancing custom playback with owned native media audio', () => {
+    const nativeExpectations = {
+        expectedAudioPath: 'native-media',
+        expectedVideoDecoderBackend: 'native',
+        expectedVideoOutputMode: 'video-frame'
+    };
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioPath: 'ready',
+            currentTimeMicroseconds: 1_000_000
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            audioPath: 'ready',
+            videoDecode: {
+                ...createActiveSnapshot().customPlayback.videoDecode,
+                audioCodec: 'ec-3',
+                nativeAudioClockReady: true,
+                receivedNativeAudioSegmentCount: 8
+            }
+        },
+        customPlaybackEligibility: {
+            ...createActiveSnapshot().customPlaybackEligibility,
+            audioOutputMode: 'native-media'
+        },
+        dom: {
+            ...createActiveSnapshot().dom,
+            ownedNativeAudioCount: 1,
+            ownedNativeAudioPlaying: true,
+            ownedNativeAudioSourcedCount: 1,
+            ownedNativeAudioTimeMicroseconds: 2_000_000
+        }
+    });
+
+    assert.deepEqual(
+        validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, nativeExpectations),
+        []
+    );
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        customPlayback: {
+            ...laterSnapshot.customPlayback,
+            videoDecode: {
+                ...laterSnapshot.customPlayback.videoDecode,
+                nativeAudioClockReady: false
+            }
+        }
+    }, nativeExpectations).includes('native-audio-clock-not-ready'));
+});
+
 test('rejects repeated waiting and playing churn during steady playback', () => {
     const initialSnapshot = createActiveSnapshot();
     const laterSnapshot = createActiveSnapshot({
@@ -1238,6 +1407,7 @@ test('accepts bounded raw HDR playback with healthy custom audio', () => {
             }
         },
         customPlaybackEligibility: {
+            audioOutputMode: 'decoded-pcm',
             eligible: true,
             hdr: true,
             reason: null,
