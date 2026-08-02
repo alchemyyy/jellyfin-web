@@ -114,6 +114,7 @@ const expression = String.raw`(async () => {
     };
     const audioConfigurations = {
         aac: { codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate: 48000 },
+        aacSurround: { codec: 'mp4a.40.2', numberOfChannels: 6, sampleRate: 48000 },
         ac3Stereo: { codec: 'ac-3', numberOfChannels: 2, sampleRate: 48000 },
         ac3Surround: { codec: 'ac-3', numberOfChannels: 6, sampleRate: 48000 },
         eac3Stereo: { codec: 'ec-3', numberOfChannels: 2, sampleRate: 48000 },
@@ -124,12 +125,30 @@ const expression = String.raw`(async () => {
             numberOfChannels: 2,
             sampleRate: 48000
         },
+        flacSurround: {
+            codec: 'flac',
+            description: new Uint8Array(34),
+            numberOfChannels: 6,
+            sampleRate: 48000
+        },
         mp3: { codec: 'mp3', numberOfChannels: 2, sampleRate: 48000 },
         opus: { codec: 'opus', numberOfChannels: 2, sampleRate: 48000 },
+        opusSurround: {
+            codec: 'opus',
+            description: new Uint8Array(27),
+            numberOfChannels: 6,
+            sampleRate: 48000
+        },
         vorbis: {
             codec: 'vorbis',
             description: new Uint8Array([0]),
             numberOfChannels: 2,
+            sampleRate: 48000
+        },
+        vorbisSurround: {
+            codec: 'vorbis',
+            description: new Uint8Array([0]),
+            numberOfChannels: 6,
             sampleRate: 48000
         }
     };

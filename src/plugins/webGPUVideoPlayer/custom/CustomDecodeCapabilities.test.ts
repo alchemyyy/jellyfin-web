@@ -6,6 +6,7 @@ import CustomDecodeCapabilityProbe, {
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
@@ -27,6 +28,11 @@ type CapabilityEnvironmentHarness = {
     rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
     videoProbe: ReturnType<typeof vi.fn>
 };
+
+type NativeSurroundAudioSupport = Readonly<{
+    configuration: ReadonlySet<string>
+    output?: ReadonlySet<string>
+}>;
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 
@@ -100,15 +106,22 @@ function createEnvironment(
     rawHDRVideoOutputSupport: ReadonlySet<string> = new Set<string>(),
     nativeDolbyVisionVideoOutputSupported = false,
     nativeVideoOutputSupport: ReadonlySet<string> = videoSupport,
-    nativeAudioOutputSupport: ReadonlySet<string> = audioSupport
+    nativeAudioOutputSupport: ReadonlySet<string> = audioSupport,
+    nativeSurroundAudioSupport: NativeSurroundAudioSupport = {
+        configuration: new Set<string>()
+    }
 ): CapabilityEnvironmentHarness {
+    const nativeSurroundAudioOutputSupport = nativeSurroundAudioSupport.output
+        ?? nativeSurroundAudioSupport.configuration;
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
         supported: videoSupport.has(config.codec)
     }));
     const audioProbe = vi.fn(async (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => ({
         config,
-        supported: audioSupport.has(config.codec)
+        supported: config.numberOfChannels === 6 ?
+            nativeSurroundAudioSupport.configuration.has(config.codec) :
+            audioSupport.has(config.codec)
     }));
     const rawHDRVideoOutputProbe = vi.fn(async (probeRequest: {
         codec: string
@@ -121,7 +134,11 @@ function createEnvironment(
     }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
     const nativeAudioOutputProbe = vi.fn(async (probeRequest: {
         configuration: AudioDecoderConfig
-    }): Promise<boolean> => nativeAudioOutputSupport.has(probeRequest.configuration.codec));
+    }): Promise<boolean> => (
+        probeRequest.configuration.numberOfChannels === 6 ?
+            nativeSurroundAudioOutputSupport :
+            nativeAudioOutputSupport
+    ).has(probeRequest.configuration.codec));
     return {
         audioProbe,
         environment: {
@@ -192,6 +209,10 @@ describe('CustomDecodeCapabilityProbe', () => {
             'opus',
             'flac',
             'mp3',
+            'vorbis',
+            'mp4a.40.2',
+            'opus',
+            'flac',
             'vorbis'
         ]);
         expect(harness.videoProbe.mock.calls[0][0]).toMatchObject({
@@ -264,14 +285,17 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
+            nativeSurroundAudioProbeCount: 4,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
             supportedAudioCodecCount: 4,
+            supportedNativeSurroundAudioCodecCount: 0,
             supportedNativeUltraHDVideoCodecCount: 1,
             supportedRawHDRVideoCodecCount: 2,
             supportedVideoCodecCount: 2,
             unknownAudioCodecCount: 0,
+            unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: 9
@@ -311,7 +335,10 @@ describe('CustomDecodeCapabilityProbe', () => {
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
                 + 1
         );
-        expect(harness.audioProbe).toHaveBeenCalledTimes(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
+        expect(harness.audioProbe).toHaveBeenCalledTimes(
+            CUSTOM_WEB_CODECS_AUDIO_CODECS.length
+                + CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length
+        );
     });
 
     it.each([
@@ -391,6 +418,89 @@ describe('CustomDecodeCapabilityProbe', () => {
             } else {
                 expect(request.configuration.description).toHaveLength(descriptionByteLength);
             }
+            expect(request.encodedChunks.map((chunk: { data: Uint8Array }) => (
+                chunk.data.byteLength
+            ))).toEqual(chunkByteLengths);
+        }
+    );
+
+    it.each([
+        {
+            chunkByteLengths: [ 36 ],
+            codec: 'aac',
+            codecString: 'mp4a.40.2',
+            descriptionByteLength: 5,
+            expectedNumberOfFrames: 1_024
+        },
+        {
+            chunkByteLengths: [ 640 ],
+            codec: 'opus',
+            codecString: 'opus',
+            descriptionByteLength: 27,
+            expectedNumberOfFrames: 648
+        },
+        {
+            chunkByteLengths: [ 26 ],
+            codec: 'flac',
+            codecString: 'flac',
+            descriptionByteLength: 42,
+            expectedNumberOfFrames: 4_608
+        },
+        {
+            chunkByteLengths: [ 1, 2 ],
+            codec: 'vorbis',
+            codecString: 'vorbis',
+            descriptionByteLength: 6_513,
+            expectedNumberOfFrames: 576
+        }
+    ] as const)(
+        'requires exact decoded native 5.1 $codec audio output',
+        async ({
+            chunkByteLengths,
+            codec,
+            codecString,
+            descriptionByteLength,
+            expectedNumberOfFrames
+        }) => {
+            const codecSupport = new Set([ codecString ]);
+            const harness = createEnvironment(
+                new Set(),
+                codecSupport,
+                new Set(),
+                false,
+                new Set(),
+                codecSupport,
+                { configuration: codecSupport, output: codecSupport }
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(
+                harness.environment
+            ).probe();
+
+            expect(capabilities.nativeSurroundAudio?.[codec]).toMatchObject({
+                inputChannelCount: 6,
+                reason: 'decode-output-verified',
+                sampleRate: 48_000,
+                status: 'supported'
+            });
+            const surroundRequests = harness.nativeAudioOutputProbe.mock.calls.filter(
+                call => call[0].configuration.numberOfChannels === 6
+            );
+            expect(surroundRequests).toHaveLength(1);
+            const request = surroundRequests[0][0];
+            expect(request).toMatchObject({
+                codec,
+                configuration: {
+                    codec: codecString,
+                    numberOfChannels: 6,
+                    sampleRate: 48_000
+                },
+                expectedNumberOfChannels: 6,
+                expectedNumberOfFrames,
+                expectedSampleRate: 48_000,
+                expectedTimestamp: 0
+            });
+            expect(request.configuration.description).toHaveLength(descriptionByteLength);
             expect(request.encodedChunks.map((chunk: { data: Uint8Array }) => (
                 chunk.data.byteLength
             ))).toEqual(chunkByteLengths);

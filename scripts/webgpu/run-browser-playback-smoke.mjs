@@ -1129,6 +1129,7 @@ function createPlayerSnapshotExpression(accessKey) {
                 audio: customDecodeCapabilities.audio,
                 bundledHEVC: customDecodeCapabilities.bundledHEVC,
                 nativeDolbyVisionHEVC: customDecodeCapabilities.nativeDolbyVisionHEVC,
+                nativeSurroundAudio: customDecodeCapabilities.nativeSurroundAudio,
                 nativeUltraHDVideo: customDecodeCapabilities.nativeUltraHDVideo,
                 rawHDRHEVC: customDecodeCapabilities.rawHDRVideo?.hevc ?? null,
                 telemetry: customDecodeCapabilities.telemetry,

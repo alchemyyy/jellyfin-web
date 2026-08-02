@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
+    type CustomNativeSurroundAudioCodec,
+    type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodec,
     type CustomNativeUltraHDVideoCodecCapability,
     type CustomAudioCodec,
@@ -180,14 +183,17 @@ function createCapabilities(): CustomDecodeCapabilities {
         telemetry: {
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
+            nativeSurroundAudioProbeCount: 0,
             nativeUltraHDVideoProbeCount: 0,
             rawHDRVideoProbeCount: 2,
             reason: 'complete',
             supportedAudioCodecCount: 7,
+            supportedNativeSurroundAudioCodecCount: 0,
             supportedNativeUltraHDVideoCodecCount: 0,
             supportedRawHDRVideoCodecCount: 3,
             supportedVideoCodecCount: 5,
             unknownAudioCodecCount: 0,
+            unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: 5
@@ -200,6 +206,33 @@ function createCapabilities(): CustomDecodeCapabilities {
             vp9: createCapability('vp9', true)
         }
     };
+}
+
+function createNativeSurroundAudioCapabilities(
+    supportedCodecs: ReadonlySet<CustomNativeSurroundAudioCodec>
+): NonNullable<CustomDecodeCapabilities['nativeSurroundAudio']> {
+    const codecStrings: Readonly<Record<CustomNativeSurroundAudioCodec, string>> = {
+        aac: 'mp4a.40.2',
+        flac: 'flac',
+        opus: 'opus',
+        vorbis: 'vorbis'
+    };
+    const capabilities = {} as Record<
+        CustomNativeSurroundAudioCodec,
+        CustomNativeSurroundAudioCodecCapability
+    >;
+    for (const codec of CUSTOM_NATIVE_SURROUND_AUDIO_CODECS) {
+        const supported: boolean = supportedCodecs.has(codec);
+        capabilities[codec] = {
+            codec,
+            codecString: codecStrings[codec],
+            inputChannelCount: 6,
+            reason: supported ? 'decode-output-verified' : 'decode-output-missing',
+            sampleRate: 48_000,
+            status: supported ? 'supported' : 'unsupported'
+        };
+    }
+    return capabilities;
 }
 
 function createNativeUltraHDVideoCapabilities(
@@ -1400,7 +1433,35 @@ describe('CustomPlaybackEligibility', () => {
         }
     });
 
-    it('does not apply the AC-3 downmix claim to other codecs', () => {
+    it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
+        'selects decoded PCM for exact qualified native 5.1 %s input',
+        codec => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[1].Channels = 6;
+            mediaSource.MediaStreams[1].Codec = codec;
+            const capabilities: CustomDecodeCapabilities = {
+                ...createCapabilities(),
+                nativeSurroundAudio: createNativeSurroundAudioCapabilities(
+                    new Set([ codec ])
+                )
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it('does not apply the surround downmix claim without exact output evidence', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>

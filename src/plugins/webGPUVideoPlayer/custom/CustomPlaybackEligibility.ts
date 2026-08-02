@@ -15,6 +15,7 @@ import {
     CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
+    type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
     type CustomRawHDRVideoCodecCapability,
@@ -438,6 +439,37 @@ function getNativeMediaAudioCodec(codec: CustomAudioCodec): NativeMediaAudioCode
     }
 }
 
+function hasQualifiedDecodedPCMInputLayout(
+    codec: CustomAudioCodec,
+    stream: MediaStream,
+    capabilities: CustomDecodeCapabilities
+): boolean {
+    if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
+        return false;
+    }
+    if (stream.Channels !== 6) {
+        return true;
+    }
+
+    switch (codec) {
+        case 'ac3':
+        case 'eac3':
+            return true;
+        case 'aac':
+        case 'flac':
+        case 'opus':
+        case 'vorbis': {
+            const surroundCapability: CustomNativeSurroundAudioCodecCapability | undefined =
+                capabilities.nativeSurroundAudio?.[codec];
+            return surroundCapability?.status === 'supported'
+                && surroundCapability.inputChannelCount === stream.Channels
+                && surroundCapability.sampleRate === stream.SampleRate;
+        }
+        case 'mp3':
+            return false;
+    }
+}
+
 function selectAudioOutput(
     codec: CustomAudioCodec,
     stream: MediaStream,
@@ -467,7 +499,7 @@ function selectAudioOutput(
             status: 'invalid'
         };
     }
-    if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
+    if (!hasQualifiedDecodedPCMInputLayout(codec, stream, capabilities)) {
         return { reason: 'audio-layout-unsupported', status: 'invalid' };
     }
     return { outputMode: 'decoded-pcm', status: 'selected' };

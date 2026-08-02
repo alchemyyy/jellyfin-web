@@ -13,6 +13,7 @@ import {
     CUSTOM_VIDEO_CODECS,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
+    type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
@@ -20,6 +21,7 @@ import {
 import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+    CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
     getSupportedCustomAudioInputChannelCounts
 } from './CustomAudioOutputPolicy';
 import {
@@ -1515,6 +1517,30 @@ function getDecodedAudioCodecsWithoutNativeProfile(
     return decodedAudioCodecs;
 }
 
+function hasQualifiedDecodedSurroundRoute(
+    codec: CustomAudioCodec,
+    capabilities: CustomDecodeCapabilities
+): boolean {
+    switch (codec) {
+        case 'ac3':
+        case 'eac3':
+            return true;
+        case 'aac':
+        case 'flac':
+        case 'opus':
+        case 'vorbis': {
+            const surroundCapability: CustomNativeSurroundAudioCodecCapability | undefined =
+                capabilities.nativeSurroundAudio?.[codec];
+            return surroundCapability?.status === 'supported'
+                && surroundCapability.inputChannelCount
+                    === CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
+                && surroundCapability.sampleRate === CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE;
+        }
+        case 'mp3':
+            return false;
+    }
+}
+
 function appendMeasuredAudioRouteProfiles(
     profile: DeviceProfile,
     capabilities: CustomDecodeCapabilities,
@@ -1536,10 +1562,10 @@ function appendMeasuredAudioRouteProfiles(
         nativeMediaCodecs
     );
     const decodedSurroundAudioCodecs = decodedAudioCodecs.filter(codec => (
-        codec === 'ac3' || codec === 'eac3'
+        hasQualifiedDecodedSurroundRoute(codec, capabilities)
     ));
     const decodedStereoAudioCodecs = decodedAudioCodecs.filter(codec => (
-        codec !== 'ac3' && codec !== 'eac3'
+        !hasQualifiedDecodedSurroundRoute(codec, capabilities)
     ));
     if (decodedStereoAudioCodecs.length > 0) {
         measuredProfiles.push(createMeasuredAudioRouteProfile(

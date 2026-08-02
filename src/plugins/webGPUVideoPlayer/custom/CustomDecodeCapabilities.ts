@@ -17,6 +17,13 @@ import {
     type NativeAudioCapabilityFixture
 } from './NativeAudioCapabilityFixtures';
 import {
+    createNativeSurroundAudioCapabilityFixture,
+    NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CHANNEL_COUNT,
+    NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CODECS,
+    NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_SAMPLE_RATE,
+    type NativeSurroundAudioCapabilityFixture
+} from './NativeSurroundAudioCapabilityFixtures';
+import {
     createNativeUltraHDVideoCapabilityFixture,
     NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS,
     NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODED_HEIGHT,
@@ -33,6 +40,8 @@ export const CUSTOM_AUDIO_CODECS = [
     ...CUSTOM_BUNDLED_AUDIO_CODECS
 ] as const;
 export const CUSTOM_RAW_HDR_VIDEO_CODECS = [ 'hevc', 'vp9', 'av1' ] as const;
+export const CUSTOM_NATIVE_SURROUND_AUDIO_CODECS =
+    NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CODECS;
 export const CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS =
     NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS;
 export const CUSTOM_NATIVE_VIDEO_BIT_DEPTH = 8;
@@ -48,6 +57,8 @@ export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
 export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
 export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
+export type CustomNativeSurroundAudioCodec =
+    typeof CUSTOM_NATIVE_SURROUND_AUDIO_CODECS[number];
 export type CustomNativeUltraHDVideoCodec =
     typeof CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS[number];
 export type CustomDecodeCodec = CustomAudioCodec | CustomVideoCodec;
@@ -79,14 +90,17 @@ export type CustomDecodeProbeReason =
 export type CustomDecodeProbeTelemetry = {
     audioProbeCount: number
     bundledAudioCodecCount: number
+    nativeSurroundAudioProbeCount: number
     nativeUltraHDVideoProbeCount: number
     rawHDRVideoProbeCount: number
     reason: CustomDecodeProbeReason
     supportedAudioCodecCount: number
+    supportedNativeSurroundAudioCodecCount: number
     supportedNativeUltraHDVideoCodecCount: number
     supportedRawHDRVideoCodecCount: number
     supportedVideoCodecCount: number
     unknownAudioCodecCount: number
+    unknownNativeSurroundAudioCodecCount: number
     unknownNativeUltraHDVideoCodecCount: number
     unknownVideoCodecCount: number
     videoProbeCount: number
@@ -97,6 +111,10 @@ export type CustomDecodeCapabilities = {
     bundledHEVC?: BundledHEVCExactCapabilities
     h264Profiles?: H264ProfileCapabilities
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
+    nativeSurroundAudio?: Readonly<Record<
+        CustomNativeSurroundAudioCodec,
+        CustomNativeSurroundAudioCodecCapability
+    >>
     nativeUltraHDVideo?: Readonly<Record<
         CustomNativeUltraHDVideoCodec,
         CustomNativeUltraHDVideoCodecCapability
@@ -105,6 +123,12 @@ export type CustomDecodeCapabilities = {
     telemetry: Readonly<CustomDecodeProbeTelemetry>
     video: Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>>
 };
+
+export type CustomNativeSurroundAudioCodecCapability =
+    CustomDecodeCodecCapability<CustomNativeSurroundAudioCodec> & {
+        inputChannelCount: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CHANNEL_COUNT
+        sampleRate: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_SAMPLE_RATE
+    };
 
 export type CustomNativeUltraHDVideoCodecCapability =
     CustomDecodeCodecCapability<CustomNativeUltraHDVideoCodec> & {
@@ -250,11 +274,16 @@ type AudioProbeDefinition = {
     config: AudioDecoderConfig
     outputFixture: {
         encodedChunks: NativeAudioCapabilityFixture['encodedChunks']
+            | NativeSurroundAudioCapabilityFixture['encodedChunks']
         expectedNumberOfChannels: number
         expectedNumberOfFrames: number
         expectedSampleRate: number
         expectedTimestamp: number
     }
+};
+
+type NativeSurroundAudioProbeDefinition = AudioProbeDefinition & {
+    codec: CustomNativeSurroundAudioCodec
 };
 
 type BundledAudioCodecDefinition = {
@@ -473,7 +502,7 @@ const NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION = {
 } as const satisfies VideoProbeDefinition;
 
 function createAudioProbeDefinition(
-    fixture: NativeAudioCapabilityFixture
+    fixture: NativeAudioCapabilityFixture | NativeSurroundAudioCapabilityFixture
 ): AudioProbeDefinition {
     return {
         codec: fixture.codec,
@@ -500,6 +529,24 @@ const AUDIO_PROBE_DEFINITIONS: readonly AudioProbeDefinition[] = [
     createAudioProbeDefinition(NATIVE_MP3_AUDIO_FIXTURE),
     createAudioProbeDefinition(NATIVE_VORBIS_AUDIO_FIXTURE)
 ];
+
+function createNativeSurroundAudioProbeDefinitions():
+readonly NativeSurroundAudioProbeDefinition[] {
+    const definitions: NativeSurroundAudioProbeDefinition[] = [];
+    for (const codec of NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CODECS) {
+        const fixture = createNativeSurroundAudioCapabilityFixture(codec);
+        definitions.push({
+            ...createAudioProbeDefinition(fixture),
+            codec
+        });
+    }
+    return definitions;
+}
+
+const NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS:
+readonly NativeSurroundAudioProbeDefinition[] =
+    createNativeSurroundAudioProbeDefinitions();
+
 const BUNDLED_AUDIO_CODEC_DEFINITIONS: readonly BundledAudioCodecDefinition[] = [
     { codec: 'ac3', codecString: 'ac-3' },
     { codec: 'eac3', codecString: 'ec-3' }
@@ -1430,6 +1477,64 @@ async function probeNativeAudioConfig(
     }
 }
 
+async function probeNativeSurroundAudioConfig(
+    definition: NativeSurroundAudioProbeDefinition,
+    decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
+    outputProbe: NativeAudioOutputProbe | null | undefined
+): Promise<CustomNativeSurroundAudioCodecCapability> {
+    const capability = await probeNativeAudioConfig(
+        definition,
+        decoder,
+        outputProbe
+    );
+    return Object.freeze({
+        codec: definition.codec,
+        codecString: capability.codecString,
+        inputChannelCount: NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_CHANNEL_COUNT,
+        reason: capability.reason,
+        sampleRate: NATIVE_SURROUND_AUDIO_CAPABILITY_FIXTURE_SAMPLE_RATE,
+        status: capability.status
+    });
+}
+
+function createNativeSurroundAudioProbePromises(
+    environment: WebCodecsCapabilityEnvironment
+): Array<Promise<CustomNativeSurroundAudioCodecCapability>> {
+    const probePromises: Array<Promise<CustomNativeSurroundAudioCodecCapability>> = [];
+    for (const definition of NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS) {
+        probePromises.push(probeNativeSurroundAudioConfig(
+            definition,
+            environment.audioDecoder,
+            environment.nativeAudioOutputProbe
+        ));
+    }
+    return probePromises;
+}
+
+function createNativeSurroundAudioCapabilities(
+    capabilities: readonly CustomNativeSurroundAudioCodecCapability[]
+): Readonly<Record<
+        CustomNativeSurroundAudioCodec,
+        CustomNativeSurroundAudioCodecCapability
+    >> {
+    const capabilitiesByCodec = {} as Record<
+        CustomNativeSurroundAudioCodec,
+        CustomNativeSurroundAudioCodecCapability
+    >;
+    for (const capability of capabilities) {
+        capabilitiesByCodec[capability.codec] = capability;
+    }
+    return Object.freeze(capabilitiesByCodec);
+}
+
+function getNativeSurroundAudioProbeCount(
+    environment: WebCodecsCapabilityEnvironment
+): number {
+    return environment.audioDecoder && environment.nativeAudioOutputProbe ?
+        NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length :
+        0;
+}
+
 async function probeNativeVideoConfig(
     definition: DecodedVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
@@ -1719,6 +1824,9 @@ export default class CustomDecodeCapabilityProbe {
                 environment.nativeAudioOutputProbe
             ));
         }
+        const nativeSurroundAudioProbePromises: Array<Promise<
+            CustomNativeSurroundAudioCodecCapability
+        >> = createNativeSurroundAudioProbePromises(environment);
         const rawHDRVideoProbePromises: Array<Promise<CustomRawHDRVideoCodecCapability>> = [];
         for (const definition of RAW_HDR_VIDEO_PROBE_DEFINITIONS) {
             rawHDRVideoProbePromises.push(probeRawHDRVideoConfig(
@@ -1735,6 +1843,7 @@ export default class CustomDecodeCapabilityProbe {
             h264Profiles,
             bundledHEVC,
             nativeDolbyVisionHEVC,
+            nativeSurroundAudioCapabilities,
             nativeUltraHDVideoCapabilities
         ] = await Promise.all([
             Promise.all(videoProbePromises),
@@ -1746,6 +1855,7 @@ export default class CustomDecodeCapabilityProbe {
                 environment.videoDecoder,
                 environment.nativeDolbyVisionVideoOutputProbe
             ),
+            Promise.all(nativeSurroundAudioProbePromises),
             Promise.all(nativeUltraHDVideoProbePromises)
         ]);
         const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
@@ -1773,12 +1883,17 @@ export default class CustomDecodeCapabilityProbe {
             CustomNativeUltraHDVideoCodec,
             CustomNativeUltraHDVideoCodecCapability
         >> = createNativeUltraHDVideoCapabilities(nativeUltraHDVideoCapabilities);
+        const nativeSurroundAudio: Readonly<Record<
+            CustomNativeSurroundAudioCodec,
+            CustomNativeSurroundAudioCodecCapability
+        >> = createNativeSurroundAudioCapabilities(nativeSurroundAudioCapabilities);
 
         const allCapabilities: Array<CustomDecodeCodecCapability<CustomDecodeCodec>> = [];
         allCapabilities.push(
             ...videoCapabilities,
             ...audioCapabilities,
             nativeDolbyVisionHEVC,
+            ...nativeSurroundAudioCapabilities,
             ...nativeUltraHDVideoCapabilities
         );
         const telemetry = Object.freeze({
@@ -1786,12 +1901,16 @@ export default class CustomDecodeCapabilityProbe {
             bundledAudioCodecCount: bundledAC3SoftwareDecoder ?
                 BUNDLED_AUDIO_CODEC_DEFINITIONS.length :
                 0,
+            nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
             nativeUltraHDVideoProbeCount: getNativeUltraHDVideoProbeCount(environment),
             rawHDRVideoProbeCount: environment.videoDecoder && environment.rawHDRVideoOutputProbe ?
                 RAW_HDR_VIDEO_PROBE_DEFINITIONS.length :
                 0,
             reason: getProbeReason(environment, allCapabilities),
             supportedAudioCodecCount: audioCapabilities.filter(capability => capability.status === 'supported').length,
+            supportedNativeSurroundAudioCodecCount: nativeSurroundAudioCapabilities.filter(
+                capability => capability.status === 'supported'
+            ).length,
             supportedNativeUltraHDVideoCodecCount: nativeUltraHDVideoCapabilities.filter(
                 capability => capability.status === 'supported'
             ).length,
@@ -1804,6 +1923,9 @@ export default class CustomDecodeCapabilityProbe {
                 bundledHEVC
             ),
             unknownAudioCodecCount: audioCapabilities.filter(capability => capability.status === 'unknown').length,
+            unknownNativeSurroundAudioCodecCount: nativeSurroundAudioCapabilities.filter(
+                capability => capability.status === 'unknown'
+            ).length,
             unknownNativeUltraHDVideoCodecCount: nativeUltraHDVideoCapabilities.filter(
                 capability => capability.status === 'unknown'
             ).length,
@@ -1820,6 +1942,7 @@ export default class CustomDecodeCapabilityProbe {
             ...(bundledHEVC ? { bundledHEVC } : {}),
             h264Profiles,
             nativeDolbyVisionHEVC,
+            nativeSurroundAudio,
             nativeUltraHDVideo,
             rawHDRVideo: Object.freeze(rawHDRVideo),
             telemetry,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     assertSupportedCustomAudioOutputLayout,
-    CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT,
+    CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     getSupportedCustomAudioInputChannelCounts,
@@ -30,14 +30,23 @@ describe('CustomAudioOutputPolicy', () => {
         );
     });
 
-    it('accepts 5.1 input only for the AC-3 software downmix route', () => {
-        expect(getSupportedCustomAudioInputChannelCounts('eac3')).toEqual([
-            CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
-            CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT
-        ]);
-        expect(isSupportedCustomAudioInputLayout('ac3', 6, 48_000)).toBe(true);
-        expect(isSupportedCustomAudioInputLayout('eac3', 6, 48_000)).toBe(true);
-        expect(isSupportedCustomAudioInputLayout('aac', 6, 48_000)).toBe(false);
+    it('accepts the implemented 5.1 downmix input layouts', () => {
+        for (const codec of [
+            'aac',
+            'ac3',
+            'eac3',
+            'flac',
+            'opus',
+            'vorbis'
+        ] as const) {
+            expect(getSupportedCustomAudioInputChannelCounts(codec)).toEqual([
+                CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+                CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
+            ]);
+            expect(isSupportedCustomAudioInputLayout(codec, 6, 48_000)).toBe(true);
+        }
+        expect(getSupportedCustomAudioInputChannelCounts('mp3')).toEqual([ 2 ]);
+        expect(isSupportedCustomAudioInputLayout('mp3', 6, 48_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('eac3', 8, 48_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 44_100)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('eac3', '6', 48_000)).toBe(false);

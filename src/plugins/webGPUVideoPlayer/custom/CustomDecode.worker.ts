@@ -21,7 +21,7 @@ import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { downmixFivePointOneToStereo } from './CustomAudioDownmix';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
-    CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT,
+    CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
@@ -1192,7 +1192,7 @@ function postAudioSample(
             case CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT:
                 channelData = inputChannelData;
                 break;
-            case CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT:
+            case CUSTOM_SURROUND_INPUT_CHANNEL_COUNT:
                 channelData = downmixFivePointOneToStereo(inputChannelData);
                 break;
             default:

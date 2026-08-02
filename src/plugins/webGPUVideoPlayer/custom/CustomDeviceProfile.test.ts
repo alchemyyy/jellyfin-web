@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
     CUSTOM_AUDIO_CODECS,
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
@@ -11,6 +12,8 @@ import {
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomDecodeCodecCapability,
+    type CustomNativeSurroundAudioCodec,
+    type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodec,
     type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
@@ -130,6 +133,48 @@ type NativeUltraHDVideoCapabilityHarness = Readonly<{
     probeCount: number
 }>;
 
+type NativeSurroundAudioCapabilityHarness = Readonly<{
+    capabilityProperties: Readonly<{
+        nativeSurroundAudio?: NonNullable<CustomDecodeCapabilities['nativeSurroundAudio']>
+    }>
+    probeCount: number
+}>;
+
+function createNativeSurroundAudioCapabilityHarness(
+    supportedCodecs: readonly CustomNativeSurroundAudioCodec[]
+): NativeSurroundAudioCapabilityHarness {
+    if (supportedCodecs.length === 0) {
+        return { capabilityProperties: {}, probeCount: 0 };
+    }
+
+    const capabilities = {} as Record<
+        CustomNativeSurroundAudioCodec,
+        CustomNativeSurroundAudioCodecCapability
+    >;
+    const supportedCodecSet = new Set(supportedCodecs);
+    const codecStrings: Readonly<Record<CustomNativeSurroundAudioCodec, string>> = {
+        aac: 'mp4a.40.2',
+        flac: 'flac',
+        opus: 'opus',
+        vorbis: 'vorbis'
+    };
+    for (const codec of CUSTOM_NATIVE_SURROUND_AUDIO_CODECS) {
+        const supported = supportedCodecSet.has(codec);
+        capabilities[codec] = {
+            codec,
+            codecString: codecStrings[codec],
+            inputChannelCount: 6,
+            reason: supported ? 'decode-output-verified' : 'decode-output-missing',
+            sampleRate: 48_000,
+            status: supported ? 'supported' : 'unsupported'
+        };
+    }
+    return {
+        capabilityProperties: { nativeSurroundAudio: capabilities },
+        probeCount: CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length
+    };
+}
+
 function createNativeUltraHDVideoCapabilityHarness(
     supportedCodecs: readonly CustomNativeUltraHDVideoCodec[]
 ): NativeUltraHDVideoCapabilityHarness {
@@ -170,7 +215,8 @@ function createCapabilities(
     supportedAudioCodecs: readonly CustomAudioCodec[],
     supportedRawHDRVideoCodecs: readonly CustomRawHDRVideoCodec[] = [],
     nativeDolbyVisionSupported = false,
-    supportedNativeUltraHDVideoCodecs: readonly CustomNativeUltraHDVideoCodec[] = []
+    supportedNativeUltraHDVideoCodecs: readonly CustomNativeUltraHDVideoCodec[] = [],
+    supportedNativeSurroundAudioCodecs: readonly CustomNativeSurroundAudioCodec[] = []
 ): CustomDecodeCapabilities {
     const supportedVideoSet = new Set(supportedVideoCodecs);
     const supportedAudioSet = new Set(supportedAudioCodecs);
@@ -211,6 +257,8 @@ function createCapabilities(
     }
     const nativeUltraHDVideoCapabilityHarness =
         createNativeUltraHDVideoCapabilityHarness(supportedNativeUltraHDVideoCodecs);
+    const nativeSurroundAudioCapabilityHarness =
+        createNativeSurroundAudioCapabilityHarness(supportedNativeSurroundAudioCodecs);
     return {
         audio,
         ...(supportedVideoSet.has('hevc') || supportedRawHDRVideoSet.has('hevc') ? {
@@ -231,20 +279,25 @@ function createCapabilities(
                 'decode-output-missing',
             status: nativeDolbyVisionSupported ? 'supported' : 'unsupported'
         },
+        ...nativeSurroundAudioCapabilityHarness.capabilityProperties,
         ...nativeUltraHDVideoCapabilityHarness.capabilityProperties,
         rawHDRVideo,
         telemetry: {
             audioProbeCount: CUSTOM_WEB_CODECS_AUDIO_CODECS.length,
             bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
+            nativeSurroundAudioProbeCount: nativeSurroundAudioCapabilityHarness.probeCount,
             nativeUltraHDVideoProbeCount: nativeUltraHDVideoCapabilityHarness.probeCount,
             rawHDRVideoProbeCount: CUSTOM_RAW_HDR_VIDEO_CODECS.length - 1,
             reason: 'complete',
             supportedAudioCodecCount: supportedAudioCodecs.length,
+            supportedNativeSurroundAudioCodecCount:
+                supportedNativeSurroundAudioCodecs.length,
             supportedNativeUltraHDVideoCodecCount:
                 supportedNativeUltraHDVideoCodecs.length,
             supportedRawHDRVideoCodecCount: supportedRawHDRVideoCodecs.length,
             supportedVideoCodecCount: supportedVideoCodecs.length,
             unknownAudioCodecCount: 0,
+            unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: CUSTOM_VIDEO_CODECS.length
@@ -511,6 +564,40 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Type: 'VideoAudio'
         });
     });
+
+    it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
+        'advertises exact qualified native 5.1 %s limits',
+        codec => {
+            const result = augmentDeviceProfileForCustomDecode(
+                createBaseProfile(),
+                createCapabilities(
+                    [ 'h264' ],
+                    [ codec ],
+                    [],
+                    false,
+                    [],
+                    [ codec ]
+                )
+            );
+            const measuredProfile = result.profile.CodecProfiles?.find(profile => (
+                profile.Codec === codec
+                && profile.Container === 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts'
+            ));
+
+            expect(measuredProfile?.Conditions).toContainEqual({
+                Condition: 'EqualsAny',
+                IsRequired: true,
+                Property: 'AudioChannels',
+                Value: '2|6'
+            });
+            expect(measuredProfile?.Conditions).toContainEqual({
+                Condition: 'Equals',
+                IsRequired: true,
+                Property: 'AudioSampleRate',
+                Value: '48000'
+            });
+        }
+    );
 
     it('advertises bundled AC-3 codecs only in compatible video containers', () => {
         const result = augmentDeviceProfileForCustomDecode(

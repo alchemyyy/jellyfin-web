@@ -106,13 +106,21 @@ Eligibility remains narrower than the decoder's theoretical support:
   silence bound before closing the output and decoder. Configuration-only,
   missing, duplicate, malformed, non-silent, or timed-out output remains
   unadvertised.
+- AAC LC, Opus, FLAC, and Vorbis independently add 48 kHz 5.1 input only after
+  a second codec-specific configuration decodes pinned six-channel packets
+  into one exact owned `AudioData`. Chromium constructs six-channel WebCodecs
+  configurations as canonical 5.1 and exposes its planes in
+  `FL, FR, FC, LFE, surround L, surround R` order. The worker omits LFE and
+  applies its bounded Lo/Ro matrix before submitting stereo PCM. MP3 remains
+  stereo-only, and a failed 5.1 result does not reduce that codec's qualified
+  stereo route.
 - Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
   access-unit fixture under its production `hev1.2.4.H150.B0` configuration
   and requires a correctly sized owned `VideoFrame`. Configuration support
   alone does not authorize that route.
 - Config-only results never authorize native audio, H.264, ordinary native
-  HEVC/VP8/VP9/AV1, native Ultra HD expansion, raw HDR, Dolby Vision Profile 5,
-  or bundled HEVC.
+  HEVC/VP8/VP9/AV1, native 5.1 audio, native Ultra HD expansion, raw HDR,
+  Dolby Vision Profile 5, or bundled HEVC.
   Unknown, timed-out, failed exact-output, interlaced, oversized, or ambiguous
   streams remain on the HTML player or server-selected fallback.
 
