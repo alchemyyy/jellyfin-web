@@ -1,0 +1,21 @@
+[package]
+name = "jellyfin-webgpu-dolby-vision-parser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "GPL-2.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dolby_vision = { git = "https://github.com/quietvoid/dovi_tool.git", rev = "38adec045bf183c24df38149836c920398072281" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = "symbols"
+

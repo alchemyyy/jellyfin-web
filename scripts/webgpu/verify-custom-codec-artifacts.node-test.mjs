@@ -13,6 +13,20 @@ const HEVC_FILES = Object.freeze([
     [ 'dist/wasm/hevc-decode.wasm', 'libraries/hevcjs/hevc-decode.wasm' ],
     [ 'LICENSE', 'libraries/hevcjs/LICENSE.txt' ]
 ]);
+const DOLBY_VISION_FILES = Object.freeze([
+    [
+        'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm',
+        'libraries/libdovi/dovi-rpu-parser.wasm'
+    ],
+    [
+        'scripts/webgpu/dolby-vision-parser/LICENSE.libdovi.txt',
+        'libraries/libdovi/LICENSE.txt'
+    ],
+    [
+        'scripts/webgpu/dolby-vision-parser/REVISION',
+        'libraries/libdovi/REVISION'
+    ]
+]);
 
 afterEach(async () => {
     while (temporaryDirectories.length > 0) {
@@ -38,6 +52,11 @@ async function createArtifactFixture(ac3Enabled) {
             join('node_modules/@hevcjs/core', packagePath),
             contents
         );
+        await writeFixtureFile(repositoryRoot, join('dist', servedPath), contents);
+    }
+    for (const [ sourcePath, servedPath ] of DOLBY_VISION_FILES) {
+        const contents = `dovi:${sourcePath}`;
+        await writeFixtureFile(repositoryRoot, sourcePath, contents);
         await writeFixtureFile(repositoryRoot, join('dist', servedPath), contents);
     }
     if (ac3Enabled) {
@@ -69,6 +88,7 @@ test('accepts an ordinary build without opt-in AC-3 artifacts', async () => {
     });
 
     assert.equal(result.ac3.licensePresent, false);
+    assert.equal(result.dolbyVision.length, DOLBY_VISION_FILES.length);
     assert.equal(result.hevc.length, HEVC_FILES.length);
 });
 
@@ -123,5 +143,19 @@ test('rejects a copied HEVC artifact that differs from its pinned package', asyn
     await assert.rejects(
         verifyCustomCodecArtifacts({ ac3Mode: 'disabled', ...fixture }),
         /HEVC artifact hash mismatch/
+    );
+});
+
+test('rejects a copied Dolby Vision parser that differs from its source artifact', async () => {
+    const fixture = await createArtifactFixture(false);
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        'dist/libraries/libdovi/dovi-rpu-parser.wasm',
+        'corrupt'
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts({ ac3Mode: 'disabled', ...fixture }),
+        /Dolby Vision artifact hash mismatch/
     );
 });

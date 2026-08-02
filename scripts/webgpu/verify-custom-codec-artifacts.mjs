@@ -9,6 +9,20 @@ const AC3_DISABLED = 'disabled';
 const AC3_ENABLED = 'enabled';
 const AC3_IMPLEMENTATION_SENTINEL = 'jellyfin-webgpu-bundled-ac3-v1';
 const AC3_LICENSE_PATH = 'libraries/mediabunny-ac3/LICENSE.txt';
+const DOLBY_VISION_ARTIFACTS = Object.freeze([
+    {
+        servedPath: 'libraries/libdovi/dovi-rpu-parser.wasm',
+        sourcePath: 'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm'
+    },
+    {
+        servedPath: 'libraries/libdovi/LICENSE.txt',
+        sourcePath: 'scripts/webgpu/dolby-vision-parser/LICENSE.libdovi.txt'
+    },
+    {
+        servedPath: 'libraries/libdovi/REVISION',
+        sourcePath: 'scripts/webgpu/dolby-vision-parser/REVISION'
+    }
+]);
 const HEVC_ARTIFACTS = Object.freeze([
     {
         packagePath: 'dist/wasm/hevc-decode.js',
@@ -93,6 +107,28 @@ async function verifyHEVCArtifacts(repositoryRoot, distDirectory) {
     return verifiedArtifacts;
 }
 
+async function verifyDolbyVisionArtifacts(repositoryRoot, distDirectory) {
+    const verifiedArtifacts = [];
+    for (const artifact of DOLBY_VISION_ARTIFACTS) {
+        const sourceArtifact = join(repositoryRoot, artifact.sourcePath);
+        const servedArtifact = join(distDirectory, artifact.servedPath);
+        await requireFile(sourceArtifact);
+        await requireFile(servedArtifact);
+        const [ sourceSHA256, servedSHA256 ] = await Promise.all([
+            hashFile(sourceArtifact),
+            hashFile(servedArtifact)
+        ]);
+        if (sourceSHA256 !== servedSHA256) {
+            throw new Error(`Dolby Vision artifact hash mismatch: ${artifact.servedPath}`);
+        }
+        verifiedArtifacts.push({
+            path: artifact.servedPath.replaceAll('\\', '/'),
+            sha256: servedSHA256
+        });
+    }
+    return verifiedArtifacts;
+}
+
 async function findAC3ImplementationMarkers(distDirectory) {
     const files = await listFiles(distDirectory);
     const matches = [];
@@ -148,7 +184,7 @@ async function verifyAC3Artifacts(repositoryRoot, distDirectory, mode) {
     };
 }
 
-/** Verifies copied HEVC files and the selected AC-3 build boundary. */
+/** Verifies copied codec files and the selected AC-3 build boundary. */
 export async function verifyCustomCodecArtifacts(options = {}) {
     const repositoryRoot = resolve(options.repositoryRoot ?? REPOSITORY_ROOT);
     const distDirectory = resolve(options.distDirectory ?? join(repositoryRoot, 'dist'));
@@ -157,11 +193,12 @@ export async function verifyCustomCodecArtifacts(options = {}) {
         throw new TypeError('The AC-3 artifact mode is invalid');
     }
     await requireFile(join(distDirectory, 'config.json'));
-    const [ hevc, ac3 ] = await Promise.all([
+    const [ hevc, ac3, dolbyVision ] = await Promise.all([
         verifyHEVCArtifacts(repositoryRoot, distDirectory),
-        verifyAC3Artifacts(repositoryRoot, distDirectory, mode)
+        verifyAC3Artifacts(repositoryRoot, distDirectory, mode),
+        verifyDolbyVisionArtifacts(repositoryRoot, distDirectory)
     ]);
-    return { ac3, hevc };
+    return { ac3, dolbyVision, hevc };
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;

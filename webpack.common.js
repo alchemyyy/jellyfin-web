@@ -125,6 +125,28 @@ const config = {
                     ),
                     to: 'libraries/hevcjs/LICENSE.txt'
                 },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm'
+                    ),
+                    to: 'libraries/libdovi/dovi-rpu-parser.wasm'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dolby-vision-parser/LICENSE.libdovi.txt'
+                    ),
+                    to: 'libraries/libdovi/LICENSE.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dolby-vision-parser/REVISION'
+                    ),
+                    to: 'libraries/libdovi/REVISION',
+                    toType: 'file'
+                },
                 ...(ENABLE_BUNDLED_AC3_SOFTWARE_DECODER ? [{
                     from: path.resolve(
                         __dirname,

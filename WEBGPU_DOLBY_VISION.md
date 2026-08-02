@@ -1,6 +1,6 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: research complete, bounded native and bundled HEVC packet ownership complete
+Status: research, HEVC packet ownership, and bounded RPU parser complete; runtime shader integration pending
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -49,6 +49,42 @@ There are two distinct mpv parity targets:
 The Profile 7 work landed in May 2026, after the v0.41.0 release. It is in
 current mpv development sources but not the latest stable release as of the
 research date.
+
+## Implemented parser checkpoint
+
+The repository now contains a pinned `wasm32-unknown-unknown` wrapper around
+libdovi revision `38adec045bf183c24df38149836c920398072281`. It has no WASM
+imports, exports a fixed 16 MiB maximum memory, accepts at most 64 KiB per RPU,
+and copies a 3,232-byte schema-versioned snapshot out of module memory. The
+artifact, exact revision, and libdovi license are copied into the ordinary web
+build and verified byte-for-byte by the codec artifact gate.
+
+The parser currently:
+
+- accepts Profiles 5, 7, and 8;
+- retains 16 mapping IDs and implements prior-mapping lookup plus FFmpeg's
+  mapping-ID-zero fallback;
+- resets all mapping state at generation and seek boundaries;
+- converts encoded pivot deltas into the cumulative normalized pivots required
+  by libplacebo's shader model;
+- packs polynomial and MMR curves, nonlinear and linear matrices, LINEAR_DZ
+  NLQ data, source PQ bounds, and L1 metadata into finite float32 data;
+- identifies single-layer, MEL, FEL, and active FEL residual cases;
+- rejects Profile 4, malformed CRCs, compressed display metadata, unsupported
+  interpolation, mixed per-segment mapping methods, missing prior state, and
+  out-of-range metadata instead of approximating them.
+
+Conformance tests instantiate the checked-in WASM artifact directly and cover
+eight upstream libdovi fixtures, stable output hashes, Profile 4 rejection,
+CRC failure and recovery, owned snapshots, exact close behavior, zero imports,
+the 16 MiB growth ceiling, and corrupt packed-schema rejection. Rust unit tests
+cover explicit mapping storage, exact prior-ID lookup, ID-zero fallback, and
+reset semantics.
+
+This checkpoint does not yet advertise Dolby Vision or alter live playback.
+The next integration step is to parse RPU NAL units in HEVC decode order, pair
+the copied snapshot with the decoded base frame's integer-microsecond PTS, and
+only then enable the libplacebo-equivalent WGSL reconstruction route.
 
 ## Profile support matrix
 
