@@ -13,6 +13,7 @@ import {
     CUSTOM_VIDEO_CODECS,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
+    type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
@@ -998,6 +999,32 @@ function createMeasuredRouteApplyConditions(
     ));
 }
 
+function getNativeMeasuredVideoDimensions(
+    codec: CustomVideoCodec,
+    capabilities: CustomDecodeCapabilities
+): Readonly<{ maximumHeight: number, maximumWidth: number }> {
+    let maximumHeight: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT;
+    let maximumWidth: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH;
+    switch (codec) {
+        case 'hevc':
+        case 'vp9':
+        case 'av1': {
+            const ultraHDCapability: CustomNativeUltraHDVideoCodecCapability | undefined =
+                capabilities.nativeUltraHDVideo?.[codec];
+            if (ultraHDCapability?.status === 'supported'
+                && ultraHDCapability.bitDepth === CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
+                maximumHeight = ultraHDCapability.maximumCodedHeight;
+                maximumWidth = ultraHDCapability.maximumCodedWidth;
+            }
+            break;
+        }
+        case 'h264':
+        case 'vp8':
+            break;
+    }
+    return { maximumHeight, maximumWidth };
+}
+
 function createNativeMeasuredVideoRoute(
     codec: CustomVideoCodec,
     capabilities: CustomDecodeCapabilities
@@ -1011,6 +1038,10 @@ function createNativeMeasuredVideoRoute(
         const mainTier = capabilities.bundledHEVC?.tiers['main-1080p'];
         bundledMain = mainTier?.status === 'supported' ? mainTier : null;
     }
+    const nativeDimensions: Readonly<{
+        maximumHeight: number
+        maximumWidth: number
+    }> = getNativeMeasuredVideoDimensions(codec, capabilities);
     return {
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec,
@@ -1018,9 +1049,9 @@ function createNativeMeasuredVideoRoute(
         maximumFrameRate: bundledMain ?
             CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND :
             null,
-        maximumHeight: CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
+        maximumHeight: bundledMain?.maximumCodedHeight ?? nativeDimensions.maximumHeight,
         maximumLevel: bundledMain?.maximumLevel ?? null,
-        maximumWidth: CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
+        maximumWidth: bundledMain?.maximumCodedWidth ?? nativeDimensions.maximumWidth,
         profiles: getNativeVideoProfiles(codec, capabilities),
         rangeTypes: [ 'SDR' ]
     };

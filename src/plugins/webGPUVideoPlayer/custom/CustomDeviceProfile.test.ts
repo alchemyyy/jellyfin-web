@@ -4,12 +4,15 @@ import { describe, expect, it } from 'vitest';
 import {
     CUSTOM_AUDIO_CODECS,
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomDecodeCodecCapability,
+    type CustomNativeUltraHDVideoCodec,
+    type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
@@ -120,11 +123,54 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
     };
 }
 
+type NativeUltraHDVideoCapabilityHarness = Readonly<{
+    capabilityProperties: Readonly<{
+        nativeUltraHDVideo?: NonNullable<CustomDecodeCapabilities['nativeUltraHDVideo']>
+    }>
+    probeCount: number
+}>;
+
+function createNativeUltraHDVideoCapabilityHarness(
+    supportedCodecs: readonly CustomNativeUltraHDVideoCodec[]
+): NativeUltraHDVideoCapabilityHarness {
+    if (supportedCodecs.length === 0) {
+        return { capabilityProperties: {}, probeCount: 0 };
+    }
+
+    const capabilities = {} as Record<
+        CustomNativeUltraHDVideoCodec,
+        CustomNativeUltraHDVideoCodecCapability
+    >;
+    const supportedCodecSet = new Set(supportedCodecs);
+    const codecStrings: Readonly<Record<CustomNativeUltraHDVideoCodec, string>> = {
+        av1: 'av01.0.12M.08',
+        hevc: 'hvc1.1.6.L153.B0',
+        vp9: 'vp09.00.51.08'
+    };
+    for (const codec of CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS) {
+        const supported = supportedCodecSet.has(codec);
+        capabilities[codec] = {
+            bitDepth: 8,
+            codec,
+            codecString: codecStrings[codec],
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            reason: supported ? 'decode-output-verified' : 'decode-output-missing',
+            status: supported ? 'supported' : 'unsupported'
+        };
+    }
+    return {
+        capabilityProperties: { nativeUltraHDVideo: capabilities },
+        probeCount: CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
+    };
+}
+
 function createCapabilities(
     supportedVideoCodecs: readonly CustomVideoCodec[],
     supportedAudioCodecs: readonly CustomAudioCodec[],
     supportedRawHDRVideoCodecs: readonly CustomRawHDRVideoCodec[] = [],
-    nativeDolbyVisionSupported = false
+    nativeDolbyVisionSupported = false,
+    supportedNativeUltraHDVideoCodecs: readonly CustomNativeUltraHDVideoCodec[] = []
 ): CustomDecodeCapabilities {
     const supportedVideoSet = new Set(supportedVideoCodecs);
     const supportedAudioSet = new Set(supportedAudioCodecs);
@@ -163,6 +209,8 @@ function createCapabilities(
             status: supported ? 'supported' : 'unsupported'
         };
     }
+    const nativeUltraHDVideoCapabilityHarness =
+        createNativeUltraHDVideoCapabilityHarness(supportedNativeUltraHDVideoCodecs);
     return {
         audio,
         ...(supportedVideoSet.has('hevc') || supportedRawHDRVideoSet.has('hevc') ? {
@@ -183,16 +231,21 @@ function createCapabilities(
                 'decode-output-missing',
             status: nativeDolbyVisionSupported ? 'supported' : 'unsupported'
         },
+        ...nativeUltraHDVideoCapabilityHarness.capabilityProperties,
         rawHDRVideo,
         telemetry: {
             audioProbeCount: CUSTOM_WEB_CODECS_AUDIO_CODECS.length,
             bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
+            nativeUltraHDVideoProbeCount: nativeUltraHDVideoCapabilityHarness.probeCount,
             rawHDRVideoProbeCount: CUSTOM_RAW_HDR_VIDEO_CODECS.length - 1,
             reason: 'complete',
             supportedAudioCodecCount: supportedAudioCodecs.length,
+            supportedNativeUltraHDVideoCodecCount:
+                supportedNativeUltraHDVideoCodecs.length,
             supportedRawHDRVideoCodecCount: supportedRawHDRVideoCodecs.length,
             supportedVideoCodecCount: supportedVideoCodecs.length,
             unknownAudioCodecCount: 0,
+            unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: CUSTOM_VIDEO_CODECS.length
         },
@@ -354,6 +407,47 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.telemetry.supportedVideoCodecs).toEqual([]);
         expect(result.profile.DirectPlayProfiles).toEqual(createBaseProfile().DirectPlayProfiles);
     });
+
+    it.each([
+        { codec: 'hevc', profile: 'main' },
+        { codec: 'vp9', profile: 'profile 0' },
+        { codec: 'av1', profile: 'main' }
+    ] as const)(
+        'advertises exact native Ultra HD $codec limits',
+        ({ codec, profile }) => {
+            const capabilities = createCapabilities(
+                [ codec ],
+                [ 'aac' ],
+                [],
+                false,
+                [ codec ]
+            );
+
+            const result = augmentDeviceProfileForCustomDecode(
+                createBaseProfile(),
+                capabilities
+            );
+            const measuredProfile = result.profile.CodecProfiles?.find(codecProfile => (
+                codecProfile.Codec === codec
+                && codecProfile.Conditions?.some(condition => (
+                    condition.Property === 'VideoRangeType'
+                    && condition.Value === 'SDR'
+                ))
+                && codecProfile.Conditions.some(condition => (
+                    condition.Property === 'Width'
+                    && condition.Value === '3840'
+                ))
+            ));
+
+            expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
+                expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
+                expect.objectContaining({ Property: 'VideoRangeType', Value: 'SDR' }),
+                expect.objectContaining({ Property: 'Width', Value: '3840' }),
+                expect.objectContaining({ Property: 'Height', Value: '2160' }),
+                expect.objectContaining({ Property: 'VideoProfile', Value: profile })
+            ]));
+        }
+    );
 
     it('adds only compatible Mediabunny container and codec combinations', () => {
         const result = augmentDeviceProfileForCustomDecode(

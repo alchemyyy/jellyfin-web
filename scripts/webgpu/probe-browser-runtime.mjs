@@ -54,6 +54,12 @@ await new Promise(resolve => setTimeout(resolve, 1_000));
 const expression = String.raw`(async () => {
     const videoConfigurations = {
         av1: { codec: 'av01.0.08M.08', codedHeight: 1080, codedWidth: 1920 },
+        av1Main4K8: {
+            codec: 'av01.0.12M.08',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'no-preference'
+        },
         av1Main10: {
             codec: 'av01.0.08M.10',
             codedHeight: 2160,
@@ -76,6 +82,12 @@ const expression = String.raw`(async () => {
         h264Main: { codec: 'avc1.4d0028', codedHeight: 1080, codedWidth: 1920 },
         hev1Main10: { codec: 'hev1.2.4.H153.90', codedHeight: 2160, codedWidth: 3840 },
         hevcMain: { codec: 'hvc1.1.6.L120.B0', codedHeight: 1080, codedWidth: 1920 },
+        hevcMain4K: {
+            codec: 'hvc1.1.6.L153.B0',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'no-preference'
+        },
         hevcMain10: { codec: 'hvc1.2.4.L153.B0', codedHeight: 2160, codedWidth: 3840 },
         hevcMain10Software: {
             codec: 'hvc1.2.4.L153.B0',
@@ -86,6 +98,12 @@ const expression = String.raw`(async () => {
         prores422HQ: { codec: 'apch', codedHeight: 1080, codedWidth: 1920 },
         vp8: { codec: 'vp8', codedHeight: 1080, codedWidth: 1920 },
         vp9: { codec: 'vp09.00.10.08', codedHeight: 1080, codedWidth: 1920 },
+        vp9Profile0UltraHD: {
+            codec: 'vp09.00.51.08',
+            codedHeight: 2160,
+            codedWidth: 3840,
+            hardwareAcceleration: 'no-preference'
+        },
         vp9Profile2: { codec: 'vp09.02.10.10', codedHeight: 2160, codedWidth: 3840 },
         vp9Profile2Software: {
             codec: 'vp09.02.10.10',

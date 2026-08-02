@@ -93,6 +93,12 @@ Eligibility remains narrower than the decoder's theoretical support:
   64-pixel vertical alignment. Every output frame is closed, and missing,
   duplicate, malformed, timed-out, or rejected output keeps that native route
   unadvertised.
+- Native 8-bit HEVC Main, VP9 Profile 0, and AV1 Main expand from the baseline
+  1920x1080 limit to 3840x2160 only when a second codec-specific configuration
+  decodes a pinned exact 3840x2160 keyframe with bounded hardware-surface
+  padding and exact visible and display geometry. Each Ultra HD result is
+  independent; failure retains that codec's qualified baseline limit without
+  reducing the other codecs. H.264 and VP8 remain bounded to 1920x1080.
 - AAC LC, Opus, FLAC, MP3, and Vorbis each require their exact 48 kHz stereo
   decoder initialization data and one or two pinned silence packets to produce
   exactly one owned `AudioData`. The probe verifies timestamp, channel count,
@@ -105,7 +111,8 @@ Eligibility remains narrower than the decoder's theoretical support:
   and requires a correctly sized owned `VideoFrame`. Configuration support
   alone does not authorize that route.
 - Config-only results never authorize native audio, H.264, ordinary native
-  HEVC/VP8/VP9/AV1, raw HDR, Dolby Vision Profile 5, or bundled HEVC.
+  HEVC/VP8/VP9/AV1, native Ultra HD expansion, raw HDR, Dolby Vision Profile 5,
+  or bundled HEVC.
   Unknown, timed-out, failed exact-output, interlaced, oversized, or ambiguous
   streams remain on the HTML player or server-selected fallback.
 

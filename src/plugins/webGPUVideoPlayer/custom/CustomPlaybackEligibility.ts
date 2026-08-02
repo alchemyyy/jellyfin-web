@@ -15,6 +15,7 @@ import {
     CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
+    type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
@@ -574,6 +575,32 @@ type SDRVideoSelection = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
 };
 
+function getNativeSDRVideoDimensions(
+    capabilities: CustomDecodeCapabilities,
+    codec: CustomVideoCodec
+): Readonly<{ maximumCodedHeight: number, maximumCodedWidth: number }> {
+    let maximumCodedHeight: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT;
+    let maximumCodedWidth: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH;
+    switch (codec) {
+        case 'hevc':
+        case 'vp9':
+        case 'av1': {
+            const ultraHDCapability: CustomNativeUltraHDVideoCodecCapability | undefined =
+                capabilities.nativeUltraHDVideo?.[codec];
+            if (ultraHDCapability?.status === 'supported'
+                && ultraHDCapability.bitDepth === CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
+                maximumCodedHeight = ultraHDCapability.maximumCodedHeight;
+                maximumCodedWidth = ultraHDCapability.maximumCodedWidth;
+            }
+            break;
+        }
+        case 'h264':
+        case 'vp8':
+            break;
+    }
+    return { maximumCodedHeight, maximumCodedWidth };
+}
+
 function getSDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
     codec: CustomVideoCodec,
@@ -617,6 +644,15 @@ function getSDRVideoSelection(
         || !hasSupportedNativeVideoProfile(codec, stream)
     ) {
         return null;
+    }
+
+    if (videoDecoderBackend === 'native') {
+        const nativeDimensions: Readonly<{
+            maximumCodedHeight: number
+            maximumCodedWidth: number
+        }> = getNativeSDRVideoDimensions(capabilities, codec);
+        maximumCodedWidth = nativeDimensions.maximumCodedWidth;
+        maximumCodedHeight = nativeDimensions.maximumCodedHeight;
     }
 
     if (stream.Width > maximumCodedWidth || stream.Height > maximumCodedHeight) {

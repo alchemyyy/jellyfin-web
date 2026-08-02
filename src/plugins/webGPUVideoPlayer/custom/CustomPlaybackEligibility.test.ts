@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-    CustomAudioCodec,
-    CustomDecodeCapabilities,
-    CustomDecodeCodecCapability,
-    CustomRawHDRVideoCodec,
-    CustomRawHDRVideoCodecCapability,
-    CustomVideoCodec
+import {
+    CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
+    type CustomNativeUltraHDVideoCodec,
+    type CustomNativeUltraHDVideoCodecCapability,
+    type CustomAudioCodec,
+    type CustomDecodeCapabilities,
+    type CustomDecodeCodecCapability,
+    type CustomRawHDRVideoCodec,
+    type CustomRawHDRVideoCodecCapability,
+    type CustomVideoCodec
 } from './CustomDecodeCapabilities';
 import { getCustomPlaybackEligibility } from './CustomPlaybackEligibility';
 import type { CustomPlaybackRuntimeAvailability } from './CustomPlaybackRuntime';
@@ -177,12 +180,15 @@ function createCapabilities(): CustomDecodeCapabilities {
         telemetry: {
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
+            nativeUltraHDVideoProbeCount: 0,
             rawHDRVideoProbeCount: 2,
             reason: 'complete',
             supportedAudioCodecCount: 7,
+            supportedNativeUltraHDVideoCodecCount: 0,
             supportedRawHDRVideoCodecCount: 3,
             supportedVideoCodecCount: 5,
             unknownAudioCodecCount: 0,
+            unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: 5
         },
@@ -194,6 +200,33 @@ function createCapabilities(): CustomDecodeCapabilities {
             vp9: createCapability('vp9', true)
         }
     };
+}
+
+function createNativeUltraHDVideoCapabilities(
+    supportedCodecs: ReadonlySet<CustomNativeUltraHDVideoCodec>
+): NonNullable<CustomDecodeCapabilities['nativeUltraHDVideo']> {
+    const codecStrings: Readonly<Record<CustomNativeUltraHDVideoCodec, string>> = {
+        av1: 'av01.0.12M.08',
+        hevc: 'hvc1.1.6.L153.B0',
+        vp9: 'vp09.00.51.08'
+    };
+    const capabilities = {} as Record<
+        CustomNativeUltraHDVideoCodec,
+        CustomNativeUltraHDVideoCodecCapability
+    >;
+    for (const codec of CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS) {
+        const supported: boolean = supportedCodecs.has(codec);
+        capabilities[codec] = {
+            bitDepth: 8,
+            codec,
+            codecString: codecStrings[codec],
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            reason: supported ? 'decode-output-verified' : 'decode-output-missing',
+            status: supported ? 'supported' : 'unsupported'
+        };
+    }
+    return capabilities;
 }
 
 function createNativeMediaAudioCapabilities(
@@ -1080,6 +1113,86 @@ describe('CustomPlaybackEligibility', () => {
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it.each([
+        { codec: 'hevc', profile: 'Main' },
+        { codec: 'vp9', profile: 'Profile 0' },
+        { codec: 'av1', profile: 'Main' }
+    ] as const)(
+        'selects exact native Ultra HD $codec limits',
+        ({ codec, profile }) => {
+            const baseCapabilities: CustomDecodeCapabilities = createCapabilities();
+            const capabilities: CustomDecodeCapabilities = {
+                ...baseCapabilities,
+                nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(
+                    new Set([ codec ])
+                )
+            };
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[0] = {
+                BitDepth: 8,
+                Codec: codec,
+                Height: 2_160,
+                Index: 0,
+                IsInterlaced: false,
+                Profile: profile,
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 3_840
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                eligible: true,
+                maximumCodedHeight: 2_160,
+                maximumCodedWidth: 3_840,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            });
+
+            mediaSource.MediaStreams[0].Width = 3_841;
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        }
+    );
+
+    it('does not widen native SDR limits without exact Ultra HD output', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[0] = {
+            BitDepth: 8,
+            Codec: 'hevc',
+            Height: 2_160,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: 'Main',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 3_840
+        };
+        const baseCapabilities: CustomDecodeCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(new Set())
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'codec-unsupported' });
     });

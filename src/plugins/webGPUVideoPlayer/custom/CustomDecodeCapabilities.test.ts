@@ -6,6 +6,7 @@ import CustomDecodeCapabilityProbe, {
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
@@ -161,7 +162,12 @@ describe('CustomDecodeCapabilityProbe', () => {
 
     it('probes every representative WebCodecs configuration and records support', async () => {
         const harness = createEnvironment(
-            new Set([ 'avc1.640028', 'vp09.00.10.08', 'vp09.02.10.10' ]),
+            new Set([
+                'avc1.640028',
+                'vp09.00.10.08',
+                'vp09.00.51.08',
+                'vp09.02.10.10'
+            ]),
             new Set([ 'mp4a.40.2', 'flac' ]),
             new Set([ 'vp9' ])
         );
@@ -173,6 +179,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             'vp8',
             'vp09.00.10.08',
             'av01.0.08M.08',
+            'hvc1.1.6.L153.B0',
+            'vp09.00.51.08',
+            'av01.0.12M.08',
             'hvc1.2.4.L153.B0',
             'vp09.02.10.10',
             'av01.0.08M.10',
@@ -255,14 +264,35 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
+            nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
             supportedAudioCodecCount: 4,
+            supportedNativeUltraHDVideoCodecCount: 1,
             supportedRawHDRVideoCodecCount: 2,
             supportedVideoCodecCount: 2,
             unknownAudioCodecCount: 0,
+            unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 6
+            videoProbeCount: 9
+        });
+        expect(capabilities.nativeUltraHDVideo).toMatchObject({
+            av1: {
+                reason: 'config-unsupported',
+                status: 'unsupported'
+            },
+            hevc: {
+                reason: 'config-unsupported',
+                status: 'unsupported'
+            },
+            vp9: {
+                bitDepth: 8,
+                codecString: 'vp09.00.51.08',
+                maximumCodedHeight: 2_160,
+                maximumCodedWidth: 3_840,
+                reason: 'decode-output-verified',
+                status: 'supported'
+            }
         });
     });
 
@@ -276,7 +306,10 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(first).toBe(second);
         expect(second).toBe(third);
         expect(harness.videoProbe).toHaveBeenCalledTimes(
-            CUSTOM_VIDEO_CODECS.length + CUSTOM_RAW_HDR_VIDEO_CODECS.length + 1
+            CUSTOM_VIDEO_CODECS.length
+                + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
+                + CUSTOM_RAW_HDR_VIDEO_CODECS.length
+                + 1
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
     });
@@ -475,6 +508,63 @@ describe('CustomDecodeCapabilityProbe', () => {
             });
             expect(request.encodedKeyFrame).toBeInstanceOf(Uint8Array);
             expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
+        }
+    );
+
+    it.each([
+        {
+            codec: 'hevc',
+            codecString: 'hvc1.1.6.L153.B0',
+            encodedByteLength: 2_086
+        },
+        {
+            codec: 'vp9',
+            codecString: 'vp09.00.51.08',
+            encodedByteLength: 731
+        },
+        {
+            codec: 'av1',
+            codecString: 'av01.0.12M.08',
+            encodedByteLength: 49
+        }
+    ] as const)(
+        'requires exact decoded native Ultra HD $codec output',
+        async ({ codec, codecString, encodedByteLength }) => {
+            const harness = createEnvironment(
+                new Set([ codecString ]),
+                new Set()
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(
+                harness.environment
+            ).probe();
+
+            expect(capabilities.nativeUltraHDVideo?.[codec]).toMatchObject({
+                bitDepth: 8,
+                codec,
+                codecString,
+                maximumCodedHeight: 2_160,
+                maximumCodedWidth: 3_840,
+                reason: 'decode-output-verified',
+                status: 'supported'
+            });
+            expect(harness.nativeVideoOutputProbe).toHaveBeenCalledOnce();
+            const request = harness.nativeVideoOutputProbe.mock.calls[0][0];
+            expect(request).toMatchObject({
+                codec,
+                configuration: {
+                    codec: codecString,
+                    codedHeight: 2_160,
+                    codedWidth: 3_840,
+                    hardwareAcceleration: 'prefer-hardware'
+                },
+                expectedCodedHeight: 2_160,
+                expectedCodedWidth: 3_840,
+                expectedDisplayHeight: 2_160,
+                expectedDisplayWidth: 3_840,
+                expectedTimestamp: 0
+            });
+            expect(request.encodedKeyFrame).toHaveLength(encodedByteLength);
         }
     );
 
