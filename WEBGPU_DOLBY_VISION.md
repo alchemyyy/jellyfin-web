@@ -1,10 +1,10 @@
 # WebGPU Dolby Vision Implementation Record
 
 Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
-interleaved and separate-track Matroska Profile 7 FEL decode/residual paths are
-implemented with separate exact-device authorization. Interleaved Profile 7
-also supports container `hvcE` initialization when a selected key access unit
-omits EL parameter sets.
+interleaved, separate-track Matroska, and legacy dual-track ISO BMFF Profile 7
+FEL decode/residual paths are implemented with separate exact-device
+authorization. Interleaved Profile 7 also supports container `hvcE`
+initialization when a selected key access unit omits EL parameter sets.
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -117,8 +117,9 @@ and creates a new per-frame storage buffer before presentation resumes.
 Profile 7 MEL applies RPU reconstruction to the HDR10-compatible base image.
 For interleaved Profile 7 FEL, the worker removes the NAL type 63 wrapper and
 feeds a second bundled HEVC decoder. For a conservatively identified Matroska
-BL/EL track pair, it instead aligns ordinary HEVC packets from a second demux
-iterator and accepts the RPU from either track. Both routes pair BL/EL output
+or legacy dual-track ISO BMFF BL/EL pair, it instead aligns ordinary HEVC
+packets from a second demux iterator and accepts the RPU from either track.
+Both routes pair BL/EL output
 within one microsecond, upload both planar images, apply LINEAR_DZ residual
 composition after reshape and before the nonlinear matrix, and then enter the
 ordinary BT.2020/PQ tone-mapping path. Missing, late, or failed EL degrades that
@@ -424,6 +425,17 @@ passed the same worker smoke with exact packet and decoded-frame PTS pairing,
 one parsed EL-side RPU per frame, one shared compound raw buffer, full
 `decoded-fel` output, natural EOF, and acknowledged shutdown.
 
+[`create-dual-track-dolby-vision-mp4-fixture.mjs`](./scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.mjs)
+remuxes that two-track fixture without moving `moov` ahead of `mdat`, changes
+the EL sample entry to `dvh1` or `dvhe`, clears its dvcC base-layer flag, and
+adds the spec-defined `tref`/`vdep` reference to the BL track. The generated
+validation-only file, SHA-256
+`b26f4af23308b1eb247934da6e5ab714464156b8b5492dc3760d6a8a52e48594`,
+passed the worker smoke with a Mediabunny codec-null EL track,
+container-derived `hvcC`, three lockstep packet pairs, one parsed EL-side RPU
+per frame, a shared 31,242,240-byte compound buffer, full `decoded-fel` output,
+natural EOF, and acknowledged shutdown.
+
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
 imports it through `GPUExternalTexture`, executes the production Profile 5 RPU
@@ -680,17 +692,18 @@ the parsed NLQ values.
 ### Stage 4: Profile 7 FEL
 
 Status: implemented for interleaved NAL type 63 streams using either in-band EL
-parameter sets or a validated Matroska `hvcE` record, and for conservative
-two-track Matroska BL/EL topology. Full residual presentation has separate
-exact-device authorization and retains explicit HDR10-base degradation.
+parameter sets or a validated Matroska `hvcE` record, conservative two-track
+Matroska BL/EL topology, and legacy dual-track ISO BMFF `dvh1`/`dvhe` topology.
+Full residual presentation has separate exact-device authorization and retains
+explicit HDR10-base degradation.
 
 Implemented behavior:
 
 1. Split interleaved NAL type 63 and remove its two-byte outer header, or pair a
    conservatively identified separate HEVC EL track with the selected BL track.
 2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS, the
-   selected Matroska track's bounded `hvcE` record, or the separate EL track's
-   validated decoder description.
+   selected Matroska track's bounded `hvcE` record, the ordinary Matroska EL
+   track description, or the ISO BMFF EL track's bounded `hvcC` record.
 3. Convert wrapped EL NAL units to the framing declared by the selected decoder
    configuration while leaving ordinary separate-track HEVC framing intact.
 4. Pair separate encoded packets and decoded BL/EL outputs by exact
@@ -705,7 +718,8 @@ Implemented behavior:
    resources and continue BL-only without renegotiating or restarting playback.
 
 Remaining Profile 7 container work is a block-additional representation backed
-by real fixtures, plus dependency-stream discovery for MP4 and MPEG-TS.
+by real fixtures and dependency-stream discovery for MPEG-TS. Fragmented ISO
+BMFF carriage remains unverified with a real dual-track fixture.
 
 If later evidence contradicts the left-siting assumption for a fixture, reject
 that route rather than silently presenting a misaligned residual.

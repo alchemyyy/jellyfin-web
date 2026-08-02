@@ -125,9 +125,11 @@ route covers half-resolution EL sampling and LINEAR_DZ residual composition.
 A stream can use the full route when either its interleaved key access unit
 contains EL parameter sets, its selected Matroska track provides a validated
 `hvcE` configuration, or a conservative two-track Matroska topology provides a
-validated separate EL decoder configuration. The second bundled decoder must
-produce a PTS-matched EL frame and the exact FEL GPU route must be authorized.
-Otherwise the same BL session continues through the base route.
+validated separate EL decoder configuration. Legacy dual-track ISO BMFF is
+also supported when a bounded `dvh1`/`dvhe`, `dvcC`, `hvcC`, and `vdep`
+topology identifies exactly one EL for the selected BL. The second bundled
+decoder must produce a PTS-matched EL frame and the exact FEL GPU route must be
+authorized. Otherwise the same BL session continues through the base route.
 
 ## Bundled codec licensing and distribution
 
@@ -224,6 +226,7 @@ node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
 node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
 node --test scripts/webgpu/release-validation-metrics.node-test.mjs
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
+node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs
 npm run build:development
 node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
 ```

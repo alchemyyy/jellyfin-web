@@ -416,6 +416,39 @@ generator unit coverage with:
 node --test scripts/webgpu/create-separate-track-dolby-vision-fixture.node-test.mjs
 ```
 
+To prove legacy dual-track Profile 7 in ISO BMFF, remux the generated
+two-track Matroska fixture and add the `dvh1`/`dvhe`, `dvcC`, and `vdep`
+topology required by Annex C carriage:
+
+```powershell
+node scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.mjs `
+    "$env:TEMP\dovi-p7-separate-track.mkv" `
+    "$env:TEMP\dovi-p7-dual-track.mp4"
+
+Copy-Item "$env:TEMP\dovi-p7-dual-track.mp4" `
+    dist/webgpu-dovi-p7-dual-track.bin
+
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/webgpu-dovi-p7-dual-track.bin
+```
+
+The MP4 generator uses FFmpeg only to copy the two ordinary HEVC tracks. It
+then validates compact `moov`/`trak` boxes, requires all `mdat` boxes before
+`moov`, changes the EL sample entry to `dvh1` or `dvhe`, clears the dvcC BL
+flag, and inserts one `tref`/`vdep` reference to the BL track. Keeping media
+data before `moov` means the 20-byte metadata insertion does not invalidate
+sample offsets. The worker reads the topology and EL `hvcC` through bounded
+HTTP ranges because Mediabunny exposes packets and dimensions for the Dolby
+Vision sample entry but currently reports its codec and decoder configuration
+as null. Remove the served `.bin` copy after validation. Run patcher coverage
+with:
+
+```powershell
+node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs
+```
+
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely

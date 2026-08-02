@@ -16,7 +16,7 @@ const USAGE = `Usage:
 Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
   --frontend-url <url>   Built Jellyfin Web frontend URL
-  --media-url <url>      Same-origin Profile 7 FEL Matroska fixture URL
+  --media-url <url>      Same-origin Profile 7 FEL fixture URL
   --timeout-ms <number>  Worker validation timeout
   --help                 Show this text`;
 

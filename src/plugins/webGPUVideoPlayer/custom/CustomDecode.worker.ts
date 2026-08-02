@@ -99,9 +99,9 @@ import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4RemuxOutput
 } from './NativeMediaAudioFMP4Remuxer';
 import OwnedNativeHEVCVideoDecoder from './OwnedNativeHEVCVideoDecoder';
+import { readISOBaseMediaDolbyVisionTrackConfiguration } from './ISOBaseMediaDolbyVisionConfiguration';
 import {
-    readMatroskaDolbyVisionTrackConfiguration,
-    type MatroskaDolbyVisionTrackConfiguration
+    readMatroskaDolbyVisionTrackConfiguration
 } from './MatroskaDolbyVisionHVCE';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
@@ -170,6 +170,14 @@ type DolbyVisionEnhancementDecoderConfiguration = {
 type SeparateDolbyVisionEnhancementPacketStream = {
     inputFormat: HEVCNALFormat
     pairer: DolbyVisionEncodedPacketPairer
+};
+
+type ContainerDolbyVisionTrackConfiguration = {
+    enhancementConfiguration: Uint8Array | null
+    separateEnhancement: {
+        decoderDescription: Uint8Array | null
+        trackNumber: number
+    } | null
 };
 
 type PreparedAudioTrack = {
@@ -579,7 +587,8 @@ function copyDecoderDescription(
 
 async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
     preparedVideoTrack: PreparedVideoTrack,
-    enhancementTrackNumber: number
+    enhancementTrackNumber: number,
+    containerDecoderDescription: Uint8Array | null
 ): Promise<DolbyVisionEnhancementDecoderConfiguration | null> {
     const videoTrack = preparedVideoTrack.availableVideoTracks.find(
         (candidate: InputVideoTrack): boolean => candidate.id === enhancementTrackNumber
@@ -602,8 +611,16 @@ async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
         videoTrack.getDisplayHeight(),
         videoTrack.getDisplayWidth()
     ]);
-    const description = copyDecoderDescription(decoderConfig?.description);
-    if (codec !== 'hevc' || !decoderConfig || !description) {
+    if (codec !== null && codec !== 'hevc') {
+        return null;
+    }
+    let description: Uint8Array | null = containerDecoderDescription?.slice() ?? null;
+    let decoderPacketFormat: HEVCNALFormat | null = null;
+    if (!description && codec === 'hevc' && decoderConfig) {
+        description = copyDecoderDescription(decoderConfig.description);
+        decoderPacketFormat = getHEVCNALFormat(decoderConfig);
+    }
+    if (!description) {
         return null;
     }
     const configuration = getContainerDolbyVisionEnhancementConfiguration(
@@ -621,7 +638,7 @@ async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
     }
     return {
         ...configuration,
-        packetFormat: getHEVCNALFormat(decoderConfig),
+        packetFormat: decoderPacketFormat ?? configuration.packetFormat,
         source: {
             kind: 'separate-track',
             videoTrack
@@ -1791,7 +1808,7 @@ async function readContainerDolbyVisionTrackConfiguration(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     containerTrackNumber: number
-): Promise<MatroskaDolbyVisionTrackConfiguration | null> {
+): Promise<ContainerDolbyVisionTrackConfiguration | null> {
     if (run.cancelled) {
         return null;
     }
@@ -1799,18 +1816,48 @@ async function readContainerDolbyVisionTrackConfiguration(
     const abortController = new AbortController();
     run.metadataAbortController = abortController;
     try {
-        return await readMatroskaDolbyVisionTrackConfiguration(
-            (offset: number, byteLength: number): Promise<Uint8Array | null> => (
-                readDolbyVisionMetadataByteRange(
-                    run,
-                    request.url,
-                    abortController,
-                    offset,
-                    byteLength
-                )
-            ),
+        const reader = (
+            offset: number,
+            byteLength: number
+        ): Promise<Uint8Array | null> => readDolbyVisionMetadataByteRange(
+            run,
+            request.url,
+            abortController,
+            offset,
+            byteLength
+        );
+        const matroskaConfiguration = await readMatroskaDolbyVisionTrackConfiguration(
+            reader,
             containerTrackNumber
         );
+        if (matroskaConfiguration && (
+            matroskaConfiguration.enhancementConfiguration
+            || matroskaConfiguration.separateEnhancementTrackNumber !== null
+        )) {
+            return {
+                enhancementConfiguration: matroskaConfiguration.enhancementConfiguration,
+                separateEnhancement: matroskaConfiguration.separateEnhancementTrackNumber === null ?
+                    null :
+                    {
+                        decoderDescription: null,
+                        trackNumber: matroskaConfiguration.separateEnhancementTrackNumber
+                    }
+            };
+        }
+        const isoBaseMediaConfiguration = await readISOBaseMediaDolbyVisionTrackConfiguration(
+            reader,
+            containerTrackNumber
+        );
+        if (!isoBaseMediaConfiguration) {
+            return null;
+        }
+        return {
+            enhancementConfiguration: null,
+            separateEnhancement: {
+                decoderDescription: isoBaseMediaConfiguration.enhancementConfiguration,
+                trackNumber: isoBaseMediaConfiguration.separateEnhancementTrackNumber
+            }
+        };
     } finally {
         if (run.metadataAbortController === abortController) {
             run.metadataAbortController = null;
@@ -1847,12 +1894,13 @@ async function resolveDolbyVisionEnhancementDecoderConfiguration(
             containerConfiguration.enhancementConfiguration
         );
     }
-    if (containerConfiguration.separateEnhancementTrackNumber === null) {
+    if (!containerConfiguration.separateEnhancement) {
         return null;
     }
     return createSeparateDolbyVisionEnhancementDecoderConfiguration(
         preparedVideoTrack,
-        containerConfiguration.separateEnhancementTrackNumber
+        containerConfiguration.separateEnhancement.trackNumber,
+        containerConfiguration.separateEnhancement.decoderDescription
     );
 }
 
