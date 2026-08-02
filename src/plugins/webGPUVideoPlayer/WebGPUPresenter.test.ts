@@ -451,11 +451,15 @@ function createRawFrame(
 }
 
 function createDolbyVisionEncodedMetadata(
-    packedRPUData = createDolbyVisionAuthorizationRPUFixture()
+    packedRPUData = createDolbyVisionAuthorizationRPUFixture(),
+    enhancementLayerDisposition: TransferableDolbyVisionEncodedFrameMetadata[
+        'enhancementLayerDisposition'
+    ] = 'absent',
+    hasEnhancementLayerVCL = false
 ): TransferableDolbyVisionEncodedFrameMetadata {
     return {
-        enhancementLayerData: null,
-        hasEnhancementLayerVCL: false,
+        enhancementLayerDisposition,
+        hasEnhancementLayerVCL,
         parsedRPUData: [ packedRPUData ],
         schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
     };
@@ -1171,6 +1175,78 @@ describe('WebGPUPresenter', () => {
         expect(RPUBuffer.destroy).toHaveBeenCalledOnce();
     });
 
+    it('presents Profile 7 MEL and explicit FEL HDR10-base fallback frames', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 7,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+
+        const deviceHarness = gpuHarness.devices[0];
+        const profile7Shader = deviceHarness.createShaderModule.mock.calls
+            .map((call: unknown[]) => call[0] as { code: string })
+            .find(descriptor => descriptor.code.includes('if (isDolbyVisionFEL())'));
+        expect(profile7Shader?.code).toContain('if (isDolbyVisionFEL())');
+
+        const melRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'mel');
+        const melFrame = createRawFrame('I420P10', createPQColorMetadata());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: melFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
+                melRPUData,
+                'discarded-mel',
+                true
+            ),
+            frame: melFrame,
+            mediaTimeMicroseconds: melFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        const felRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const felFrame = createRawFrame('I420P10', createPQColorMetadata());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: felFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
+                felRPUData,
+                'discarded-fel',
+                true
+            ),
+            frame: felFrame,
+            mediaTimeMicroseconds: felFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+        expect(presenter.getTelemetry()).toMatchObject({
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 1,
+            dolbyVisionProfile7MELPresentedFrameCount: 1
+        });
+
+        const RPUBuffers = deviceHarness.queueWriteBuffer.mock.calls
+            .map((call: unknown[]) => call[2]);
+        expect(RPUBuffers).toContain(melRPUData);
+        expect(RPUBuffers).toContain(felRPUData);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+    });
+
     it.each([
         {
             name: 'missing metadata',
@@ -1189,11 +1265,11 @@ describe('WebGPUPresenter', () => {
             })
         },
         {
-            name: 'enhancement-layer data',
+            name: 'discarded enhancement-layer data',
             profile: 8 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
                 ...createDolbyVisionEncodedMetadata(),
-                enhancementLayerData: new ArrayBuffer(1),
+                enhancementLayerDisposition: 'discarded-mel',
                 hasEnhancementLayerVCL: true
             })
         },
@@ -1210,6 +1286,17 @@ describe('WebGPUPresenter', () => {
             profile: 5 as const,
             toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
                 createDolbyVisionEncodedMetadata()
+            )
+        },
+        {
+            name: 'a Profile 7 layer disposition mismatch',
+            profile: 7 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
+                createDolbyVisionEncodedMetadata(
+                    createDolbyVisionAuthorizationRPUFixture(7, 'mel'),
+                    'discarded-fel',
+                    true
+                )
             )
         }
     ])('fails closed for $name in a Dolby Vision frame', async ({ profile, toMetadata }) => {

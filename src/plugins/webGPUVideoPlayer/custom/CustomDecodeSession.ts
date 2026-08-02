@@ -1047,7 +1047,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         this.telemetry.receivedDolbyVisionFrameCount += 1;
         this.telemetry.receivedDolbyVisionRPUCount += metadata.parsedRPUData.length;
-        if (metadata.enhancementLayerData) {
+        if (metadata.hasEnhancementLayerVCL) {
             this.telemetry.receivedDolbyVisionEnhancementFrameCount += 1;
         }
     }

@@ -8,6 +8,7 @@ import {
     createStartupSampleModeOrder,
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
+    hasAuthorizedHDRPlaybackRoute,
     hasConsumedCustomAudio,
     hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
@@ -967,6 +968,15 @@ function createPlayerSnapshotExpression(accessKey) {
             ? player.getPresentationTelemetry()
             : null;
         const presentationInputMode = player.presenter?.activeInputMode ?? null;
+        const dolbyVisionProfile = player.presenter?.activeDolbyVisionProfile ?? null;
+        const profile7DolbyVisionAuthorization =
+            typeof player.getProfile7DolbyVisionAuthorizationTelemetry === 'function' ?
+                player.getProfile7DolbyVisionAuthorizationTelemetry() :
+                null;
+        const externalDolbyVisionAuthorization =
+            typeof player.getExternalDolbyVisionAuthorizationTelemetry === 'function' ?
+                player.getExternalDolbyVisionAuthorizationTelemetry() :
+                null;
         const rawHDRAuthorization = presentationInputMode === 'raw-yuv'
             && customEligibility?.eligible === true
             && customEligibility.hdr === true
@@ -974,12 +984,20 @@ function createPlayerSnapshotExpression(accessKey) {
             && typeof player.getRawHDRAuthorizationTelemetry === 'function' ?
             player.getRawHDRAuthorizationTelemetry() :
             null;
-        const dolbyVisionAuthorization = presentationInputMode === 'raw-dolby-vision'
+        let dolbyVisionAuthorization = null;
+        if (presentationInputMode === 'raw-dolby-vision'
             && customEligibility?.eligible === true
-            && customEligibility.hdr === true
-            && typeof player.getDolbyVisionAuthorizationTelemetry === 'function' ?
-            player.getDolbyVisionAuthorizationTelemetry() :
-            null;
+            && customEligibility.hdr === true) {
+            if (dolbyVisionProfile === 7
+                && typeof player.getProfile7DolbyVisionAuthorizationTelemetry
+                    === 'function') {
+                dolbyVisionAuthorization =
+                    player.getProfile7DolbyVisionAuthorizationTelemetry();
+            } else if (dolbyVisionProfile !== 7
+                && typeof player.getDolbyVisionAuthorizationTelemetry === 'function') {
+                dolbyVisionAuthorization = player.getDolbyVisionAuthorizationTelemetry();
+            }
+        }
         const activeRawFrameFormat = player.presenter?.activeRawFrameFormat;
         const activeRawColorMetadata = player.presenter?.activeInputColorMetadata;
         const deriveRouteKey = ${deriveRawHDRPlaybackRouteKey.toString()};
@@ -1133,8 +1151,21 @@ function createPlayerSnapshotExpression(accessKey) {
                 viewportWidth: window.innerWidth,
                 visibleCanvasCount: canvases.filter(isVisible).length
             },
+            dolbyVisionProfile,
             eventCounts: { ...capture.eventCounts },
             eventSequence: [ ...capture.eventSequence ],
+            externalDolbyVisionValidation: externalDolbyVisionAuthorization ? {
+                failureReason: externalDolbyVisionAuthorization.failureReason,
+                fixtureVersion: externalDolbyVisionAuthorization.fixtureVersion,
+                maximumChannelError:
+                    externalDolbyVisionAuthorization.maximumChannelError,
+                renderSettingsVersion:
+                    externalDolbyVisionAuthorization.renderSettingsVersion,
+                routeKey: externalDolbyVisionAuthorization.routeKey,
+                sampleCount: externalDolbyVisionAuthorization.sampleCount,
+                status: externalDolbyVisionAuthorization.status,
+                targetFormat: externalDolbyVisionAuthorization.targetFormat
+            } : null,
             hasCurrentSource: typeof currentSource === 'string'
                 ? currentSource.length > 0
                 : currentSource != null,
@@ -1150,6 +1181,10 @@ function createPlayerSnapshotExpression(accessKey) {
             presentation: presentation ? {
                 decodedFrameCount: presentation.decodedFrameCount,
                 deviceRecoveryCount: presentation.deviceRecoveryCount,
+                dolbyVisionProfile7FELBaseFallbackPresentedFrameCount:
+                    presentation.dolbyVisionProfile7FELBaseFallbackPresentedFrameCount,
+                dolbyVisionProfile7MELPresentedFrameCount:
+                    presentation.dolbyVisionProfile7MELPresentedFrameCount,
                 fallbackReason: presentation.fallbackReason,
                 firstFrameLatencyMicroseconds: presentation.firstFrameLatencyMicroseconds,
                 sessionStartedMicroseconds: presentation.sessionStartedMicroseconds,
@@ -1158,6 +1193,18 @@ function createPlayerSnapshotExpression(accessKey) {
                 presentationSource: presentation.presentationSource,
                 presentedFrameCount: presentation.presentedFrameCount,
                 state: presentation.state
+            } : null,
+            profile7DolbyVisionValidation: profile7DolbyVisionAuthorization ? {
+                failureReason: profile7DolbyVisionAuthorization.failureReason,
+                fixtureVersion: profile7DolbyVisionAuthorization.fixtureVersion,
+                maximumChannelError:
+                    profile7DolbyVisionAuthorization.maximumChannelError,
+                renderSettingsVersion:
+                    profile7DolbyVisionAuthorization.renderSettingsVersion,
+                routeKey: profile7DolbyVisionAuthorization.routeKey,
+                sampleCount: profile7DolbyVisionAuthorization.sampleCount,
+                status: profile7DolbyVisionAuthorization.status,
+                targetFormat: profile7DolbyVisionAuthorization.targetFormat
             } : null,
             rawHDRValidation: rawHDRAuthorization ? {
                 authorizedRouteKeys: [ ...rawHDRAuthorization.authorizedRouteKeys ],
@@ -1703,34 +1750,6 @@ async function createStartupConfigurationInterceptor(client, configuration) {
     };
 }
 
-function hasAuthorizedRawHDRPlaybackRoute(snapshot) {
-    if (snapshot?.presentationInputMode === 'raw-dolby-vision') {
-        const authorization = snapshot.dolbyVisionValidation;
-        return authorization?.status === 'authorized'
-            && (authorization.targetFormat === 'bgra8unorm'
-                || authorization.targetFormat === 'rgba8unorm')
-            && Number.isSafeInteger(authorization.fixtureVersion)
-            && authorization.fixtureVersion > 0
-            && Number.isSafeInteger(authorization.renderSettingsVersion)
-            && authorization.renderSettingsVersion > 0
-            && authorization.routeKey === 'I420P10:dovi-rpu-v1'
-            && Number.isSafeInteger(authorization.sampleCount)
-            && authorization.sampleCount > 0;
-    }
-    const authorization = snapshot?.rawHDRValidation;
-    const routeKey = snapshot?.rawHDRPlaybackRouteKey;
-    return authorization?.status === 'authorized'
-        && (authorization.targetFormat === 'bgra8unorm'
-            || authorization.targetFormat === 'rgba8unorm')
-        && Number.isSafeInteger(authorization.fixtureVersion)
-        && authorization.fixtureVersion > 0
-        && Number.isSafeInteger(authorization.renderSettingsVersion)
-        && authorization.renderSettingsVersion > 0
-        && typeof routeKey === 'string'
-        && Array.isArray(authorization.authorizedRouteKeys)
-        && authorization.authorizedRouteKeys.includes(routeKey);
-}
-
 function getExpectedControllerAudioPath(expectedAudioPath) {
     return expectedAudioPath === 'native-media' ? 'ready' : expectedAudioPath;
 }
@@ -1762,8 +1781,8 @@ function isExpectedCustomPlaybackActive(snapshot, configuration, previousGenerat
         && (configuration.expectedVideoDecoderBackend === null
             || snapshot.customPlaybackEligibility?.videoDecoderBackend
                 === configuration.expectedVideoDecoderBackend)
-        && (configuration.expectedVideoOutputMode !== 'raw-planes'
-            || hasAuthorizedRawHDRPlaybackRoute(snapshot))
+        && (snapshot.customPlaybackEligibility?.hdr !== true
+            || hasAuthorizedHDRPlaybackRoute(snapshot))
         && (snapshot.customPlayback?.videoDecode?.receivedFrameCount ?? 0)
             >= MINIMUM_ACTIVE_PRESENTED_FRAMES
         && snapshot.presentation?.state === 'presenting'
@@ -2236,8 +2255,8 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                         && Number.isFinite(
                             snapshot.observedMilestones?.firstCustomAudioAtMilliseconds
                         ))
-                && (configuration.expectedVideoOutputMode !== 'raw-planes'
-                    || hasAuthorizedRawHDRPlaybackRoute(snapshot));
+                && (snapshot.customPlaybackEligibility?.hdr !== true
+                    || hasAuthorizedHDRPlaybackRoute(snapshot));
         default:
             return false;
     }
@@ -3551,8 +3570,8 @@ async function runDeviceLossRecoveryInjection(options) {
             && (!pausedDeviceLoss
                 || (snapshot.presentation?.presentedFrameCount ?? 0)
                     > (recoveryStartSnapshot.presentation?.presentedFrameCount ?? 0))
-            && (options.configuration.expectedVideoOutputMode !== 'raw-planes'
-                || hasAuthorizedRawHDRPlaybackRoute(snapshot)),
+            && (snapshot.customPlaybackEligibility?.hdr !== true
+                || hasAuthorizedHDRPlaybackRoute(snapshot)),
         accessKey: options.accessKey,
         client: options.client,
         description: 'presentation on the replacement WebGPU device',

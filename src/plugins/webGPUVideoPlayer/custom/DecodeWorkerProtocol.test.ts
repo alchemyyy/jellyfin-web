@@ -19,25 +19,17 @@ import {
     MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
 } from './DolbyVisionEncodedMetadataProtocol';
 import {
-    DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
-    DOLBY_VISION_RPU_SCHEMA_MAGIC,
-    DOLBY_VISION_RPU_SCHEMA_VERSION
+    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
 } from './DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
 import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
+import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL =
     'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
 
 function createPackedRPUData(): ArrayBuffer {
-    const data = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
-    const view = new DataView(data);
-    view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
-    view.setUint32(4, DOLBY_VISION_RPU_SCHEMA_VERSION, true);
-    view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
-    view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
-    return data;
+    return createDolbyVisionAuthorizationRPUFixture();
 }
 
 function createRawFrame(): TransferableRawVideoFrame {
@@ -219,16 +211,18 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: new ArrayBuffer(32),
+                enhancementLayerDisposition: 'discarded-mel',
                 hasEnhancementLayerVCL: true,
-                parsedRPUData: [ createPackedRPUData() ],
+                parsedRPUData: [
+                    createDolbyVisionAuthorizationRPUFixture(7, 'mel')
+                ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(true);
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: null,
+                enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
                 parsedRPUData: [ createPackedRPUData() ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
@@ -237,7 +231,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: null,
+                enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
                 parsedRPUData: [],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
@@ -246,7 +240,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: null,
+                enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
                 parsedRPUData: [ new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
@@ -255,7 +249,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: null,
+                enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: false,
                 parsedRPUData: Array.from(
                     { length: MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT + 1 },
@@ -267,7 +261,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             ...baseFrame,
             encodedDolbyVisionMetadata: {
-                enhancementLayerData: null,
+                enhancementLayerDisposition: 'absent',
                 hasEnhancementLayerVCL: true,
                 parsedRPUData: [ createPackedRPUData() ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION

@@ -223,6 +223,7 @@ export type CustomPlaybackIneligibilityReason =
 
 export type CustomPlaybackEligibilityOptions = {
     allowDolbyVision?: boolean
+    allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowRawHDR: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
@@ -683,6 +684,7 @@ function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
     allowRawDolbyVision: boolean,
+    allowRawDolbyVisionProfile7: boolean,
     allowNativeDolbyVision: boolean,
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream
@@ -715,7 +717,10 @@ function selectDolbyVisionVideoOutput(
             videoOutputMode: 'video-frame'
         };
     }
-    if (!allowRawDolbyVision) {
+    const rawPresentationAllowed = descriptor.profile === 7 ?
+        allowRawDolbyVisionProfile7 :
+        allowRawDolbyVision;
+    if (!rawPresentationAllowed) {
         return { reason: 'hdr-presentation-unavailable', status: 'invalid' };
     }
 
@@ -757,6 +762,7 @@ function selectVideoOutput(
         options,
         capabilities,
         eligibilityOptions.allowDolbyVision === true,
+        eligibilityOptions.allowDolbyVisionProfile7 === true,
         eligibilityOptions.allowNativeDolbyVision === true,
         videoCodec,
         videoStream

@@ -228,6 +228,8 @@ describe('createDolbyVisionColorTransformWGSL', () => {
         expect(shader).toContain(`dolbyVisionRPU.words[1] == ${DOLBY_VISION_RPU_SCHEMA_VERSION}u`);
         expect(shader).toContain(`dolbyVisionRPU.words[2] == ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}u`);
         expect(shader).toContain(`dolbyVisionRPU.words[4] == ${DOLBY_VISION_RPU_PARSER_REVISION_PREFIX}u`);
+        expect(shader).toContain('fn isDolbyVisionFEL() -> bool');
+        expect(shader).toContain('& 64u) != 0u');
         expect(shader).toContain('fn evaluateDolbyVisionMMR');
         expect(shader).toContain('mmrVectorIndex * 4u');
         expect(shader).toContain('quadraticCoefficient * componentSignal');

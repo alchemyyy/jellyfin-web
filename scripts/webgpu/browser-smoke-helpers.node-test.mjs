@@ -11,6 +11,8 @@ import {
     createFrontendRouteURL,
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
+    hasAuthorizedHDRPlaybackRoute,
+    hasAuthorizedRawHDRPlaybackRoute,
     hasConsumedCustomAudio,
     hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
@@ -853,6 +855,73 @@ test('derives only exact measured raw HDR authorization routes', () => {
     }), null);
 });
 
+test('requires the route-specific Dolby Vision authorization fixture', () => {
+    const profile7Snapshot = {
+        dolbyVisionProfile: 7,
+        dolbyVisionValidation: {
+            fixtureVersion: 3,
+            renderSettingsVersion: 1,
+            routeKey: 'I420P10:dovi-profile7-base-v1',
+            sampleCount: 18,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentationInputMode: 'raw-dolby-vision'
+    };
+    assert.equal(hasAuthorizedRawHDRPlaybackRoute(profile7Snapshot), true);
+    assert.equal(hasAuthorizedRawHDRPlaybackRoute({
+        ...profile7Snapshot,
+        dolbyVisionValidation: {
+            ...profile7Snapshot.dolbyVisionValidation,
+            sampleCount: 17
+        }
+    }), false);
+    assert.equal(hasAuthorizedRawHDRPlaybackRoute({
+        ...profile7Snapshot,
+        dolbyVisionValidation: {
+            ...profile7Snapshot.dolbyVisionValidation,
+            routeKey: 'I420P10:dovi-rpu-v1'
+        }
+    }), false);
+
+    assert.equal(hasAuthorizedRawHDRPlaybackRoute({
+        ...profile7Snapshot,
+        dolbyVisionProfile: 5,
+        dolbyVisionValidation: {
+            ...profile7Snapshot.dolbyVisionValidation,
+            routeKey: 'I420P10:dovi-rpu-v1',
+            sampleCount: 9
+        }
+    }), true);
+});
+
+test('requires exact external Profile 5 authorization', () => {
+    const snapshot = {
+        dolbyVisionProfile: 5,
+        externalDolbyVisionValidation: {
+            fixtureVersion: 1,
+            renderSettingsVersion: 4,
+            routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
+            sampleCount: 9,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentationInputMode: 'external-dolby-vision'
+    };
+    assert.equal(hasAuthorizedHDRPlaybackRoute(snapshot), true);
+    assert.equal(hasAuthorizedHDRPlaybackRoute({
+        ...snapshot,
+        dolbyVisionProfile: 7
+    }), false);
+    assert.equal(hasAuthorizedHDRPlaybackRoute({
+        ...snapshot,
+        externalDolbyVisionValidation: {
+            ...snapshot.externalDolbyVisionValidation,
+            sampleCount: 0
+        }
+    }), false);
+});
+
 function createPresentedFrameEvidence(hash, overrides = {}) {
     return {
         channelMaximums: [ 245, 238, 250 ],
@@ -1490,6 +1559,122 @@ test('accepts bounded raw HDR playback with healthy custom audio', () => {
         assert.ok(!failures.includes('raw-frame-credit-window-exceeded'));
         assert.ok(!failures.includes('pending-frame-bound-exceeded'));
     }
+});
+
+test('validates the active Profile 7 authorization independently', () => {
+    const rawDolbyVisionExpectations = {
+        expectedAudioPath: 'disabled',
+        expectedVideoDecoderBackend: 'bundled-hevc',
+        expectedVideoOutputMode: 'raw-planes'
+    };
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            currentTimeMicroseconds: 1_000_000
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr',
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlaybackEligibility: {
+            audioOutputMode: null,
+            eligible: true,
+            hdr: true,
+            reason: null,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes'
+        },
+        dolbyVisionProfile: 7,
+        dolbyVisionValidation: {
+            failureReason: null,
+            fixtureVersion: 3,
+            maximumChannelError: 0,
+            renderSettingsVersion: 1,
+            routeKey: 'I420P10:dovi-profile7-base-v1',
+            sampleCount: 18,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 4,
+            dolbyVisionProfile7MELPresentedFrameCount: 6,
+            mode: 'hdr-to-sdr'
+        },
+        presentationInputMode: 'raw-dolby-vision'
+    });
+
+    assert.deepEqual(validateActivePlaybackSnapshot(
+        initialSnapshot,
+        laterSnapshot,
+        rawDolbyVisionExpectations
+    ), []);
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        dolbyVisionValidation: {
+            ...laterSnapshot.dolbyVisionValidation,
+            routeKey: 'I420P10:dovi-rpu-v1'
+        }
+    }, rawDolbyVisionExpectations).includes(
+        'dolby-vision-playback-route-unauthorized'
+    ));
+});
+
+test('accepts authorized external Profile 5 HDR presentation', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            currentTimeMicroseconds: 1_000_000
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlaybackEligibility: {
+            audioOutputMode: null,
+            eligible: true,
+            hdr: true,
+            reason: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        },
+        dolbyVisionProfile: 5,
+        externalDolbyVisionValidation: {
+            failureReason: null,
+            fixtureVersion: 1,
+            maximumChannelError: 0.02,
+            renderSettingsVersion: 4,
+            routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
+            sampleCount: 9,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr'
+        },
+        presentationInputMode: 'external-dolby-vision'
+    });
+
+    assert.deepEqual(validateActivePlaybackSnapshot(
+        initialSnapshot,
+        laterSnapshot,
+        SDR_EXPECTATIONS
+    ), []);
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        externalDolbyVisionValidation: {
+            ...laterSnapshot.externalDolbyVisionValidation,
+            status: 'rejected'
+        }
+    }, SDR_EXPECTATIONS).includes(
+        'external-dolby-vision-playback-route-unauthorized'
+    ));
 });
 
 test('rejects sustained audio underflow while ignoring a short observation window', () => {

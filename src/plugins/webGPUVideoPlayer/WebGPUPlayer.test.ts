@@ -22,6 +22,7 @@ type MockAudioEligibilityOverride = {
 
 type MockEligibilityOptions = {
     allowDolbyVision?: boolean
+    allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowRawHDR: boolean
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
@@ -49,6 +50,7 @@ const customDecodeMockState = vi.hoisted(() => ({
     audioOutputMode: 'decoded-pcm' as 'decoded-pcm' | 'native-media',
     audioTrackIndex: null as number | null,
     dolbyVision: false,
+    dolbyVisionProfile7: false,
     eligible: false,
     hdr: false,
     instances: [] as object[],
@@ -107,7 +109,9 @@ vi.mock('./custom/CustomPlaybackEligibility', () => ({
     getCustomPlaybackEligibility: vi.fn((options: unknown, _capabilities: unknown, eligibilityOptions: MockEligibilityOptions) => {
         let HDRPresentationAllowed = eligibilityOptions.allowRawHDR;
         if (customDecodeMockState.dolbyVision) {
-            HDRPresentationAllowed = eligibilityOptions.allowDolbyVision === true;
+            HDRPresentationAllowed = customDecodeMockState.dolbyVisionProfile7 ?
+                eligibilityOptions.allowDolbyVisionProfile7 === true :
+                eligibilityOptions.allowDolbyVision === true;
         }
         const audioEligibilityOverride = customDecodeMockState.audioEligibilityOverride?.(
             options,
@@ -443,6 +447,8 @@ vi.mock('./WebGPUPresenter', () => {
         getTelemetry = vi.fn(() => ({
             decodedFrameCount: 0,
             deviceRecoveryCount: 0,
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
+            dolbyVisionProfile7MELPresentedFrameCount: 0,
             fallbackReason: null,
             firstFrameLatencyMicroseconds: null,
             firstPresentedMediaTimeMicroseconds: null,
@@ -472,6 +478,9 @@ vi.mock('./WebGPUPresenter', () => {
         isRawDolbyVisionPresentationAuthorized = vi.fn(() => (
             presenterMockState.dolbyVisionAuthorized
         ));
+        isRawDolbyVisionProfile7PresentationAuthorized = vi.fn(() => (
+            presenterMockState.dolbyVisionAuthorized
+        ));
         isExternalDolbyVisionPresentationAuthorized = vi.fn(() => (
             presenterMockState.dolbyVisionAuthorized
         ));
@@ -497,6 +506,16 @@ vi.mock('./WebGPUPresenter', () => {
             renderSettingsVersion: 4,
             routeKey: 'I420P10:dovi-rpu-v1',
             sampleCount: 4,
+            status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
+            targetFormat: 'bgra8unorm'
+        }));
+        getProfile7DolbyVisionAuthorizationTelemetry = vi.fn(() => ({
+            failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
+            fixtureVersion: 3,
+            maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-profile7-base-v1',
+            sampleCount: 18,
             status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
             targetFormat: 'bgra8unorm'
         }));
@@ -952,6 +971,29 @@ function createKnownDolbyVisionPlayOptions(
     };
 }
 
+function createKnownProfile7DolbyVisionPlayOptions(
+    properties: Record<string, unknown> = {}
+): Record<string, unknown> {
+    return {
+        ...properties,
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                DvBlSignalCompatibilityId: 6,
+                DvProfile: 7,
+                ElPresentFlag: true,
+                Index: 0,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithEL'
+            }]
+        }
+    };
+}
+
 function createNativeCompatibleProfile(): Record<string, unknown> {
     return {
         CodecProfiles: [],
@@ -1002,6 +1044,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.dolbyVision = false;
+        customDecodeMockState.dolbyVisionProfile7 = false;
         customDecodeMockState.hdr = false;
         customDecodeMockState.audioOutputMode = 'decoded-pcm';
         customDecodeMockState.audioTrackIndex = null;
@@ -1094,6 +1137,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: false,
+                allowDolbyVisionProfile7: false,
                 allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: [],
@@ -1106,6 +1150,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         await player.getDeviceProfile(item, { isRetry: true });
         expect(customProfileMockState.augmentationCalls[1]?.options).toEqual({
             allowDolbyVision: false,
+            allowDolbyVisionProfile7: false,
             allowNativeDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
@@ -1162,6 +1207,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: false,
+                allowDolbyVisionProfile7: false,
                 allowNativeDolbyVision: false,
                 allowRawHDR: true,
                 authorizedRawHDRRouteKeys: [
@@ -1189,6 +1235,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: true,
+                allowDolbyVisionProfile7: true,
                 allowNativeDolbyVision: true,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: [],
@@ -1263,6 +1310,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(customProfileMockState.augmentationCalls[0]?.options).toEqual({
             allowDolbyVision: false,
+            allowDolbyVisionProfile7: false,
             allowNativeDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
@@ -1519,6 +1567,40 @@ describe('WebGPUPlayer HTML delegation', () => {
                 videoOutputMode: 'raw-planes'
             })
         );
+    });
+
+    it('selects the separately authorized Profile 7 MEL/base-fallback pipeline', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        customDecodeMockState.dolbyVision = true;
+        customDecodeMockState.dolbyVisionProfile7 = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.hdr = true;
+        customDecodeMockState.videoDecoderBackend = 'bundled-hevc';
+        customDecodeMockState.videoOutputMode = 'raw-planes';
+
+        await player.play(createKnownProfile7DolbyVisionPlayOptions({
+            playMethod: 'DirectPlay'
+        }));
+
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            inputMode: 'raw-dolby-vision',
+            profile: 7,
+            rawFrameFormat: 'I420P10',
+            settings: expect.objectContaining({
+                mode: 'hdr-to-sdr',
+                toneMapping: expect.objectContaining({ inputPeakNits: 4_000 })
+            })
+        }, 1);
     });
 
     it('keeps HDR on native video when custom tone mapping is disabled', async () => {

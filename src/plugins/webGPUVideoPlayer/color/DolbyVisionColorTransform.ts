@@ -28,6 +28,8 @@ const COMPONENT_SEGMENT_WORD_OFFSET =
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET / BYTES_PER_PACKED_WORD;
 const COMPONENT_MMR_WORD_OFFSET =
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET / BYTES_PER_PACKED_WORD;
+const DOLBY_VISION_RPU_FLAGS_WORD_OFFSET = 3;
+const DOLBY_VISION_RPU_FEL_FLAG = 1 << 6;
 
 const PQ_M1 = 2610 / 16384;
 const PQ_M2 = 2523 / 32;
@@ -290,6 +292,12 @@ fn hasCompatibleDolbyVisionRPU() -> bool {
         && dolbyVisionRPU.words[1] == ${DOLBY_VISION_RPU_SCHEMA_VERSION}u
         && dolbyVisionRPU.words[2] == ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}u
         && dolbyVisionRPU.words[4] == ${DOLBY_VISION_RPU_PARSER_REVISION_PREFIX}u;
+}
+
+fn isDolbyVisionFEL() -> bool {
+    return hasCompatibleDolbyVisionRPU()
+        && (dolbyVisionRPU.words[${DOLBY_VISION_RPU_FLAGS_WORD_OFFSET}]
+            & ${DOLBY_VISION_RPU_FEL_FLAG}u) != 0u;
 }
 
 fn multiplyDolbyVisionMatrix(matrixWordOffset: u32, signal: vec3f) -> vec3f {

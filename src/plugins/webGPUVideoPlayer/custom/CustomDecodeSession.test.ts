@@ -20,10 +20,6 @@ import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 } from './DolbyVisionEncodedMetadataProtocol';
 import {
-    DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
-    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
-    DOLBY_VISION_RPU_SCHEMA_MAGIC,
-    DOLBY_VISION_RPU_SCHEMA_VERSION,
     resolveDolbyVisionRPUParserWASMURL
 } from './DolbyVisionRPUParser';
 import type {
@@ -34,6 +30,7 @@ import type {
     RawVideoFrameGeometry,
     TransferableRawVideoFrame
 } from './RawVideoFrameCopy';
+import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
 
 vi.mock('./CustomDecode.worker', () => ({
     default: class MockBundledWorker {}
@@ -41,16 +38,6 @@ vi.mock('./CustomDecode.worker', () => ({
 
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
-
-function createPackedRPUData(): ArrayBuffer {
-    const data = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
-    const view = new DataView(data);
-    view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
-    view.setUint32(4, DOLBY_VISION_RPU_SCHEMA_VERSION, true);
-    view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
-    view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
-    return data;
-}
 
 class MockWorker {
     readonly postedMessages: unknown[] = [];
@@ -305,9 +292,9 @@ describe('CustomDecodeSession', () => {
         emitRawReady(worker, 31);
         const frame = createFrame();
         const encodedDolbyVisionMetadata = {
-            enhancementLayerData: new ArrayBuffer(32),
+            enhancementLayerDisposition: 'discarded-fel',
             hasEnhancementLayerVCL: true,
-            parsedRPUData: [ createPackedRPUData(), createPackedRPUData() ],
+            parsedRPUData: [ createDolbyVisionAuthorizationRPUFixture(7, 'fel') ],
             schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
         } as const;
         worker.emitMessage({
@@ -326,7 +313,7 @@ describe('CustomDecodeSession', () => {
         expect(session.getTelemetry()).toMatchObject({
             receivedDolbyVisionEnhancementFrameCount: 1,
             receivedDolbyVisionFrameCount: 1,
-            receivedDolbyVisionRPUCount: 2
+            receivedDolbyVisionRPUCount: 1
         });
         if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
             throw new Error('Expected a transferred decoded video frame');

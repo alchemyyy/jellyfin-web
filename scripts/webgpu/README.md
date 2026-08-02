@@ -331,6 +331,21 @@ PQ or HLG transfer. The report retains only that bounded route key, target
 format, versions, route lists, and failure codes; it does not serialize GPU
 objects or source details.
 
+Raw Dolby Vision uses its dedicated authorization telemetry instead. Profile 5
+and 8 require route `I420P10:dovi-rpu-v1`. Profile 7 requires the separately
+gated `I420P10:dovi-profile7-base-v1` route and all 18 MEL plus FEL-base fixture
+samples. This proves exact-device shader behavior only; a Profile 7 smoke item
+is still required to validate container parsing, decoding, and per-frame
+enhancement disposition end to end.
+An active Profile 7 smoke additionally requires a nonzero, bounded sum of the
+MEL-presented and FEL-base-fallback presentation counters.
+
+Native decoded Profile 5 is also HDR despite using `video-frame` output. The
+harness requires `external-dolby-vision` presentation and authorized route
+`external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely
+from the output mode. Reports retain both that active authorization and the
+prewarmed Profile 7 authorization so one smoke session verifies route isolation.
+
 To exercise an in-session audio track change, set both
 `WEBGPU_SMOKE_AUDIO_STREAM_INDEX` and `WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC`. The
 harness requires a new decoder generation, the exact audio codec, uninterrupted

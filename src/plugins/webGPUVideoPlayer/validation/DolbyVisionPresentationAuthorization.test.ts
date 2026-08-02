@@ -8,6 +8,7 @@ import {
     createDolbyVisionShaderSignature,
     createExpectedDolbyVisionAuthorizationObservations,
     DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+    DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY,
     DolbyVisionPresentationAuthorizationRegistry,
     DolbyVisionPresentationAuthorizationRunner,
     type DolbyVisionAuthorizationDecision
@@ -55,14 +56,18 @@ function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
 }
 
 function createDeviceHarness(
-    observations: readonly RawHDRFixtureObservation[]
+    ...observationSets: Array<readonly RawHDRFixtureObservation[]>
 ): DeviceHarness {
-    const observationMap = new Map<string, ColorTriplet>();
-    for (const observation of observations) {
-        observationMap.set(
-            `${observation.sampleX}:${observation.sampleY}`,
-            observation.linearRGB
-        );
+    const observationMaps: Array<Map<string, ColorTriplet>> = [];
+    for (const observations of observationSets) {
+        const observationMap = new Map<string, ColorTriplet>();
+        for (const observation of observations) {
+            observationMap.set(
+                `${observation.sampleX}:${observation.sampleY}`,
+                observation.linearRGB
+            );
+        }
+        observationMaps.push(observationMap);
     }
     const lost = new Promise<GPUDeviceLostInfo>(() => undefined);
     const draw = vi.fn();
@@ -107,6 +112,10 @@ function createDeviceHarness(
                 const origin = source.origin as GPUOrigin3DDict;
                 const sampleX = Number(origin.x ?? 0);
                 const sampleY = Number(origin.y ?? 0);
+                const renderIndex = Math.max(draw.mock.calls.length - 1, 0);
+                const observationMap = observationMaps[
+                    Math.min(renderIndex, observationMaps.length - 1)
+                ];
                 const linearRGB = observationMap.get(`${sampleX}:${sampleY}`);
                 if (!linearRGB) {
                     throw new Error('Unexpected readback coordinate');
@@ -217,6 +226,30 @@ describe('Dolby Vision presentation authorization', () => {
         expect(new Uint8Array(secondFixture)).toEqual(new Uint8Array(firstFixture));
     });
 
+    it('builds distinct schema-valid Profile 7 MEL and FEL fixtures', () => {
+        const melSnapshot = decodeDolbyVisionRPUSnapshot(
+            createDolbyVisionAuthorizationRPUFixture(7, 'mel')
+        );
+        const felSnapshot = decodeDolbyVisionRPUSnapshot(
+            createDolbyVisionAuthorizationRPUFixture(7, 'fel')
+        );
+
+        expect(melSnapshot).toMatchObject({
+            disableResidual: false,
+            layerMode: 'mel',
+            nlqActive: false,
+            profile: 7
+        });
+        expect(felSnapshot).toMatchObject({
+            disableResidual: false,
+            layerMode: 'fel',
+            nlqActive: true,
+            profile: 7
+        });
+        expect(melSnapshot.nlq.every(component => component.deadzoneSlope === 0)).toBe(true);
+        expect(felSnapshot.nlq.every(component => component.deadzoneSlope > 0)).toBe(true);
+    });
+
     it('authorizes exact shader output and binds the RPU storage buffer', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
         const runner = new DolbyVisionPresentationAuthorizationRunner();
@@ -237,6 +270,33 @@ describe('Dolby Vision presentation authorization', () => {
         }));
         expect(harness.bufferDestroy).toHaveBeenCalled();
         expect(harness.textureDestroy).toHaveBeenCalled();
+    });
+
+    it('authorizes both Profile 7 MEL reconstruction and FEL HDR10-base fallback', async () => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const melRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'mel');
+        const felRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const harness = createDeviceHarness(
+            createExpectedDolbyVisionAuthorizationObservations(melRPUData, settings),
+            createExpectedDolbyVisionAuthorizationObservations(
+                felRPUData,
+                settings,
+                'fel-hdr10-base'
+            )
+        );
+        const runner = new DolbyVisionPresentationAuthorizationRunner('profile7-base');
+
+        const decision = await runner.validate(harness.device, 'bgra8unorm');
+
+        expect(decision).toMatchObject({
+            failureReason: null,
+            routeKey: DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY,
+            sampleCount: 18,
+            status: 'authorized'
+        });
+        expect(harness.draw).toHaveBeenCalledTimes(2);
     });
 
     it('rejects a bounded pixel mismatch', async () => {

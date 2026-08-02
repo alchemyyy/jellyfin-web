@@ -34,6 +34,7 @@ import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentati
 
 export type CustomDeviceProfileOptions = {
     allowDolbyVision?: boolean
+    allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowRawHDR?: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
@@ -139,11 +140,9 @@ const DOLBY_VISION_VIDEO_RANGE_TYPES = [
 function getDolbyVisionVideoRangeTypes(
     capabilities: CustomDecodeCapabilities,
     allowRawDolbyVision: boolean,
+    allowRawDolbyVisionProfile7: boolean,
     allowNativeDolbyVision: boolean
 ): string[] {
-    if (!allowRawDolbyVision && !allowNativeDolbyVision) {
-        return [];
-    }
     const rangeTypes: string[] = [];
     if (
         allowNativeDolbyVision
@@ -151,15 +150,18 @@ function getDolbyVisionVideoRangeTypes(
     ) {
         rangeTypes.push('DOVI');
     }
-    if (
-        allowRawDolbyVision
-        && capabilities.rawHDRVideo.hevc.status === 'supported'
-    ) {
+    if (capabilities.rawHDRVideo.hevc.status !== 'supported') {
+        return rangeTypes;
+    }
+    if (allowRawDolbyVision) {
         for (const rangeType of DOLBY_VISION_VIDEO_RANGE_TYPES) {
             if (!rangeTypes.includes(rangeType)) {
                 rangeTypes.push(rangeType);
             }
         }
+    }
+    if (allowRawDolbyVisionProfile7) {
+        rangeTypes.push('DOVIWithEL');
     }
     return rangeTypes;
 }
@@ -1544,10 +1546,12 @@ export function augmentDeviceProfileForCustomDecode(
     const availableRawDolbyVisionVideoRangeTypes = getDolbyVisionVideoRangeTypes(
         capabilities,
         options.allowDolbyVision === true,
+        options.allowDolbyVisionProfile7 === true,
         false
     );
     const nativeDolbyVisionVideoRangeTypes = getDolbyVisionVideoRangeTypes(
         capabilities,
+        false,
         false,
         options.allowNativeDolbyVision === true
     );

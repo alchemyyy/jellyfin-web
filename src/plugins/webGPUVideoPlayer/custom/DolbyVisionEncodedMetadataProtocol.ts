@@ -1,19 +1,24 @@
 import {
+    decodeDolbyVisionRPUSnapshot,
     hasCompatibleDolbyVisionRPUSnapshotHeader,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
 } from './DolbyVisionRPUParser';
 
-export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 2;
+export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 3;
 export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT = 16;
 export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH =
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
 export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH =
     MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
     * MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH;
-export const MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH = 32 * 1_024 * 1_024;
+
+export type DolbyVisionEnhancementLayerDisposition =
+    | 'absent'
+    | 'discarded-fel'
+    | 'discarded-mel';
 
 export type DolbyVisionEncodedFrameMetadata = {
-    enhancementLayerData: Uint8Array | null
+    enhancementLayerDisposition: DolbyVisionEnhancementLayerDisposition
     hasEnhancementLayerVCL: boolean
     parsedRPUData: readonly ArrayBuffer[]
     rpuNALUnits: readonly Uint8Array[]
@@ -21,22 +26,11 @@ export type DolbyVisionEncodedFrameMetadata = {
 };
 
 export type TransferableDolbyVisionEncodedFrameMetadata = {
-    enhancementLayerData: ArrayBuffer | null
+    enhancementLayerDisposition: DolbyVisionEnhancementLayerDisposition
     hasEnhancementLayerVCL: boolean
     parsedRPUData: readonly ArrayBuffer[]
     schemaVersion: typeof DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 };
-
-function takeOwnedArrayBuffer(data: Uint8Array): ArrayBuffer {
-    if (
-        data.buffer instanceof ArrayBuffer
-        && data.byteOffset === 0
-        && data.byteLength === data.buffer.byteLength
-    ) {
-        return data.buffer;
-    }
-    return data.slice().buffer;
-}
 
 /** Converts extracted metadata to explicit postMessage ownership. */
 export function takeTransferableDolbyVisionEncodedFrameMetadata(
@@ -47,9 +41,7 @@ export function takeTransferableDolbyVisionEncodedFrameMetadata(
     }
 
     return {
-        enhancementLayerData: metadata.enhancementLayerData ?
-            takeOwnedArrayBuffer(metadata.enhancementLayerData) :
-            null,
+        enhancementLayerDisposition: metadata.enhancementLayerDisposition,
         hasEnhancementLayerVCL: metadata.hasEnhancementLayerVCL,
         parsedRPUData: metadata.parsedRPUData,
         schemaVersion: metadata.schemaVersion
@@ -66,10 +58,20 @@ export function getDolbyVisionEncodedMetadataTransferList(
 
     const transferables: Transferable[] = [];
     transferables.push(...metadata.parsedRPUData);
-    if (metadata.enhancementLayerData) {
-        transferables.push(metadata.enhancementLayerData);
-    }
     return transferables;
+}
+
+function isEnhancementLayerDisposition(
+    value: unknown
+): value is DolbyVisionEnhancementLayerDisposition {
+    switch (value) {
+        case 'absent':
+        case 'discarded-fel':
+        case 'discarded-mel':
+            return true;
+        default:
+            return false;
+    }
 }
 
 /** Validates encoded Dolby Vision metadata received across the worker boundary. */
@@ -82,23 +84,36 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(
     const metadata = value as Partial<TransferableDolbyVisionEncodedFrameMetadata>;
     if (
         metadata.schemaVersion !== DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+        || !isEnhancementLayerDisposition(metadata.enhancementLayerDisposition)
         || typeof metadata.hasEnhancementLayerVCL !== 'boolean'
         || !Array.isArray(metadata.parsedRPUData)
+        || metadata.parsedRPUData.length === 0
         || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
-        || !(metadata.enhancementLayerData === null
-            || metadata.enhancementLayerData instanceof ArrayBuffer)
+        || (metadata.enhancementLayerDisposition === 'absent'
+            && metadata.hasEnhancementLayerVCL)
     ) {
         return false;
     }
 
+    const layerModes: string[] = [];
     for (const packedRPUData of metadata.parsedRPUData) {
         if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedRPUData)) {
             return false;
         }
+        try {
+            const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+            layerModes.push(snapshot.layerMode);
+        } catch {
+            return false;
+        }
     }
 
-    const enhancementLayerByteLength = metadata.enhancementLayerData?.byteLength ?? 0;
-    return enhancementLayerByteLength <= MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH
-        && (!metadata.hasEnhancementLayerVCL || enhancementLayerByteLength > 0)
-        && metadata.parsedRPUData.length + enhancementLayerByteLength > 0;
+    switch (metadata.enhancementLayerDisposition) {
+        case 'absent':
+            return true;
+        case 'discarded-fel':
+            return layerModes.length === 1 && layerModes[0] === 'fel';
+        case 'discarded-mel':
+            return layerModes.length === 1 && layerModes[0] === 'mel';
+    }
 }

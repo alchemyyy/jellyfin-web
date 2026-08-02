@@ -38,8 +38,9 @@ type PlaybackOptions = {
 
 export type DolbyVisionPresentationDescriptor = {
     baseLayerBitDepth: 10
-    baseLayerSignalCompatibilityID: 0 | 1 | 4 | null
-    profile: 5 | 8
+    baseLayerSignalCompatibilityID: 0 | 1 | 4 | 6 | null
+    enhancementLayerPresent: boolean
+    profile: 5 | 7 | 8
 };
 
 const SDR_VIDEO_RANGE = 'SDR';
@@ -276,11 +277,12 @@ function parseDolbyVisionDescriptor(
     videoStream: MediaStreamMetadata
 ): DolbyVisionPresentationDescriptor | null {
     const profile = parseDolbyVisionInteger(videoStream.DvProfile);
+    const enhancementLayerPresent = hasEnabledMetadataFlag(videoStream.ElPresentFlag);
     if (
-        (profile !== 5 && profile !== 8)
+        (profile !== 5 && profile !== 7 && profile !== 8)
         || !hasEnabledMetadataFlag(videoStream.BlPresentFlag)
         || !hasEnabledMetadataFlag(videoStream.RpuPresentFlag)
-        || hasEnabledMetadataFlag(videoStream.ElPresentFlag)
+        || (profile === 7 ? !enhancementLayerPresent : enhancementLayerPresent)
     ) {
         return null;
     }
@@ -296,18 +298,20 @@ function parseDolbyVisionDescriptor(
     }
     if (
         (profile === 5 && compatibilityID !== null && compatibilityID !== 0)
+        || (profile === 7 && compatibilityID !== 6)
         || (profile === 8 && compatibilityID !== 1 && compatibilityID !== 4)
     ) {
         return null;
     }
     return {
         baseLayerBitDepth: 10,
-        baseLayerSignalCompatibilityID: compatibilityID as 0 | 1 | 4 | null,
+        baseLayerSignalCompatibilityID: compatibilityID as 0 | 1 | 4 | 6 | null,
+        enhancementLayerPresent,
         profile
     };
 }
 
-/** Returns one exact single-layer Profile 5 or 8 presentation descriptor. */
+/** Returns one exact supported Profile 5, 7, or 8 presentation descriptor. */
 export function getDolbyVisionPresentationDescriptor(
     options: unknown
 ): DolbyVisionPresentationDescriptor | null {

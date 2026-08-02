@@ -485,6 +485,8 @@ export default class WebGPUPlayer {
         const allowRawHDR = authorizedRawHDRRouteKeys.length > 0;
         const allowDolbyVision = hdrToneMappingEnabled
             && this.presenter.isRawDolbyVisionPresentationAuthorized();
+        const allowDolbyVisionProfile7 = hdrToneMappingEnabled
+            && this.presenter.isRawDolbyVisionProfile7PresentationAuthorized();
         const allowNativeDolbyVision = hdrToneMappingEnabled
             && this.presenter.isExternalDolbyVisionPresentationAuthorized();
         const profileResult = augmentDeviceProfileForCustomDecode(
@@ -492,6 +494,7 @@ export default class WebGPUPlayer {
             capabilities,
             {
                 allowDolbyVision,
+                allowDolbyVisionProfile7,
                 allowNativeDolbyVision,
                 allowRawHDR,
                 authorizedRawHDRRouteKeys,
@@ -1154,6 +1157,11 @@ export default class WebGPUPlayer {
     /** Returns bounded exact-device Dolby Vision authorization state. */
     getDolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
         return this.presenter.getDolbyVisionAuthorizationTelemetry();
+    }
+
+    /** Returns exact Profile 7 MEL/base-fallback authorization telemetry. */
+    getProfile7DolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
+        return this.presenter.getProfile7DolbyVisionAuthorizationTelemetry();
     }
 
     /** Returns bounded exact-device external Profile 5 authorization state. */
@@ -1864,6 +1872,7 @@ export default class WebGPUPlayer {
     ): Promise<Pick<
         CustomPlaybackEligibilityOptions,
         | 'allowDolbyVision'
+        | 'allowDolbyVisionProfile7'
         | 'allowNativeDolbyVision'
         | 'allowRawHDR'
         | 'authorizedRawHDRRouteKeys'
@@ -1877,6 +1886,7 @@ export default class WebGPUPlayer {
         if (!rawHDRRequested && !dolbyVisionRequested) {
             return {
                 allowDolbyVision: false,
+                allowDolbyVisionProfile7: false,
                 allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys
@@ -1890,6 +1900,7 @@ export default class WebGPUPlayer {
         if (!hdrToneMappingEnabled) {
             return {
                 allowDolbyVision: false,
+                allowDolbyVisionProfile7: false,
                 allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: []
@@ -1905,7 +1916,11 @@ export default class WebGPUPlayer {
         }
         return {
             allowDolbyVision: dolbyVisionRequested
+                && this.currentDolbyVisionPresentationDescriptor?.profile !== 7
                 && this.presenter.isRawDolbyVisionPresentationAuthorized(),
+            allowDolbyVisionProfile7: dolbyVisionRequested
+                && this.currentDolbyVisionPresentationDescriptor?.profile === 7
+                && this.presenter.isRawDolbyVisionProfile7PresentationAuthorized(),
             allowNativeDolbyVision: dolbyVisionRequested
                 && this.presenter.isExternalDolbyVisionPresentationAuthorized(),
             allowRawHDR: rawHDRRequested && authorizedRawHDRRouteKeys.length > 0,

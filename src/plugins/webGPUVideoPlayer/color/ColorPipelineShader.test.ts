@@ -13,6 +13,7 @@ import {
     createColorPipelineWGSL,
     createExternalDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
+    createRawDolbyVisionProfile7ColorPipelineWGSL,
     createRawYUVColorPipelineWGSL
 } from './ColorPipelineShader';
 
@@ -245,6 +246,46 @@ describe('createRawDolbyVisionColorPipelineWGSL', () => {
                 toneMapping: { inputPeakNits: 4_000 }
             }),
             'I420P12'
+        );
+
+        expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('createRawDolbyVisionProfile7ColorPipelineWGSL', () => {
+    it('reconstructs MEL and explicitly uses the compatible HDR10 base for FEL', () => {
+        const shader = createRawDolbyVisionProfile7ColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).toContain('fn isDolbyVisionFEL() -> bool');
+        expect(shader).toContain('fn normalizeRawYUV');
+        expect(shader).toContain('fn convertRawYUVToEncodedRGB');
+        expect(fragmentFunction).toContain('if (isDolbyVisionFEL())');
+        expect(fragmentFunction).toContain(
+            'convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal))'
+        );
+        expect(fragmentFunction).toContain(
+            'encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(rawBaseSignal)'
+        );
+        expect(fragmentFunction.indexOf('isDolbyVisionFEL')).toBeLessThan(
+            fragmentFunction.indexOf('processColor')
+        );
+    });
+
+    it('keeps the Profile 7 shader stable across live setting changes', () => {
+        const firstShader = createRawDolbyVisionProfile7ColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const secondShader = createRawDolbyVisionProfile7ColorPipelineWGSL(
+            createHDRToSDRRenderSettings({
+                display: { brightness: 0.1, contrast: 1.2, saturation: 0.8 },
+                toneMapping: { inputPeakNits: 4_000 }
+            }),
+            'I420P10'
         );
 
         expect(secondShader).toBe(firstShader);

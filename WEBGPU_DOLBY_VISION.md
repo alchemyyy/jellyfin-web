@@ -1,8 +1,8 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: single-layer Profile 5 and 8 reconstruction, exact-device runtime
-authorization, and capability gating implemented; Profile 7 enhancement-layer
-reconstruction pending
+Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and
+exact-device runtime authorization implemented; Profile 7 FEL currently uses
+an explicit HDR10-base fallback while full residual composition remains pending
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -52,7 +52,7 @@ The Profile 7 work landed in May 2026, after the v0.41.0 release. It is in
 current mpv development sources but not the latest stable release as of the
 research date.
 
-## Implemented single-layer reconstruction checkpoint
+## Implemented reconstruction checkpoint
 
 The repository now contains a pinned `wasm32-unknown-unknown` wrapper around
 libdovi revision `38adec045bf183c24df38149836c920398072281`. It has no WASM
@@ -87,10 +87,11 @@ Each HEVC worker generation now owns and prewarms one parser session. RPU NAL
 units are parsed sequentially in packet decode order before the cleaned base
 layer packet reaches the decoder. Ordinary HEVC packets do not wait for parser
 initialization. Parsed snapshots are paired with decoder output by exact signed
-integer-microsecond PTS and transferred to the main thread with the encoded
-enhancement access unit under protocol schema version 2. Raw RPU bytes remain
-worker-internal. Stop, seek, failure, and generation retirement reset and close
-the parser exactly once.
+integer-microsecond PTS and transferred under protocol schema version 3. The
+compressed enhancement access unit and raw RPU bytes remain worker-local. Only
+the packed RPU snapshot and an `absent`, `discarded-mel`, or `discarded-fel`
+disposition cross the worker boundary. Stop, seek, failure, and generation
+retirement reset and close the parser exactly once.
 
 The presentation path now consumes those snapshots through a fixed WebGPU
 storage buffer and follows libplacebo's reshape, nonlinear matrix, PQ EOTF,
@@ -98,18 +99,25 @@ RGB-to-LMS, HPE LMS-to-BT.2020, and PQ OETF order. Profile 5 and single-layer
 Profile 8 are represented by a separate presentation descriptor rather than by
 overloading ordinary PQ or HLG metadata.
 
-The routes are fail-closed. Both require an exact per-frame RPU, no
-enhancement-layer payload, a supported profile, and a successful exact-device
-GPU authorization fixture. Raw presentation requires qualified 10-bit I420
-output. Native Profile 5 presentation separately requires decoded-output
-evidence for its exact WebCodecs configuration and authorization of the
-production `GPUExternalTexture` shader path. A successful raw authorization
-cannot authorize external presentation, or vice versa. Device recovery repeats
-the applicable authorization and creates a new per-frame storage buffer before
-presentation resumes.
+The routes are fail-closed. Profile 5 and 8 require an exact per-frame RPU and
+no enhancement-layer payload. Profile 7 requires an exact RPU, an enhancement
+NAL in the encoded access unit, and a disposition matching the parsed MEL or
+FEL state. Raw presentation requires qualified 10-bit I420 output and the
+applicable exact-device GPU authorization fixture. Native Profile 5
+presentation separately requires decoded-output evidence for its exact
+WebCodecs configuration and authorization of the production
+`GPUExternalTexture` shader path. A successful authorization for one route
+cannot authorize another. Device recovery repeats the applicable authorization
+and creates a new per-frame storage buffer before presentation resumes.
 
-The next implementation step is Profile 7 MEL/FEL enhancement-layer pairing
-and LINEAR_DZ residual composition. Profile 7 remains unadvertised.
+Profile 7 MEL applies RPU reconstruction to the HDR10-compatible base image.
+Profile 7 FEL is currently identified exactly but deliberately presents the
+HDR10 base instead of applying the RPU without its residual. Full FEL requires
+the worker-local enhancement packet to feed a second decoder, exact-PTS BL/EL
+pairing, LINEAR_DZ composition, and new device authorization fixtures.
+Presentation telemetry counts successful Profile 7 MEL frames separately from
+FEL HDR10-base fallback frames so a session cannot report full FEL fidelity by
+omission.
 
 ## Profile support matrix
 
@@ -336,9 +344,10 @@ decode. `DolbyVisionEncodedMetadataQueue`:
 - joins those copies to decoded frames by exact integer-microsecond PTS;
 - rejects unmatched output, silent packet loss, and unbounded metadata windows.
 
-Parsed RPU snapshots and encoded enhancement access units cross the worker
-boundary with schema version 2 and explicit transfer ownership. Raw RPU bytes
-remain worker-internal. Session telemetry counts DV frames, parsed RPUs, and
+Packed RPU snapshots and enhancement dispositions cross the worker boundary
+with schema version 3 and explicit transfer ownership. Raw RPU bytes and the
+bounded encoded enhancement access unit remain worker-local for the future
+second decoder. Session telemetry counts DV frames, parsed RPUs, and
 enhancement access units. The bundled HEVC path passes repeated playback and
 natural-EOF browser smoke tests after this refactor. The native HEVC path uses
 one directly owned `VideoDecoder`, preserves Chromium's first-access-unit
@@ -347,30 +356,42 @@ queues, and passes a natural-EOF Chrome smoke test with 240 decoded and
 presented frames.
 
 This completes packet ownership, decode-order parsing, exact-PTS metadata
-transfer, and single-layer shader consumption. A missing, duplicate, stale, or
-incompatible RPU causes the Dolby Vision presentation route to fail closed.
+transfer, single-layer shader consumption, MEL reconstruction, and explicit
+FEL HDR10-base fallback. A missing, duplicate, stale, or incompatible RPU or
+enhancement disposition causes the Dolby Vision presentation route to fail
+closed.
 
-### Single-layer Dolby Vision is separately modeled and authorized
+### Dolby Vision routes are separately modeled and authorized
 
 [`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)
-returns a dedicated descriptor only for 10-bit Profile 5 and single-layer
-Profile 8 with supported BL compatibility IDs. Ordinary color metadata remains
-limited to `sdr`, `pq`, and `hlg`; Dolby Vision is not misrepresented as one of
-those standard transfers.
+returns dedicated descriptors for 10-bit Profile 5, Profile 7 with its required
+enhancement layer, and supported single-layer Profile 8 compatibility IDs.
+Ordinary color metadata remains limited to `sdr`, `pq`, and `hlg`; Dolby Vision
+is not misrepresented as one of those standard transfers.
 
 [`CustomPlaybackEligibility.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.ts)
 selects native `VideoFrame` output for Profile 5 only when its external-texture
-authorization is active, and selects raw I420P10 output only when raw Dolby
-Vision authorization is active. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
+authorization is active, and selects raw I420P10 output only when the exact raw
+Dolby Vision route is authorized. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
 then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the applicable
-HEVC routes. When both routes qualify, `DOVI` uses the stronger native Profile
-5 limits while the compatible-base range types retain their independently
-measured raw limits. Profile 7 and enhancement-layer streams remain rejected.
+single-layer HEVC routes. Separately authorized Profile 7 support exposes only
+`DOVIWithEL` and remains bounded by the measured raw HEVC limits. It does not
+advertise `DOVIWithELHDR10Plus` or let a single-layer authorization enable an
+enhancement-layer route.
 
 [`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
-runs a bounded exact-device shader fixture and records authorization telemetry.
-Authorization is scoped to the GPU device and target format and is repeated
-after device loss.
+runs bounded exact-device shader fixtures and records authorization telemetry.
+The Profile 7 route validates both MEL reconstruction and the explicit FEL
+HDR10-base fallback in 18 readback samples. Authorization is scoped to the GPU
+device, target format, and route and is repeated after device loss. No live
+Profile 7 media fixture has yet completed the browser smoke harness, so this is
+not evidence for container-level or decoder-level Profile 7 interoperability.
+During a Chrome 151 Wolfwalkers Profile 5 regression smoke, the prewarmed
+Profile 7 route authorized all 18 samples on the active `bgra8unorm` device with
+a maximum channel error of approximately `0.00198`. The same run independently
+authorized the nine-sample external Profile 5 route and completed playback,
+pause, resume, seek, fullscreen, resize, and stop checks without fallback or
+browser errors.
 
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
@@ -410,7 +431,7 @@ RPU NAL units are parsed before base-layer decode, and the resulting immutable
 snapshot remains associated with the owned decoded output by exact
 integer-microsecond PTS. Native output transfers its `VideoFrame` directly;
 bundled output transfers independently owned raw planes. Encoded enhancement
-data remains separately owned for the later Profile 7 path.
+data remains separately owned inside the worker for the later FEL decoder.
 
 The pinned Mediabunny 1.52.2 package exposes `EncodedPacketSink` at
 `node_modules/mediabunny/src/media-sink.ts:147`. It yields packets in decode
@@ -424,8 +445,8 @@ same parse, association, and transfer behavior.
 defines `TransferableRawVideoFrame` at lines 58-71. It carries raw planes,
 geometry, standard `VideoColorSpace`, and timestamps. The surrounding worker
 frame response now carries schema-versioned packed RPU reconstruction snapshots
-and separately encoded EL buffers with explicit transfer ownership. Raw RPU
-bytes never cross this boundary.
+and the parsed EL disposition with explicit transfer ownership. Compressed EL
+buffers and raw RPU bytes never cross this boundary.
 
 [`WebGPUPresenter.ts`](./src/plugins/webGPUVideoPlayer/WebGPUPresenter.ts)
 defines `DecodedRawPresentationFrame` at lines 142-147 and requires standard
@@ -591,7 +612,11 @@ output, shader output, and the exact decoder backend as one route.
 
 ### Stage 3: Profile 7 MEL
 
-Parse Profile 7 RPU and determine whether NLQ is trivial. For verified MEL:
+Status: implemented through raw I420P10 base-layer reconstruction, exact-device
+authorization, and separate `DOVIWithEL` capability gating. Live Profile 7
+media validation remains pending.
+
+The parser determines whether Profile 7 NLQ is trivial. For verified MEL:
 
 - apply RPU reshape to the base image;
 - skip the second decoder when the NLQ residual is trivial;
@@ -601,6 +626,11 @@ Do not infer MEL only from Jellyfin's `ElPresentFlag`. Classification must use
 the parsed NLQ values.
 
 ### Stage 4: Profile 7 FEL
+
+Status: FEL is classified from active NLQ and uses an explicit HDR10-compatible
+base-layer fallback. Compressed EL packets are worker-local and owned, but a
+second decoder and residual composition are not implemented. Full FEL fidelity
+therefore remains pending.
 
 1. Extend container parsing for `dvcC`, `dvvC`, and `hvcE`.
 2. Split NAL type 63 and remove its two-byte outer header.

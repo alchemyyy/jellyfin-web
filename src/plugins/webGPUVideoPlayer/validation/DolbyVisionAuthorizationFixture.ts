@@ -2,6 +2,7 @@ import {
     DOLBY_VISION_RPU_COLOR_WORD_OFFSET,
     DOLBY_VISION_RPU_COMPONENT_WORD_OFFSET,
     DOLBY_VISION_RPU_COMPONENT_WORD_STRIDE,
+    DOLBY_VISION_RPU_NLQ_WORD_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
@@ -16,9 +17,14 @@ import {
 
 const BYTES_PER_WORD = Uint32Array.BYTES_PER_ELEMENT;
 const DEFAULT_COLOR_METADATA_FLAG = 1 << 8;
+const FEL_FLAG = 1 << 6;
+const MEL_FLAG = 1 << 5;
+const NLQ_ACTIVE_FLAG = 1 << 4;
+const NLQ_PRESENT_FLAG = 1 << 3;
 const MISSING_UNSIGNED_INTEGER = 0xFFFF_FFFF;
 const POLYNOMIAL_MAPPING_METHOD = 1;
 const MMR_MAPPING_METHOD = 2;
+const NLQ_WORD_STRIDE = 4;
 
 const COEFFICIENT_LOG2_DENOMINATOR_BYTE_OFFSET = 44;
 const BASE_LAYER_BIT_DEPTH_BYTE_OFFSET = 48;
@@ -150,23 +156,59 @@ function writeComponent(
     }
 }
 
+export type DolbyVisionAuthorizationLayerMode = 'fel' | 'mel' | 'single-layer';
+
+function getFixtureFlags(layerMode: DolbyVisionAuthorizationLayerMode): number {
+    switch (layerMode) {
+        case 'fel':
+            return DEFAULT_COLOR_METADATA_FLAG | FEL_FLAG | NLQ_ACTIVE_FLAG | NLQ_PRESENT_FLAG;
+        case 'mel':
+            return DEFAULT_COLOR_METADATA_FLAG | MEL_FLAG | NLQ_PRESENT_FLAG;
+        case 'single-layer':
+            return DEFAULT_COLOR_METADATA_FLAG;
+    }
+}
+
+function writeNLQFixture(
+    view: DataView,
+    layerMode: DolbyVisionAuthorizationLayerMode
+): void {
+    if (layerMode === 'single-layer') {
+        return;
+    }
+    for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
+        const wordOffset = DOLBY_VISION_RPU_NLQ_WORD_OFFSET
+            + (componentIndex * NLQ_WORD_STRIDE);
+        writeFloatArray(view, wordOffset * BYTES_PER_WORD, [
+            0,
+            layerMode === 'fel' ? 0.125 : 0,
+            layerMode === 'fel' ? 0.01 : 0,
+            1
+        ]);
+    }
+}
+
 /** Builds a deterministic schema-valid fixture that exercises polynomial and MMR paths. */
 export function createDolbyVisionAuthorizationRPUFixture(
-    profile: 5 | 8 = 8
+    profile: 5 | 7 | 8 = 8,
+    layerMode: DolbyVisionAuthorizationLayerMode = profile === 7 ? 'mel' : 'single-layer'
 ): ArrayBuffer {
+    if ((profile === 7) !== (layerMode !== 'single-layer')) {
+        throw new TypeError('The synthetic Dolby Vision profile and layer mode disagree');
+    }
     const packedData = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
     const view = new DataView(packedData);
     view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
     view.setUint32(4, DOLBY_VISION_RPU_SCHEMA_VERSION, true);
     view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
-    view.setUint32(12, DEFAULT_COLOR_METADATA_FLAG, true);
+    view.setUint32(12, getFixtureFlags(layerMode), true);
     view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
     view.setUint32(20, profile, true);
     view.setUint32(COEFFICIENT_LOG2_DENOMINATOR_BYTE_OFFSET, 23, true);
     view.setUint32(BASE_LAYER_BIT_DEPTH_BYTE_OFFSET, 10, true);
     view.setUint32(ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET, 10, true);
     view.setUint32(VDR_BIT_DEPTH_BYTE_OFFSET, 12, true);
-    view.setUint32(DISABLE_RESIDUAL_BYTE_OFFSET, 1, true);
+    view.setUint32(DISABLE_RESIDUAL_BYTE_OFFSET, layerMode === 'single-layer' ? 1 : 0, true);
     view.setUint32(MAPPING_ID_BYTE_OFFSET, 0, true);
     view.setUint32(PREVIOUS_MAPPING_ID_BYTE_OFFSET, MISSING_UNSIGNED_INTEGER, true);
     view.setUint32(SIGNAL_BIT_DEPTH_BYTE_OFFSET, 12, true);
@@ -191,6 +233,7 @@ export function createDolbyVisionAuthorizationRPUFixture(
         DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 16,
         LINEAR_RGB_TO_LMS_MATRIX
     );
+    writeNLQFixture(view, layerMode);
     for (let componentIndex = 0; componentIndex < SYNTHETIC_COMPONENTS.length; componentIndex += 1) {
         writeComponent(view, componentIndex, SYNTHETIC_COMPONENTS[componentIndex]);
     }

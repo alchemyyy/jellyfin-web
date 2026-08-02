@@ -4,14 +4,16 @@ import { describe, expect, it, vi } from 'vitest';
 import DolbyVisionEncodedMetadataQueue, {
     MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT
 } from './DolbyVisionEncodedMetadata';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from './DolbyVisionRPUParser';
+import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
 
-function createRPUParser(): {
-    parse: ReturnType<typeof vi.fn>
-} {
+function createRPUParser(
+    packedRPUData: ArrayBuffer = createDolbyVisionAuthorizationRPUFixture()
+): {
+        parse: ReturnType<typeof vi.fn>
+    } {
     return {
         parse: vi.fn(async (): Promise<ArrayBuffer> => (
-            new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH)
+            packedRPUData.slice(0)
         ))
     };
 }
@@ -79,7 +81,9 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             basePicture,
             enhancementWrapper
         ]);
-        const rpuParser = createRPUParser();
+        const rpuParser = createRPUParser(
+            createDolbyVisionAuthorizationRPUFixture(7, 'mel')
+        );
         const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' }, rpuParser);
 
         const processedPacket = await queue.processPacket(createPacket(packetData, 1.25, 7));
@@ -90,14 +94,57 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         expect(getAnnexBNALUnitTypes(
             processedPacket.baseLayerPacket?.data ?? new Uint8Array()
         )).toEqual([ 19 ]);
+        expect(getAnnexBNALUnitTypes(
+            processedPacket.enhancementLayerPacket?.data ?? new Uint8Array()
+        )).toEqual([ 1 ]);
         const metadata = queue.takeFrameMetadata(1_250_000);
         expect(metadata?.rpuNALUnits).toEqual([ rpu ]);
         expect(metadata?.parsedRPUData).toHaveLength(1);
         expect(rpuParser.parse).toHaveBeenCalledWith(rpu);
-        expect(getAnnexBNALUnitTypes(
-            metadata?.enhancementLayerData ?? new Uint8Array()
-        )).toEqual([ 1 ]);
+        expect(metadata?.enhancementLayerDisposition).toBe('discarded-mel');
         expect(metadata?.hasEnhancementLayerVCL).toBe(true);
+        queue.requireDrained();
+    });
+
+    it('classifies FEL from parsed RPU state without transferring compressed EL bytes', async () => {
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const rpu = createNALUnit(62, [ 2 ]);
+        const enhancementPicture = createNALUnit(1, [ 3 ]);
+        const enhancementWrapper = createNALUnit(63, Array.from(enhancementPicture));
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser(createDolbyVisionAuthorizationRPUFixture(7, 'fel'))
+        );
+
+        const processedPacket = await queue.processPacket(createPacket(
+            encodeAnnexBNALUnits([ rpu, basePicture, enhancementWrapper ]),
+            1.5
+        ));
+        const metadata = queue.takeFrameMetadata(1_500_000);
+
+        expect(processedPacket.enhancementLayerPacket).not.toBeNull();
+        expect(metadata).toMatchObject({
+            enhancementLayerDisposition: 'discarded-fel',
+            hasEnhancementLayerVCL: true
+        });
+        expect(metadata).not.toHaveProperty('enhancementLayerData');
+        queue.requireDrained();
+    });
+
+    it('rejects enhancement data paired with a single-layer RPU', async () => {
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const rpu = createNALUnit(62, [ 2 ]);
+        const enhancementPicture = createNALUnit(1, [ 3 ]);
+        const enhancementWrapper = createNALUnit(63, Array.from(enhancementPicture));
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser()
+        );
+
+        await expect(queue.processPacket(createPacket(
+            encodeAnnexBNALUnits([ rpu, basePicture, enhancementWrapper ]),
+            1.75
+        ))).rejects.toThrow('single-layer Dolby Vision RPU contains enhancement data');
         queue.requireDrained();
     });
 

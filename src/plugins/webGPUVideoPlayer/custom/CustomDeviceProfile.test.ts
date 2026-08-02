@@ -777,6 +777,33 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         )))).toBe(false);
     });
 
+    it('advertises Profile 7 only through its separately authorized EL range', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'hevc' ], [ 'aac' ], [ 'hevc' ]),
+            { allowDolbyVisionProfile7: true, allowRawHDR: false }
+        );
+        const rangeValues = result.profile.CodecProfiles
+            ?.flatMap(profile => profile.Conditions ?? [])
+            .filter(condition => condition.Property === 'VideoRangeType')
+            .map(condition => condition.Value) ?? [];
+
+        expect(rangeValues.some(value => value?.includes('DOVIWithEL'))).toBe(true);
+        expect(rangeValues.some(value => value?.includes('DOVIWithHDR10'))).toBe(false);
+        expect(rangeValues.some(value => value?.includes('DOVIWithHLG'))).toBe(false);
+    });
+
     it('advertises only the exact native Profile 5 route when externally authorized', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {

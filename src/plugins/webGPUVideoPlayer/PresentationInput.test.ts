@@ -24,6 +24,7 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         })).toEqual({
             baseLayerBitDepth: 10,
             baseLayerSignalCompatibilityID: 0,
+            enhancementLayerPresent: false,
             profile: 5
         });
     });
@@ -42,12 +43,35 @@ describe('getDolbyVisionPresentationDescriptor', () => {
             }
         })).toMatchObject({
             baseLayerSignalCompatibilityID: compatibilityID,
+            enhancementLayerPresent: false,
             profile: 8
         });
     });
 
+    it('accepts exact dual-layer Profile 7 metadata', () => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    DvBlSignalCompatibilityId: 6,
+                    DvProfile: 7,
+                    ElPresentFlag: true,
+                    RpuPresentFlag: true,
+                    Type: 'Video'
+                }]
+            }
+        })).toEqual({
+            baseLayerBitDepth: 10,
+            baseLayerSignalCompatibilityID: 6,
+            enhancementLayerPresent: true,
+            profile: 7
+        });
+    });
+
     it.each([
-        { DvProfile: 7 },
+        { DvBlSignalCompatibilityId: 6, DvProfile: 7, ElPresentFlag: false },
+        { DvBlSignalCompatibilityId: 1, DvProfile: 7, ElPresentFlag: true },
         { DvProfile: 5, ElPresentFlag: true },
         { DvProfile: 5, RpuPresentFlag: false },
         { BlPresentFlag: false, DvProfile: 5 },

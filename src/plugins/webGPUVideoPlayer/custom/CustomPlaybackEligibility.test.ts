@@ -655,6 +655,65 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
     });
 
+    it('requires the separately authorized Profile 7 presentation route', () => {
+        const profile7Options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        BitDepth: 10,
+                        BitRate: 10_000_000,
+                        BlPresentFlag: true,
+                        Codec: 'hevc',
+                        DvBlSignalCompatibilityId: 6,
+                        DvProfile: 7,
+                        ElPresentFlag: true,
+                        Height: 1_080,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 120,
+                        Profile: 'Main 10',
+                        RealFrameRate: 24,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithEL',
+                        Width: 1_920
+                    },
+                    { Channels: 2, Codec: 'flac', Index: 1, SampleRate: 48_000, Type: 'Audio' }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            profile7Options,
+            createCapabilities(),
+            {
+                allowDolbyVision: true,
+                allowDolbyVisionProfile7: false,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(
+            profile7Options,
+            createCapabilities(),
+            {
+                allowDolbyVision: false,
+                allowDolbyVisionProfile7: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            hdr: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
     it.each([
         { codec: 'h264', label: 'H264' },
         { codec: 'hevc', label: 'HEVC' }
