@@ -7,6 +7,11 @@ const rawHDRAuthorizationMockState = vi.hoisted(() => ({
     authorized: true,
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
+const externalHDRAuthorizationMockState = vi.hoisted(() => ({
+    authorizeCalls: [] as GPUDevice[],
+    authorized: true,
+    prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
+}));
 const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
     authorizeCalls: [] as GPUDevice[],
     authorized: true,
@@ -51,6 +56,59 @@ vi.mock('./validation/RawHDRPresentationAuthorization', () => ({
                 ],
             renderSettingsVersion: 4,
             status: rawHDRAuthorizationMockState.authorized ? 'authorized' : 'rejected',
+            targetFormat
+        }));
+    }
+}));
+
+vi.mock('./validation/ExternalHDRPresentationAuthorization', () => ({
+    getExternalHDRAuthorizationRouteKey: vi.fn((metadata: { transfer?: string }) => {
+        switch (metadata.transfer) {
+            case 'hlg':
+                return 'external-hevc-main10-bt709-limited:hlg-v1';
+            case 'pq':
+                return 'external-hevc-main10-bt709-limited:pq-v1';
+            default:
+                return null;
+        }
+    }),
+    ExternalHDRPresentationAuthorizationRegistry:
+    class MockExternalHDRAuthorizationRegistry {
+        authorize = vi.fn(async (device: GPUDevice) => {
+            externalHDRAuthorizationMockState.authorizeCalls.push(device);
+            return {
+                status: externalHDRAuthorizationMockState.authorized ?
+                    'authorized' :
+                    'rejected'
+            };
+        });
+
+        prewarm = vi.fn((device: GPUDevice, targetFormat: GPUTextureFormat): void => {
+            externalHDRAuthorizationMockState.prewarmCalls.push({ device, targetFormat });
+        });
+
+        waitForPending = vi.fn((): Promise<void> => Promise.resolve());
+
+        isAuthorized = vi.fn((): boolean => externalHDRAuthorizationMockState.authorized);
+
+        getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
+            authorizedRouteKeys: externalHDRAuthorizationMockState.authorized ? [
+                'external-hevc-main10-bt709-limited:pq-v1',
+                'external-hevc-main10-bt709-limited:hlg-v1'
+            ] : [],
+            failureReasons: {},
+            fixtureVersion: 1,
+            maximumChannelErrors: {},
+            pendingRouteKeys: [],
+            rejectedRouteKeys: externalHDRAuthorizationMockState.authorized ? [] : [
+                'external-hevc-main10-bt709-limited:pq-v1',
+                'external-hevc-main10-bt709-limited:hlg-v1'
+            ],
+            renderSettingsVersion: 4,
+            sampleCounts: {},
+            status: externalHDRAuthorizationMockState.authorized ?
+                'authorized' :
+                'rejected',
             targetFormat
         }));
     }
@@ -363,6 +421,22 @@ function createFrameMetadata(mediaTime = 1.234567): VideoFrameCallbackMetadata {
     };
 }
 
+function createNeutralBT709VideoFrame(close: MockFunction): VideoFrame {
+    return {
+        close,
+        codedHeight: 2_160,
+        codedWidth: 3_840,
+        colorSpace: {
+            fullRange: false,
+            matrix: 'bt709',
+            primaries: 'bt709',
+            transfer: 'bt709'
+        },
+        displayHeight: 2_160,
+        displayWidth: 3_840
+    } as unknown as VideoFrame;
+}
+
 type RawPlaneDefinition = {
     bytesPerComponent: 1 | 2
     componentsPerTexel: 1 | 2
@@ -525,6 +599,9 @@ describe('WebGPUPresenter', () => {
         webSettingsMockState.hdrToneMappingEnabled = false;
         rawHDRAuthorizationMockState.authorized = true;
         rawHDRAuthorizationMockState.prewarmCalls = [];
+        externalHDRAuthorizationMockState.authorizeCalls = [];
+        externalHDRAuthorizationMockState.authorized = true;
+        externalHDRAuthorizationMockState.prewarmCalls = [];
         dolbyVisionAuthorizationMockState.authorizeCalls = [];
         dolbyVisionAuthorizationMockState.authorized = true;
         dolbyVisionAuthorizationMockState.prewarmCalls = [];
@@ -862,6 +939,53 @@ describe('WebGPUPresenter', () => {
             lastPresentedMediaTimeMicroseconds: 2_000_000,
             presentationSource: 'decoded'
         });
+    });
+
+    it('presents neutralized native Main10 frames through the authorized HDR shader', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+        const closeFrame = vi.fn();
+        const frame = createNeutralBT709VideoFrame(closeFrame);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'external-hdr',
+            metadata,
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: { inputPeakNits: metadata.nominalPeakNits }
+            })
+        }, 1)).resolves.toBe(true);
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        expect(gpuHarness.devices[0].importExternalTexture).toHaveBeenCalledWith({
+            colorSpace: 'srgb',
+            source: frame
+        });
+        expect(closeFrame).toHaveBeenCalledOnce();
+        const toneMappingShaderDescriptor = gpuHarness.devices[0].createShaderModule.mock.calls
+            .map((call: unknown[]) => call[0] as { code: string })
+            .find(descriptor => descriptor.code.includes(
+                'fn recoverLimitedRangeBT709YUV'
+            ));
+        expect(toneMappingShaderDescriptor).toBeDefined();
+        expect(fallbackHandler).not.toHaveBeenCalled();
     });
 
     it('requests one generation-safe pushed-frame refresh after device recovery', async () => {
@@ -1562,6 +1686,67 @@ describe('WebGPUPresenter', () => {
 
         gpuHarness.devices[1].lost.resolve({
             message: 'second raw device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+    });
+
+    it('reauthorizes external HDR presentation on one replacement device', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'external-hdr',
+            metadata,
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: { inputPeakNits: metadata.nominalPeakNits }
+            })
+        }, 1)).resolves.toBe(true);
+
+        const firstFrame = createNeutralBT709VideoFrame(vi.fn());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: firstFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        gpuHarness.devices[0].lost.resolve({
+            message: 'first external HDR device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1));
+        expect(externalHDRAuthorizationMockState.authorizeCalls)
+            .toEqual([ gpuHarness.devices[1].device ]);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+
+        const recoveredFrame = createNeutralBT709VideoFrame(vi.fn());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: recoveredFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(3),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+
+        gpuHarness.devices[1].lost.resolve({
+            message: 'second external HDR device loss',
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());

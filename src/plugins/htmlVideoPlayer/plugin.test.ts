@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLAYBACK_SUPERSEDED } from 'constants/playbackResult';
+import browser from 'scripts/browser';
 import Events from 'utils/events';
 
 type Deferred<Value> = {
@@ -285,6 +286,7 @@ async function createPlayer(): Promise<HtmlVideoPlayerTestHarness> {
 
 beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(browser.supportsCssAnimation).mockReturnValue(false);
     htmlMediaHelperMock.applySrc.mockImplementation((element: { src: string }, source: string) => {
         element.src = source;
         return Promise.resolve();
@@ -315,6 +317,21 @@ describe('HtmlVideoPlayer custom presentation shell', () => {
         expect(htmlMediaHelperMock.applySrc).not.toHaveBeenCalled();
         expect(htmlMediaHelperMock.playWithPromise).not.toHaveBeenCalled();
         expect(htmlMediaHelperMock.resetSrc).toHaveBeenCalledOnce();
+    });
+
+    it('does not gate a custom fullscreen surface on the cosmetic zoom animation', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/custom.mkv', 'MKV');
+        options.fullscreen = true;
+        vi.mocked(browser.supportsCssAnimation).mockReturnValue(true);
+
+        const surface = await player.prepareCustomPlayback(options);
+
+        expect(surface).toMatchObject({
+            container: expect.any(HTMLDivElement),
+            video: expect.any(HTMLVideoElement)
+        });
+        expect(typeof surface === 'object' ? surface?.container.style.animation : null).toBe('');
     });
 
     it('forwards custom clock events and retires natural end exactly once', async () => {

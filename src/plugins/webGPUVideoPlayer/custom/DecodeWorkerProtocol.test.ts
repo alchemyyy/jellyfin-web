@@ -122,6 +122,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 1,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: -1_000_000,
             type: 'start',
@@ -199,6 +201,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: -500_000,
             type: 'start',
@@ -226,6 +230,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: 0,
             type: 'start',
@@ -392,6 +398,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             startTimeMicroseconds: 0,
             type: 'start',
             url: 'http://localhost/video.mkv',
@@ -423,6 +431,60 @@ describe('DecodeWorkerProtocol', () => {
             dolbyVisionRPUParserWASMURL: 'https://user:secret@example.test/parser.wasm',
             rawVideoFrameFormat: null,
             videoOutputMode: 'video-frame'
+        })).toBe(false);
+    });
+
+    it('permits HDR metadata neutralization only for native non-Dolby video frames', () => {
+        const nativeFrameRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 3,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(nativeFrameRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            nativeHDRTransfer: null
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            nativeHDRTransfer: 'sdr'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: false
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            videoDecoderBackend: 'bundled-hevc'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            dolbyVisionProfile: 5
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeFrameRequest,
+            neutralizeHDRColorMetadata: 'true'
         })).toBe(false);
     });
 
@@ -576,6 +638,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
@@ -609,6 +673,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 2,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',
@@ -679,6 +745,8 @@ describe('DecodeWorkerProtocol', () => {
             generation: 4,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 0,
             type: 'start',

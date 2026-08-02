@@ -32,6 +32,7 @@ export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
 export type CustomDecodeVideoDecoderBackend = 'bundled-hevc' | 'native';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
 export type CustomDecodeDolbyVisionProfile = 5 | 7 | 8 | null;
+export type CustomDecodeNativeHDRTransfer = 'hlg' | 'pq' | null;
 export type CustomDecodeWorkerProgressPhase =
     | 'video-decoder-ready'
     | 'video-key-packet-ready'
@@ -73,6 +74,8 @@ export type DecodeWorkerStartRequest = {
     generation: number
     maximumCodedHeight: number
     maximumCodedWidth: number
+    nativeHDRTransfer: CustomDecodeNativeHDRTransfer
+    neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     type: 'start'
@@ -288,6 +291,10 @@ function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode
 
 function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
     return value === 'bundled-hevc' || value === 'native';
+}
+
+function isNativeHDRTransfer(value: unknown): value is CustomDecodeNativeHDRTransfer {
+    return value === null || value === 'hlg' || value === 'pq';
 }
 
 function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode {
@@ -609,6 +616,14 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 )
                 && isVideoOutputMode(value.videoOutputMode)
                 && isVideoDecoderBackend(value.videoDecoderBackend)
+                && isNativeHDRTransfer(value.nativeHDRTransfer)
+                && typeof value.neutralizeHDRColorMetadata === 'boolean'
+                && (value.neutralizeHDRColorMetadata ?
+                    (value.nativeHDRTransfer !== null
+                        && value.videoOutputMode === 'video-frame'
+                        && value.videoDecoderBackend === 'native'
+                        && value.dolbyVisionProfile === null) :
+                    value.nativeHDRTransfer === null)
                 && hasValidVideoOutput
                 && isFrameCredit(value.frameCredits)
                 && (value.videoOutputMode !== 'raw-planes'

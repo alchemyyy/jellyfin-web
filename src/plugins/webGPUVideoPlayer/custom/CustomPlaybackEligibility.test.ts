@@ -185,6 +185,19 @@ function createCapabilities(): CustomDecodeCapabilities {
             reason: 'decode-output-verified',
             status: 'supported'
         },
+        nativeHDRHEVC: {
+            bitDepth: 10,
+            codec: 'hevc',
+            codecString: 'hvc1.2.4.L153.B0',
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 60,
+            maximumLevel: 153,
+            measuredFramesPerSecond: 80,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        },
         rawHDRVideo: {
             av1: createRawHDRCapability('av1'),
             hevc: createRawHDRCapability('hevc'),
@@ -194,16 +207,19 @@ function createCapabilities(): CustomDecodeCapabilities {
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
             nativeSurroundAudioProbeCount: 0,
+            nativeHDRVideoProbeCount: 1,
             nativeUltraHDVideoProbeCount: 0,
             rawHDRVideoProbeCount: 2,
             reason: 'complete',
             supportedAudioCodecCount: 7,
             supportedNativeSurroundAudioCodecCount: 0,
+            supportedNativeHDRVideoCodecCount: 1,
             supportedNativeUltraHDVideoCodecCount: 0,
             supportedRawHDRVideoCodecCount: 3,
             supportedVideoCodecCount: 5,
             unknownAudioCodecCount: 0,
             unknownNativeSurroundAudioCodecCount: 0,
+            unknownNativeHDRVideoCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
             videoProbeCount: 5
@@ -576,6 +592,7 @@ describe('CustomPlaybackEligibility', () => {
                         BitRate: 40_000_000,
                         Codec: 'hevc',
                         ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
                         ColorSpace: 'bt2020nc',
                         ColorTransfer: 'smpte2084',
                         Height: 2_160,
@@ -609,6 +626,58 @@ describe('CustomPlaybackEligibility', () => {
             hdrOptions,
             createCapabilities(),
             {
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(
+            hdrOptions,
+            createCapabilities(),
+            {
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ],
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            hdr: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+        const nativeHDRMediaSource = hdrOptions.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        delete nativeHDRMediaSource.MediaStreams[0].ColorRange;
+        expect(getCustomPlaybackEligibility(
+            hdrOptions,
+            createCapabilities(),
+            {
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ],
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true
+        });
+        nativeHDRMediaSource.MediaStreams[0].ColorRange = 'tv';
+        expect(getCustomPlaybackEligibility(
+            hdrOptions,
+            createCapabilities(),
+            {
                 allowRawHDR: true,
                 authorizedRawHDRRouteKeys: [
                     'I420P10:bt2020-ncl:bt2020:limited:hlg'
@@ -625,9 +694,112 @@ describe('CustomPlaybackEligibility', () => {
             hdr: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
         });
+    });
+
+    it.each([
+        { field: 'Profile', label: 'profile', value: 'Main' },
+        { field: 'BitDepth', label: 'bit depth', value: 8 },
+        { field: 'Level', label: 'level', value: 154 },
+        { field: 'Width', label: 'width', value: 3_841 },
+        { field: 'Height', label: 'height', value: 2_161 },
+        { field: 'BitRate', label: 'bitrate', value: 40_000_001 },
+        { field: 'RealFrameRate', label: 'frame rate', value: 60.01 },
+        { field: 'ColorTransfer', label: 'transfer authorization', value: 'arib-std-b67' }
+    ] as const)(
+        'rejects native HDR outside its exact $label bound',
+        ({ field, value }) => {
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    DefaultAudioStreamIndex: 1,
+                    MediaStreams: [ {
+                        BitDepth: 10,
+                        BitRate: 40_000_000,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 60,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    }, {
+                        Channels: 2,
+                        Codec: 'flac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    } ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[0][field] = value;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                {
+                    allowNativeHDR: true,
+                    allowRawHDR: false,
+                    authorizedExternalHDRRouteKeys: [
+                        'external-hevc-main10-bt709-limited:pq-v1'
+                    ],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            ).eligible).toBe(false);
+        }
+    );
+
+    it('rejects native HDR when required color metadata is missing', () => {
+        const options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                MediaStreams: [ {
+                    BitDepth: 10,
+                    BitRate: 24_000_000,
+                    Codec: 'hevc',
+                    ColorPrimaries: 'bt2020',
+                    ColorSpace: 'bt2020nc',
+                    Height: 2_160,
+                    Index: 0,
+                    IsInterlaced: false,
+                    Level: 153,
+                    Profile: 'Main 10',
+                    RealFrameRate: 24,
+                    Type: 'Video',
+                    VideoRangeType: 'HDR10',
+                    Width: 3_840
+                } ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ],
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        ).eligible).toBe(false);
     });
 
     it('keeps native and raw Dolby Vision authorization routes separate', () => {

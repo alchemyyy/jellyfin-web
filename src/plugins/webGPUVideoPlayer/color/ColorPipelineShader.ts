@@ -321,6 +321,20 @@ fn convertRawYUVToEncodedRGB(normalizedYUV: vec3f) -> vec3f {
     }
 }
 
+function createExternalBT709LimitedYUVRecoveryWGSL(): string {
+    return `
+fn recoverLimitedRangeBT709YUV(encodedBT709RGB: vec3f) -> vec3f {
+    let normalizedLuma = dot(encodedBT709RGB, vec3f(0.2126, 0.7152, 0.0722));
+    let normalizedChromaBlue = (encodedBT709RGB.b - normalizedLuma) / 1.8556;
+    let normalizedChromaRed = (encodedBT709RGB.r - normalizedLuma) / 1.5748;
+    return vec3f(
+        (normalizedLuma * 876.0) + 64.0,
+        (normalizedChromaBlue * 896.0) + 512.0,
+        (normalizedChromaRed * 896.0) + 512.0
+    );
+}`;
+}
+
 function createRawYUVTextureBindingsWGSL(format: RawYUVVideoFrameFormat): string {
     if (format === 'NV12') {
         return `
@@ -616,6 +630,89 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
+/** Recovers neutralized 10-bit HDR YUV from Chromium's opaque BT.709 texture. */
+export function createExternalHDRColorPipelineWGSL(
+    metadata: InputColorMetadata,
+    settings: HDRToSDRRenderSettings
+): string {
+    assertValidInputColorMetadata(metadata);
+    assertValidRenderSettings(settings);
+    if (
+        metadata.bitDepth !== 10
+        || metadata.matrix !== 'bt2020-ncl'
+        || metadata.primaries !== 'bt2020'
+        || metadata.range !== 'limited'
+        || (metadata.transfer !== 'pq' && metadata.transfer !== 'hlg')
+    ) {
+        throw new RangeError(
+            'External HDR presentation requires limited-range 10-bit BT.2020 PQ or HLG metadata'
+        );
+    }
+
+    return /* wgsl */ `
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) textureCoordinate: vec2f,
+}
+
+struct PresentationUniforms {
+    textureScale: vec2f,
+    textureOffset: vec2f,
+}
+
+@group(0) @binding(0) var videoSampler: sampler;
+@group(0) @binding(1) var videoTexture: texture_external;
+@group(0) @binding(2) var<uniform> presentation: PresentationUniforms;
+${createRenderSettingsUniformWGSL(settings, 3)}
+${createExternalBT709LimitedYUVRecoveryWGSL()}
+${createRawYUVRangeWGSL(metadata)}
+${createRawYUVMatrixWGSL(metadata)}
+${createTransferDecodeWGSL(metadata)}
+${createGamutConversionWGSL(metadata)}
+${createToneMapWGSL(settings)}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    let positions = array<vec2f, 6>(
+        vec2f(-1.0, 1.0),
+        vec2f(1.0, 1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(1.0, 1.0),
+        vec2f(1.0, -1.0),
+    );
+    let textureCoordinates = array<vec2f, 6>(
+        vec2f(0.0, 0.0),
+        vec2f(1.0, 0.0),
+        vec2f(0.0, 1.0),
+        vec2f(0.0, 1.0),
+        vec2f(1.0, 0.0),
+        vec2f(1.0, 1.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+    output.textureCoordinate = textureCoordinates[vertexIndex];
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+    let textureCoordinate = input.textureCoordinate * presentation.textureScale
+        + presentation.textureOffset;
+    let encodedBT709RGB = textureSampleBaseClampToEdge(
+        videoTexture,
+        videoSampler,
+        textureCoordinate
+    ).rgb;
+    let rawYUV = recoverLimitedRangeBT709YUV(encodedBT709RGB);
+    let normalizedYUV = normalizeRawYUV(rawYUV);
+    let encodedHDRRGB = convertRawYUVToEncodedRGB(normalizedYUV);
+    return vec4f(processColor(encodedHDRRGB, input.position.xy), 1.0);
+}
+`;
+}
+
 /** Generates Profile 5 reconstruction from Chromium's opaque BT.709 texture. */
 export function createExternalDolbyVisionColorPipelineWGSL(
     settings: HDRToSDRRenderSettings
@@ -641,16 +738,10 @@ ${createDolbyVisionColorTransformWGSL(4)}
 ${createTransferDecodeWGSL(DOLBY_VISION_OUTPUT_METADATA)}
 ${createGamutConversionWGSL(DOLBY_VISION_OUTPUT_METADATA)}
 ${createToneMapWGSL(settings)}
+${createExternalBT709LimitedYUVRecoveryWGSL()}
 
 fn recoverDolbyVisionBaseSignal(encodedBT709RGB: vec3f) -> vec3f {
-    let normalizedLuma = dot(encodedBT709RGB, vec3f(0.2126, 0.7152, 0.0722));
-    let normalizedChromaBlue = (encodedBT709RGB.b - normalizedLuma) / 1.8556;
-    let normalizedChromaRed = (encodedBT709RGB.r - normalizedLuma) / 1.5748;
-    return vec3f(
-        (normalizedLuma * 876.0) + 64.0,
-        (normalizedChromaBlue * 896.0) + 512.0,
-        (normalizedChromaRed * 896.0) + 512.0
-    );
+    return recoverLimitedRangeBT709YUV(encodedBT709RGB);
 }
 
 @vertex

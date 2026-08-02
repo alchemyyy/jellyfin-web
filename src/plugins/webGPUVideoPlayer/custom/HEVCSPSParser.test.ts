@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseHEVCSPS } from './HEVCSPSParser';
+import {
+    parseHEVCSPS,
+    rewriteHEVCSPSColorDescriptionToBT709
+} from './HEVCSPSParser';
 
 function createBytesFromHex(hex: string): Uint8Array {
     const bytes = new Uint8Array(hex.length / 2);
@@ -85,6 +88,34 @@ describe('parseHEVCSPS', () => {
             primaries: 'bt2020',
             transfer: 'hlg'
         });
+    });
+
+    it('rewrites PQ and HLG VUI descriptions to limited-range BT.709', () => {
+        for (const sourceSPS of [ MAIN10_PQ_SPS, MAIN10_HLG_SPS ]) {
+            const originalSPS = sourceSPS.slice();
+            const originalConfiguration = parseHEVCSPS(sourceSPS);
+            const rewrittenSPS = rewriteHEVCSPSColorDescriptionToBT709(sourceSPS);
+
+            expect(sourceSPS).toEqual(originalSPS);
+            expect(parseHEVCSPS(rewrittenSPS)).toEqual({
+                ...originalConfiguration,
+                colorSpace: {
+                    fullRange: false,
+                    matrix: 'bt709',
+                    primaries: 'bt709',
+                    transfer: 'bt709'
+                }
+            });
+            expect(parseHEVCSPS(
+                rewriteHEVCSPSColorDescriptionToBT709(rewrittenSPS)
+            )).toEqual(parseHEVCSPS(rewrittenSPS));
+        }
+    });
+
+    it('rejects color neutralization when the SPS has no color description', () => {
+        expect(() => rewriteHEVCSPSColorDescriptionToBT709(
+            DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR
+        )).toThrow('no VUI color description');
     });
 
     it('preserves unspecified SPS color for a Dolby Vision Profile 5 stream', () => {

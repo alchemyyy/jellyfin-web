@@ -16,6 +16,7 @@ import {
     isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
+    type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
     type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
@@ -36,11 +37,16 @@ import {
 import { isSupportedCustomAudioInputLayout } from './CustomAudioOutputPolicy';
 import { supportsH264JellyfinProfile } from './H264ProfileCapabilities';
 import {
+    getExternalHDRAuthorizationRouteKey,
+    type ExternalHDRAuthorizationRouteKey
+} from '../validation/ExternalHDRPresentationAuthorization';
+import {
     getRawHDRAuthorizationRouteKey,
     type RawHDRAuthorizationRouteKey
 } from '../validation/RawHDRPresentationAuthorization';
 import type {
     CustomDecodeAudioOutputMode,
+    CustomDecodeNativeHDRTransfer,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode
@@ -183,7 +189,9 @@ type VideoOutputSelection =
         hdr: boolean
         maximumCodedHeight: number
         maximumCodedWidth: number
+        nativeHDRTransfer?: Exclude<CustomDecodeNativeHDRTransfer, null>
         nativeVideoDecoderRequired: boolean
+        neutralizeHDRColorMetadata: boolean
         rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
         status: 'selected'
         videoDecoderBackend: CustomDecodeVideoDecoderBackend
@@ -205,6 +213,15 @@ type AudioOutputSelection =
         reason: 'audio-codec-unsupported' | 'audio-layout-unsupported'
         status: 'invalid'
     };
+
+function getNativeHDRTransferResult(
+    videoOutput: Extract<VideoOutputSelection, { status: 'selected' }>
+): Pick<EligibleCustomPlayback, 'nativeHDRTransfer'> {
+    if (!videoOutput.nativeHDRTransfer) {
+        return {};
+    }
+    return { nativeHDRTransfer: videoOutput.nativeHDRTransfer };
+}
 
 export type CustomPlaybackIneligibilityReason =
     | 'audio-codec-unsupported'
@@ -229,7 +246,9 @@ export type CustomPlaybackEligibilityOptions = {
     allowDolbyVision?: boolean
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
+    allowNativeHDR?: boolean
     allowRawHDR: boolean
+    authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
     runtimeAvailability: CustomPlaybackRuntimeAvailability
@@ -244,6 +263,8 @@ export type EligibleCustomPlayback = {
     hdr: boolean
     maximumCodedHeight: number
     maximumCodedWidth: number
+    nativeHDRTransfer?: Exclude<CustomDecodeNativeHDRTransfer, null>
+    neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     url: string
@@ -765,6 +786,60 @@ function supportsNativeDolbyVisionProfile5(
         && stream.Height <= capability.maximumCodedHeight;
 }
 
+function supportsNativeHDRHEVC(
+    capability: CustomNativeHDRHEVCCapability | undefined,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream
+): capability is CustomNativeHDRHEVCCapability {
+    const frameRate = getEffectiveVideoFrameRate(stream);
+    return videoCodec === 'hevc'
+        && capability?.status === 'supported'
+        && stream.BitDepth === capability.bitDepth
+        && hasSupportedRawVideoProfile(videoCodec, stream)
+        && isCustomHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )
+        && frameRate !== null
+        && frameRate <= capability.maximumFramesPerSecond
+        && isPositiveSafeInteger(stream.Level)
+        && stream.Level <= capability.maximumLevel
+        && isPositiveSafeInteger(stream.BitRate)
+        && stream.BitRate <= capability.maximumBitrate
+        && isPositiveSafeInteger(stream.Width)
+        && stream.Width <= capability.maximumCodedWidth
+        && isPositiveSafeInteger(stream.Height)
+        && stream.Height <= capability.maximumCodedHeight;
+}
+
+type NativeHDRColorDescriptionStream = MediaStream & {
+    ColorPrimaries?: unknown
+    ColorSpace?: unknown
+    ColorTransfer?: unknown
+};
+
+function hasExplicitNativeHDRChromaticity(stream: MediaStream): boolean {
+    const colorDescription = stream as NativeHDRColorDescriptionStream;
+    if (
+        typeof colorDescription.ColorTransfer !== 'string'
+        || colorDescription.ColorTransfer.trim().length === 0
+    ) {
+        return false;
+    }
+    if (
+        typeof colorDescription.ColorPrimaries !== 'string'
+        || colorDescription.ColorPrimaries.trim().length === 0
+    ) {
+        return false;
+    }
+    if (
+        typeof colorDescription.ColorSpace !== 'string'
+        || colorDescription.ColorSpace.trim().length === 0
+    ) {
+        return false;
+    }
+    return true;
+}
+
 function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
@@ -796,6 +871,7 @@ function selectDolbyVisionVideoOutput(
             maximumCodedHeight: nativeCapability.maximumCodedHeight,
             maximumCodedWidth: nativeCapability.maximumCodedWidth,
             nativeVideoDecoderRequired: true,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             status: 'selected',
             videoDecoderBackend: 'native',
@@ -827,6 +903,7 @@ function selectDolbyVisionVideoOutput(
         maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
         maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
         nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
+        neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat,
         status: 'selected',
         videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
@@ -878,9 +955,38 @@ function selectVideoOutput(
             maximumCodedHeight: sdrSelection.maximumCodedHeight,
             maximumCodedWidth: sdrSelection.maximumCodedWidth,
             nativeVideoDecoderRequired: sdrSelection.videoDecoderBackend === 'native',
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             status: 'selected',
             videoDecoderBackend: sdrSelection.videoDecoderBackend,
+            videoOutputMode: 'video-frame'
+        };
+    }
+    const externalHDRRouteKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
+    const nativeHDRTransfer = colorMetadata.transfer === 'sdr' ?
+        null :
+        colorMetadata.transfer;
+    const nativeHDRCapability = capabilities.nativeHDRHEVC;
+    if (
+        eligibilityOptions.allowNativeHDR === true
+        && externalHDRRouteKey !== null
+        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(
+            externalHDRRouteKey
+        )
+        && nativeHDRTransfer !== null
+        && hasExplicitNativeHDRChromaticity(videoStream)
+        && supportsNativeHDRHEVC(nativeHDRCapability, videoCodec, videoStream)
+    ) {
+        return {
+            hdr: true,
+            maximumCodedHeight: nativeHDRCapability.maximumCodedHeight,
+            maximumCodedWidth: nativeHDRCapability.maximumCodedWidth,
+            nativeHDRTransfer,
+            nativeVideoDecoderRequired: true,
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            status: 'selected',
+            videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame'
         };
     }
@@ -918,6 +1024,7 @@ function selectVideoOutput(
         maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
         maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
         nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
+        neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat,
         status: 'selected',
         videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
@@ -1127,6 +1234,8 @@ export function getCustomPlaybackEligibility(
         hdr: videoOutput.hdr,
         maximumCodedHeight: videoOutput.maximumCodedHeight,
         maximumCodedWidth: videoOutput.maximumCodedWidth,
+        ...getNativeHDRTransferResult(videoOutput),
+        neutralizeHDRColorMetadata: videoOutput.neutralizeHDRColorMetadata,
         rawVideoFrameFormat: videoOutput.rawVideoFrameFormat,
         startTimeMicroseconds: parsedSource.startTimeMicroseconds,
         url: parsedSource.url,

@@ -48,6 +48,7 @@ const PAGE_POLL_INTERVAL_MILLISECONDS = 100;
 const PAUSE_OBSERVATION_MILLISECONDS = 900;
 const PLAYBACK_OBSERVATION_MILLISECONDS = 750;
 const RESUME_OBSERVATION_MILLISECONDS = 750;
+const MINIMUM_RESUME_CLOCK_ADVANCE_MICROSECONDS = 250_000;
 const MICROSECONDS_PER_MILLISECOND = 1_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 const MINIMUM_ACTIVE_PRESENTED_FRAMES = 3;
@@ -63,6 +64,7 @@ const RETENTION_SETTLE_MILLISECONDS = 250;
 const RETENTION_FINALIZER_DRAIN_MILLISECONDS = 100;
 const MAXIMUM_CLEAN_STOP_DURATION_MICROSECONDS = 900_000;
 const STARTUP_MILESTONE_POLL_MILLISECONDS = 10;
+const BROWSER_VISIBILITY_RESTORE_MILLISECONDS = 250;
 const STARTUP_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
 const RETENTION_PERFORMANCE_RESOURCE_METRICS = Object.freeze([
     Object.freeze({ code: 'array-buffer-contents', name: 'ArrayBufferContents' }),
@@ -960,6 +962,10 @@ function createPlayerSnapshotExpression(accessKey) {
         const customEligibility = typeof player.getCustomPlaybackEligibility === 'function'
             ? player.getCustomPlaybackEligibility()
             : null;
+        const customPlaybackSetup =
+            typeof player.getCustomPlaybackSetupTelemetry === 'function'
+                ? player.getCustomPlaybackSetupTelemetry()
+                : null;
         const customDecodeCapabilities = typeof player.getCustomDecodeCapabilities === 'function'
             ? player.getCustomDecodeCapabilities()
             : null;
@@ -986,6 +992,10 @@ function createPlayerSnapshotExpression(accessKey) {
         const externalDolbyVisionAuthorization =
             typeof player.getExternalDolbyVisionAuthorizationTelemetry === 'function' ?
                 player.getExternalDolbyVisionAuthorizationTelemetry() :
+                null;
+        const externalHDRAuthorization =
+            typeof player.getExternalHDRAuthorizationTelemetry === 'function' ?
+                player.getExternalHDRAuthorizationTelemetry() :
                 null;
         const rawHDRAuthorization = presentationInputMode === 'raw-yuv'
             && customEligibility?.eligible === true
@@ -1117,6 +1127,12 @@ function createPlayerSnapshotExpression(accessKey) {
                     : null,
                 eligible: customEligibility.eligible,
                 hdr: customEligibility.eligible ? customEligibility.hdr : null,
+                nativeHDRTransfer: customEligibility.eligible
+                    ? customEligibility.nativeHDRTransfer ?? null
+                    : null,
+                neutralizeHDRColorMetadata: customEligibility.eligible
+                    ? customEligibility.neutralizeHDRColorMetadata
+                    : null,
                 reason: customEligibility.eligible ? null : customEligibility.reason,
                 videoDecoderBackend: customEligibility.eligible
                     ? customEligibility.videoDecoderBackend
@@ -1125,6 +1141,7 @@ function createPlayerSnapshotExpression(accessKey) {
                     ? customEligibility.videoOutputMode
                     : null
             } : null,
+            customPlaybackSetup,
             customDecodeCapabilities: customDecodeCapabilities ? {
                 audio: customDecodeCapabilities.audio,
                 bundledHEVC: customDecodeCapabilities.bundledHEVC,
@@ -1196,6 +1213,20 @@ function createPlayerSnapshotExpression(accessKey) {
                 sampleCount: externalDolbyVisionAuthorization.sampleCount,
                 status: externalDolbyVisionAuthorization.status,
                 targetFormat: externalDolbyVisionAuthorization.targetFormat
+            } : null,
+            externalHDRValidation: externalHDRAuthorization ? {
+                authorizedRouteKeys: [ ...externalHDRAuthorization.authorizedRouteKeys ],
+                failureReasons: { ...externalHDRAuthorization.failureReasons },
+                fixtureVersion: externalHDRAuthorization.fixtureVersion,
+                maximumChannelErrors: {
+                    ...externalHDRAuthorization.maximumChannelErrors
+                },
+                pendingRouteKeys: [ ...externalHDRAuthorization.pendingRouteKeys ],
+                rejectedRouteKeys: [ ...externalHDRAuthorization.rejectedRouteKeys ],
+                renderSettingsVersion: externalHDRAuthorization.renderSettingsVersion,
+                sampleCounts: { ...externalHDRAuthorization.sampleCounts },
+                status: externalHDRAuthorization.status,
+                targetFormat: externalHDRAuthorization.targetFormat
             } : null,
             hasCurrentSource: typeof currentSource === 'string'
                 ? currentSource.length > 0
@@ -1637,6 +1668,55 @@ async function clearFrontendRuntimeCaches(client) {
         await Promise.all(cacheNames.map(cacheName => globalThis.caches.delete(cacheName)));
         return true;
     })()`);
+}
+
+async function ensureBrowserPageVisible(client, pageTarget, configuration) {
+    await client.send('Page.bringToFront');
+    const initialVisibility = await evaluateValue(
+        client,
+        '({ hidden: document.hidden, visibilityState: document.visibilityState })',
+        false
+    );
+    if (initialVisibility?.hidden === false
+        && initialVisibility.visibilityState === 'visible') {
+        return;
+    }
+
+    const windowDescriptor = await client.send('Browser.getWindowForTarget', {
+        targetId: pageTarget.id
+    });
+    const windowIdentifier = windowDescriptor.windowId;
+    if (!Number.isSafeInteger(windowIdentifier)) {
+        throw new SmokeHarnessError(
+            'browser-window-unavailable',
+            'Unable to identify the browser window required for visible playback validation'
+        );
+    }
+
+    if (windowDescriptor.bounds?.windowState !== 'minimized') {
+        await client.send('Browser.setWindowBounds', {
+            bounds: { windowState: 'minimized' },
+            windowId: windowIdentifier
+        });
+        await sleep(BROWSER_VISIBILITY_RESTORE_MILLISECONDS);
+    }
+    await client.send('Browser.setWindowBounds', {
+        bounds: { windowState: 'normal' },
+        windowId: windowIdentifier
+    });
+    await client.send('Page.bringToFront');
+    await waitForValue({
+        accept: visibility => visibility?.hidden === false
+            && visibility.visibilityState === 'visible',
+        description: 'a visible browser page for hardware presentation validation',
+        errorCode: 'browser-page-hidden',
+        read: () => evaluateValue(
+            client,
+            '({ hidden: document.hidden, visibilityState: document.visibilityState })',
+            false
+        ),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
 }
 
 async function readFrontendConfiguration(configuration) {
@@ -3871,8 +3951,19 @@ async function runPlaybackExercise(
             errorCode: 'resume-timeout',
             timeoutMilliseconds: configuration.timeoutMilliseconds
         });
-        await sleep(RESUME_OBSERVATION_MILLISECONDS);
-        const resumeLater = await getPlayerSnapshot(client, accessKey);
+        const resumeLater = await waitForPlayerSnapshot({
+            accept: snapshot => snapshot?.customPlayback?.state === 'playing'
+                && snapshot.customPlayback.currentTimeMicroseconds
+                    - resumeInitial.customPlayback.currentTimeMicroseconds
+                    >= MINIMUM_RESUME_CLOCK_ADVANCE_MICROSECONDS
+                && snapshot.presentation?.presentedFrameCount
+                    > resumeInitial.presentation?.presentedFrameCount,
+            accessKey,
+            client,
+            description: 'advancing custom playback after resume',
+            errorCode: 'resume-progress-timeout',
+            timeoutMilliseconds: configuration.timeoutMilliseconds
+        });
 
         const seekTargetMicroseconds = createPrimarySeekTargetMicroseconds(
             resumeLater.customPlayback.currentTimeMicroseconds,
@@ -4103,9 +4194,10 @@ async function runSmoke(configuration) {
             pageTarget,
             configuration
         );
-        await client.send('Page.bringToFront');
+        await ensureBrowserPageVisible(client, pageTarget, configuration);
         await clearFrontendRuntimeCaches(client);
         await reloadFreshFrontend(client, configuration);
+        await ensureBrowserPageVisible(client, pageTarget, configuration);
         const browserErrorMonitor = createBrowserErrorMonitor(client);
         const alreadyAuthenticated = await hasMatchingAuthenticatedServer(
             client,

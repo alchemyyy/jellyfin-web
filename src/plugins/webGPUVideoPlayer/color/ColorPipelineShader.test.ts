@@ -12,6 +12,7 @@ import {
 import {
     createColorPipelineWGSL,
     createExternalDolbyVisionColorPipelineWGSL,
+    createExternalHDRColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
     createRawDolbyVisionProfile7FELColorPipelineWGSL,
@@ -138,6 +139,63 @@ describe('createExternalDolbyVisionColorPipelineWGSL', () => {
         );
 
         expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('createExternalHDRColorPipelineWGSL', () => {
+    it('recovers neutralized limited-range Main10 YUV before PQ processing', () => {
+        const shader = createExternalHDRColorPipelineWGSL(
+            createPQColorMetadata(),
+            createHDRToSDRRenderSettings()
+        );
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).toContain('@binding(1) var videoTexture: texture_external');
+        expect(shader).toContain('@binding(3) var<uniform> renderSettings');
+        expect(shader).toContain('fn recoverLimitedRangeBT709YUV');
+        expect(shader).toContain('(normalizedLuma * 876.0) + 64.0');
+        expect(shader).toContain('(rawYUV.x - 64.000000000) / 876.000000000');
+        expect(shader).toContain('normalizedYUV.x + 1.4746 * normalizedYUV.z');
+        expect(shader).toContain('fn applyPQEOTF');
+        expect(fragmentFunction.indexOf('recoverLimitedRangeBT709YUV')).toBeLessThan(
+            fragmentFunction.indexOf('normalizeRawYUV')
+        );
+        expect(fragmentFunction.indexOf('convertRawYUVToEncodedRGB')).toBeLessThan(
+            fragmentFunction.indexOf('processColor')
+        );
+    });
+
+    it('specializes HLG and remains stable across live renderer settings', () => {
+        const metadata = createHLGColorMetadata();
+        const firstShader = createExternalHDRColorPipelineWGSL(
+            metadata,
+            createHDRToSDRRenderSettings()
+        );
+        const secondShader = createExternalHDRColorPipelineWGSL(
+            metadata,
+            createHDRToSDRRenderSettings({
+                display: { brightness: 0.1, contrast: 1.2, saturation: 0.8 },
+                toneMapping: { inputPeakNits: 2_000 }
+            })
+        );
+
+        expect(firstShader).toContain('fn applyHLGInverseOETF');
+        expect(secondShader).toBe(firstShader);
+    });
+
+    it('rejects metadata outside the exact neutralized Main10 route', () => {
+        expect(() => createExternalHDRColorPipelineWGSL(
+            createPQColorMetadata({ bitDepth: 12 }),
+            createHDRToSDRRenderSettings()
+        )).toThrow('limited-range 10-bit BT.2020');
+        expect(() => createExternalHDRColorPipelineWGSL(
+            createPQColorMetadata({ range: 'full' }),
+            createHDRToSDRRenderSettings()
+        )).toThrow('limited-range 10-bit BT.2020');
+        expect(() => createExternalHDRColorPipelineWGSL(
+            createSDRColorMetadata({ bitDepth: 10, matrix: 'bt2020-ncl', primaries: 'bt2020' }),
+            createHDRToSDRRenderSettings()
+        )).toThrow('limited-range 10-bit BT.2020');
     });
 });
 

@@ -52,6 +52,8 @@ export type HEVCSPSConfiguration = {
     progressive: true
 };
 
+export type HEVCHDRTransfer = 'hlg' | 'pq';
+
 class BoundedBitReader {
     private bitOffset = 0;
 
@@ -77,6 +79,10 @@ class BoundedBitReader {
 
     public readFlag(label: string): boolean {
         return this.readBits(1, label) === 1;
+    }
+
+    public getBitOffset(): number {
+        return this.bitOffset;
     }
 
     public readUnsignedExpGolomb(label: string, maximumValue: number): number {
@@ -115,8 +121,16 @@ type ProfileTierLevel = {
 };
 
 type ParsedVUI = {
+    colorDescriptionOffsets: VUIColorDescriptionOffsets | null
     colorSpace: HEVCSPSColorSpace | null
     fieldSequence: boolean
+};
+
+type VUIColorDescriptionOffsets = {
+    fullRange: number
+    matrix: number
+    primaries: number
+    transfer: number
 };
 
 function createRBSP(nalUnit: Uint8Array): Uint8Array {
@@ -324,14 +338,25 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     if (reader.readFlag('overscan_info_present_flag')) {
         reader.skipBits(1, 'overscan_appropriate_flag');
     }
+    let colorDescriptionOffsets: VUIColorDescriptionOffsets | null = null;
     let colorSpace: HEVCSPSColorSpace | null = null;
     if (reader.readFlag('video_signal_type_present_flag')) {
         reader.skipBits(3, 'video_format');
+        const fullRangeOffset = reader.getBitOffset();
         const fullRange = reader.readFlag('video_full_range_flag');
         if (reader.readFlag('colour_description_present_flag')) {
+            const primariesOffset = reader.getBitOffset();
             const primariesValue = reader.readBits(8, 'colour_primaries');
+            const transferOffset = reader.getBitOffset();
             const transferValue = reader.readBits(8, 'transfer_characteristics');
+            const matrixOffset = reader.getBitOffset();
             const matrixValue = reader.readBits(8, 'matrix_coeffs');
+            colorDescriptionOffsets = {
+                fullRange: fullRangeOffset,
+                matrix: matrixOffset,
+                primaries: primariesOffset,
+                transfer: transferOffset
+            };
             colorSpace = mapColorSpace(
                 primariesValue,
                 transferValue,
@@ -356,6 +381,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     reader.skipBits(1, 'frame_field_info_present_flag');
 
     return {
+        colorDescriptionOffsets,
         colorSpace,
         fieldSequence
     };
@@ -584,9 +610,15 @@ function skipReferencePictureSyntax(
     }
 }
 
-/** Parses the bounded SPS fields required by the planar software decoder. */
-export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
-    const reader = new BoundedBitReader(createRBSP(nalUnit));
+type ParsedHEVCSPS = {
+    configuration: HEVCSPSConfiguration
+    RBSP: Uint8Array
+    VUI: ParsedVUI
+};
+
+function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
+    const RBSP = createRBSP(nalUnit);
+    const reader = new BoundedBitReader(RBSP);
     reader.skipBits(4, 'sps_video_parameter_set_id');
     const maximumSubLayerIndex = reader.readBits(3, 'sps_max_sub_layers_minus1');
     if (maximumSubLayerIndex > 6) {
@@ -633,16 +665,92 @@ export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
     }
 
     return {
-        bitDepth: bitDepthConfiguration.bitDepth,
-        chromaFormat: 1,
-        codedHeight: dimensions.codedHeight,
-        codedWidth: dimensions.codedWidth,
-        colorSpace: vui.colorSpace,
-        displayHeight: dimensions.displayHeight,
-        displayWidth: dimensions.displayWidth,
-        levelIDC: profileTierLevel.levelIDC,
-        maximumDPBPictureCount,
-        profileIDC: profileTierLevel.profileIDC,
-        progressive: true
+        configuration: {
+            bitDepth: bitDepthConfiguration.bitDepth,
+            chromaFormat: 1,
+            codedHeight: dimensions.codedHeight,
+            codedWidth: dimensions.codedWidth,
+            colorSpace: vui.colorSpace,
+            displayHeight: dimensions.displayHeight,
+            displayWidth: dimensions.displayWidth,
+            levelIDC: profileTierLevel.levelIDC,
+            maximumDPBPictureCount,
+            profileIDC: profileTierLevel.profileIDC,
+            progressive: true
+        },
+        RBSP,
+        VUI: vui
     };
+}
+
+function writeBits(
+    bytes: Uint8Array,
+    bitOffset: number,
+    bitCount: number,
+    value: number
+): void {
+    for (let bitIndex = 0; bitIndex < bitCount; bitIndex += 1) {
+        const destinationBitOffset = bitOffset + bitIndex;
+        const byteOffset = Math.floor(destinationBitOffset / 8);
+        const shift = 7 - (destinationBitOffset % 8);
+        const bitValue = (value >> (bitCount - bitIndex - 1)) & 1;
+        bytes[byteOffset] = (bytes[byteOffset] & ~(1 << shift)) | (bitValue << shift);
+    }
+}
+
+function createNALUnitFromRBSP(nalUnit: Uint8Array, RBSP: Uint8Array): Uint8Array {
+    const escapedBytes: number[] = [ nalUnit[0], nalUnit[1] ];
+    let consecutiveZeroCount = 0;
+    for (const byteValue of RBSP) {
+        if (consecutiveZeroCount >= 2 && byteValue <= 3) {
+            escapedBytes.push(3);
+            consecutiveZeroCount = 0;
+        }
+        escapedBytes.push(byteValue);
+        consecutiveZeroCount = byteValue === 0 ? consecutiveZeroCount + 1 : 0;
+    }
+    return new Uint8Array(escapedBytes);
+}
+
+/** Parses the bounded SPS fields required by the planar software decoder. */
+export function parseHEVCSPS(nalUnit: Uint8Array): HEVCSPSConfiguration {
+    return parseHEVCSPSSyntax(nalUnit).configuration;
+}
+
+/** Rewrites an existing VUI color description without changing coded video syntax. */
+export function rewriteHEVCSPSColorDescriptionToBT709(
+    nalUnit: Uint8Array,
+    expectedHDRTransfer?: HEVCHDRTransfer
+): Uint8Array {
+    const parsedSPS = parseHEVCSPSSyntax(nalUnit);
+    const offsets = parsedSPS.VUI.colorDescriptionOffsets;
+    if (!offsets) {
+        throw new TypeError('The HEVC SPS has no VUI color description to rewrite');
+    }
+    const colorSpace = parsedSPS.configuration.colorSpace;
+    if (expectedHDRTransfer !== undefined && (
+        colorSpace?.fullRange !== false
+        || colorSpace.matrix !== 'bt2020-ncl'
+        || colorSpace.primaries !== 'bt2020'
+        || colorSpace.transfer !== expectedHDRTransfer
+    )) {
+        throw new TypeError(
+            'The HEVC SPS does not match the expected limited-range BT.2020 HDR route'
+        );
+    }
+    if (
+        colorSpace?.fullRange === false
+        && colorSpace.matrix === 'bt709'
+        && colorSpace.primaries === 'bt709'
+        && colorSpace.transfer === 'bt709'
+    ) {
+        return nalUnit.slice();
+    }
+
+    const rewrittenRBSP = parsedSPS.RBSP.slice();
+    writeBits(rewrittenRBSP, offsets.fullRange, 1, 0);
+    writeBits(rewrittenRBSP, offsets.primaries, 8, 1);
+    writeBits(rewrittenRBSP, offsets.transfer, 8, 1);
+    writeBits(rewrittenRBSP, offsets.matrix, 8, 1);
+    return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
 }

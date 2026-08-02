@@ -36,6 +36,7 @@ import {
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeFailureKind,
+    type CustomDecodeNativeHDRTransfer,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
@@ -138,6 +139,8 @@ type DecodeRun = {
     maximumCodedHeight: number
     maximumCodedWidth: number
     metadataAbortController: AbortController | null
+    nativeHDRTransfer: CustomDecodeNativeHDRTransfer
+    neutralizeHDRColorMetadata: boolean
     outstandingRawFrameBufferCount: number
     rawFrameBufferPool: RawFrameBufferPool | null
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
@@ -447,6 +450,11 @@ async function prepareVideoTrack(
     if (request.videoDecoderBackend === 'bundled-hevc' && codec !== 'hevc') {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected video track does not match the negotiated bundled HEVC decoder'
+        );
+    }
+    if (request.neutralizeHDRColorMetadata && codec !== 'hevc') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'HDR color neutralization requires an HEVC video track'
         );
     }
     if (!canDecode) {
@@ -1365,6 +1373,11 @@ function createOwnedHEVCVideoDecoderPort(
                         kind: 'native-frame'
                     }),
                     onProgress: callbacks.onProgress
+                },
+                undefined,
+                {
+                    nativeHDRTransfer: run.nativeHDRTransfer ?? undefined,
+                    neutralizeHDRColorMetadata: run.neutralizeHDRColorMetadata
                 }
             );
     }
@@ -2418,6 +2431,8 @@ function handleRequest(requestValue: unknown): void {
                 maximumCodedHeight: requestValue.maximumCodedHeight,
                 maximumCodedWidth: requestValue.maximumCodedWidth,
                 metadataAbortController: null,
+                nativeHDRTransfer: requestValue.nativeHDRTransfer,
+                neutralizeHDRColorMetadata: requestValue.neutralizeHDRColorMetadata,
                 outstandingRawFrameBufferCount: 0,
                 rawFrameBufferPool: createRawFrameBufferPool(requestValue.videoOutputMode),
                 rawVideoFrameFormat: requestValue.rawVideoFrameFormat,

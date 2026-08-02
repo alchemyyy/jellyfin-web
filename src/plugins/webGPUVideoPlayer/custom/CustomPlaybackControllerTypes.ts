@@ -19,6 +19,7 @@ import type {
     CustomDecodeFailureKind,
     CustomDecodeAudioOutputMode,
     CustomDecodeDolbyVisionProfile,
+    CustomDecodeNativeHDRTransfer,
     CustomDecodeRawVideoFrameFormat,
     CustomDecodeVideoDecoderBackend,
     CustomDecodeVideoOutputMode,
@@ -57,6 +58,8 @@ export type CustomPlaybackPlayOptions = {
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     maximumCodedHeight: number
     maximumCodedWidth: number
+    nativeHDRTransfer: CustomDecodeNativeHDRTransfer
+    neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     url: string

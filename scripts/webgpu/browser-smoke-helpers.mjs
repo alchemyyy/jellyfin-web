@@ -792,9 +792,45 @@ function hasAuthorizedExternalDolbyVisionPlaybackRoute(snapshot) {
         && authorization.sampleCount > 0;
 }
 
+function getExternalHDRPlaybackRouteKey(snapshot) {
+    const eligibility = snapshot?.customPlaybackEligibility;
+    if (eligibility?.eligible !== true
+        || eligibility.hdr !== true
+        || eligibility.videoDecoderBackend !== 'native'
+        || eligibility.videoOutputMode !== 'video-frame'
+        || eligibility.neutralizeHDRColorMetadata !== true) {
+        return null;
+    }
+    switch (eligibility.nativeHDRTransfer) {
+        case 'hlg':
+            return 'external-hevc-main10-bt709-limited:hlg-v1';
+        case 'pq':
+            return 'external-hevc-main10-bt709-limited:pq-v1';
+        default:
+            return null;
+    }
+}
+
+function hasAuthorizedExternalHDRPlaybackRoute(snapshot) {
+    const authorization = snapshot?.externalHDRValidation;
+    const routeKey = getExternalHDRPlaybackRouteKey(snapshot);
+    return snapshot?.presentationInputMode === 'external-hdr'
+        && authorization?.status === 'authorized'
+        && (authorization.targetFormat === 'bgra8unorm'
+            || authorization.targetFormat === 'rgba8unorm')
+        && Number.isSafeInteger(authorization.fixtureVersion)
+        && authorization.fixtureVersion > 0
+        && Number.isSafeInteger(authorization.renderSettingsVersion)
+        && authorization.renderSettingsVersion > 0
+        && Array.isArray(authorization.authorizedRouteKeys)
+        && authorization.authorizedRouteKeys.includes(routeKey);
+}
+
 /** Confirms exact-device authorization for the active custom HDR route. */
 export function hasAuthorizedHDRPlaybackRoute(snapshot) {
     switch (snapshot?.presentationInputMode) {
+        case 'external-hdr':
+            return hasAuthorizedExternalHDRPlaybackRoute(snapshot);
         case 'external-dolby-vision':
             return hasAuthorizedExternalDolbyVisionPlaybackRoute(snapshot);
         case 'raw-dolby-vision':
@@ -1082,6 +1118,17 @@ function validateExternalDolbyVisionAuthorizationSnapshot(failures, snapshot) {
     );
 }
 
+function validateExternalHDRAuthorizationSnapshot(failures, snapshot) {
+    if (snapshot.presentationInputMode !== 'external-hdr') {
+        return;
+    }
+    addFailure(
+        failures,
+        hasAuthorizedHDRPlaybackRoute(snapshot),
+        'external-hdr-playback-route-unauthorized'
+    );
+}
+
 function getExpectedAudioOutputMode(expectedAudioPath) {
     switch (expectedAudioPath) {
         case 'ready':
@@ -1261,7 +1308,8 @@ export function validateActivePlaybackSnapshot(
         'unexpected-audio-output-mode'
     );
     const expectedHDR = expectedOutputMode === 'raw-planes'
-        || laterSnapshot.presentationInputMode === 'external-dolby-vision';
+        || laterSnapshot.presentationInputMode === 'external-dolby-vision'
+        || laterSnapshot.presentationInputMode === 'external-hdr';
     addFailure(
         failures,
         presentationTelemetry?.mode === (expectedHDR ? 'hdr-to-sdr' : 'identity-sdr'),
@@ -1301,6 +1349,7 @@ export function validateActivePlaybackSnapshot(
     }
     validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
     validateExternalDolbyVisionAuthorizationSnapshot(failures, laterSnapshot);
+    validateExternalHDRAuthorizationSnapshot(failures, laterSnapshot);
     validateExpectedAudioSnapshot(
         failures,
         initialSnapshot,

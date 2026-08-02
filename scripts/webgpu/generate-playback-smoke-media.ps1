@@ -18,6 +18,10 @@ param(
     [string] $Resolution = '1080p',
 
     [Parameter()]
+    [ValidateRange(6, 120)]
+    [int] $DurationSeconds = 6,
+
+    [Parameter()]
     [switch] $IncludeAC3,
 
     [Parameter()]
@@ -29,7 +33,6 @@ $ErrorActionPreference = 'Stop'
 
 [int] $Width = if ($Resolution -eq '720p') { 1280 } else { 1920 }
 [int] $Height = if ($Resolution -eq '720p') { 720 } else { 1080 }
-[int] $DurationSeconds = 6
 [int] $TargetVideoBitRateKilobits = 6000
 [int] $MaximumVideoBitRateKilobits = 8000
 [int] $AudioSampleRate = 48000

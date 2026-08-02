@@ -952,6 +952,44 @@ test('requires exact external Profile 5 authorization', () => {
     }), false);
 });
 
+test('requires the exact native Main10 external HDR route authorization', () => {
+    const snapshot = {
+        customPlaybackEligibility: {
+            eligible: true,
+            hdr: true,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        },
+        externalHDRValidation: {
+            authorizedRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1'
+            ],
+            fixtureVersion: 1,
+            renderSettingsVersion: 4,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentationInputMode: 'external-hdr'
+    };
+    assert.equal(hasAuthorizedHDRPlaybackRoute(snapshot), true);
+    assert.equal(hasAuthorizedHDRPlaybackRoute({
+        ...snapshot,
+        customPlaybackEligibility: {
+            ...snapshot.customPlaybackEligibility,
+            nativeHDRTransfer: 'hlg'
+        }
+    }), false);
+    assert.equal(hasAuthorizedHDRPlaybackRoute({
+        ...snapshot,
+        customPlaybackEligibility: {
+            ...snapshot.customPlaybackEligibility,
+            neutralizeHDRColorMetadata: false
+        }
+    }), false);
+});
+
 function createPresentedFrameEvidence(hash, overrides = {}) {
     return {
         channelMaximums: [ 245, 238, 250 ],
@@ -1754,6 +1792,64 @@ test('accepts authorized external Profile 5 HDR presentation', () => {
         }
     }, SDR_EXPECTATIONS).includes(
         'external-dolby-vision-playback-route-unauthorized'
+    ));
+});
+
+test('accepts authorized native Main10 external HDR presentation', () => {
+    const initialSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            currentTimeMicroseconds: 1_000_000
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr',
+            presentedFrameCount: 5
+        }
+    });
+    const laterSnapshot = createActiveSnapshot({
+        customPlaybackEligibility: {
+            audioOutputMode: null,
+            eligible: true,
+            hdr: true,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            reason: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        },
+        externalHDRValidation: {
+            authorizedRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1',
+                'external-hevc-main10-bt709-limited:hlg-v1'
+            ],
+            fixtureVersion: 2,
+            renderSettingsVersion: 4,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentation: {
+            ...createActiveSnapshot().presentation,
+            mode: 'hdr-to-sdr'
+        },
+        presentationInputMode: 'external-hdr'
+    });
+
+    assert.deepEqual(validateActivePlaybackSnapshot(
+        initialSnapshot,
+        laterSnapshot,
+        SDR_EXPECTATIONS
+    ), []);
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        externalHDRValidation: {
+            ...laterSnapshot.externalHDRValidation,
+            authorizedRouteKeys: [
+                'external-hevc-main10-bt709-limited:hlg-v1'
+            ]
+        }
+    }, SDR_EXPECTATIONS).includes(
+        'external-hdr-playback-route-unauthorized'
     ));
 });
 

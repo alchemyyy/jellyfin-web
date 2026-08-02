@@ -20,6 +20,7 @@ import {
 } from './color/ColorMetadata';
 import {
     createExternalDolbyVisionColorPipelineWGSL,
+    createExternalHDRColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
     createRawDolbyVisionProfile7FELColorPipelineWGSL,
@@ -59,6 +60,12 @@ import {
     ExternalDolbyVisionPresentationAuthorizationRegistry,
     type ExternalDolbyVisionAuthorizationTelemetry
 } from './validation/ExternalDolbyVisionPresentationAuthorization';
+import {
+    ExternalHDRPresentationAuthorizationRegistry,
+    getExternalHDRAuthorizationRouteKey,
+    type ExternalHDRAuthorizationRouteKey,
+    type ExternalHDRAuthorizationTelemetry
+} from './validation/ExternalHDRPresentationAuthorization';
 import {
     getRawHDRAuthorizationRouteKey,
     RawHDRPresentationAuthorizationRegistry,
@@ -207,14 +214,22 @@ export type ExternalDolbyVisionColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
+export type ExternalHDRColorPipelineConfiguration = {
+    inputMode: 'external-hdr'
+    metadata: InputColorMetadata
+    settings: HDRToSDRRenderSettings
+};
+
 export type PresentationColorPipelineConfiguration =
     | ExternalDolbyVisionColorPipelineConfiguration
+    | ExternalHDRColorPipelineConfiguration
     | IdentityColorPipelineConfiguration
     | RawDolbyVisionColorPipelineConfiguration
     | RawHDRColorPipelineConfiguration;
 
 type PresentationInputMode =
     | 'external-dolby-vision'
+    | 'external-hdr'
     | 'external-texture'
     | 'raw-dolby-vision'
     | 'raw-yuv';
@@ -337,7 +352,7 @@ function decodedFrameColorMatches(
         && colorSpace.fullRange === (metadata.range === 'full');
 }
 
-function decodedProfile5FrameColorMatches(frame: VideoFrame): boolean {
+function decodedNeutralBT709FrameColorMatches(frame: VideoFrame): boolean {
     const colorSpace = frame.colorSpace;
     return colorSpace.fullRange === false
         && String(colorSpace.matrix) === 'bt709'
@@ -347,6 +362,7 @@ function decodedProfile5FrameColorMatches(frame: VideoFrame): boolean {
 
 function isExternalInputMode(inputMode: PresentationInputMode): boolean {
     return inputMode === 'external-texture'
+        || inputMode === 'external-hdr'
         || inputMode === 'external-dolby-vision';
 }
 
@@ -538,6 +554,8 @@ export default class WebGPUPresenter {
     private readonly presentationUniformValues = new Float32Array(FLOATS_PER_PRESENTATION_UNIFORM);
     private readonly externalDolbyVisionAuthorization =
         new ExternalDolbyVisionPresentationAuthorizationRegistry();
+    private readonly externalHDRAuthorization =
+        new ExternalHDRPresentationAuthorizationRegistry();
     private readonly rawDolbyVisionAuthorization =
         new DolbyVisionPresentationAuthorizationRegistry();
     private readonly profile7DolbyVisionAuthorization =
@@ -593,13 +611,16 @@ export default class WebGPUPresenter {
     ) {
         this.fallbackHandler = fallbackHandler;
         this.decodedPresentationRefreshHandler = decodedPresentationRefreshHandler;
-        this.scheduleColorPresentationAuthorizationPrewarm();
+        this.scheduleDevicePrewarm();
     }
 
-    private scheduleColorPresentationAuthorizationPrewarm(): void {
+    private scheduleDevicePrewarm(): void {
         void Promise.resolve().then((): void => {
-            void this.prewarmRawHDRPresentationAuthorization();
-            void this.prewarmDolbyVisionPresentationAuthorization();
+            void getWebGPUHDRToneMappingEnabled().then((featureEnabled: boolean): void => {
+                if (featureEnabled) {
+                    void this.ensureDevice();
+                }
+            });
         });
     }
 
@@ -759,6 +780,19 @@ export default class WebGPUPresenter {
         }
     }
 
+    /** Starts native Main10 decode and external-texture probes without delaying playback. */
+    async prewarmExternalHDRPresentationAuthorization(): Promise<void> {
+        const featureEnabled = await getWebGPUHDRToneMappingEnabled();
+        if (!featureEnabled || !await this.ensureDevice()) {
+            return;
+        }
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        if (device && targetFormat) {
+            this.externalHDRAuthorization.prewarm(device, targetFormat);
+        }
+    }
+
     /** Starts the exact Dolby Vision storage-buffer probe without delaying playback. */
     async prewarmDolbyVisionPresentationAuthorization(): Promise<void> {
         const featureEnabled = await getWebGPUHDRToneMappingEnabled();
@@ -783,6 +817,19 @@ export default class WebGPUPresenter {
                 const targetFormat = this.canvasFormat;
                 return device && targetFormat ?
                     this.rawHDRAuthorization.waitForPending(device, targetFormat) :
+                    Promise.resolve();
+            })
+        );
+    }
+
+    /** Waits a tightly bounded already-running native Main10 presentation probe. */
+    async waitForExternalHDRAuthorizationPrewarm(): Promise<void> {
+        await waitForRawHDRNegotiationProbe(
+            this.prewarmExternalHDRPresentationAuthorization().then((): Promise<void> => {
+                const device = this.device;
+                const targetFormat = this.canvasFormat;
+                return device && targetFormat ?
+                    this.externalHDRAuthorization.waitForPending(device, targetFormat) :
                     Promise.resolve();
             })
         );
@@ -819,6 +866,19 @@ export default class WebGPUPresenter {
             this.device,
             this.canvasFormat
         ).authorizedRouteKeys;
+    }
+
+    /** Returns only settled native Main10 external-texture routes. */
+    getAuthorizedExternalHDRRouteKeys(): readonly ExternalHDRAuthorizationRouteKey[] {
+        return this.externalHDRAuthorization.getTelemetry(
+            this.device,
+            this.canvasFormat
+        ).authorizedRouteKeys;
+    }
+
+    /** Returns bounded native Main10 external-texture authorization state. */
+    getExternalHDRAuthorizationTelemetry(): ExternalHDRAuthorizationTelemetry {
+        return this.externalHDRAuthorization.getTelemetry(this.device, this.canvasFormat);
     }
 
     /** Returns bounded raw authorization state without exposing GPU objects. */
@@ -896,6 +956,14 @@ export default class WebGPUPresenter {
                 this.device,
                 this.canvasFormat
             ).status === 'authorized';
+    }
+
+    /** Returns only settled native Main10 external-texture authorization. */
+    isExternalHDRPresentationAuthorized(): boolean {
+        return this.externalHDRAuthorization.getTelemetry(
+            this.device,
+            this.canvasFormat
+        ).status === 'authorized';
     }
 
     /** Returns only settled exact-device Dolby Vision authorization. */
@@ -1161,6 +1229,11 @@ export default class WebGPUPresenter {
                         configuration,
                         pendingConfiguration
                     );
+                case 'external-hdr':
+                    return this.prepareExternalHDRColorPipeline(
+                        configuration,
+                        pendingConfiguration
+                    );
                 case 'raw-dolby-vision':
                     return this.prepareRawDolbyVisionColorPipeline(
                         configuration,
@@ -1266,6 +1339,90 @@ export default class WebGPUPresenter {
             dolbyVisionProfile: configuration.profile,
             inputMode: 'external-dolby-vision',
             inputColorMetadata: null,
+            rawFrameFormat: null,
+            settings: cloneRenderSettings(configuration.settings),
+            shaderCode
+        };
+    }
+
+    private async prepareExternalHDRColorPipeline(
+        configuration: ExternalHDRColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        try {
+            assertValidInputColorMetadata(configuration.metadata);
+            assertValidRenderSettings(configuration.settings);
+        } catch (error) {
+            console.warn('Invalid WebGPU external HDR color configuration', error);
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+        if (
+            configuration.settings.mode !== 'hdr-to-sdr'
+            || !getExternalHDRAuthorizationRouteKey(configuration.metadata)
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+
+        const featureEnabled = await getWebGPUHDRToneMappingEnabled();
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        if (!featureEnabled) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-tone-mapping-disabled'
+            );
+            return null;
+        }
+        const initialized = await this.ensureDevice();
+        if (!initialized || !this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        if (
+            !device
+            || !targetFormat
+            || !this.externalHDRAuthorization.isAuthorized(
+                device,
+                targetFormat,
+                configuration.metadata,
+                configuration.settings
+            )
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-authorization-unavailable'
+            );
+            return null;
+        }
+
+        let shaderCode: string;
+        try {
+            shaderCode = createExternalHDRColorPipelineWGSL(
+                configuration.metadata,
+                configuration.settings
+            );
+        } catch (error) {
+            console.warn('Invalid WebGPU external HDR shader configuration', error);
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+        return {
+            dolbyVisionProfile: null,
+            inputMode: 'external-hdr',
+            inputColorMetadata: { ...configuration.metadata },
             rawFrameFormat: null,
             settings: cloneRenderSettings(configuration.settings),
             shaderCode
@@ -1539,6 +1696,20 @@ export default class WebGPUPresenter {
                 metadata,
                 this.settings,
                 format
+            );
+    }
+
+    private isActiveExternalHDRAuthorized(metadata: InputColorMetadata): boolean {
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        return this.settings.mode === 'hdr-to-sdr'
+            && device !== null
+            && targetFormat !== null
+            && this.externalHDRAuthorization.isAuthorized(
+                device,
+                targetFormat,
+                metadata,
+                this.settings
             );
     }
 
@@ -1932,6 +2103,7 @@ export default class WebGPUPresenter {
             void getWebGPUHDRToneMappingEnabled().then((enabled: boolean): void => {
                 if (enabled && this.device === device && this.canvasFormat === canvasFormat) {
                     this.rawHDRAuthorization.prewarm(device, canvasFormat);
+                    this.externalHDRAuthorization.prewarm(device, canvasFormat);
                     this.externalDolbyVisionAuthorization.prewarm(device, canvasFormat);
                     this.rawDolbyVisionAuthorization.prewarm(device, canvasFormat);
                     this.profile7DolbyVisionAuthorization.prewarm(device, canvasFormat);
@@ -2148,7 +2320,7 @@ export default class WebGPUPresenter {
                     !device
                     || profile !== 5
                     || !storageBuffer
-                    || !decodedProfile5FrameColorMatches(frame)
+                    || !decodedNeutralBT709FrameColorMatches(frame)
                     || !this.isActiveExternalDolbyVisionAuthorized()
                 ) {
                     this.fallback(generation, 'decoded-frame-color-mismatch');
@@ -2164,6 +2336,18 @@ export default class WebGPUPresenter {
                     return null;
                 }
                 device.queue.writeBuffer(storageBuffer, 0, packedRPUData);
+                break;
+            }
+            case 'external-hdr': {
+                const metadata = this.activeInputColorMetadata;
+                if (
+                    !metadata
+                    || !decodedNeutralBT709FrameColorMatches(frame)
+                    || !this.isActiveExternalHDRAuthorized(metadata)
+                ) {
+                    this.fallback(generation, 'decoded-frame-color-mismatch');
+                    return null;
+                }
                 break;
             }
             case 'raw-dolby-vision':
@@ -2200,6 +2384,7 @@ export default class WebGPUPresenter {
                     format
                 );
             case 'external-dolby-vision':
+            case 'external-hdr':
             case 'external-texture':
                 this.fallback(generation, 'decoded-frame-color-mismatch');
                 return null;
@@ -3057,6 +3242,11 @@ export default class WebGPUPresenter {
         switch (this.activeInputMode) {
             case 'external-texture':
                 break;
+            case 'external-hdr':
+                presentationReauthorized = await this.reauthorizeExternalHDRPresentation(
+                    generation
+                );
+                break;
             case 'external-dolby-vision':
             case 'raw-dolby-vision':
                 presentationReauthorized = await this.reauthorizeDolbyVisionPresentation(
@@ -3132,6 +3322,44 @@ export default class WebGPUPresenter {
             metadata,
             this.settings,
             rawFrameFormat
+        );
+    }
+
+    private async reauthorizeExternalHDRPresentation(generation: number): Promise<boolean> {
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        const metadata = this.activeInputColorMetadata;
+        if (
+            !device
+            || !targetFormat
+            || !metadata
+            || this.settings.mode !== 'hdr-to-sdr'
+        ) {
+            return false;
+        }
+        const routeKey = getExternalHDRAuthorizationRouteKey(metadata);
+        if (!routeKey) {
+            return false;
+        }
+
+        const decision = await this.externalHDRAuthorization.authorize(
+            device,
+            targetFormat,
+            routeKey
+        );
+        if (
+            !this.isCurrent(generation)
+            || this.fallbackLatched
+            || this.device !== device
+            || decision.status !== 'authorized'
+        ) {
+            return false;
+        }
+        return this.externalHDRAuthorization.isAuthorized(
+            device,
+            targetFormat,
+            metadata,
+            this.settings
         );
     }
 

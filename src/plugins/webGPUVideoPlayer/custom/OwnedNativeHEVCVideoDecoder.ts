@@ -2,9 +2,12 @@ import type { EncodedPacket } from 'mediabunny';
 
 import {
     hasHEVCRASLPicture,
+    rewriteHEVCAccessUnitColorDescriptionToBT709,
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat
 } from './DolbyVisionHEVCSplitter';
+import { neutralizeNativeHDRHEVCDecoderConfig } from './NativeHDRHEVCColorNeutralizer';
+import type { HEVCHDRTransfer } from './HEVCSPSParser';
 
 export type OwnedNativeHEVCVideoDecoderCallbacks = {
     onError: (error: unknown) => void
@@ -26,6 +29,11 @@ export type OwnedNativeHEVCVideoDecoderDependencies = {
     createEncodedVideoChunk: (packet: EncodedPacket) => EncodedVideoChunk
 };
 
+export type OwnedNativeHEVCVideoDecoderOptions = {
+    nativeHDRTransfer?: HEVCHDRTransfer
+    neutralizeHDRColorMetadata?: boolean
+};
+
 const DEFAULT_DEPENDENCIES: OwnedNativeHEVCVideoDecoderDependencies = {
     // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
     createDecoder: (init: VideoDecoderInit): NativeVideoDecoderPort => new VideoDecoder(init),
@@ -39,13 +47,15 @@ export default class OwnedNativeHEVCVideoDecoder {
     private closed = false;
     private currentPacketIndex = 0;
     private decoder: NativeVideoDecoderPort | null = null;
+    private nativeHDRColorDescriptionValidated = false;
     private raslSkipped = false;
 
     public constructor(
         private readonly config: VideoDecoderConfig,
         private readonly inputFormat: HEVCNALFormat,
         private readonly callbacks: OwnedNativeHEVCVideoDecoderCallbacks,
-        private readonly dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_DEPENDENCIES
+        private readonly dependencies: OwnedNativeHEVCVideoDecoderDependencies = DEFAULT_DEPENDENCIES,
+        private readonly options: OwnedNativeHEVCVideoDecoderOptions = {}
     ) {}
 
     /** Creates and configures the native decoder exactly once. */
@@ -63,7 +73,16 @@ export default class OwnedNativeHEVCVideoDecoder {
         });
         decoder.ondequeue = (): void => this.callbacks.onProgress();
         try {
-            decoder.configure(this.config);
+            const neutralizeHDRColorMetadata =
+                this.options.neutralizeHDRColorMetadata === true;
+            decoder.configure(neutralizeHDRColorMetadata ?
+                neutralizeNativeHDRHEVCDecoderConfig(
+                    this.config,
+                    this.requireNativeHDRTransfer()
+                ) :
+                this.config);
+            this.nativeHDRColorDescriptionValidated = neutralizeHDRColorMetadata
+                && this.config.description !== undefined;
         } catch (error) {
             decoder.ondequeue = null;
             decoder.close();
@@ -87,19 +106,25 @@ export default class OwnedNativeHEVCVideoDecoder {
             this.raslSkipped = true;
         }
 
-        let decodedPacket = packet;
+        let decodedPacketData = packet.data;
         if (this.currentPacketIndex === 0) {
             const sanitizedData = sanitizeHEVCAccessUnitForChromium(
-                packet.data,
+                decodedPacketData,
                 this.inputFormat
             );
             if (sanitizedData?.byteLength === 0) {
                 return false;
             }
             if (sanitizedData) {
-                decodedPacket = packet.clone({ data: sanitizedData });
+                decodedPacketData = sanitizedData;
             }
         }
+
+        decodedPacketData = this.neutralizeHDRPacketData(packet, decodedPacketData);
+
+        const decodedPacket = decodedPacketData === packet.data ?
+            packet :
+            packet.clone({ data: decodedPacketData });
 
         decoder.decode(this.dependencies.createEncodedVideoChunk(decodedPacket));
         this.currentPacketIndex += 1;
@@ -115,6 +140,40 @@ export default class OwnedNativeHEVCVideoDecoder {
 
     public getDecodeQueueSize(): number {
         return this.decoder?.decodeQueueSize ?? 0;
+    }
+
+    private requireNativeHDRTransfer(): HEVCHDRTransfer {
+        const transfer = this.options.nativeHDRTransfer;
+        if (transfer !== 'hlg' && transfer !== 'pq') {
+            throw new TypeError('Native HDR color neutralization requires an exact HDR transfer');
+        }
+        return transfer;
+    }
+
+    private neutralizeHDRPacketData(
+        packet: EncodedPacket,
+        packetData: Uint8Array
+    ): Uint8Array {
+        if (this.options.neutralizeHDRColorMetadata !== true) {
+            return packetData;
+        }
+        if (packet.type === 'key') {
+            const neutralizedData = rewriteHEVCAccessUnitColorDescriptionToBT709(
+                packetData,
+                this.inputFormat,
+                this.requireNativeHDRTransfer()
+            );
+            if (neutralizedData) {
+                this.nativeHDRColorDescriptionValidated = true;
+                return neutralizedData;
+            }
+        }
+        if (!this.nativeHDRColorDescriptionValidated) {
+            throw new TypeError(
+                'Native HDR color neutralization requires a validated HEVC SPS'
+            );
+        }
+        return packetData;
     }
 
     /** Closes the decoder exactly once and rejects later callbacks. */

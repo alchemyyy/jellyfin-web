@@ -13,7 +13,8 @@ building:
 
 - `enableWebGPUVideoPlayer`
 - `enableWebGPUCustomDecode`
-- `enableWebGPUHDRToneMapping` for raw HDR presentation
+- `enableWebGPUHDRToneMapping` for qualified raw-plane or native external HDR
+  presentation
 - `enableWebGPUValidationHarness` for diagnostic color validation
 
 Dolby Vision support, mpv/libplacebo parity targets, profile-specific fallback
@@ -132,6 +133,31 @@ Eligibility remains narrower than the decoder's theoretical support:
   device profile and local eligibility. Missing, duplicate, malformed, or
   inconsistent output fails closed; configuration support alone does not
   authorize the route.
+- Native HEVC Main10 external HDR independently qualifies the
+  `hvc1.2.4.L153.B0` 3840x2160 route. It decodes one warm-up frame, measures
+  seven exact outputs, and quantizes measured throughput to 24, 30, or 60 fps
+  only with the same 1.25x headroom. Eligibility is bounded to progressive
+  Main10, Level 153, 3840x2160, 40 Mbps, and the qualified frame-rate tier.
+  Jellyfin metadata must explicitly provide transfer, primaries, and matrix.
+  `ColorRange` may be absent because some Jellyfin scans omit it, but the
+  neutralizer then requires the source SPS itself to prove limited range,
+  BT.2020 primaries/matrix, and the exact expected PQ or HLG transfer before
+  changing any color-description bits. Inferred HDR defaults alone cannot
+  authorize destructive metadata neutralization.
+- The native external HDR route rewrites every SPS in the owned decoder's
+  HVCC description and every in-band key access unit to limited-range BT.709,
+  and supplies the same neutral descriptor in `VideoDecoderConfig`. The
+  original packet and source metadata remain owned and unchanged. Dolby
+  Vision routes never use this neutralization flag.
+- Native external HDR presentation is separately authorized for PQ and HLG by
+  decoding a bounded embedded Main10 fixture, requiring an opaque
+  `VideoFrame` with a 1920x1088 coded surface, 1920x1080 visible area, and an
+  exact limited BT.709 color description, importing it as a
+  `GPUExternalTexture`, running the production recovery/tone-mapping shader,
+  and comparing eight GPU readback samples. Authorization is scoped to the
+  exact `GPUDevice`, canvas target format, transfer route, fixture hash,
+  shader signature, and render-settings schema. A replacement device must
+  pass authorization again before presentation resumes.
 - Config-only results never authorize native audio, H.264, ordinary native
   HEVC/VP8/VP9/AV1, native 5.1 audio, native Ultra HD expansion, raw HDR,
   Dolby Vision Profile 5, or bundled HEVC.
@@ -161,6 +187,15 @@ production pixel-readback authorization executes this exact fused renderer on
 the active device and target format. Add a reusable float working texture only
 if a future spatial, compositing, or multi-pass stage needs linear pixels to
 survive between passes.
+
+Native external HDR uses the same fused color stages after recovering the
+original limited-range 10-bit YUV code values from Chromium's deliberately
+neutralized BT.709 external texture. It is not authorized by the raw-plane
+probe. `getExternalHDRAuthorizationTelemetry()` reports the settled PQ/HLG
+route keys, pending and rejected routes, bounded failure reasons, fixture and
+render-settings versions, and active target format. A decoded frame whose
+color descriptor is not the exact neutral BT.709 contract latches
+presentation fallback instead of being sampled through the HDR shader.
 
 Dolby Vision has separate raw-plane and external-texture authorizations. The
 native Profile 5 route imports an owned decoded `VideoFrame`, executes the
@@ -255,7 +290,7 @@ Start Chromium with a remote-debugging port, serve the built frontend on
 `localhost`, and run:
 
 ```powershell
-node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://localhost:8080
+node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://localhost:8096
 ```
 
 This command reports WebGPU adapter information and calls
@@ -363,6 +398,12 @@ $env:WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE = 'testsrc2-motion'
 $env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '0'
 ```
 
+For the combined fullscreen, resize, pause/resume, seek, and stop lifecycle,
+regenerate the same route names with `-DurationSeconds 30 -Overwrite` and scan
+the Jellyfin validation library again. The parameter accepts 6 through 120
+seconds; the six-second default remains appropriate for focused startup and
+natural-end checks.
+
 To validate decoder EOF and physical audio-tail draining instead of the normal
 pause, seek, and explicit-stop lifecycle, also set:
 
@@ -409,17 +450,19 @@ Jellyfin UI. It navigates that page but does not start or stop Chromium,
 Jellyfin, or the static server. The frontend and server must use `localhost` so
 WebGPU runs in a secure context.
 
-Enable the player and custom-decode flags in the served `dist/config.json`.
-Raw HDR also requires the tone-mapping flag; the diagnostic-validation flag is
-not a substitute for production raw authorization. Enable `multiserver` when
-the static frontend and Jellyfin API are served from different ports.
+Install the final `dist` into the local Jellyfin web root and enable the player,
+custom-decode, and tone-mapping flags only in the served `dist/config.json`.
+The authoritative manual frontend and Jellyfin API are both
+`http://localhost:8096`; do not substitute a separate port-8080 frontend.
+The diagnostic-validation flag is not a substitute for production raw or
+external HDR authorization.
 
 Set the common connection and credential inputs without placing credentials on
 the process command line:
 
 ```powershell
 $env:WEBGPU_SMOKE_DEBUG_URL = 'http://localhost:9224'
-$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8080'
+$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_ITEM_ID = '<item-id>'
 $env:WEBGPU_SMOKE_USERNAME = '<username>'
@@ -453,13 +496,32 @@ $env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'bundled-hevc'
 node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
 
+For qualified native HEVC Main10 external HDR presentation:
+
+```powershell
+$env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'video-frame'
+$env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'native'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'ready'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
+Require Jellyfin Playback Info to report `WebGPU Video Player` and Direct Play,
+not HLS transcoding. In DevTools, require the custom playback result to report
+native `video-frame` output with `neutralizeHDRColorMetadata: true`, and require
+external-HDR telemetry to contain the exact PQ or HLG route for the current
+device and target. Exercise pause/resume, deterministic seek, seek storm,
+resize, DPR change, fullscreen, stop, replay, authorization rejection, and one
+device loss. Authorization rejection must not create a renegotiation loop;
+device loss gets one replacement-device authorization attempt and then falls
+back to direct video if that attempt fails.
+
 Use `WEBGPU_SMOKE_INJECT_FAILURE=paused-device-loss` to prove that a paused raw
 or native custom presentation re-decodes and repaints one exact-time frame on a
 replacement GPU device without restarting the HTML backend or emitting a
 second pause event.
 
-The raw path passes only when telemetry reports the exact active raw HDR route
-as authorized. The harness also checks playback progress, pause and resume,
+An HDR path passes only when telemetry reports the exact active raw or external
+HDR route as authorized. The harness also checks playback progress, pause and resume,
 seek storms, fullscreen where available, resize and device-pixel-ratio changes,
 bounded queues, event cardinality, stop cleanup, stale work, and browser errors.
 

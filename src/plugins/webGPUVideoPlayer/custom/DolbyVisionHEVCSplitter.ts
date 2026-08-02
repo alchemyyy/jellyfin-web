@@ -1,3 +1,8 @@
+import {
+    rewriteHEVCSPSColorDescriptionToBT709,
+    type HEVCHDRTransfer
+} from './HEVCSPSParser';
+
 const ANNEX_B_START_CODE = new Uint8Array([ 0, 0, 0, 1 ]);
 const DOLBY_VISION_RPU_NAL_UNIT_TYPE = 62;
 const DOLBY_VISION_ENHANCEMENT_WRAPPER_NAL_UNIT_TYPE = 63;
@@ -407,4 +412,28 @@ export function sanitizeHEVCAccessUnitForChromium(
         return null;
     }
     return encodeNALUnits(retainedNALUnits, format) ?? new Uint8Array();
+}
+
+/** Rewrites every in-band SPS to the neutral color descriptor used by external HDR. */
+export function rewriteHEVCAccessUnitColorDescriptionToBT709(
+    data: Uint8Array,
+    format: HEVCNALFormat,
+    expectedHDRTransfer?: HEVCHDRTransfer
+): Uint8Array | null {
+    requireAccessUnit(data);
+    const nalUnits = parseNALUnits(data, format);
+    const rewrittenNALUnits: Uint8Array[] = [];
+    let rewritten = false;
+    for (const nalUnit of nalUnits) {
+        if (nalUnit.type !== HEVC_SPS_NAL_UNIT_TYPE) {
+            rewrittenNALUnits.push(nalUnit.data);
+            continue;
+        }
+        rewrittenNALUnits.push(rewriteHEVCSPSColorDescriptionToBT709(
+            nalUnit.data,
+            expectedHDRTransfer
+        ));
+        rewritten = true;
+    }
+    return rewritten ? encodeNALUnits(rewrittenNALUnits, format) : null;
 }

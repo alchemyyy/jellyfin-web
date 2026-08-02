@@ -186,6 +186,22 @@ It therefore rejects black, static, or grossly misordered decoded output that
 would otherwise satisfy frame counters. Leave it at its default `none` for
 ordinary media whose pixels do not follow this generated pattern.
 
+For fullscreen, resize, pause/resume, seek, and stop in one run, generate a
+longer lifecycle set instead of weakening progress assertions around a
+six-second end of stream:
+
+```powershell
+./scripts/webgpu/generate-playback-smoke-media.ps1 `
+    -FfmpegPath ffmpeg `
+    -FfprobePath ffprobe `
+    -DurationSeconds 30 `
+    -Overwrite
+```
+
+`-DurationSeconds` accepts 6 through 120 seconds. A longer run overwrites the
+same deterministic route names in the selected output directory, so scan the
+Jellyfin validation library again before lifecycle smoke.
+
 For `pq-main10-1080p24-aac-ac3.mkv`, read the AC-3 track's Jellyfin
 `MediaStream.Index` after the library scan. The browser harness expects that
 Jellyfin index, not the audio-only container ordinal. After setting the common

@@ -303,6 +303,8 @@ function createPlayOptions(audioTrackIndex: number | null = null): CustomPlaybac
         durationMicroseconds: secondsToMicroseconds(120),
         maximumCodedHeight: 1_080,
         maximumCodedWidth: 1_920,
+        nativeHDRTransfer: null,
+        neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat: null,
         startTimeMicroseconds: secondsToMicroseconds(5),
         url: 'http://localhost/video.mkv?ApiKey=secret',
@@ -438,6 +440,41 @@ async function startReadyPlayback(harness: ControllerHarness, withAudio: boolean
 }
 
 describe('CustomPlaybackController', () => {
+    it('forwards native HDR metadata neutralization to the decode session', async () => {
+        const harness = createControllerHarness(false);
+        const startPromise = harness.controller.play({
+            ...createPlayOptions(),
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true
+        });
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0]?.generation;
+        if (!generation) {
+            throw new Error('Native HDR decode did not start');
+        }
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            generation,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+        await expect(startPromise).resolves.toMatchObject({
+            generation,
+            status: 'started'
+        });
+        await harness.controller.destroy();
+    });
+
     it('forwards the selected Dolby Vision profile to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({

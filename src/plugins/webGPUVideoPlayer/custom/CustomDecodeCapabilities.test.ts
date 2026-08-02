@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import CustomDecodeCapabilityProbe, {
     createNativeAudioOutputProbe,
     createNativeDolbyVisionVideoOutputProbe,
+    createNativeHDRVideoOutputProbe,
     createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
@@ -12,6 +13,7 @@ import CustomDecodeCapabilityProbe, {
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
     getQualifiedHDRMaximumFramesPerSecond,
+    type NativeDolbyVisionVideoOutputProbeRequest,
     type NativeDolbyVisionVideoOutputProbeResult,
     type RawHDRVideoOutputProbeResult,
     type WebCodecsCapabilityEnvironment
@@ -27,6 +29,7 @@ type CapabilityEnvironmentHarness = {
     environment: WebCodecsCapabilityEnvironment
     nativeAudioOutputProbe: ReturnType<typeof vi.fn>
     nativeDolbyVisionVideoOutputProbe: ReturnType<typeof vi.fn>
+    nativeHDRVideoOutputProbe: ReturnType<typeof vi.fn>
     nativeVideoOutputProbe: ReturnType<typeof vi.fn>
     rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
     videoProbe: ReturnType<typeof vi.fn>
@@ -166,6 +169,13 @@ function createEnvironment(
             outputSupported: nativeDolbyVisionVideoOutputSupported
         })
     );
+    const nativeHDRVideoOutputProbe = vi.fn(
+        async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputSupported: false
+        })
+    );
     const nativeVideoOutputProbe = vi.fn(async (probeRequest: {
         configuration: VideoDecoderConfig
     }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
@@ -186,12 +196,14 @@ function createEnvironment(
             },
             nativeAudioOutputProbe,
             nativeDolbyVisionVideoOutputProbe,
+            nativeHDRVideoOutputProbe,
             nativeVideoOutputProbe,
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         },
         nativeAudioOutputProbe,
         nativeDolbyVisionVideoOutputProbe,
+        nativeHDRVideoOutputProbe,
         nativeVideoOutputProbe,
         rawHDRVideoOutputProbe,
         videoProbe
@@ -212,6 +224,16 @@ describe('CustomDecodeCapabilityProbe', () => {
         vi.stubGlobal('AudioDecoder', class FakeAudioDecoder {});
         vi.stubGlobal('EncodedAudioChunk', undefined);
         expect(createNativeAudioOutputProbe()).toBeNull();
+    });
+
+    it('does not create a native HDR output probe without both WebCodecs APIs', () => {
+        vi.stubGlobal('VideoDecoder', undefined);
+        vi.stubGlobal('EncodedVideoChunk', class FakeEncodedVideoChunk {});
+        expect(createNativeHDRVideoOutputProbe()).toBeNull();
+
+        vi.stubGlobal('VideoDecoder', class FakeVideoDecoder {});
+        vi.stubGlobal('EncodedVideoChunk', undefined);
+        expect(createNativeHDRVideoOutputProbe()).toBeNull();
     });
 
     it('probes every representative WebCodecs configuration and records support', async () => {
@@ -239,7 +261,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             'hvc1.2.4.L153.B0',
             'vp09.02.10.10',
             'av01.0.08M.10',
-            'hev1.2.4.H150.B0'
+            'hev1.2.4.H150.B0',
+            'hvc1.2.4.L153.B0'
         ]);
         expect(harness.audioProbe.mock.calls.map(call => call[0].codec)).toEqual([
             'mp4a.40.2',
@@ -281,6 +304,18 @@ describe('CustomDecodeCapabilityProbe', () => {
             maximumLevel: 153,
             measuredFramesPerSecond: null,
             profile: 5,
+            reason: 'config-unsupported',
+            status: 'unsupported'
+        });
+        expect(capabilities.nativeHDRHEVC).toMatchObject({
+            bitDepth: 10,
+            codecString: 'hvc1.2.4.L153.B0',
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 0,
+            maximumLevel: 153,
+            measuredFramesPerSecond: null,
             reason: 'config-unsupported',
             status: 'unsupported'
         });
@@ -334,20 +369,23 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
             bundledAudioCodecCount: 2,
+            nativeHDRVideoProbeCount: 1,
             nativeSurroundAudioProbeCount: 4,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
             supportedAudioCodecCount: 4,
+            supportedNativeHDRVideoCodecCount: 0,
             supportedNativeSurroundAudioCodecCount: 0,
             supportedNativeUltraHDVideoCodecCount: 1,
             supportedRawHDRVideoCodecCount: 2,
             supportedVideoCodecCount: 2,
             unknownAudioCodecCount: 0,
+            unknownNativeHDRVideoCodecCount: 0,
             unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 9
+            videoProbeCount: 10
         });
         expect(capabilities.nativeUltraHDVideo).toMatchObject({
             av1: {
@@ -382,7 +420,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             CUSTOM_VIDEO_CODECS.length
                 + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
-                + 1
+                + 2
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(
             CUSTOM_WEB_CODECS_AUDIO_CODECS.length
@@ -1095,6 +1133,52 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
         }
     );
+
+    it('requires exact decoded native Main10 HDR output and throughput', async () => {
+        const harness = createEnvironment(
+            new Set([ 'hvc1.2.4.L153.B0' ]),
+            new Set()
+        );
+        const nativeHDRVideoOutputProbe = vi.fn(async (
+            probeRequest: NativeDolbyVisionVideoOutputProbeRequest
+        ) => ({
+            maximumFramesPerSecond: 60 as const,
+            measuredFramesPerSecond: 80,
+            outputSupported: probeRequest.expectedCodedWidth === 3_840
+        }));
+        harness.environment.nativeHDRVideoOutputProbe = nativeHDRVideoOutputProbe;
+
+        const capabilities = await new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        expect(capabilities.nativeHDRHEVC).toMatchObject({
+            bitDepth: 10,
+            codecString: 'hvc1.2.4.L153.B0',
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 60,
+            maximumLevel: 153,
+            measuredFramesPerSecond: 80,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        });
+        expect(nativeHDRVideoOutputProbe).toHaveBeenCalledOnce();
+        expect(nativeHDRVideoOutputProbe.mock.calls[0][0]).toMatchObject({
+            configuration: {
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840,
+                hardwareAcceleration: 'prefer-hardware',
+                optimizeForLatency: true
+            },
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        });
+        expect(nativeHDRVideoOutputProbe.mock.calls[0][0].encodedKeyFrame)
+            .toBeInstanceOf(Uint8Array);
+    });
 
     it('rejects native Profile 5 output without qualified throughput', async () => {
         const harness = createEnvironment(

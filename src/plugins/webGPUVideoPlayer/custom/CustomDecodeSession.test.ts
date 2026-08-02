@@ -219,7 +219,8 @@ function startSession(
     generation: number,
     audioTrackIndex?: number,
     videoOutputMode: 'raw-planes' | 'video-frame' = 'video-frame',
-    dolbyVisionProfile: CustomDecodeDolbyVisionProfile = null
+    dolbyVisionProfile: CustomDecodeDolbyVisionProfile = null,
+    neutralizeHDRColorMetadata = false
 ): void {
     session.start({
         audioTrackIndex,
@@ -227,6 +228,8 @@ function startSession(
         generation,
         maximumCodedHeight: videoOutputMode === 'raw-planes' ? 2_160 : 1_080,
         maximumCodedWidth: videoOutputMode === 'raw-planes' ? 3_840 : 1_920,
+        nativeHDRTransfer: neutralizeHDRColorMetadata ? 'pq' : null,
+        neutralizeHDRColorMetadata,
         rawVideoFrameFormat: videoOutputMode === 'raw-planes' ? 'I420P10' : null,
         startTimeMicroseconds: secondsToMicroseconds(1),
         url: 'http://localhost/video.mp4?ApiKey=secret',
@@ -393,6 +396,8 @@ describe('CustomDecodeSession', () => {
             generation: 7,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: 1_000_000,
             type: 'start',
@@ -466,6 +471,24 @@ describe('CustomDecodeSession', () => {
         });
         expect(session.acknowledgeFrame(presentationFrame)).toBe(false);
         presentationFrame.frame.close();
+    });
+
+    it('forwards native HDR metadata neutralization to the worker start request', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            vi.fn(),
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 8, undefined, 'video-frame', null, true);
+
+        expect(worker.postedMessages[0]).toMatchObject({
+            generation: 8,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
     });
 
     it('keeps two raw frames outstanding while acknowledgement is delayed', () => {
@@ -662,6 +685,8 @@ describe('CustomDecodeSession', () => {
             generation: 18,
             maximumCodedHeight: 720,
             maximumCodedWidth: 1_280,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
             url: 'http://localhost/video.mp4',
@@ -785,6 +810,8 @@ describe('CustomDecodeSession', () => {
             generation: 21,
             maximumCodedHeight: 2,
             maximumCodedWidth: 4,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: 'I420P10',
             startTimeMicroseconds: secondsToMicroseconds(1),
             url: 'http://localhost/video.mp4',
@@ -1224,6 +1251,8 @@ describe('CustomDecodeSession', () => {
             generation: 30,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
             startTimeMicroseconds: secondsToMicroseconds(1),
             url: 'http://localhost/video.mp4?ApiKey=secret',

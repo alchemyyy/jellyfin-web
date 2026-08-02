@@ -157,6 +157,26 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     }
 }
 
+function validateHDRColorNeutralization(options: CustomPlaybackPlayOptions): void {
+    if (typeof options.neutralizeHDRColorMetadata !== 'boolean') {
+        throw new TypeError('Custom playback HDR color neutralization flag is invalid');
+    }
+    if (!options.neutralizeHDRColorMetadata) {
+        if (options.nativeHDRTransfer !== null) {
+            throw new TypeError('Custom playback cannot retain an inactive native HDR transfer');
+        }
+        return;
+    }
+    if (
+        (options.nativeHDRTransfer !== 'hlg' && options.nativeHDRTransfer !== 'pq')
+        || options.videoOutputMode !== 'video-frame'
+        || options.videoDecoderBackend !== 'native'
+        || options.dolbyVisionProfile !== null
+    ) {
+        throw new TypeError('HDR color neutralization requires native non-Dolby VideoFrame output');
+    }
+}
+
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
     if (
@@ -182,6 +202,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     ) {
         throw new TypeError('Custom playback video decoder backend is invalid');
     }
+    validateHDRColorNeutralization(options);
     validateCodedDimension(
         options.maximumCodedWidth,
         MAXIMUM_RAW_VIDEO_CODED_WIDTH,
@@ -221,6 +242,8 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         dolbyVisionProfile: options.dolbyVisionProfile,
         maximumCodedHeight: options.maximumCodedHeight,
         maximumCodedWidth: options.maximumCodedWidth,
+        nativeHDRTransfer: options.nativeHDRTransfer,
+        neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
         rawVideoFrameFormat: options.rawVideoFrameFormat,
         startTimeMicroseconds: options.startTimeMicroseconds,
         url: options.url,
@@ -893,6 +916,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
                 generation,
                 maximumCodedHeight: options.maximumCodedHeight,
                 maximumCodedWidth: options.maximumCodedWidth,
+                nativeHDRTransfer: options.nativeHDRTransfer,
+                neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
                 rawVideoFrameFormat: options.rawVideoFrameFormat,
                 startTimeMicroseconds: options.startTimeMicroseconds,
                 url: options.url,

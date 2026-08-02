@@ -19,6 +19,7 @@ import {
     type CustomDecodeFailureKind,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeDolbyVisionProfile,
+    type CustomDecodeNativeHDRTransfer,
     type CustomDecodeWorkerProgressPhase,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
@@ -49,6 +50,8 @@ export type CustomDecodeSessionStartOptions = {
     generation: number
     maximumCodedHeight: number
     maximumCodedWidth: number
+    nativeHDRTransfer: CustomDecodeNativeHDRTransfer
+    neutralizeHDRColorMetadata: boolean
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     startTimeMicroseconds: Microseconds
     url: string
@@ -286,6 +289,30 @@ function validateAudioStartOptions(
     }
 }
 
+function validateHDRStartOptions(options: CustomDecodeSessionStartOptions): void {
+    if (typeof options.neutralizeHDRColorMetadata !== 'boolean') {
+        throw new TypeError('Custom decode HDR color neutralization flag is invalid');
+    }
+    if (
+        options.nativeHDRTransfer !== null
+        && options.nativeHDRTransfer !== 'hlg'
+        && options.nativeHDRTransfer !== 'pq'
+    ) {
+        throw new TypeError('Custom decode native HDR transfer is invalid');
+    }
+    const invalidRoute = options.neutralizeHDRColorMetadata ?
+        (options.nativeHDRTransfer === null
+            || options.videoOutputMode !== 'video-frame'
+            || options.videoDecoderBackend !== 'native'
+            || options.dolbyVisionProfile !== null) :
+        options.nativeHDRTransfer !== null;
+    if (invalidRoute) {
+        throw new TypeError(
+            'HDR color neutralization requires native non-Dolby VideoFrame output'
+        );
+    }
+}
+
 /** Owns one bounded, generation-safe custom video decode worker session. */
 export default class CustomDecodeSession implements DecodedFrameProvider {
     private activeAudioBridge: CustomDecodeAudioBridge | null = null;
@@ -363,6 +390,8 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 generation: options.generation,
                 maximumCodedHeight: options.maximumCodedHeight,
                 maximumCodedWidth: options.maximumCodedWidth,
+                nativeHDRTransfer: options.nativeHDRTransfer,
+                neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
                 rawVideoFrameFormat: options.rawVideoFrameFormat,
                 startTimeMicroseconds: options.startTimeMicroseconds,
                 type: 'start',
@@ -562,6 +591,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         if (!isValidVideoDecoderBackend(options.videoDecoderBackend)) {
             throw new TypeError('Custom decode video decoder backend is invalid');
         }
+        validateHDRStartOptions(options);
         if (!hasValidRawVideoFrameFormat(options)) {
             const message = options.videoOutputMode === 'raw-planes' ?
                 'Raw custom decode requires a requested raw frame format' :

@@ -2526,7 +2526,11 @@ export class HtmlVideoPlayer {
                     }
 
                     // don't animate on smart tv's, too slow
-                    if (!browser.slow && browser.supportsCssAnimation()) {
+                    if (
+                        !this.#customPlaybackActive
+                        && !browser.slow
+                        && browser.supportsCssAnimation()
+                    ) {
                         return zoomIn(playerDlg).then(() => {
                             return this.#isPlaySessionCurrent(playSessionGeneration, videoElement) ? videoElement : null;
                         });
