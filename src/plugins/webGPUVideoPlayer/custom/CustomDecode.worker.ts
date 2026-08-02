@@ -50,6 +50,8 @@ import {
     takeTransferableDolbyVisionEncodedFrameMetadata,
     type DolbyVisionEncodedFrameMetadata
 } from './DolbyVisionEncodedMetadataProtocol';
+import { DolbyVisionRPUParseError } from './DolbyVisionRPUParser';
+import DolbyVisionRPUParserSession from './DolbyVisionRPUParserSession';
 import {
     createOwnedHEVCSoftwareVideoDecoder,
     registerHEVCSoftwareVideoDecoder,
@@ -291,6 +293,9 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
         return 'range-unsupported';
     }
     if (error instanceof UnsupportedCustomDecodeSourceError) {
+        return 'source-unsupported';
+    }
+    if (error instanceof DolbyVisionRPUParseError) {
         return 'source-unsupported';
     }
     if (error instanceof MediaNetworkError) {
@@ -858,11 +863,11 @@ class OwnedHEVCStreamState {
         }
     }
 
-    public decodePacket(
+    public async decodePacket(
         packet: EncodedPacket,
         decoder: OwnedHEVCVideoDecoderPort
-    ): void {
-        const processedPacket = this.metadataQueue.processPacket(packet);
+    ): Promise<void> {
+        const processedPacket = await this.metadataQueue.processPacket(packet);
         if (processedPacket.baseLayerPacket) {
             const packetAccepted = decoder.decode(processedPacket.baseLayerPacket);
             if (!packetAccepted && processedPacket.hasBaseLayerVCL) {
@@ -992,7 +997,7 @@ async function pumpOwnedHEVCFrames(
             await state.finishPackets(decoder);
             continue;
         }
-        state.decodePacket(packetResult.value, decoder);
+        await state.decodePacket(packetResult.value, decoder);
     }
 }
 
@@ -1022,8 +1027,11 @@ async function streamOwnedHEVCFrames(
     const packetIterator = packetSink.packets(keyPacket, undefined, packetOptions);
     run.videoIterator = packetIterator;
     const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
+    const rpuParser = DolbyVisionRPUParserSession.create(
+        request.dolbyVisionRPUParserWASMURL
+    );
     const state = new OwnedHEVCStreamState(
-        new DolbyVisionEncodedMetadataQueue(inputFormat),
+        new DolbyVisionEncodedMetadataQueue(inputFormat, rpuParser),
         request.startTimeMicroseconds
     );
     const notifyDecoderProgress = (): void => {
@@ -1055,6 +1063,7 @@ async function streamOwnedHEVCFrames(
         );
     } finally {
         state.close();
+        rpuParser.close();
         try {
             await packetIterator.return?.();
         } catch {

@@ -14,6 +14,7 @@ import DolbyVisionRPUParser, {
     DolbyVisionRPUParseError,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH,
     MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH,
+    resolveDolbyVisionRPUParserWASMURL,
     type DolbyVisionRPUParserDependencies,
     type DolbyVisionRPULayerMode
 } from './DolbyVisionRPUParser';
@@ -28,6 +29,14 @@ const PARSER_WASM_PATH = resolve(
 );
 const PARSER_WASM_BYTES = new Uint8Array(readFileSync(PARSER_WASM_PATH));
 const WASM_PAGE_BYTE_LENGTH = 64 * 1_024;
+
+describe('Dolby Vision parser asset URL', () => {
+    it('resolves the copied artifact against the active frontend directory', () => {
+        expect(resolveDolbyVisionRPUParserWASMURL(
+            'https://example.test/web/index.html#!/details'
+        )).toBe('https://example.test/web/libraries/libdovi/dovi-rpu-parser.wasm');
+    });
+});
 
 type ParserFixture = {
     componentMMRVectorCounts: readonly [number, number, number]

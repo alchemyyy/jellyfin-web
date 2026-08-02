@@ -10,6 +10,7 @@ import {
     DecodedVideoGeometryError,
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
+import { resolveDolbyVisionRPUParserWASMURL } from './DolbyVisionRPUParser';
 import { requireMicroseconds } from './TimeMath';
 import {
     isDecodeWorkerResponse,
@@ -347,6 +348,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             const startRequest: DecodeWorkerRequest = {
                 audioSampleCredits: 0,
                 audioTrackIndex: options.audioTrackIndex ?? null,
+                dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
                 frameCredits: options.videoOutputMode === 'raw-planes' ?
                     MAX_DECODED_RAW_FRAME_CREDITS :
                     MAX_DECODED_FRAME_CREDITS,
@@ -1035,7 +1037,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         this.telemetry.receivedDolbyVisionFrameCount += 1;
-        this.telemetry.receivedDolbyVisionRPUCount += metadata.rpuNALUnits.length;
+        this.telemetry.receivedDolbyVisionRPUCount += metadata.parsedRPUData.length;
         if (metadata.enhancementLayerData) {
             this.telemetry.receivedDolbyVisionEnhancementFrameCount += 1;
         }

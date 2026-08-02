@@ -1,9 +1,20 @@
 import { EncodedPacket } from 'mediabunny';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import DolbyVisionEncodedMetadataQueue, {
     MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT
 } from './DolbyVisionEncodedMetadata';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from './DolbyVisionRPUParser';
+
+function createRPUParser(): {
+    parse: ReturnType<typeof vi.fn>
+} {
+    return {
+        parse: vi.fn(async (): Promise<ArrayBuffer> => (
+            new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH)
+        ))
+    };
+}
 
 function createNALUnit(type: number, payload: readonly number[]): Uint8Array {
     return new Uint8Array([ (type & 0x3F) << 1, 1, ...payload ]);
@@ -58,7 +69,7 @@ function createPacket(
 }
 
 describe('DolbyVisionEncodedMetadataQueue', () => {
-    it('strips RPU and EL NAL units while retaining owned metadata by integer PTS', () => {
+    it('strips RPU and EL NAL units while retaining owned metadata by integer PTS', async () => {
         const basePicture = createNALUnit(19, [ 1, 2, 3 ]);
         const rpu = createNALUnit(62, [ 25, 8, 9, 10 ]);
         const enhancementPicture = createNALUnit(1, [ 4, 5, 6 ]);
@@ -68,9 +79,10 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             basePicture,
             enhancementWrapper
         ]);
-        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' });
+        const rpuParser = createRPUParser();
+        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' }, rpuParser);
 
-        const processedPacket = queue.processPacket(createPacket(packetData, 1.25, 7));
+        const processedPacket = await queue.processPacket(createPacket(packetData, 1.25, 7));
         packetData.fill(0);
 
         expect(processedPacket.hasBaseLayerVCL).toBe(true);
@@ -80,6 +92,8 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         )).toEqual([ 19 ]);
         const metadata = queue.takeFrameMetadata(1_250_000);
         expect(metadata?.rpuNALUnits).toEqual([ rpu ]);
+        expect(metadata?.parsedRPUData).toHaveLength(1);
+        expect(rpuParser.parse).toHaveBeenCalledWith(rpu);
         expect(getAnnexBNALUnitTypes(
             metadata?.enhancementLayerData ?? new Uint8Array()
         )).toEqual([ 1 ]);
@@ -87,28 +101,33 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         queue.requireDrained();
     });
 
-    it('tracks ordinary HEVC pictures without manufacturing Dolby Vision data', () => {
-        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' });
+    it('tracks ordinary HEVC pictures without manufacturing Dolby Vision data', async () => {
+        const rpuParser = createRPUParser();
+        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' }, rpuParser);
         const basePicture = createNALUnit(1, [ 1 ]);
 
-        queue.processPacket(createPacket(encodeAnnexBNALUnits([ basePicture ]), 2));
+        await queue.processPacket(createPacket(encodeAnnexBNALUnits([ basePicture ]), 2));
 
         expect(queue.takeFrameMetadata(2_000_000)).toBeNull();
+        expect(rpuParser.parse).not.toHaveBeenCalled();
         queue.requireDrained();
     });
 
-    it('preserves decode-order entries that share a presentation timestamp', () => {
-        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' });
+    it('preserves decode-order entries that share a presentation timestamp', async () => {
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser()
+        );
         const firstRPU = createNALUnit(62, [ 1 ]);
         const secondRPU = createNALUnit(62, [ 2 ]);
         const basePicture = createNALUnit(1, [ 3 ]);
 
-        queue.processPacket(createPacket(
+        await queue.processPacket(createPacket(
             encodeAnnexBNALUnits([ firstRPU, basePicture ]),
             3,
             1
         ));
-        queue.processPacket(createPacket(
+        await queue.processPacket(createPacket(
             encodeAnnexBNALUnits([ secondRPU, basePicture ]),
             3,
             2
@@ -119,21 +138,48 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         queue.requireDrained();
     });
 
-    it('rejects unpaired metadata and mismatched decoder output', () => {
-        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' });
+    it('rejects unpaired metadata and mismatched decoder output', async () => {
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser()
+        );
         const rpu = createNALUnit(62, [ 1 ]);
 
-        expect(() => queue.processPacket(createPacket(
+        await expect(queue.processPacket(createPacket(
             encodeAnnexBNALUnits([ rpu ]),
             4
-        ))).toThrow('not paired with a base-layer picture');
+        ))).rejects.toThrow('not paired with a base-layer picture');
         expect(() => queue.takeFrameMetadata(4_000_000)).toThrow(
             'no matching encoded packet metadata'
         );
     });
 
-    it('bounds pending metadata even when access units contain no DV bytes', () => {
-        const queue = new DolbyVisionEncodedMetadataQueue({ kind: 'annex-b' });
+    it('does not enqueue a frame when RPU parsing fails', async () => {
+        const parseFailure = new Error('RPU parse failed');
+        const rpuParser = createRPUParser();
+        rpuParser.parse.mockRejectedValue(parseFailure);
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            rpuParser
+        );
+        const rpu = createNALUnit(62, [ 1 ]);
+        const basePicture = createNALUnit(1, [ 2 ]);
+
+        await expect(queue.processPacket(createPacket(
+            encodeAnnexBNALUnits([ rpu, basePicture ]),
+            5
+        ))).rejects.toBe(parseFailure);
+        expect(() => queue.takeFrameMetadata(5_000_000)).toThrow(
+            'no matching encoded packet metadata'
+        );
+        queue.requireDrained();
+    });
+
+    it('bounds pending metadata even when access units contain no DV bytes', async () => {
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            createRPUParser()
+        );
         const basePicture = createNALUnit(1, [ 1 ]);
         const packetData = encodeAnnexBNALUnits([ basePicture ]);
         for (
@@ -141,10 +187,14 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
             packetIndex < MAXIMUM_DOLBY_VISION_PENDING_FRAME_COUNT;
             packetIndex += 1
         ) {
-            queue.processPacket(createPacket(packetData, packetIndex / 24, packetIndex));
+            await queue.processPacket(createPacket(
+                packetData,
+                packetIndex / 24,
+                packetIndex
+            ));
         }
 
-        expect(() => queue.processPacket(createPacket(packetData, 10, 100))).toThrow(
+        await expect(queue.processPacket(createPacket(packetData, 10, 100))).rejects.toThrow(
             'frame window exceeded its bound'
         );
         queue.clear();

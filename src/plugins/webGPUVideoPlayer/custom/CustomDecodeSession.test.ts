@@ -19,6 +19,13 @@ import {
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 } from './DolbyVisionEncodedMetadataProtocol';
+import {
+    DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
+    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+    DOLBY_VISION_RPU_SCHEMA_MAGIC,
+    DOLBY_VISION_RPU_SCHEMA_VERSION,
+    resolveDolbyVisionRPUParserWASMURL
+} from './DolbyVisionRPUParser';
 import type {
     OwnedNativeMediaAudioEventHandler,
     OwnedNativeMediaAudioTelemetry
@@ -34,6 +41,16 @@ vi.mock('./CustomDecode.worker', () => ({
 
 type MessageHandler = (event: MessageEvent<unknown>) => void;
 type ErrorHandler = (event: ErrorEvent) => void;
+
+function createPackedRPUData(): ArrayBuffer {
+    const data = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
+    const view = new DataView(data);
+    view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
+    view.setUint32(4, DOLBY_VISION_RPU_SCHEMA_VERSION, true);
+    view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
+    view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
+    return data;
+}
 
 class MockWorker {
     readonly postedMessages: unknown[] = [];
@@ -265,7 +282,7 @@ describe('CustomDecodeSession', () => {
         const encodedDolbyVisionMetadata = {
             enhancementLayerData: new ArrayBuffer(32),
             hasEnhancementLayerVCL: true,
-            rpuNALUnits: [ new ArrayBuffer(16), new ArrayBuffer(24) ],
+            parsedRPUData: [ createPackedRPUData(), createPackedRPUData() ],
             schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
         } as const;
         worker.emitMessage({
@@ -305,6 +322,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages).toEqual([ {
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionRPUParserWASMURL: resolveDolbyVisionRPUParserWASMURL(),
             frameCredits: MAX_DECODED_FRAME_CREDITS,
             generation: 7,
             maximumCodedHeight: 1_080,

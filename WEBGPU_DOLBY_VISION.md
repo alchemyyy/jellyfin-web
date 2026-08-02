@@ -1,6 +1,7 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: research, HEVC packet ownership, and bounded RPU parser complete; runtime shader integration pending
+Status: research, HEVC packet ownership, bounded RPU parsing, and timestamped
+metadata integration complete; runtime shader reconstruction pending
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -50,7 +51,7 @@ The Profile 7 work landed in May 2026, after the v0.41.0 release. It is in
 current mpv development sources but not the latest stable release as of the
 research date.
 
-## Implemented parser checkpoint
+## Implemented parser and metadata checkpoint
 
 The repository now contains a pinned `wasm32-unknown-unknown` wrapper around
 libdovi revision `38adec045bf183c24df38149836c920398072281`. It has no WASM
@@ -81,10 +82,18 @@ the 16 MiB growth ceiling, and corrupt packed-schema rejection. Rust unit tests
 cover explicit mapping storage, exact prior-ID lookup, ID-zero fallback, and
 reset semantics.
 
-This checkpoint does not yet advertise Dolby Vision or alter live playback.
-The next integration step is to parse RPU NAL units in HEVC decode order, pair
-the copied snapshot with the decoded base frame's integer-microsecond PTS, and
-only then enable the libplacebo-equivalent WGSL reconstruction route.
+Each HEVC worker generation now owns and prewarms one parser session. RPU NAL
+units are parsed sequentially in packet decode order before the cleaned base
+layer packet reaches the decoder. Ordinary HEVC packets do not wait for parser
+initialization. Parsed snapshots are paired with decoder output by exact signed
+integer-microsecond PTS and transferred to the main thread with the encoded
+enhancement access unit under protocol schema version 2. Raw RPU bytes remain
+worker-internal. Stop, seek, failure, and generation retirement reset and close
+the parser exactly once.
+
+This checkpoint still does not advertise Dolby Vision or alter presentation.
+The next integration step is the libplacebo-equivalent WGSL reconstruction
+route, followed by frame-level conformance validation before eligibility changes.
 
 ## Profile support matrix
 
@@ -311,17 +320,20 @@ decode. `DolbyVisionEncodedMetadataQueue`:
 - joins those copies to decoded frames by exact integer-microsecond PTS;
 - rejects unmatched output, silent packet loss, and unbounded metadata windows.
 
-Encoded metadata crosses the worker boundary with schema version 1 and explicit
-transfer ownership. Session telemetry counts DV frames, RPUs, and enhancement
-access units. The bundled HEVC path passes repeated playback and natural-EOF
-browser smoke tests after this refactor. The native HEVC path uses one directly
-owned `VideoDecoder`, preserves Chromium's first-access-unit sanitization and
-leading RASL handling, bounds its decode and decoded-sample queues, and passes a
-natural-EOF Chrome smoke test with 240 decoded and presented frames.
+Parsed RPU snapshots and encoded enhancement access units cross the worker
+boundary with schema version 2 and explicit transfer ownership. Raw RPU bytes
+remain worker-internal. Session telemetry counts DV frames, parsed RPUs, and
+enhancement access units. The bundled HEVC path passes repeated playback and
+natural-EOF browser smoke tests after this refactor. The native HEVC path uses
+one directly owned `VideoDecoder`, preserves Chromium's first-access-unit
+sanitization and leading RASL handling, bounds its decode and decoded-sample
+queues, and passes a natural-EOF Chrome smoke test with 240 decoded and
+presented frames.
 
-This completes only the packet-ownership prerequisite. The RPU is not parsed or
-applied by a shader, and Dolby Vision remains ineligible. Profile 5 must stay
-rejected until parser and reconstruction validation are complete.
+This completes packet ownership, decode-order parsing, and exact-PTS metadata
+transfer. The parsed RPU is not yet applied by a shader, so Dolby Vision remains
+ineligible. Profile 5 must stay rejected until reconstruction validation is
+complete.
 
 ### Dolby Vision is deliberately rejected
 
@@ -360,28 +372,31 @@ I420P10:bt2020-ncl:bt2020:limited:hlg
 No `DOVI` range should be added to the Jellyfin device profile until the exact
 profile, container, decoder, parser, and shader route passes validation.
 
-### The HEVC decode path now exposes encoded Dolby Vision data
+### The HEVC decode path now exposes parsed Dolby Vision data
 
 [`CustomDecode.worker.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDecode.worker.ts)
 uses `EncodedPacketSink` for every HEVC route. The worker splits RPU NAL type 62
 and enhancement-layer NAL type 63 before dispatching the cleaned base-layer
 packet to either `OwnedNativeHEVCVideoDecoder` or the bundled software decoder.
-The split data remains associated with the decoded `VideoSample` by exact
-integer-microsecond PTS.
+RPU NAL units are parsed before base-layer decode, and the resulting immutable
+snapshot remains associated with the decoded `VideoSample` by exact
+integer-microsecond PTS. Encoded enhancement data remains separately owned for
+the later Profile 7 path.
 
 The pinned Mediabunny 1.52.2 package exposes `EncodedPacketSink` at
 `node_modules/mediabunny/src/media-sink.ts:147`. It yields packets in decode
-order and is the integration point for player-owned decoding. The remaining
-work at this boundary is to parse RPUs in decode order and attach immutable
-parsed snapshots instead of raw encoded NAL units.
+order and is the integration point for player-owned decoding. The metadata
+queue is decoder-agnostic, so both owned native and bundled HEVC routes use the
+same parse, association, and transfer behavior.
 
-### The frame protocol has encoded but not parsed Dolby Vision metadata
+### The frame protocol carries parsed Dolby Vision metadata
 
 [`RawVideoFrameCopy.ts`](./src/plugins/webGPUVideoPlayer/custom/RawVideoFrameCopy.ts)
 defines `TransferableRawVideoFrame` at lines 58-71. It carries raw planes,
 geometry, standard `VideoColorSpace`, and timestamps. The surrounding worker
-frame response can now carry schema-versioned encoded RPU and EL buffers with
-explicit transfer ownership, but it has no parsed RPU reconstruction state.
+frame response now carries schema-versioned packed RPU reconstruction snapshots
+and separately encoded EL buffers with explicit transfer ownership. Raw RPU
+bytes never cross this boundary.
 
 [`WebGPUPresenter.ts`](./src/plugins/webGPUVideoPlayer/WebGPUPresenter.ts)
 defines `DecodedRawPresentationFrame` at lines 142-147 and requires standard

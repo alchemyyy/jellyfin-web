@@ -15,10 +15,29 @@ import {
 } from './DecodeWorkerProtocol';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
-    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH
+    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
 } from './DolbyVisionEncodedMetadataProtocol';
+import {
+    DOLBY_VISION_RPU_PARSER_REVISION_PREFIX,
+    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+    DOLBY_VISION_RPU_SCHEMA_MAGIC,
+    DOLBY_VISION_RPU_SCHEMA_VERSION
+} from './DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
 import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
+
+const DOLBY_VISION_RPU_PARSER_WASM_URL =
+    'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
+
+function createPackedRPUData(): ArrayBuffer {
+    const data = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
+    const view = new DataView(data);
+    view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
+    view.setUint32(4, DOLBY_VISION_RPU_SCHEMA_VERSION, true);
+    view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
+    view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
+    return data;
+}
 
 function createRawFrame(): TransferableRawVideoFrame {
     return {
@@ -88,6 +107,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_FRAME_CREDITS,
             generation: 1,
             maximumCodedHeight: 1_080,
@@ -125,6 +145,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 2,
             maximumCodedHeight: 2_160,
@@ -161,7 +182,7 @@ describe('DecodeWorkerProtocol', () => {
             encodedDolbyVisionMetadata: {
                 enhancementLayerData: new ArrayBuffer(32),
                 hasEnhancementLayerVCL: true,
-                rpuNALUnits: [ new ArrayBuffer(16) ],
+                parsedRPUData: [ createPackedRPUData() ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(true);
@@ -170,7 +191,16 @@ describe('DecodeWorkerProtocol', () => {
             encodedDolbyVisionMetadata: {
                 enhancementLayerData: null,
                 hasEnhancementLayerVCL: false,
-                rpuNALUnits: [ new ArrayBuffer(0) ],
+                parsedRPUData: [ createPackedRPUData() ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: null,
+                hasEnhancementLayerVCL: false,
+                parsedRPUData: [],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(false);
@@ -179,9 +209,19 @@ describe('DecodeWorkerProtocol', () => {
             encodedDolbyVisionMetadata: {
                 enhancementLayerData: null,
                 hasEnhancementLayerVCL: false,
-                rpuNALUnits: [
-                    new ArrayBuffer(MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH + 1)
-                ],
+                parsedRPUData: [ new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: null,
+                hasEnhancementLayerVCL: false,
+                parsedRPUData: Array.from(
+                    { length: MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT + 1 },
+                    createPackedRPUData
+                ),
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(false);
@@ -190,7 +230,7 @@ describe('DecodeWorkerProtocol', () => {
             encodedDolbyVisionMetadata: {
                 enhancementLayerData: null,
                 hasEnhancementLayerVCL: true,
-                rpuNALUnits: [ new ArrayBuffer(16) ],
+                parsedRPUData: [ createPackedRPUData() ],
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
             }
         })).toBe(false);
@@ -200,6 +240,7 @@ describe('DecodeWorkerProtocol', () => {
         const baseRequest = {
             audioSampleCredits: 0,
             audioTrackIndex: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
             generation: 2,
             maximumCodedHeight: 2_160,
@@ -230,6 +271,12 @@ describe('DecodeWorkerProtocol', () => {
             rawVideoFrameFormat: null,
             videoOutputMode: 'video-frame'
         })).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...baseRequest,
+            dolbyVisionRPUParserWASMURL: 'https://user:secret@example.test/parser.wasm',
+            rawVideoFrameFormat: null,
+            videoOutputMode: 'video-frame'
+        })).toBe(false);
     });
 
     it('rejects floating-point timestamps and invalid frame credits', () => {
@@ -376,6 +423,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             audioTrackIndex: 1,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 2,
             maximumCodedHeight: 1_080,
@@ -407,6 +455,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: 1,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 2,
             maximumCodedHeight: 1_080,
@@ -475,6 +524,7 @@ describe('DecodeWorkerProtocol', () => {
             audioOutputMode: 'native-media',
             audioSampleCredits: 2,
             audioTrackIndex: 1,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
             generation: 4,
             maximumCodedHeight: 1_080,

@@ -9,6 +9,7 @@ import {
     MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT,
     type DolbyVisionEncodedFrameMetadata
 } from './DolbyVisionEncodedMetadataProtocol';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from './DolbyVisionRPUParser';
 import {
     splitDolbyVisionHEVCAccessUnit,
     type HEVCNALFormat
@@ -21,6 +22,10 @@ export const MAXIMUM_DOLBY_VISION_PENDING_METADATA_BYTE_LENGTH = 64 * 1_024 * 1_
 export type ProcessedDolbyVisionHEVCPacket = {
     baseLayerPacket: EncodedPacket | null
     hasBaseLayerVCL: boolean
+};
+
+export type DolbyVisionRPUDataParser = {
+    parse: (rpuNALUnit: Uint8Array) => Promise<ArrayBuffer>
 };
 
 type PendingFrameMetadata = {
@@ -59,6 +64,7 @@ export function getHEVCNALFormat(decoderConfig: VideoDecoderConfig): HEVCNALForm
 
 function getMetadataByteLength(
     rpuNALUnits: readonly Uint8Array[],
+    parsedRPUData: readonly ArrayBuffer[],
     enhancementLayerData: Uint8Array | null
 ): number {
     if (rpuNALUnits.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT) {
@@ -74,16 +80,22 @@ function getMetadataByteLength(
             throw new TypeError('A Dolby Vision RPU NAL unit exceeds its size bound');
         }
         rpuByteLength += rpuNALUnit.byteLength;
-        if (rpuByteLength > MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH) {
-            throw new TypeError('Dolby Vision RPU data exceeds its per-frame size bound');
-        }
+    }
+    if (rpuByteLength > MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH) {
+        throw new TypeError('Dolby Vision RPU data exceeds its per-frame size bound');
+    }
+    if (parsedRPUData.length !== rpuNALUnits.length
+        || parsedRPUData.some(data => data.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH)) {
+        throw new TypeError('Parsed Dolby Vision RPU data does not match its encoded frame');
     }
 
     const enhancementLayerByteLength = enhancementLayerData?.byteLength ?? 0;
     if (enhancementLayerByteLength > MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH) {
         throw new TypeError('A Dolby Vision enhancement access unit exceeds its size bound');
     }
-    return rpuByteLength + enhancementLayerByteLength;
+    return rpuByteLength
+        + (parsedRPUData.length * DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH)
+        + enhancementLayerByteLength;
 }
 
 /** Owns split HEVC metadata until the decoder emits the matching frame PTS. */
@@ -92,10 +104,13 @@ export default class DolbyVisionEncodedMetadataQueue {
     private pendingFrameCount = 0;
     private readonly pendingFrames = new Map<number, PendingFrameMetadata[]>();
 
-    public constructor(private readonly inputFormat: HEVCNALFormat) {}
+    public constructor(
+        private readonly inputFormat: HEVCNALFormat,
+        private readonly rpuParser: DolbyVisionRPUDataParser
+    ) {}
 
     /** Removes DV NAL units from one packet and records bounded frame metadata. */
-    public processPacket(packet: EncodedPacket): ProcessedDolbyVisionHEVCPacket {
+    public async processPacket(packet: EncodedPacket): Promise<ProcessedDolbyVisionHEVCPacket> {
         const timestampMicroseconds = requireMicroseconds(
             packet.microsecondTimestamp,
             'Encoded HEVC packet timestamp'
@@ -107,9 +122,15 @@ export default class DolbyVisionEncodedMetadataQueue {
             throw new TypeError('Dolby Vision metadata is not paired with a base-layer picture');
         }
 
+        const parsedRPUData: ArrayBuffer[] = [];
+        for (const rpuNALUnit of splitResult.rpuNALUnits) {
+            parsedRPUData.push(await this.rpuParser.parse(rpuNALUnit));
+        }
+
         if (splitResult.hasBaseLayerVCL) {
             const metadataByteLength = getMetadataByteLength(
                 splitResult.rpuNALUnits,
+                parsedRPUData,
                 splitResult.enhancementLayerData
             );
             this.enqueueFrame(timestampMicroseconds, {
@@ -117,6 +138,7 @@ export default class DolbyVisionEncodedMetadataQueue {
                 metadata: hasDolbyVisionData ? {
                     enhancementLayerData: splitResult.enhancementLayerData,
                     hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL,
+                    parsedRPUData,
                     rpuNALUnits: splitResult.rpuNALUnits,
                     schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
                 } : null

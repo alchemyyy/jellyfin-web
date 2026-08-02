@@ -23,6 +23,7 @@ export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
 export const MAX_DECODED_AUDIO_SAMPLE_RATE = 192_000;
+const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
 export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
@@ -58,6 +59,7 @@ export type DecodeWorkerStartRequest = {
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
+    dolbyVisionRPUParserWASMURL: string
     frameCredits: number
     generation: number
     maximumCodedHeight: number
@@ -255,6 +257,22 @@ function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode
 
 function isRawVideoFrameFormat(value: unknown): value is CustomDecodeRawVideoFrameFormat {
     return value === 'I420P10' || value === 'I420P12';
+}
+
+function isCodecAssetURL(value: unknown): value is string {
+    if (typeof value !== 'string'
+        || value.length === 0
+        || value.length > MAXIMUM_CODEC_ASSET_URL_LENGTH) {
+        return false;
+    }
+    try {
+        const parsedURL = new URL(value);
+        return (parsedURL.protocol === 'http:' || parsedURL.protocol === 'https:')
+            && parsedURL.username.length === 0
+            && parsedURL.password.length === 0;
+    } catch {
+        return false;
+    }
 }
 
 type RawVideoFormatValidation = {
@@ -483,6 +501,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     && value.rawVideoFrameFormat === null;
             return typeof value.url === 'string'
                 && value.url.length > 0
+                && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
                 && isTrackIndex(value.videoTrackIndex)
                 && isCodedDimensionBound(

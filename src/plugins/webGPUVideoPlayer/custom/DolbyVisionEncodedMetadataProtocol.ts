@@ -1,12 +1,21 @@
-export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 1;
+import {
+    hasCompatibleDolbyVisionRPUSnapshotHeader,
+    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
+} from './DolbyVisionRPUParser';
+
+export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 2;
 export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT = 16;
-export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH = 1 * 1_024 * 1_024;
-export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH = 2 * 1_024 * 1_024;
+export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH =
+    MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
+export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH =
+    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
+    * MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH;
 export const MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH = 32 * 1_024 * 1_024;
 
 export type DolbyVisionEncodedFrameMetadata = {
     enhancementLayerData: Uint8Array | null
     hasEnhancementLayerVCL: boolean
+    parsedRPUData: readonly ArrayBuffer[]
     rpuNALUnits: readonly Uint8Array[]
     schemaVersion: typeof DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 };
@@ -14,7 +23,7 @@ export type DolbyVisionEncodedFrameMetadata = {
 export type TransferableDolbyVisionEncodedFrameMetadata = {
     enhancementLayerData: ArrayBuffer | null
     hasEnhancementLayerVCL: boolean
-    rpuNALUnits: readonly ArrayBuffer[]
+    parsedRPUData: readonly ArrayBuffer[]
     schemaVersion: typeof DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
 };
 
@@ -37,16 +46,12 @@ export function takeTransferableDolbyVisionEncodedFrameMetadata(
         return null;
     }
 
-    const rpuNALUnits: ArrayBuffer[] = [];
-    for (const rpuNALUnit of metadata.rpuNALUnits) {
-        rpuNALUnits.push(takeOwnedArrayBuffer(rpuNALUnit));
-    }
     return {
         enhancementLayerData: metadata.enhancementLayerData ?
             takeOwnedArrayBuffer(metadata.enhancementLayerData) :
             null,
         hasEnhancementLayerVCL: metadata.hasEnhancementLayerVCL,
-        rpuNALUnits,
+        parsedRPUData: metadata.parsedRPUData,
         schemaVersion: metadata.schemaVersion
     };
 }
@@ -60,7 +65,7 @@ export function getDolbyVisionEncodedMetadataTransferList(
     }
 
     const transferables: Transferable[] = [];
-    transferables.push(...metadata.rpuNALUnits);
+    transferables.push(...metadata.parsedRPUData);
     if (metadata.enhancementLayerData) {
         transferables.push(metadata.enhancementLayerData);
     }
@@ -78,31 +83,22 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(
     if (
         metadata.schemaVersion !== DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
         || typeof metadata.hasEnhancementLayerVCL !== 'boolean'
-        || !Array.isArray(metadata.rpuNALUnits)
-        || metadata.rpuNALUnits.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
+        || !Array.isArray(metadata.parsedRPUData)
+        || metadata.parsedRPUData.length > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
         || !(metadata.enhancementLayerData === null
             || metadata.enhancementLayerData instanceof ArrayBuffer)
     ) {
         return false;
     }
 
-    let rpuByteLength = 0;
-    for (const rpuNALUnit of metadata.rpuNALUnits) {
-        if (
-            !(rpuNALUnit instanceof ArrayBuffer)
-            || rpuNALUnit.byteLength === 0
-            || rpuNALUnit.byteLength > MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH
-        ) {
+    for (const packedRPUData of metadata.parsedRPUData) {
+        if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedRPUData)) {
             return false;
         }
-        rpuByteLength += rpuNALUnit.byteLength;
-    }
-    if (rpuByteLength > MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH) {
-        return false;
     }
 
     const enhancementLayerByteLength = metadata.enhancementLayerData?.byteLength ?? 0;
     return enhancementLayerByteLength <= MAXIMUM_DOLBY_VISION_ENHANCEMENT_ACCESS_UNIT_BYTE_LENGTH
         && (!metadata.hasEnhancementLayerVCL || enhancementLayerByteLength > 0)
-        && rpuByteLength + enhancementLayerByteLength > 0;
+        && metadata.parsedRPUData.length + enhancementLayerByteLength > 0;
 }

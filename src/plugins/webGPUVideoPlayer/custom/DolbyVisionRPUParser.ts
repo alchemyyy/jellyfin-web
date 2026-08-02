@@ -3,10 +3,10 @@ export const DOLBY_VISION_RPU_PARSER_WASM_ASSET =
 export const DOLBY_VISION_RPU_SCHEMA_VERSION = 1;
 export const DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH = 3_232;
 export const DOLBY_VISION_RPU_PARSER_REVISION_PREFIX = 0x38AD_EC04;
+export const DOLBY_VISION_RPU_SCHEMA_MAGIC = 0x5052_5644;
 export const MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH = 64 * 1_024;
 export const MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH = 16 * 1_024 * 1_024;
 
-const DOLBY_VISION_RPU_SCHEMA_MAGIC = 0x5052_5644;
 const MAXIMUM_PARSER_ARTIFACT_BYTE_LENGTH = 2 * 1_024 * 1_024;
 const MAXIMUM_PARSER_ERROR_BYTE_LENGTH = 512;
 const PACKED_HEADER_BYTE_LENGTH = 192;
@@ -133,6 +133,15 @@ async function loadDefaultInstance(wasmURL: string): Promise<WebAssembly.Instanc
 const DEFAULT_DEPENDENCIES: DolbyVisionRPUParserDependencies = {
     loadInstance: loadDefaultInstance
 };
+
+/** Resolves the copied parser artifact against the active Jellyfin frontend. */
+export function resolveDolbyVisionRPUParserWASMURL(
+    baseURL: string | undefined = globalThis.location?.href
+): string {
+    return baseURL ?
+        new URL(DOLBY_VISION_RPU_PARSER_WASM_ASSET, baseURL).href :
+        DOLBY_VISION_RPU_PARSER_WASM_ASSET;
+}
 
 function getWASMFunction(
     exportsValue: Record<string, unknown>,
@@ -458,11 +467,13 @@ function validateOptionalSnapshotMetadata(
     }
 }
 
-/** Validates and decodes one owned schema-versioned parser snapshot. */
-export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisionRPUSnapshot {
+/** Checks the fixed fields needed to safely transport a parser snapshot. */
+export function hasCompatibleDolbyVisionRPUSnapshotHeader(
+    packedData: unknown
+): packedData is ArrayBuffer {
     if (!(packedData instanceof ArrayBuffer)
         || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
-        throw new TypeError('Dolby Vision RPU snapshot has an invalid byte length');
+        return false;
     }
     const view = new DataView(packedData);
     const magic = view.getUint32(0, true);
@@ -470,15 +481,26 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     const declaredByteLength = view.getUint32(8, true);
     const flags = view.getUint32(12, true);
     const parserRevisionPrefix = view.getUint32(16, true);
-    if (
-        magic !== DOLBY_VISION_RPU_SCHEMA_MAGIC
-        || schemaVersion !== DOLBY_VISION_RPU_SCHEMA_VERSION
-        || declaredByteLength !== packedData.byteLength
-        || parserRevisionPrefix !== DOLBY_VISION_RPU_PARSER_REVISION_PREFIX
-        || (flags & ~KNOWN_SCHEMA_FLAGS) !== 0
-    ) {
+    return magic === DOLBY_VISION_RPU_SCHEMA_MAGIC
+        && schemaVersion === DOLBY_VISION_RPU_SCHEMA_VERSION
+        && declaredByteLength === packedData.byteLength
+        && parserRevisionPrefix === DOLBY_VISION_RPU_PARSER_REVISION_PREFIX
+        && (flags & ~KNOWN_SCHEMA_FLAGS) === 0;
+}
+
+/** Validates and decodes one owned schema-versioned parser snapshot. */
+export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisionRPUSnapshot {
+    if (!(packedData instanceof ArrayBuffer)
+        || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
+        throw new TypeError('Dolby Vision RPU snapshot has an invalid byte length');
+    }
+    if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedData)) {
         throw new TypeError('Dolby Vision RPU snapshot header is incompatible');
     }
+    const view = new DataView(packedData);
+    const schemaVersion = view.getUint32(4, true);
+    const flags = view.getUint32(12, true);
+    const parserRevisionPrefix = view.getUint32(16, true);
 
     const profile = view.getUint32(20, true);
     const validatedFlags = validateSnapshotFlags(profile, flags);
