@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
     createNativeDolbyVisionVideoOutputProbe,
+    createNativeVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
@@ -19,6 +20,7 @@ type CapabilityEnvironmentHarness = {
     audioProbe: ReturnType<typeof vi.fn>
     environment: WebCodecsCapabilityEnvironment
     nativeDolbyVisionVideoOutputProbe: ReturnType<typeof vi.fn>
+    nativeVideoOutputProbe: ReturnType<typeof vi.fn>
     rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
     videoProbe: ReturnType<typeof vi.fn>
 };
@@ -93,7 +95,8 @@ function createEnvironment(
     videoSupport: ReadonlySet<string>,
     audioSupport: ReadonlySet<string>,
     rawHDRVideoOutputSupport: ReadonlySet<string> = new Set<string>(),
-    nativeDolbyVisionVideoOutputSupported = false
+    nativeDolbyVisionVideoOutputSupported = false,
+    nativeVideoOutputSupport: ReadonlySet<string> = videoSupport
 ): CapabilityEnvironmentHarness {
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
@@ -109,6 +112,9 @@ function createEnvironment(
     const nativeDolbyVisionVideoOutputProbe = vi.fn(
         async (): Promise<boolean> => nativeDolbyVisionVideoOutputSupported
     );
+    const nativeVideoOutputProbe = vi.fn(async (probeRequest: {
+        configuration: VideoDecoderConfig
+    }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
     return {
         audioProbe,
         environment: {
@@ -118,10 +124,12 @@ function createEnvironment(
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
             nativeDolbyVisionVideoOutputProbe,
+            nativeVideoOutputProbe,
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         },
         nativeDolbyVisionVideoOutputProbe,
+        nativeVideoOutputProbe,
         rawHDRVideoOutputProbe,
         videoProbe
     };
@@ -253,6 +261,119 @@ describe('CustomDecodeCapabilityProbe', () => {
             CUSTOM_VIDEO_CODECS.length + CUSTOM_RAW_HDR_VIDEO_CODECS.length + 1
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
+    });
+
+    it.each([
+        {
+            codec: 'hevc',
+            codecString: 'hvc1.1.6.L120.B0',
+            expectedCodedHeight: 1_080,
+            expectedCodedWidth: 1_920
+        },
+        {
+            codec: 'vp8',
+            codecString: 'vp8',
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64
+        },
+        {
+            codec: 'vp9',
+            codecString: 'vp09.00.10.08',
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64
+        },
+        {
+            codec: 'av1',
+            codecString: 'av01.0.08M.08',
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64
+        }
+    ] as const)(
+        'requires exact decoded native $codec output',
+        async ({ codec, codecString, expectedCodedHeight, expectedCodedWidth }) => {
+            const harness = createEnvironment(
+                new Set([ codecString ]),
+                new Set()
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(
+                harness.environment
+            ).probe();
+
+            expect(capabilities.video[codec]).toMatchObject({
+                reason: 'decode-output-verified',
+                status: 'supported'
+            });
+            expect(harness.nativeVideoOutputProbe).toHaveBeenCalledOnce();
+            const request = harness.nativeVideoOutputProbe.mock.calls[0][0];
+            expect(request).toMatchObject({
+                codec,
+                configuration: {
+                    codec: codecString,
+                    codedHeight: expectedCodedHeight,
+                    codedWidth: expectedCodedWidth
+                },
+                expectedCodedHeight,
+                expectedCodedWidth,
+                expectedDisplayHeight: expectedCodedHeight,
+                expectedDisplayWidth: expectedCodedWidth,
+                expectedTimestamp: 0
+            });
+            expect(request.encodedKeyFrame).toBeInstanceOf(Uint8Array);
+            expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
+        }
+    );
+
+    it('rejects config support without matching decoded native output', async () => {
+        const harness = createEnvironment(
+            new Set([ 'vp8' ]),
+            new Set(),
+            new Set(),
+            false,
+            new Set()
+        );
+
+        const capabilities = await new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        expect(capabilities.video.vp8).toMatchObject({
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
+    });
+
+    it('does not claim native output when the decoded-frame probe is unavailable', async () => {
+        const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
+        harness.environment.nativeVideoOutputProbe = null;
+
+        const capabilities = await new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        expect(capabilities.video.vp8).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+    });
+
+    it('bounds an ordinary native decoded-output probe that never settles', async () => {
+        vi.useFakeTimers();
+        const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
+        harness.environment.nativeVideoOutputProbe = vi.fn(
+            () => new Promise<boolean>(() => undefined)
+        );
+        const probePromise = new CustomDecodeCapabilityProbe(
+            harness.environment
+        ).probe();
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        const capabilities = await probePromise;
+
+        expect(capabilities.video.vp8).toMatchObject({
+            reason: 'probe-timeout',
+            status: 'unknown'
+        });
     });
 
     it('does not advertise bundled AC3 codecs when the build excludes them', async () => {
@@ -391,6 +512,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
+            nativeVideoOutputProbe: harness.nativeVideoOutputProbe,
             videoDecoder: harness.environment.videoDecoder
         }).probe();
 
@@ -576,6 +698,193 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(closeFrame).toHaveBeenCalledOnce();
         }
     );
+
+    it.each([
+        {
+            frames: [ {
+                codedHeight: 64,
+                codedWidth: 64,
+                displayHeight: 64,
+                displayWidth: 64,
+                timestamp: 0,
+                visibleHeight: 64,
+                visibleWidth: 64
+            } ],
+            supported: true
+        },
+        {
+            frames: [ {
+                codedHeight: 64,
+                codedWidth: 128,
+                displayHeight: 64,
+                displayWidth: 64,
+                timestamp: 0,
+                visibleHeight: 64,
+                visibleWidth: 64
+            } ],
+            supported: true
+        },
+        {
+            frames: [ {
+                codedHeight: 64,
+                codedWidth: 512,
+                displayHeight: 64,
+                displayWidth: 64,
+                timestamp: 0,
+                visibleHeight: 64,
+                visibleWidth: 64
+            } ],
+            supported: false
+        },
+        {
+            frames: [ {
+                codedHeight: 64,
+                codedWidth: 64,
+                displayHeight: 32,
+                displayWidth: 64,
+                timestamp: 0,
+                visibleHeight: 32,
+                visibleWidth: 64
+            } ],
+            supported: false
+        },
+        {
+            frames: [
+                {
+                    codedHeight: 64,
+                    codedWidth: 64,
+                    displayHeight: 64,
+                    displayWidth: 64,
+                    timestamp: 0,
+                    visibleHeight: 64,
+                    visibleWidth: 64
+                },
+                {
+                    codedHeight: 64,
+                    codedWidth: 64,
+                    displayHeight: 64,
+                    displayWidth: 64,
+                    timestamp: 0,
+                    visibleHeight: 64,
+                    visibleWidth: 64
+                }
+            ],
+            supported: false
+        }
+    ] as const)(
+        'requires one exact ordinary native output: $supported',
+        async ({ frames, supported }) => {
+            const closeDecoder = vi.fn();
+            const closeFrame = vi.fn();
+            class FakeVideoDecoder {
+                public state: CodecState = 'unconfigured';
+
+                public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+                public close(): void {
+                    this.state = 'closed';
+                    closeDecoder();
+                }
+
+                public configure(): void {
+                    this.state = 'configured';
+                }
+
+                public decode(): void {
+                    for (const frameDefinition of frames) {
+                        const frame = {
+                            close: closeFrame,
+                            codedHeight: frameDefinition.codedHeight,
+                            codedWidth: frameDefinition.codedWidth,
+                            displayHeight: frameDefinition.displayHeight,
+                            displayWidth: frameDefinition.displayWidth,
+                            timestamp: frameDefinition.timestamp,
+                            visibleRect: {
+                                height: frameDefinition.visibleHeight,
+                                width: frameDefinition.visibleWidth,
+                                x: 0,
+                                y: 0
+                            }
+                        } as unknown as VideoFrame;
+                        this.callbacks.output(frame);
+                    }
+                }
+
+                public flush(): Promise<void> {
+                    return Promise.resolve();
+                }
+            }
+            class FakeEncodedVideoChunk {}
+            vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+            vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+            const outputProbe = createNativeVideoOutputProbe();
+
+            await expect(outputProbe?.({
+                codec: 'vp8',
+                configuration: {
+                    codec: 'vp8',
+                    codedHeight: 64,
+                    codedWidth: 64
+                },
+                encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+                expectedCodedHeight: 64,
+                expectedCodedWidth: 64,
+                expectedDisplayHeight: 64,
+                expectedDisplayWidth: 64,
+                expectedTimestamp: 0
+            })).resolves.toBe(supported);
+            expect(closeFrame).toHaveBeenCalledTimes(frames.length);
+            expect(closeDecoder).toHaveBeenCalledOnce();
+        }
+    );
+
+    it('closes an ordinary native decoder whose flush never settles', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        class FakeVideoDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public close(): void {
+                this.state = 'closed';
+                closeDecoder();
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                return;
+            }
+
+            public flush(): Promise<void> {
+                return new Promise<void>(() => undefined);
+            }
+        }
+        class FakeEncodedVideoChunk {}
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createNativeVideoOutputProbe();
+        const probePromise = outputProbe?.({
+            codec: 'vp8',
+            configuration: {
+                codec: 'vp8',
+                codedHeight: 64,
+                codedWidth: 64
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64,
+            expectedDisplayHeight: 64,
+            expectedDisplayWidth: 64,
+            expectedTimestamp: 0
+        });
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toBe(false);
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
 
     it.each([
         {

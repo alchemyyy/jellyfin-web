@@ -1129,6 +1129,8 @@ function createPlayerSnapshotExpression(accessKey) {
                 bundledHEVC: customDecodeCapabilities.bundledHEVC,
                 nativeDolbyVisionHEVC: customDecodeCapabilities.nativeDolbyVisionHEVC,
                 rawHDRHEVC: customDecodeCapabilities.rawHDRVideo?.hevc ?? null,
+                telemetry: customDecodeCapabilities.telemetry,
+                video: customDecodeCapabilities.video,
                 videoHEVC: customDecodeCapabilities.video?.hevc ?? null
             } : null,
             customDeviceProfile: customDeviceProfile ? {

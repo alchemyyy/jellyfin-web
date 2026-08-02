@@ -84,9 +84,15 @@ Eligibility remains narrower than the decoder's theoretical support:
   pixel-readback authorization for the active `GPUDevice`, canvas format, raw
   frame format, matrix, primaries, range, and PQ or HLG transfer.
 - Native WebCodecs output takes precedence when its codec capability and exact
-  stream constraints qualify. H.264 and raw HDR routes include decoded-output
-  evidence; representative native SDR probes for other codecs use
-  `isConfigSupported()` and remain capped at 1920x1080 8-bit output.
+  stream constraints qualify. Every native SDR codec first requires
+  `isConfigSupported()` at the advertised 1920x1080 limit. H.264 then decodes
+  one exact keyframe for each advertised profile; HEVC decodes the exact 1080p
+  Main access unit; and VP8, VP9 Profile 0, and AV1 Main each decode a pinned
+  64x64 keyframe with exact visible/display geometry and timestamp. Hardware
+  surface padding is accepted only within bounded 256-pixel horizontal and
+  64-pixel vertical alignment. Every output frame is closed, and missing,
+  duplicate, malformed, timed-out, or rejected output keeps that native route
+  unadvertised.
 - Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
   access-unit fixture under its production `hev1.2.4.H150.B0` configuration
   and requires a correctly sized owned `VideoFrame`. Configuration support
