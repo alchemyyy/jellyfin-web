@@ -23,6 +23,17 @@ type HEVCNALUnit = {
     type: number
 };
 
+const HEVC_RASL_N_NAL_UNIT_TYPE = 8;
+const HEVC_RASL_R_NAL_UNIT_TYPE = 9;
+
+enum ChromiumHEVCNALOrderState {
+    AUDAllowed,
+    BeforeFirstVCL,
+    AfterFirstVCL,
+    EndOfBitstreamAllowed,
+    NoMoreDataAllowed
+}
+
 function requireAccessUnit(data: Uint8Array): void {
     if (!(data instanceof Uint8Array)
         || data.byteLength === 0
@@ -241,4 +252,143 @@ export function splitDolbyVisionHEVCAccessUnit(
         hasEnhancementLayerVCL,
         rpuNALUnits
     };
+}
+
+/** Returns whether an access unit contains a random-access skipped picture. */
+export function hasHEVCRASLPicture(
+    data: Uint8Array,
+    format: HEVCNALFormat
+): boolean {
+    requireAccessUnit(data);
+    return parseNALUnits(data, format).some((nalUnit: HEVCNALUnit): boolean => (
+        nalUnit.type === HEVC_RASL_N_NAL_UNIT_TYPE
+        || nalUnit.type === HEVC_RASL_R_NAL_UNIT_TYPE
+    ));
+}
+
+function getNextChromiumNALOrderState(
+    orderState: ChromiumHEVCNALOrderState,
+    nalUnitType: number
+): ChromiumHEVCNALOrderState | null {
+    switch (orderState) {
+        case ChromiumHEVCNALOrderState.NoMoreDataAllowed:
+            return null;
+        case ChromiumHEVCNALOrderState.EndOfBitstreamAllowed:
+            return nalUnitType === 37 ? ChromiumHEVCNALOrderState.NoMoreDataAllowed : null;
+        default:
+            return getActiveChromiumNALOrderState(orderState, nalUnitType);
+    }
+}
+
+type ExactChromiumNALTransition = {
+    handled: boolean
+    nextState: ChromiumHEVCNALOrderState | null
+};
+
+function getExactChromiumNALTransition(
+    orderState: ChromiumHEVCNALOrderState,
+    nalUnitType: number
+): ExactChromiumNALTransition {
+    switch (nalUnitType) {
+        case 35:
+            return {
+                handled: true,
+                nextState: orderState > ChromiumHEVCNALOrderState.AUDAllowed ?
+                    null :
+                    ChromiumHEVCNALOrderState.BeforeFirstVCL
+            };
+        case 36:
+            return {
+                handled: true,
+                nextState: orderState === ChromiumHEVCNALOrderState.AfterFirstVCL ?
+                    ChromiumHEVCNALOrderState.EndOfBitstreamAllowed :
+                    null
+            };
+        case 37:
+            return {
+                handled: true,
+                nextState: orderState >= ChromiumHEVCNALOrderState.AfterFirstVCL ?
+                    ChromiumHEVCNALOrderState.NoMoreDataAllowed :
+                    null
+            };
+        default:
+            return { handled: false, nextState: orderState };
+    }
+}
+
+function getActiveChromiumNALOrderState(
+    orderState: ChromiumHEVCNALOrderState,
+    nalUnitType: number
+): ChromiumHEVCNALOrderState | null {
+    const exactTransition = getExactChromiumNALTransition(orderState, nalUnitType);
+    if (exactTransition.handled) {
+        return exactTransition.nextState;
+    }
+
+    if (nalUnitType <= 31) {
+        return orderState > ChromiumHEVCNALOrderState.AfterFirstVCL ?
+            null :
+            ChromiumHEVCNALOrderState.AfterFirstVCL;
+    }
+    if (isChromiumHEVCPrefixNALUnit(nalUnitType)) {
+        return orderState > ChromiumHEVCNALOrderState.BeforeFirstVCL ?
+            null :
+            ChromiumHEVCNALOrderState.BeforeFirstVCL;
+    }
+    if (isChromiumHEVCSuffixNALUnit(nalUnitType)) {
+        return orderState < ChromiumHEVCNALOrderState.AfterFirstVCL ?
+            null :
+            orderState;
+    }
+    return orderState;
+}
+
+function isChromiumHEVCPrefixNALUnit(nalUnitType: number): boolean {
+    switch (nalUnitType) {
+        case 32:
+        case 33:
+        case 34:
+        case 39:
+            return true;
+        default:
+            return (nalUnitType >= 41 && nalUnitType <= 44)
+                || (nalUnitType >= 48 && nalUnitType <= 55);
+    }
+}
+
+function isChromiumHEVCSuffixNALUnit(nalUnitType: number): boolean {
+    switch (nalUnitType) {
+        case 38:
+        case 40:
+            return true;
+        default:
+            return (nalUnitType >= 45 && nalUnitType <= 47)
+                || (nalUnitType >= 56 && nalUnitType <= 63);
+    }
+}
+
+/** Removes only HEVC NAL ordering violations rejected by Chromium. */
+export function sanitizeHEVCAccessUnitForChromium(
+    data: Uint8Array,
+    format: HEVCNALFormat
+): Uint8Array | null {
+    requireAccessUnit(data);
+    const nalUnits = parseNALUnits(data, format);
+    const retainedNALUnits: Uint8Array[] = [];
+    let orderState = ChromiumHEVCNALOrderState.AUDAllowed;
+    let removedNALUnit = false;
+    for (const nalUnit of nalUnits) {
+        const nextOrderState = getNextChromiumNALOrderState(orderState, nalUnit.type);
+        if (nextOrderState === null) {
+            removedNALUnit = true;
+            continue;
+        }
+        retainedNALUnits.push(nalUnit.data);
+        orderState = nextOrderState;
+    }
+
+    if (!removedNALUnit) {
+        return null;
+    }
+    return encodeNALUnits(retainedNALUnits, format) ?? new Uint8Array();
 }

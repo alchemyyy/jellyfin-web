@@ -1,6 +1,6 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: research complete, bounded packet-splitting implementation started
+Status: research complete, bounded native and bundled HEVC packet ownership complete
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -266,8 +266,8 @@ Symbols are the durable reference if later edits move the lines.
 
 ### Encoded-packet ownership checkpoint
 
-The bundled HEVC playback route now owns Mediabunny `EncodedPacketSink`
-packets before decode. `DolbyVisionEncodedMetadataQueue`:
+Both HEVC playback routes now own Mediabunny `EncodedPacketSink` packets before
+decode. `DolbyVisionEncodedMetadataQueue`:
 
 - derives the HVCC length size or Annex B mode from the decoder configuration;
 - removes NAL types 62 and 63 from the base-layer packet;
@@ -277,13 +277,15 @@ packets before decode. `DolbyVisionEncodedMetadataQueue`:
 
 Encoded metadata crosses the worker boundary with schema version 1 and explicit
 transfer ownership. Session telemetry counts DV frames, RPUs, and enhancement
-access units. The complete bundled HEVC path passes repeated playback and
-natural-EOF browser smoke tests after this refactor.
+access units. The bundled HEVC path passes repeated playback and natural-EOF
+browser smoke tests after this refactor. The native HEVC path uses one directly
+owned `VideoDecoder`, preserves Chromium's first-access-unit sanitization and
+leading RASL handling, bounds its decode and decoded-sample queues, and passes a
+natural-EOF Chrome smoke test with 240 decoded and presented frames.
 
-This is only the packet-ownership prerequisite. Native HEVC still uses the
-Mediabunny sample sink, the RPU is not parsed or applied by a shader, and Dolby
-Vision remains ineligible. Profile 5 must stay rejected until parser and
-reconstruction validation are complete.
+This completes only the packet-ownership prerequisite. The RPU is not parsed or
+applied by a shader, and Dolby Vision remains ineligible. Profile 5 must stay
+rejected until parser and reconstruction validation are complete.
 
 ### Dolby Vision is deliberately rejected
 
@@ -322,31 +324,28 @@ I420P10:bt2020-ncl:bt2020:limited:hlg
 No `DOVI` range should be added to the Jellyfin device profile until the exact
 profile, container, decoder, parser, and shader route passes validation.
 
-### The current decode abstraction hides the RPU
+### The HEVC decode path now exposes encoded Dolby Vision data
 
 [`CustomDecode.worker.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDecode.worker.ts)
-uses Mediabunny's `VideoSampleSink` in `streamVideoFrames`, lines 620-666.
-Mediabunny owns demux and `VideoDecoder`; the worker sees a decoded
-`VideoSample`, not the encoded HEVC access unit. RPU NAL type 62 and EL NAL type
-63 are therefore unavailable when `takeVideoFrame` runs.
+uses `EncodedPacketSink` for every HEVC route. The worker splits RPU NAL type 62
+and enhancement-layer NAL type 63 before dispatching the cleaned base-layer
+packet to either `OwnedNativeHEVCVideoDecoder` or the bundled software decoder.
+The split data remains associated with the decoded `VideoSample` by exact
+integer-microsecond PTS.
 
 The pinned Mediabunny 1.52.2 package exposes `EncodedPacketSink` at
 `node_modules/mediabunny/src/media-sink.ts:147`. It yields packets in decode
-order and is the required integration point for a player-owned `VideoDecoder`.
+order and is the integration point for player-owned decoding. The remaining
+work at this boundary is to parse RPUs in decode order and attach immutable
+parsed snapshots instead of raw encoded NAL units.
 
-The HEVC route must be refactored to:
-
-1. retrieve encoded packets;
-2. inspect and split their NAL units;
-3. parse and snapshot RPU state;
-4. feed cleaned BL chunks to the selected native or bundled HEVC decoder;
-5. join decoder output to RPU snapshots by integer-microsecond PTS.
-
-### The frame protocol has no Dolby Vision metadata
+### The frame protocol has encoded but not parsed Dolby Vision metadata
 
 [`RawVideoFrameCopy.ts`](./src/plugins/webGPUVideoPlayer/custom/RawVideoFrameCopy.ts)
 defines `TransferableRawVideoFrame` at lines 58-71. It carries raw planes,
-geometry, standard `VideoColorSpace`, and timestamps, but no RPU state or EL.
+geometry, standard `VideoColorSpace`, and timestamps. The surrounding worker
+frame response can now carry schema-versioned encoded RPU and EL buffers with
+explicit transfer ownership, but it has no parsed RPU reconstruction state.
 
 [`WebGPUPresenter.ts`](./src/plugins/webGPUVideoPlayer/WebGPUPresenter.ts)
 defines `DecodedRawPresentationFrame` at lines 142-147 and requires standard
@@ -453,10 +452,10 @@ Add a separate structured Dolby Vision input model. At minimum it must carry:
 Do not force Dolby Vision into `InputColorMetadata.transfer`. That structure
 describes the standard image after reconstruction, not the encoded DV input.
 
-For HEVC Dolby Vision routes:
+The following HEVC packet steps apply to both native and bundled decoders:
 
-1. Replace `VideoSampleSink` with `EncodedPacketSink` and a player-owned
-   `VideoDecoder`.
+1. Replace `VideoSampleSink` with `EncodedPacketSink` and a directly owned
+   decoder.
 2. Preserve the existing native-versus-bundled backend selection.
 3. Read the HEVC length-field size from decoder configuration and support both
    length-prefixed HVCC samples and Annex B samples.
@@ -465,6 +464,9 @@ For HEVC Dolby Vision routes:
 6. Parse RPUs in decode order and keep immutable snapshots indexed by PTS.
 7. Join each output `VideoFrame.timestamp` to the corresponding snapshot.
 8. Bound all pending metadata and decoder-output queues.
+
+Steps 1-5 and 8 are implemented. Step 7 currently joins encoded metadata;
+steps 6-7 must be extended to immutable parsed RPU snapshots.
 
 A small WASM wrapper over MIT-licensed libdovi is the preferred parser starting
 point. Its C API exposes the RPU header, mapping data, and display-management

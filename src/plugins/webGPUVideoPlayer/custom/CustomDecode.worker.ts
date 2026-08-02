@@ -75,12 +75,14 @@ import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4Codec,
     type NativeMediaAudioFMP4RemuxOutput
 } from './NativeMediaAudioFMP4Remuxer';
+import OwnedNativeHEVCVideoDecoder from './OwnedNativeHEVCVideoDecoder';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
 const MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT = 8;
+const MAXIMUM_OWNED_VIDEO_DECODER_QUEUE_SIZE = 8;
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -106,6 +108,7 @@ type DecodeRun = {
     videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
     wakeAudioCreditWaiters: Array<() => void>
     wakeFrameCreditWaiters: Array<() => void>
+    wakeVideoDecodeWaiters: Array<() => void>
 };
 
 type PreparedVideoTrack = {
@@ -262,6 +265,7 @@ function stopRun(run: DecodeRun): void {
     run.cancelled = true;
     wakeWaiters(run.wakeAudioCreditWaiters);
     wakeWaiters(run.wakeFrameCreditWaiters);
+    wakeWaiters(run.wakeVideoDecodeWaiters);
     run.input?.dispose();
     const iteratorRetirementPromises: Array<Promise<void>> = [];
     iteratorRetirementPromises.push(retireIterator(run.audioIterator));
@@ -737,9 +741,19 @@ type OwnedDecodedVideoSample = {
     sample: VideoSample
 };
 
-type OwnedHEVCSoftwareVideoDecoder = ReturnType<
-    typeof createOwnedHEVCSoftwareVideoDecoder
->;
+type OwnedHEVCVideoDecoderCallbacks = {
+    onError: (error: unknown) => void
+    onProgress: () => void
+    onSample: (sample: VideoSample) => void
+};
+
+type OwnedHEVCVideoDecoderPort = {
+    close: () => void
+    decode: (packet: EncodedPacket) => boolean
+    flush: () => Promise<void>
+    getDecodeQueueSize: () => number
+    init: () => Promise<void>
+};
 
 type OwnedSamplePostResult = 'none' | 'posted' | 'stopped';
 
@@ -751,7 +765,52 @@ function closeOwnedDecodedVideoSample(decodedSample: OwnedDecodedVideoSample | n
     }
 }
 
-class OwnedBundledHEVCStreamState {
+function createOwnedBundledHEVCVideoDecoderPort(
+    config: VideoDecoderConfig,
+    callbacks: OwnedHEVCVideoDecoderCallbacks
+): OwnedHEVCVideoDecoderPort {
+    const decoder = createOwnedHEVCSoftwareVideoDecoder(config, callbacks);
+    return {
+        close: (): void => decoder.close(),
+        decode: (packet: EncodedPacket): boolean => {
+            decoder.decode(packet);
+            return true;
+        },
+        flush: (): Promise<void> => {
+            decoder.flush();
+            return Promise.resolve();
+        },
+        getDecodeQueueSize: (): number => 0,
+        init: (): Promise<void> => decoder.init()
+    };
+}
+
+function createOwnedHEVCVideoDecoderPort(
+    run: DecodeRun,
+    decoderConfig: VideoDecoderConfig,
+    inputFormat: ReturnType<typeof getHEVCNALFormat>,
+    callbacks: OwnedHEVCVideoDecoderCallbacks
+): OwnedHEVCVideoDecoderPort {
+    switch (run.videoDecoderBackend) {
+        case 'bundled-hevc':
+            return createOwnedBundledHEVCVideoDecoderPort(decoderConfig, callbacks);
+        case 'native':
+            return new OwnedNativeHEVCVideoDecoder(
+                {
+                    ...decoderConfig,
+                    hardwareAcceleration: getCustomDecodeHardwareAcceleration(
+                        run.videoOutputMode,
+                        run.videoDecoderBackend
+                    ),
+                    optimizeForLatency: true
+                },
+                inputFormat,
+                callbacks
+            );
+    }
+}
+
+class OwnedHEVCStreamState {
     private readonly decodedSamples: OwnedDecodedVideoSample[] = [];
     private decoderFailure: unknown = null;
     private firstPresentationSampleQueued = false;
@@ -801,17 +860,20 @@ class OwnedBundledHEVCStreamState {
 
     public decodePacket(
         packet: EncodedPacket,
-        decoder: OwnedHEVCSoftwareVideoDecoder
+        decoder: OwnedHEVCVideoDecoderPort
     ): void {
         const processedPacket = this.metadataQueue.processPacket(packet);
         if (processedPacket.baseLayerPacket) {
-            decoder.decode(processedPacket.baseLayerPacket);
+            const packetAccepted = decoder.decode(processedPacket.baseLayerPacket);
+            if (!packetAccepted && processedPacket.hasBaseLayerVCL) {
+                this.metadataQueue.takeFrameMetadata(packet.microsecondTimestamp);
+            }
         }
         this.throwDecoderFailure();
     }
 
-    public finishPackets(decoder: OwnedHEVCSoftwareVideoDecoder): void {
-        decoder.flush();
+    public async finishPackets(decoder: OwnedHEVCVideoDecoderPort): Promise<void> {
+        await decoder.flush();
         this.throwDecoderFailure();
         this.metadataQueue.requireDrained();
         this.queueFirstPresentationSample();
@@ -845,6 +907,17 @@ class OwnedBundledHEVCStreamState {
             this.frameCreditHeld = await waitForFrameCredit(run);
         }
         return this.frameCreditHeld;
+    }
+
+    public async waitForDecoderProgress(run: DecodeRun): Promise<void> {
+        this.throwDecoderFailure();
+        if (this.decodedSamples.length > 0 || run.cancelled) {
+            return;
+        }
+        await new Promise<void>(resolve => {
+            run.wakeVideoDecodeWaiters.push(resolve);
+        });
+        this.throwDecoderFailure();
     }
 
     public close(): void {
@@ -882,11 +955,11 @@ class OwnedBundledHEVCStreamState {
     }
 }
 
-async function pumpOwnedBundledHEVCFrames(
+async function pumpOwnedHEVCFrames(
     run: DecodeRun,
     packetIterator: MediaSampleIterator<EncodedPacket>,
-    decoder: OwnedHEVCSoftwareVideoDecoder,
-    state: OwnedBundledHEVCStreamState,
+    decoder: OwnedHEVCVideoDecoderPort,
+    state: OwnedHEVCStreamState,
     expectedGeometry: RawVideoFrameGeometry
 ): Promise<void> {
     while (!run.cancelled) {
@@ -903,6 +976,10 @@ async function pumpOwnedBundledHEVCFrames(
         if (state.packetsEnded) {
             return;
         }
+        if (decoder.getDecodeQueueSize() >= MAXIMUM_OWNED_VIDEO_DECODER_QUEUE_SIZE) {
+            await state.waitForDecoderProgress(run);
+            continue;
+        }
         if (!await state.acquireFrameCredit(run)) {
             return;
         }
@@ -912,21 +989,21 @@ async function pumpOwnedBundledHEVCFrames(
             return;
         }
         if (packetResult.done) {
-            state.finishPackets(decoder);
+            await state.finishPackets(decoder);
             continue;
         }
         state.decodePacket(packetResult.value, decoder);
     }
 }
 
-async function streamOwnedBundledHEVCFrames(
+async function streamOwnedHEVCFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
     if (preparedVideoTrack.codec !== 'hevc') {
         throw new UnsupportedCustomDecodeSourceError(
-            'The owned bundled decoder requires an HEVC track'
+            'The owned HEVC decoder requires an HEVC track'
         );
     }
 
@@ -944,22 +1021,32 @@ async function streamOwnedBundledHEVCFrames(
 
     const packetIterator = packetSink.packets(keyPacket, undefined, packetOptions);
     run.videoIterator = packetIterator;
-    const state = new OwnedBundledHEVCStreamState(
-        new DolbyVisionEncodedMetadataQueue(
-            getHEVCNALFormat(preparedVideoTrack.decoderConfig)
-        ),
+    const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
+    const state = new OwnedHEVCStreamState(
+        new DolbyVisionEncodedMetadataQueue(inputFormat),
         request.startTimeMicroseconds
     );
-    const decoder = createOwnedHEVCSoftwareVideoDecoder(
+    const notifyDecoderProgress = (): void => {
+        wakeWaiters(run.wakeVideoDecodeWaiters);
+    };
+    const decoder = createOwnedHEVCVideoDecoderPort(
+        run,
         preparedVideoTrack.decoderConfig,
+        inputFormat,
         {
-            onError: (error: unknown): void => state.recordDecoderFailure(error),
-            onSample: (sample: VideoSample): void => state.enqueueDecodedSample(sample)
+            onError: (error: unknown): void => {
+                state.recordDecoderFailure(error);
+                notifyDecoderProgress();
+            },
+            onProgress: notifyDecoderProgress,
+            onSample: (sample: VideoSample): void => {
+                state.enqueueDecodedSample(sample);
+            }
         }
     );
     try {
         await decoder.init();
-        await pumpOwnedBundledHEVCFrames(
+        await pumpOwnedHEVCFrames(
             run,
             packetIterator,
             decoder,
@@ -982,8 +1069,8 @@ async function streamVideoFrames(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
-    if (run.videoDecoderBackend === 'bundled-hevc') {
-        return streamOwnedBundledHEVCFrames(run, request, preparedVideoTrack);
+    if (preparedVideoTrack.codec === 'hevc') {
+        return streamOwnedHEVCFrames(run, request, preparedVideoTrack);
     }
 
     const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
@@ -1270,7 +1357,8 @@ function handleRequest(requestValue: unknown): void {
                 videoOutputMode: requestValue.videoOutputMode,
                 videoIterator: null,
                 wakeAudioCreditWaiters: [],
-                wakeFrameCreditWaiters: []
+                wakeFrameCreditWaiters: [],
+                wakeVideoDecodeWaiters: []
             };
             currentRun = run;
             void decodeMedia(run, requestValue);

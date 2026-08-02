@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    hasHEVCRASLPicture,
+    sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat,
     splitDolbyVisionHEVCAccessUnit
 } from './DolbyVisionHEVCSplitter';
@@ -195,5 +197,44 @@ describe('DolbyVisionHEVCSplitter validation', () => {
             { kind: 'length-prefixed', lengthSize: 2 },
             { kind: 'length-prefixed', lengthSize: 1 }
         )).toThrow('does not fit the output length field');
+    });
+});
+
+describe('owned native HEVC packet workarounds', () => {
+    it('detects only RASL picture NAL unit types', () => {
+        expect(hasHEVCRASLPicture(
+            encodeAnnexBNALUnits([ createNALUnit(8, [ 1 ]) ]),
+            { kind: 'annex-b' }
+        )).toBe(true);
+        expect(hasHEVCRASLPicture(
+            encodeAnnexBNALUnits([ createNALUnit(9, [ 1 ]) ]),
+            { kind: 'annex-b' }
+        )).toBe(true);
+        expect(hasHEVCRASLPicture(
+            encodeAnnexBNALUnits([ createNALUnit(1, [ 1 ]) ]),
+            { kind: 'annex-b' }
+        )).toBe(false);
+    });
+
+    it('sanitizes Chromium ordering violations without rewriting valid packets', () => {
+        const basePicture = createNALUnit(19, [ 1 ]);
+        const lateParameterSet = createNALUnit(32, [ 2 ]);
+        const suffixSEI = createNALUnit(40, [ 3 ]);
+        const format = { kind: 'length-prefixed', lengthSize: 2 } as const;
+        const invalidPacket = encodeLengthPrefixedNALUnits([
+            suffixSEI,
+            basePicture,
+            lateParameterSet
+        ], format.lengthSize);
+
+        const sanitizedPacket = sanitizeHEVCAccessUnitForChromium(
+            invalidPacket,
+            format
+        );
+        expect(decodeNALUnitTypes(sanitizedPacket, format)).toEqual([ 19 ]);
+        expect(sanitizeHEVCAccessUnitForChromium(
+            encodeLengthPrefixedNALUnits([ lateParameterSet, basePicture ], 2),
+            format
+        )).toBeNull();
     });
 });
