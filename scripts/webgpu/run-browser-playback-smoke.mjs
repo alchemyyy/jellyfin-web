@@ -4092,6 +4092,7 @@ async function runSmoke(configuration) {
             client.send('Network.setBypassServiceWorker', { bypass: true }),
             client.send('Network.setCacheDisabled', { cacheDisabled: true })
         ]);
+        await client.send('Network.clearBrowserCache');
         const workerTargetScope = await getRetentionWorkerTargetScope(
             client,
             pageTarget,

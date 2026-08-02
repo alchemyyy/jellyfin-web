@@ -1,10 +1,12 @@
 # WebGPU Dolby Vision Implementation Record
 
 Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
-interleaved, separate-track Matroska, and legacy dual-track ISO BMFF Profile 7
-FEL decode/residual paths are implemented with separate exact-device
-authorization. Interleaved Profile 7 also supports container `hvcE`
-initialization when a selected key access unit omits EL parameter sets.
+interleaved, separate-track Matroska, legacy dual-track ISO BMFF, and
+separate-PID MPEG-TS Profile 7 FEL decode/residual paths are implemented with
+separate exact-device authorization. M2TS dependency discovery is implemented
+and unit-tested; end-to-end BDMV demux remains runtime-dependent. Interleaved
+Profile 7 also supports container `hvcE` initialization when a selected key
+access unit omits EL parameter sets.
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -117,9 +119,9 @@ and creates a new per-frame storage buffer before presentation resumes.
 Profile 7 MEL applies RPU reconstruction to the HDR10-compatible base image.
 For interleaved Profile 7 FEL, the worker removes the NAL type 63 wrapper and
 feeds a second bundled HEVC decoder. For a conservatively identified Matroska
-or legacy dual-track ISO BMFF BL/EL pair, it instead aligns ordinary HEVC
-packets from a second demux iterator and accepts the RPU from either track.
-Both routes pair BL/EL output
+or legacy dual-track ISO BMFF BL/EL pair, or an exact MPEG-TS dependency pair,
+it instead aligns ordinary HEVC packets from a second demux iterator and
+accepts the RPU from either track. These routes pair BL/EL output
 within one microsecond, upload both planar images, apply LINEAR_DZ residual
 composition after reshape and before the nonlinear matrix, and then enter the
 ordinary BT.2020/PQ tone-mapping path. Missing, late, or failed EL degrades that
@@ -387,7 +389,11 @@ then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the applicable
 single-layer HEVC routes. Separately authorized Profile 7 support exposes only
 `DOVIWithEL` and remains bounded by the measured raw HEVC limits. It does not
 advertise `DOVIWithELHDR10Plus` or let a single-layer authorization enable an
-enhancement-layer route.
+enhancement-layer route. Jellyfin 10.11 may instead label both streams of an
+MPEG-TS Profile 7 pair as `HDR10`. For one item with exactly one media source
+and an exact two-track Profile 7 topology, `WebGPUPlayer` additionally permits
+that label in only that item-scoped profile request. It does not globally
+authorize unrelated HDR10 content.
 
 [`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
 runs bounded exact-device shader fixtures and records authorization telemetry.
@@ -468,12 +474,32 @@ BL frames with 30 paired EL frames and 30 RPUs, reported every frame as full
 FEL, dropped no frames, performed no fallback, drained both queues, and emitted
 one clean stopped event with no browser error or ownership warning.
 
-This fixture exposed two integration defects before that pass. A failing decode
-stream cancelled its sibling and then suppressed its own worker error; the
-concurrent-stream boundary now retains and reports the initiating failure after
-draining cancelled siblings. The reported failure then showed that Mediabunny
-used the HEVC display size, 1920x1080, while the SPS used a normal conformance
-crop from 1920x1088. The bundled decoder now accepts a configuration matching
+[`create-dual-pid-dolby-vision-ts-fixture.mjs`](./scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.mjs)
+copy-muxes the same structural BL and EL/RPU tracks to MPEG-TS PIDs `0x100`
+and `0x101`, then adds an exact Profile 7 dependency descriptor to every
+single-packet PMT and recomputes its MPEG-2 CRC. Two runs with FFmpeg
+`2026-03-01-git-862338fe31` produced the same 5,486,216-byte file with SHA-256
+`2a3fa9909969a8957db571be6534688c592ab8d0376dc1bf86db7301e7f85682`.
+The worker smoke decoded matching 1920x1080 I420P10 BL and EL frames, paired
+their timestamps exactly, parsed one 3,232-byte RPU, transferred one
+12,718,080-byte compound buffer, reported `decoded-fel`, and stopped cleanly.
+
+Jellyfin 10.11.6 indexed both transport-stream PIDs as 10-bit HEVC and retained
+the exact Profile 7.6 RPU/EL/BL-disabled side data on the EL, but labeled that
+stream `HDR10` rather than `DOVIWithEL`. The exact-topology presentation parser
+now accepts that server label only when its PQ transfer also agrees, and the
+device profile adds the corresponding HDR10 range only to the exact item-scoped
+request. Chrome 151 then completed the full Jellyfin browser smoke through
+direct custom playback: 30 BL frames, 30 matched EL frames, 30 RPUs, 30 full
+FEL presentations, natural EOF, no fallback, no dropped frame, one clean stop,
+and no browser error or ownership warning.
+
+The structural MP4 fixture exposed two integration defects before its pass. A
+failing decode stream cancelled its sibling and then suppressed its own worker
+error; the concurrent-stream boundary now retains and reports the initiating
+failure after draining cancelled siblings. The reported failure then showed
+that Mediabunny used the HEVC display size, 1920x1080, while the SPS used a
+normal conformance crop from 1920x1088. The bundled decoder now accepts a configuration matching
 either exact coded dimensions or bounded SPS display dimensions, preserves the
 cropped display geometry, and includes the bounded padding in its allocation
 ceiling. It still rejects inconsistent or oversized SPS dimensions.
@@ -594,6 +620,16 @@ ordinary `hvc1`/`hev1` HEVC BL, and accepts exactly one Profile 7
 bounded Main10 `hvcC` record and `dvcC`/`dvvC` metadata with RPU and EL enabled
 and BL disabled. Mediabunny remains responsible for samples and packet timing.
 
+[`MPEGTransportStreamDolbyVisionConfiguration.ts`](./src/plugins/webGPUVideoPlayer/custom/MPEGTransportStreamDolbyVisionConfiguration.ts)
+provides the transport-stream boundary. It recognizes 188-byte MPEG-TS and
+192-byte M2TS packets, reads at most 1 MiB, reassembles bounded PAT and PMT PSI
+sections across continuity-checked packets, validates MPEG-2 CRCs, and requires
+one unambiguous Profile 7.6 RPU/EL dependency descriptor for the selected HEVC
+BL PID. It accepts both the standards-defined private-data `stream_type 0x06`
+and HEVC `0x24`, and recognizes an `HDMV` program registration with fixed BDMV
+BL `0x1011` and EL `0x1015` PIDs. Mediabunny remains responsible for PES
+demuxing and must expose the discovered PID as an ordinary track.
+
 The worker validates an `hvcE` or separate-track decoder description as Main10
 4:2:0 HVCC with VPS/SPS/PPS, expected coded EL geometry, and bounded display
 geometry before configuring the second decoder. Separate-track packets come
@@ -604,10 +640,12 @@ attached to the BL presentation timestamp. Malformed, missing, ambiguous,
 unreachable, or mismatched metadata retires the EL route while the existing
 HDR10 BL session continues.
 
-Mediabunny remains the packet demuxer. The local readers do not parse clusters
-or media-data boxes, rewrite access units, alter source negotiation, or expose
-general container metadata. Block-additional EL payloads, fragmented ISO BMFF,
-and MPEG-TS dependency streams remain outside these narrow workarounds.
+Mediabunny remains the packet demuxer. The local readers do not parse clusters,
+media-data boxes, or PES payloads, rewrite access units, alter source
+negotiation, or expose general container metadata. Block-additional EL payloads
+and fragmented ISO BMFF remain outside these narrow workarounds. A private-data
+`0x06` EL is discovered but currently fails closed because Mediabunny 1.52.2
+does not expose it as a track.
 
 ## Browser and WebGPU constraints
 
@@ -749,9 +787,10 @@ the parsed NLQ values.
 
 Status: implemented for interleaved NAL type 63 streams using either in-band EL
 parameter sets or a validated Matroska `hvcE` record, conservative two-track
-Matroska BL/EL topology, and legacy dual-track ISO BMFF `dvh1`/`dvhe` topology.
-Full residual presentation has separate exact-device authorization and retains
-explicit HDR10-base degradation.
+Matroska BL/EL topology, legacy dual-track ISO BMFF `dvh1`/`dvhe` topology, and
+separate-PID MPEG-TS dependency signaling. Full residual presentation has
+separate exact-device authorization and retains explicit HDR10-base
+degradation.
 
 Implemented behavior:
 
@@ -759,7 +798,8 @@ Implemented behavior:
    conservatively identified separate HEVC EL track with the selected BL track.
 2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS, the
    selected Matroska track's bounded `hvcE` record, the ordinary Matroska EL
-   track description, or the ISO BMFF EL track's bounded `hvcC` record.
+   track description, the ISO BMFF EL track's bounded `hvcC` record, or exact
+   descriptionless Annex B transport-stream geometry.
 3. Convert wrapped EL NAL units to the framing declared by the selected decoder
    configuration while leaving ordinary separate-track HEVC framing intact.
 4. Pair separate encoded packets and decoded BL/EL outputs by exact
@@ -774,8 +814,8 @@ Implemented behavior:
    resources and continue BL-only without renegotiating or restarting playback.
 
 Remaining Profile 7 container work is a block-additional representation backed
-by real fixtures and dependency-stream discovery for MPEG-TS. Fragmented ISO
-BMFF carriage remains unverified with a real dual-track fixture.
+by real fixtures. Fragmented ISO BMFF carriage and a real BDMV/M2TS demux run
+remain unverified.
 
 If later evidence contradicts the left-siting assumption for a fixture, reject
 that route rather than silently presenting a misaligned residual.
@@ -888,11 +928,12 @@ The minimum playback matrix is:
 5. Profile 7 FEL with interleaved NAL type 63.
 6. Profile 7 FEL with separate Matroska BL and EL/RPU tracks.
 7. Profile 7 FEL with legacy dual-track ISO BMFF `vdep` BL/EL tracks.
-8. Profile 7 with missing or malformed EL configuration.
-9. Missing, malformed, reused, and scene-refresh RPU data.
-10. B-frames and duplicate-nearby timestamps.
-11. Seek to multiple random-access points.
-12. Rapid seek, stop, source replacement, and next-item generation changes.
+8. Profile 7 FEL with separate MPEG-TS BL and EL/RPU PIDs.
+9. Profile 7 with missing or malformed EL configuration.
+10. Missing, malformed, reused, and scene-refresh RPU data.
+11. B-frames and duplicate-nearby timestamps.
+12. Seek to multiple random-access points.
+13. Rapid seek, stop, source replacement, and next-item generation changes.
 
 Dolby's official browser test kit can provide licensed Profile 5 and 8.4
 coverage:

@@ -495,6 +495,69 @@ tool versions and input. Because the BL is scaled and re-encoded, this output
 is only a topology, ownership, decoder, presentation, and lifecycle fixture. It
 must not be used for Dolby Vision color-fidelity comparisons.
 
+To prove separate-PID Profile 7 carriage through MPEG-TS, remux either
+two-track fixture and add the exact PMT dependency descriptor:
+
+```powershell
+node scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.mjs `
+    "$env:TEMP\dovi-p7-1080p-structural.mp4" `
+    "$env:TEMP\dovi-p7-dual-pid-1080-structural.ts" `
+    --ffmpeg "C:\ffmpeg\ffmpeg.exe"
+
+Copy-Item "$env:TEMP\dovi-p7-dual-pid-1080-structural.ts" `
+    scripts/webgpu/validation-media/dovi-p7-dual-pid-1080-structural.ts
+
+Copy-Item "$env:TEMP\dovi-p7-dual-pid-1080-structural.ts" `
+    dist/webgpu-dovi-p7-dual-pid-1080-structural.bin
+
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/webgpu-dovi-p7-dual-pid-1080-structural.bin `
+    --expected-base-width 1920 `
+    --expected-base-height 1080
+
+node --test scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.node-test.mjs
+```
+
+The generator copy-muxes BL to PID `0x100` and EL/RPU to PID `0x101`, then
+patches every bounded single-packet PMT and recomputes its MPEG-2 CRC. It keeps
+both entries at HEVC `stream_type 0x24` because Mediabunny 1.52.2 does not
+expose a track for the standards-defined private-data `stream_type 0x06`.
+Production discovery accepts either value, validates PAT/PMT continuity and
+CRC data within the first 1 MiB, and also recognizes the HDMV registration
+plus fixed `0x1011`/`0x1015` BDMV pair. A standards-defined `0x06` EL still
+fails closed until the demuxer exposes that PID as a track; the local metadata
+parser does not replace PES demuxing.
+
+The generated transport stream exposes descriptionless Annex B HEVC tracks.
+The worker permits that shape only after exact Profile 7 dependency discovery,
+exact BL/EL geometry, and an Annex B decoder configuration; malformed or
+ambiguous signaling remains BL-only. Jellyfin may label the EL as `HDR10`
+despite exact Profile 7 side data. That label is accepted only for one exact
+two-track source with matching PQ metadata, flags, geometry, and frame rates.
+The device profile authorizes that HDR10 label only for the same item-scoped
+request.
+
+After copying the `.ts` file into the ignored validation library and scanning
+it, run the complete Jellyfin path with the resulting item ID:
+
+```powershell
+$env:WEBGPU_SMOKE_DEBUG_URL = 'http://127.0.0.1:9226'
+$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096/web/'
+$env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
+$env:WEBGPU_SMOKE_ITEM_ID = '<transport-stream-item-id>'
+$env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'raw-planes'
+$env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'bundled-hevc'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'disabled'
+$env:WEBGPU_SMOKE_COMPLETION_MODE = 'natural-end'
+$env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1'
+$env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '0'
+$env:WEBGPU_SMOKE_USERNAME = '<username>'
+$env:WEBGPU_SMOKE_PASSWORD = '<password>'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely

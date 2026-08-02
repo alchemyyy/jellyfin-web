@@ -128,7 +128,9 @@ contains EL parameter sets, its selected Matroska track provides a validated
 validated separate EL decoder configuration. Legacy dual-track ISO BMFF is
 also supported when a bounded `dvh1`/`dvhe`, `dvcC`, `hvcC`, and `vdep`
 topology identifies exactly one EL for the selected BL. The second bundled
-decoder must produce a PTS-matched EL frame and the exact FEL GPU route must be
+decoder can also follow a bounded MPEG-TS or M2TS PAT/PMT dependency from one
+selected HEVC BL PID to one exposed EL PID, including the fixed HDMV BL/EL PID
+pair. It must produce a PTS-matched EL frame and the exact FEL GPU route must be
 authorized. Otherwise the same BL session continues through the base route.
 
 ## Bundled codec licensing and distribution
@@ -227,6 +229,7 @@ node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
 node --test scripts/webgpu/release-validation-metrics.node-test.mjs
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs
+node --test scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.node-test.mjs
 npm run build:development
 node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
 ```

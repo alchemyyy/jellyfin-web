@@ -1257,6 +1257,72 @@ describe('WebGPUPlayer HTML delegation', () => {
         });
     });
 
+    it('authorizes Jellyfin HDR10 labeling only for one exact separate Profile 7 source', async () => {
+        const player = new WebGPUPlayer();
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        const videoStreams = [
+            {
+                AverageFrameRate: 23.976025,
+                BitDepth: 10,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                Height: 1_080,
+                IsInterlaced: false,
+                RealFrameRate: 11.988012,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'HDR10',
+                Width: 1_920
+            },
+            {
+                AverageFrameRate: 23.976025,
+                BitDepth: 10,
+                BlPresentFlag: 0,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                DvBlSignalCompatibilityId: 6,
+                DvProfile: 7,
+                ElPresentFlag: 1,
+                Height: 1_080,
+                IsInterlaced: false,
+                RealFrameRate: 11.988012,
+                RpuPresentFlag: 1,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'HDR10',
+                Width: 1_920
+            }
+        ];
+
+        await player.getDeviceProfile({
+            Id: 'separate-profile-7-item',
+            MediaSources: [{ MediaStreams: videoStreams }]
+        }, { isRetry: false });
+
+        expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
+            allowDolbyVisionProfile7: true,
+            allowDolbyVisionProfile7HDR10Base: true
+        });
+
+        await player.getDeviceProfile({
+            Id: 'ambiguous-profile-7-item',
+            MediaSources: [
+                { MediaStreams: videoStreams },
+                { MediaStreams: videoStreams }
+            ]
+        }, { isRetry: false });
+
+        expect(customProfileMockState.augmentationCalls[1]?.options).not.toHaveProperty(
+            'allowDolbyVisionProfile7HDR10Base'
+        );
+    });
+
     it('keeps the native profile when the complete custom runtime is unavailable', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();

@@ -804,6 +804,37 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(rangeValues.some(value => value?.includes('DOVIWithHLG'))).toBe(false);
     });
 
+    it('adds HDR10 only for an exact item-scoped separate Profile 7 base route', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'hevc' ], [ 'aac' ], [ 'hevc' ]),
+            {
+                allowDolbyVisionProfile7: true,
+                allowDolbyVisionProfile7HDR10Base: true,
+                allowRawHDR: false
+            }
+        );
+        const rangeValues = result.profile.CodecProfiles
+            ?.flatMap(profile => profile.Conditions ?? [])
+            .filter(condition => condition.Property === 'VideoRangeType')
+            .map(condition => condition.Value) ?? [];
+
+        expect(rangeValues).toContain('SDR|DOVIWithEL|HDR10');
+        expect(rangeValues).toContain('DOVIWithEL|HDR10');
+        expect(rangeValues.some(value => value?.includes('HLG'))).toBe(false);
+    });
+
     it('advertises only the exact native Profile 5 route when externally authorized', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {

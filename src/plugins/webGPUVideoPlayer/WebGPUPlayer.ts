@@ -20,6 +20,7 @@ import {
 } from './MediaTime';
 import {
     getDolbyVisionPresentationDescriptor,
+    getDolbyVisionPresentationSelection,
     getPresentationInputColorMetadata,
     isKnownSDRPresentationInput,
     type DolbyVisionPresentationDescriptor
@@ -136,6 +137,15 @@ type HTMLCustomPlaybackContract = {
 
 type PlaybackOptionsRecord = Record<string, unknown>;
 
+type DeviceProfileItem = {
+    MediaSources?: unknown
+    MediaStreams?: unknown
+};
+
+type DeviceProfileMediaSource = {
+    MediaStreams?: unknown
+};
+
 type NativeDeviceProfileProof = {
     generation: number | null
     itemKey: string
@@ -173,6 +183,47 @@ function getPlaybackItemKey(options: unknown): string | null {
         return null;
     }
     return getItemKey((options as PlaybackOptionsRecord).item);
+}
+
+function hasExactSeparateProfile7Source(item: unknown): boolean {
+    if (!item || typeof item !== 'object') {
+        return false;
+    }
+    const itemRecord = item as DeviceProfileItem;
+    let mediaStreams = itemRecord.MediaStreams;
+    if (Array.isArray(itemRecord.MediaSources)) {
+        if (itemRecord.MediaSources.length !== 1) {
+            return false;
+        }
+        const mediaSource = itemRecord.MediaSources[0];
+        if (!mediaSource || typeof mediaSource !== 'object') {
+            return false;
+        }
+        mediaStreams = (mediaSource as DeviceProfileMediaSource).MediaStreams;
+    }
+    if (!Array.isArray(mediaStreams)) {
+        return false;
+    }
+    let videoStreamCount = 0;
+    for (const stream of mediaStreams) {
+        if (
+            stream
+            && typeof stream === 'object'
+            && typeof (stream as PlaybackOptionsRecord).Type === 'string'
+            && ((stream as PlaybackOptionsRecord).Type as string).trim().toLowerCase()
+                === 'video'
+        ) {
+            videoStreamCount += 1;
+        }
+    }
+    if (videoStreamCount !== 2) {
+        return false;
+    }
+    const selection = getDolbyVisionPresentationSelection({
+        mediaSource: { MediaStreams: mediaStreams }
+    });
+    return selection?.descriptor.profile === 7
+        && selection.descriptor.enhancementLayerPresent;
 }
 
 type AudioPrewarmMediaStream = {
@@ -487,6 +538,8 @@ export default class WebGPUPlayer {
             && this.presenter.isRawDolbyVisionPresentationAuthorized();
         const allowDolbyVisionProfile7 = hdrToneMappingEnabled
             && this.presenter.isRawDolbyVisionProfile7PresentationAuthorized();
+        const allowDolbyVisionProfile7HDR10Base = allowDolbyVisionProfile7
+            && hasExactSeparateProfile7Source(item);
         const allowNativeDolbyVision = hdrToneMappingEnabled
             && this.presenter.isExternalDolbyVisionPresentationAuthorized();
         const profileResult = augmentDeviceProfileForCustomDecode(
@@ -495,6 +548,9 @@ export default class WebGPUPlayer {
             {
                 allowDolbyVision,
                 allowDolbyVisionProfile7,
+                ...(allowDolbyVisionProfile7HDR10Base ? {
+                    allowDolbyVisionProfile7HDR10Base: true
+                } : {}),
                 allowNativeDolbyVision,
                 allowRawHDR,
                 authorizedRawHDRRouteKeys,

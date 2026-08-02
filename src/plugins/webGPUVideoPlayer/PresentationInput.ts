@@ -394,8 +394,15 @@ function isSeparateProfile7EnhancementStream(videoStream: MediaStreamMetadata): 
         && parseExactMetadataFlag(videoStream.BlPresentFlag) !== null
         && parseExactMetadataFlag(videoStream.ElPresentFlag) === true
         && parseExactMetadataFlag(videoStream.RpuPresentFlag) === true
-        && rangeType !== null
-        && rangeType.startsWith(DOLBY_VISION_PREFIX);
+        && (
+            rangeType?.startsWith(DOLBY_VISION_PREFIX) === true
+            // Jellyfin classifies separate MPEG-TS EL streams as HDR10 even
+            // when their exact FFmpeg side data identifies Profile 7
+            || (
+                parseRangeType(videoStream.VideoRangeType) === 'pq'
+                && parseTransfer(videoStream.ColorTransfer) === 'pq'
+            )
+        );
 }
 
 function isSeparateProfile7BaseStream(videoStream: MediaStreamMetadata): boolean {

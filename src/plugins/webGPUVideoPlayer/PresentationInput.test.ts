@@ -138,6 +138,25 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         }
     );
 
+    it('accepts the HDR10 range label Jellyfin assigns to an MPEG-TS enhancement stream', () => {
+        const mediaStreams = createSeparateProfile7Streams({}, {
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            VideoRangeType: 'HDR10'
+        });
+
+        expect(getDolbyVisionPresentationSelection({
+            mediaSource: { MediaStreams: mediaStreams }
+        })).toMatchObject({
+            baseLayerVideoTrackOrdinal: 0,
+            descriptor: {
+                enhancementLayerPresent: true,
+                profile: 7
+            }
+        });
+    });
+
     it('selects a reversed separate Profile 7 base-layer ordinal', () => {
         const mediaStreams = createSeparateProfile7Streams().reverse();
 
@@ -156,6 +175,11 @@ describe('getDolbyVisionPresentationDescriptor', () => {
         [ 'mismatched real frame rate', {}, { RealFrameRate: 24 } ],
         [ 'mismatched geometry', {}, { Width: 1_918 } ],
         [ 'missing enhancement BL flag', {}, { BlPresentFlag: undefined } ],
+        [ 'non-HDR enhancement', {}, {
+            ColorTransfer: 'bt709',
+            VideoRange: 'SDR',
+            VideoRangeType: 'SDR'
+        } ],
         [ 'wrong enhancement compatibility ID', {}, { DvBlSignalCompatibilityId: 1 } ]
     ])('rejects ambiguous separate-track Profile 7 metadata: %s', (
         _label,

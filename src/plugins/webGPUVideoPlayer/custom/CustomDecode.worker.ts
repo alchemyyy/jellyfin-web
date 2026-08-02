@@ -104,6 +104,9 @@ import { readISOBaseMediaDolbyVisionTrackConfiguration } from './ISOBaseMediaDol
 import {
     readMatroskaDolbyVisionTrackConfiguration
 } from './MatroskaDolbyVisionHVCE';
+import {
+    readMPEGTransportStreamDolbyVisionTrackConfiguration
+} from './MPEGTransportStreamDolbyVisionConfiguration';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -257,16 +260,31 @@ const validatedRangeFetch: typeof fetch = async (
     input: RequestInfo | URL,
     requestInit?: RequestInit
 ): Promise<Response> => {
-    let response: Response;
-    try {
-        response = await fetch(input, requestInit);
-    } catch (error) {
-        throw new MediaNetworkError(error);
-    }
     const requestHeaders = requestInit?.headers === undefined && input instanceof Request ?
         input.headers :
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         new Headers(requestInit?.headers);
+    let response: Response;
+    try {
+        response = await fetch(input, requestInit);
+    } catch (error) {
+        const requestURL = input instanceof Request ? input.url : String(input);
+        let requestPath = '[media path]';
+        try {
+            requestPath = new URL(requestURL).pathname;
+        } catch {
+            // Preserve a token-safe placeholder for malformed request URLs
+        }
+        const requestMethod = requestInit?.method
+            ?? (input instanceof Request ? input.method : 'GET');
+        const rangeHeader = requestHeaders.get('Range');
+        const requestDescription = rangeHeader ?
+            `${requestMethod} ${requestPath} (${rangeHeader})` :
+            `${requestMethod} ${requestPath}`;
+        throw new MediaNetworkError(
+            `${requestDescription}: ${getSafeErrorMessage(error)}`
+        );
+    }
     requireSuccessfulMediaHTTPResponse(response);
     requireValidByteRangeResponse(requestHeaders.get('Range'), response);
     return response;
@@ -618,20 +636,30 @@ async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
     }
     let description: Uint8Array | null = containerDecoderDescription?.slice() ?? null;
     let decoderPacketFormat: HEVCNALFormat | null = null;
-    if (!description && codec === 'hevc' && decoderConfig) {
-        description = copyDecoderDescription(decoderConfig.description);
-        decoderPacketFormat = getHEVCNALFormat(decoderConfig);
-    }
-    if (!description) {
+    try {
+        if (!description && codec === 'hevc' && decoderConfig) {
+            description = copyDecoderDescription(decoderConfig.description);
+            decoderPacketFormat = getHEVCNALFormat(decoderConfig);
+        }
+    } catch {
         return null;
     }
-    const configuration = getContainerDolbyVisionEnhancementConfiguration(
-        preparedVideoTrack,
-        description
-    );
+    let configuration: DolbyVisionEnhancementDecoderConfiguration | null = null;
+    if (description) {
+        configuration = getContainerDolbyVisionEnhancementConfiguration(
+            preparedVideoTrack,
+            description
+        );
+    } else if (decoderPacketFormat?.kind === 'annex-b') {
+        configuration = createDolbyVisionEnhancementDecoderConfiguration(
+            preparedVideoTrack
+        );
+    }
+    if (!configuration) {
+        return null;
+    }
     if (
-        !configuration
-        || configuration.geometry.codedHeight !== codedHeight
+        configuration.geometry.codedHeight !== codedHeight
         || configuration.geometry.codedWidth !== codedWidth
         || configuration.geometry.displayHeight !== displayHeight
         || configuration.geometry.displayWidth !== displayWidth
@@ -1850,14 +1878,28 @@ async function readContainerDolbyVisionTrackConfiguration(
             reader,
             containerTrackNumber
         );
-        if (!isoBaseMediaConfiguration) {
+        if (isoBaseMediaConfiguration) {
+            return {
+                enhancementConfiguration: null,
+                separateEnhancement: {
+                    decoderDescription: isoBaseMediaConfiguration.enhancementConfiguration,
+                    trackNumber: isoBaseMediaConfiguration.separateEnhancementTrackNumber
+                }
+            };
+        }
+        const transportStreamConfiguration =
+            await readMPEGTransportStreamDolbyVisionTrackConfiguration(
+                reader,
+                containerTrackNumber
+            );
+        if (!transportStreamConfiguration) {
             return null;
         }
         return {
             enhancementConfiguration: null,
             separateEnhancement: {
-                decoderDescription: isoBaseMediaConfiguration.enhancementConfiguration,
-                trackNumber: isoBaseMediaConfiguration.separateEnhancementTrackNumber
+                decoderDescription: null,
+                trackNumber: transportStreamConfiguration.separateEnhancementTrackNumber
             }
         };
     } finally {
