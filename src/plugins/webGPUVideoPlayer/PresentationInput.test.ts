@@ -2,10 +2,53 @@ import { describe, expect, it } from 'vitest';
 
 import {
     getDolbyVisionPresentationDescriptor,
+    getDolbyVisionPresentationSelection,
     getPresentationInputColorMetadata,
     isKnownSDRPresentationInput,
     parseVideoStreamColorMetadata
 } from './PresentationInput';
+
+function createSeparateProfile7Streams(
+    baseLayerOverrides: Record<string, unknown> = {},
+    enhancementLayerOverrides: Record<string, unknown> = {}
+): Array<Record<string, unknown>> {
+    return [
+        {
+            AverageFrameRate: 23.976025,
+            BitDepth: 10,
+            Codec: 'hevc',
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            Height: 2_160,
+            IsInterlaced: false,
+            RealFrameRate: 23.976025,
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'HDR10',
+            Width: 3_840,
+            ...baseLayerOverrides
+        },
+        {
+            AverageFrameRate: 23.976025,
+            BitDepth: 10,
+            BlPresentFlag: 0,
+            Codec: 'hevc',
+            DvBlSignalCompatibilityId: 6,
+            DvProfile: 7,
+            ElPresentFlag: 1,
+            Height: 1_080,
+            IsInterlaced: false,
+            RealFrameRate: 23.976025,
+            RpuPresentFlag: 1,
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'DOVIWithEL',
+            Width: 1_920,
+            ...enhancementLayerOverrides
+        }
+    ];
+}
 
 describe('getDolbyVisionPresentationDescriptor', () => {
     it('accepts exact single-layer Profile 5 metadata', () => {
@@ -67,6 +110,66 @@ describe('getDolbyVisionPresentationDescriptor', () => {
             enhancementLayerPresent: true,
             profile: 7
         });
+    });
+
+    it.each([ 0, 1 ])(
+        'accepts Jellyfin separate-track Profile 7 metadata with enhancement BL flag %i',
+        baseLayerPresentFlag => {
+            const mediaStreams = createSeparateProfile7Streams(
+                {},
+                { BlPresentFlag: baseLayerPresentFlag }
+            );
+            const expectedDescriptor = {
+                baseLayerBitDepth: 10,
+                baseLayerSignalCompatibilityID: 6,
+                enhancementLayerPresent: true,
+                profile: 7
+            };
+
+            expect(getDolbyVisionPresentationDescriptor({
+                mediaSource: { MediaStreams: mediaStreams }
+            })).toEqual(expectedDescriptor);
+            expect(getDolbyVisionPresentationSelection({
+                mediaSource: { MediaStreams: mediaStreams }
+            })).toEqual({
+                baseLayerVideoTrackOrdinal: 0,
+                descriptor: expectedDescriptor
+            });
+        }
+    );
+
+    it('selects a reversed separate Profile 7 base-layer ordinal', () => {
+        const mediaStreams = createSeparateProfile7Streams().reverse();
+
+        expect(getDolbyVisionPresentationSelection({
+            mediaSource: { MediaStreams: mediaStreams }
+        })).toMatchObject({
+            baseLayerVideoTrackOrdinal: 1,
+            descriptor: { profile: 7 }
+        });
+    });
+
+    it.each([
+        [ 'non-HEVC base', { Codec: 'h264' }, {} ],
+        [ 'non-PQ base', { ColorTransfer: 'bt709', VideoRange: 'SDR', VideoRangeType: 'SDR' }, {} ],
+        [ 'mismatched average frame rate', {}, { AverageFrameRate: 24 } ],
+        [ 'mismatched real frame rate', {}, { RealFrameRate: 24 } ],
+        [ 'mismatched geometry', {}, { Width: 1_918 } ],
+        [ 'missing enhancement BL flag', {}, { BlPresentFlag: undefined } ],
+        [ 'wrong enhancement compatibility ID', {}, { DvBlSignalCompatibilityId: 1 } ]
+    ])('rejects ambiguous separate-track Profile 7 metadata: %s', (
+        _label,
+        baseLayerOverrides,
+        enhancementLayerOverrides
+    ) => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: createSeparateProfile7Streams(
+                    baseLayerOverrides,
+                    enhancementLayerOverrides
+                )
+            }
+        })).toBeNull();
     });
 
     it.each([

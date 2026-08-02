@@ -8,10 +8,13 @@ import {
     type InputColorMetadata,
     type YUVMatrix
 } from './color/ColorMetadata';
+import { getDolbyVisionEnhancementDimensions } from './DolbyVisionGeometry';
 
 type MediaStreamMetadata = {
+    AverageFrameRate?: unknown
     BitDepth?: unknown
     BlPresentFlag?: unknown
+    Codec?: unknown
     ColorPrimaries?: unknown
     ColorRange?: unknown
     ColorSpace?: unknown
@@ -23,11 +26,15 @@ type MediaStreamMetadata = {
     DvVersionMinor?: unknown
     ElPresentFlag?: unknown
     Hdr10PlusPresentFlag?: unknown
+    IsInterlaced?: unknown
+    RealFrameRate?: unknown
     RpuPresentFlag?: unknown
     Type?: unknown
     VideoDoViTitle?: unknown
     VideoRange?: unknown
     VideoRangeType?: unknown
+    Height?: unknown
+    Width?: unknown
 };
 
 type PlaybackOptions = {
@@ -41,6 +48,12 @@ export type DolbyVisionPresentationDescriptor = {
     baseLayerSignalCompatibilityID: 0 | 1 | 4 | 6 | null
     enhancementLayerPresent: boolean
     profile: 5 | 7 | 8
+};
+
+export type DolbyVisionPresentationSelection = {
+    /** Zero-based ordinal among video streams, not MediaStream.Index. */
+    baseLayerVideoTrackOrdinal: number
+    descriptor: DolbyVisionPresentationDescriptor
 };
 
 const SDR_VIDEO_RANGE = 'SDR';
@@ -59,6 +72,7 @@ const SDR_VIDEO_RANGE_TYPES = new Set([ SDR_VIDEO_RANGE ]);
 const DOLBY_VISION_PREFIX = 'DOVI';
 const DEFAULT_SDR_BIT_DEPTH = 8;
 const DEFAULT_HDR_BIT_DEPTH = 10;
+const HEVC_CODEC_NAMES = new Set([ 'H265', 'HEVC' ]);
 
 type ParsedTransfer = ColorTransfer | 'dolby-vision' | 'unknown';
 
@@ -273,6 +287,163 @@ function parseDolbyVisionInteger(value: unknown): number | null {
     return Number.isSafeInteger(numericValue) && numericValue >= 0 ? numericValue : null;
 }
 
+function parseExactMetadataFlag(value: unknown): boolean | null {
+    switch (typeof value) {
+        case 'boolean':
+            return value;
+        case 'number':
+            if (value === 0 || value === 1) {
+                return value === 1;
+            }
+            return null;
+        case 'string': {
+            const normalizedValue = value.trim().toUpperCase();
+            switch (normalizedValue) {
+                case '0':
+                case 'FALSE':
+                case 'NO':
+                    return false;
+                case '1':
+                case 'TRUE':
+                case 'YES':
+                    return true;
+                default:
+                    return null;
+            }
+        }
+        default:
+            return null;
+    }
+}
+
+function isHEVCStream(videoStream: MediaStreamMetadata): boolean {
+    const codec = normalizeMetadataToken(videoStream.Codec);
+    return codec !== null && HEVC_CODEC_NAMES.has(codec);
+}
+
+function getPositiveFiniteNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function getPositiveSafeInteger(value: unknown): number | null {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function hasMatchingSeparateTrackGeometry(
+    baseLayerStream: MediaStreamMetadata,
+    enhancementLayerStream: MediaStreamMetadata
+): boolean {
+    const baseLayerWidth = getPositiveSafeInteger(baseLayerStream.Width);
+    const baseLayerHeight = getPositiveSafeInteger(baseLayerStream.Height);
+    const enhancementLayerWidth = getPositiveSafeInteger(enhancementLayerStream.Width);
+    const enhancementLayerHeight = getPositiveSafeInteger(enhancementLayerStream.Height);
+    if (
+        baseLayerWidth === null
+        || baseLayerHeight === null
+        || enhancementLayerWidth === null
+        || enhancementLayerHeight === null
+    ) {
+        return false;
+    }
+    const expectedDimensions = getDolbyVisionEnhancementDimensions(
+        baseLayerWidth,
+        baseLayerHeight
+    );
+    return enhancementLayerWidth === expectedDimensions.width
+        && enhancementLayerHeight === expectedDimensions.height;
+}
+
+function hasMatchingSeparateTrackFrameRate(
+    baseLayerStream: MediaStreamMetadata,
+    enhancementLayerStream: MediaStreamMetadata
+): boolean {
+    const frameRateFields: ReadonlyArray<'AverageFrameRate' | 'RealFrameRate'> = [
+        'AverageFrameRate',
+        'RealFrameRate'
+    ];
+    let matchedFrameRate = false;
+    for (const frameRateField of frameRateFields) {
+        const baseLayerFrameRate = getPositiveFiniteNumber(baseLayerStream[frameRateField]);
+        const enhancementLayerFrameRate = getPositiveFiniteNumber(
+            enhancementLayerStream[frameRateField]
+        );
+        if (baseLayerFrameRate === null && enhancementLayerFrameRate === null) {
+            continue;
+        }
+        if (
+            baseLayerFrameRate === null
+            || enhancementLayerFrameRate === null
+            || Math.abs(baseLayerFrameRate - enhancementLayerFrameRate) > 0.001
+        ) {
+            return false;
+        }
+        matchedFrameRate = true;
+    }
+    return matchedFrameRate;
+}
+
+function isSeparateProfile7EnhancementStream(videoStream: MediaStreamMetadata): boolean {
+    const rangeType = normalizeMetadataToken(videoStream.VideoRangeType);
+    // Jellyfin 10.11 reports BL=true for Matroska EL tracks and BL=false for
+    // ISO BMFF EL tracks, so topology and all other exact P7 fields are required
+    return isHEVCStream(videoStream)
+        && videoStream.BitDepth === DEFAULT_HDR_BIT_DEPTH
+        && videoStream.IsInterlaced === false
+        && parseDolbyVisionInteger(videoStream.DvProfile) === 7
+        && parseDolbyVisionInteger(videoStream.DvBlSignalCompatibilityId) === 6
+        && parseExactMetadataFlag(videoStream.BlPresentFlag) !== null
+        && parseExactMetadataFlag(videoStream.ElPresentFlag) === true
+        && parseExactMetadataFlag(videoStream.RpuPresentFlag) === true
+        && rangeType !== null
+        && rangeType.startsWith(DOLBY_VISION_PREFIX);
+}
+
+function isSeparateProfile7BaseStream(videoStream: MediaStreamMetadata): boolean {
+    return isHEVCStream(videoStream)
+        && videoStream.BitDepth === DEFAULT_HDR_BIT_DEPTH
+        && videoStream.IsInterlaced === false
+        && !hasDolbyVisionMetadata(videoStream)
+        && parseVideoStreamColorMetadata(videoStream)?.transfer === 'pq';
+}
+
+function parseSeparateProfile7Selection(
+    videoStreams: readonly MediaStreamMetadata[]
+): DolbyVisionPresentationSelection | null {
+    if (videoStreams.length !== 2) {
+        return null;
+    }
+    const baseLayerVideoTrackOrdinal = videoStreams.findIndex(
+        isSeparateProfile7BaseStream
+    );
+    const enhancementLayerVideoTrackOrdinal = videoStreams.findIndex(
+        isSeparateProfile7EnhancementStream
+    );
+    if (
+        baseLayerVideoTrackOrdinal < 0
+        || enhancementLayerVideoTrackOrdinal < 0
+        || baseLayerVideoTrackOrdinal === enhancementLayerVideoTrackOrdinal
+    ) {
+        return null;
+    }
+    const baseLayerStream = videoStreams[baseLayerVideoTrackOrdinal];
+    const enhancementLayerStream = videoStreams[enhancementLayerVideoTrackOrdinal];
+    if (
+        !hasMatchingSeparateTrackGeometry(baseLayerStream, enhancementLayerStream)
+        || !hasMatchingSeparateTrackFrameRate(baseLayerStream, enhancementLayerStream)
+    ) {
+        return null;
+    }
+    return {
+        baseLayerVideoTrackOrdinal,
+        descriptor: {
+            baseLayerBitDepth: 10,
+            baseLayerSignalCompatibilityID: 6,
+            enhancementLayerPresent: true,
+            profile: 7
+        }
+    };
+}
+
 function parseDolbyVisionDescriptor(
     videoStream: MediaStreamMetadata
 ): DolbyVisionPresentationDescriptor | null {
@@ -311,10 +482,10 @@ function parseDolbyVisionDescriptor(
     };
 }
 
-/** Returns one exact supported Profile 5, 7, or 8 presentation descriptor. */
-export function getDolbyVisionPresentationDescriptor(
+/** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
+export function getDolbyVisionPresentationSelection(
     options: unknown
-): DolbyVisionPresentationDescriptor | null {
+): DolbyVisionPresentationSelection | null {
     if (!options || typeof options !== 'object') {
         return null;
     }
@@ -332,7 +503,18 @@ export function getDolbyVisionPresentationDescriptor(
             videoStreams.push(stream as MediaStreamMetadata);
         }
     }
-    return videoStreams.length === 1 ? parseDolbyVisionDescriptor(videoStreams[0]) : null;
+    if (videoStreams.length === 1) {
+        const descriptor = parseDolbyVisionDescriptor(videoStreams[0]);
+        return descriptor ? { baseLayerVideoTrackOrdinal: 0, descriptor } : null;
+    }
+    return parseSeparateProfile7Selection(videoStreams);
+}
+
+/** Returns one exact supported Profile 5, 7, or 8 presentation descriptor. */
+export function getDolbyVisionPresentationDescriptor(
+    options: unknown
+): DolbyVisionPresentationDescriptor | null {
+    return getDolbyVisionPresentationSelection(options)?.descriptor ?? null;
 }
 
 /**

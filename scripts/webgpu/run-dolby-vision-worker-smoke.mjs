@@ -3,10 +3,9 @@
 const DEFAULT_DEBUG_URL = 'http://127.0.0.1:9226';
 const DEFAULT_FRONTEND_URL = 'http://localhost:8096/web/';
 const DEFAULT_TIMEOUT_MILLISECONDS = 120_000;
-const EXPECTED_BASE_HEIGHT = 2_160;
-const EXPECTED_BASE_WIDTH = 3_840;
-const EXPECTED_ENHANCEMENT_HEIGHT = 1_080;
-const EXPECTED_ENHANCEMENT_WIDTH = 1_920;
+const DEFAULT_EXPECTED_BASE_HEIGHT = 2_160;
+const DEFAULT_EXPECTED_BASE_WIDTH = 3_840;
+const DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH = 1_920;
 const EXPECTED_METADATA_SCHEMA_VERSION = 4;
 const WEBSOCKET_OPEN_STATE = 1;
 
@@ -17,6 +16,10 @@ Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
   --frontend-url <url>   Built Jellyfin Web frontend URL
   --media-url <url>      Same-origin Profile 7 FEL fixture URL
+  --expected-base-width <number>
+                         Expected decoded BL width; defaults to 3840
+  --expected-base-height <number>
+                         Expected decoded BL height; defaults to 2160
   --timeout-ms <number>  Worker validation timeout
   --help                 Show this text`;
 
@@ -136,6 +139,8 @@ function parsePositiveInteger(value, optionName) {
 function parseConfiguration(argumentsList) {
     const configuration = {
         debugURL: DEFAULT_DEBUG_URL,
+        expectedBaseHeight: DEFAULT_EXPECTED_BASE_HEIGHT,
+        expectedBaseWidth: DEFAULT_EXPECTED_BASE_WIDTH,
         frontendURL: DEFAULT_FRONTEND_URL,
         mediaURL: null,
         timeoutMilliseconds: DEFAULT_TIMEOUT_MILLISECONDS
@@ -160,6 +165,12 @@ function parseConfiguration(argumentsList) {
             case '--media-url':
                 configuration.mediaURL = value;
                 break;
+            case '--expected-base-width':
+                configuration.expectedBaseWidth = parsePositiveInteger(value, option);
+                break;
+            case '--expected-base-height':
+                configuration.expectedBaseHeight = parsePositiveInteger(value, option);
+                break;
             case '--timeout-ms':
                 configuration.timeoutMilliseconds = parsePositiveInteger(value, option);
                 break;
@@ -183,6 +194,15 @@ function parseConfiguration(argumentsList) {
         debugURL: new URL(configuration.debugURL).href.replace(/\/$/u, ''),
         frontendURL: frontendURL.href,
         mediaURL: mediaURL.href
+    };
+}
+
+function getExpectedEnhancementDimensions(configuration) {
+    const resolutionDivisor = configuration.expectedBaseWidth
+        > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
+    return {
+        height: Math.ceil(configuration.expectedBaseHeight / resolutionDivisor),
+        width: Math.ceil(configuration.expectedBaseWidth / resolutionDivisor)
     };
 }
 
@@ -360,8 +380,8 @@ function createWorkerValidationExpression(configuration) {
                 dolbyVisionRPUParserWASMURL: ${JSON.stringify(parserURL)},
                 frameCredits: 2,
                 generation,
-                maximumCodedHeight: ${EXPECTED_BASE_HEIGHT},
-                maximumCodedWidth: ${EXPECTED_BASE_WIDTH},
+                maximumCodedHeight: ${configuration.expectedBaseHeight},
+                maximumCodedWidth: ${configuration.expectedBaseWidth},
                 rawVideoFrameFormat: 'I420P10',
                 startTimeMicroseconds: 0,
                 type: 'start',
@@ -374,8 +394,9 @@ function createWorkerValidationExpression(configuration) {
     })()`;
 }
 
-function validateResult(result) {
+function validateResult(result, configuration) {
     const failures = [];
+    const expectedEnhancementDimensions = getExpectedEnhancementDimensions(configuration);
     const addFailure = (condition, code) => {
         if (!condition) {
             failures.push(code);
@@ -384,22 +405,28 @@ function validateResult(result) {
     addFailure(result?.error === null, 'worker-error');
     addFailure(result?.stopped === true, 'worker-stop-missing');
     addFailure(result?.ready?.audio === null, 'unexpected-audio-route');
-    addFailure(result?.ready?.codedWidth === EXPECTED_BASE_WIDTH, 'base-ready-width-invalid');
-    addFailure(result?.ready?.codedHeight === EXPECTED_BASE_HEIGHT, 'base-ready-height-invalid');
+    addFailure(
+        result?.ready?.codedWidth === configuration.expectedBaseWidth,
+        'base-ready-width-invalid'
+    );
+    addFailure(
+        result?.ready?.codedHeight === configuration.expectedBaseHeight,
+        'base-ready-height-invalid'
+    );
     const frame = result?.frame;
     addFailure(frame !== null && typeof frame === 'object', 'decoded-frame-missing');
     addFailure(frame?.baseFormat === 'I420P10', 'base-format-invalid');
     addFailure(frame?.baseBitDepth === 10, 'base-bit-depth-invalid');
-    addFailure(frame?.baseCodedWidth === EXPECTED_BASE_WIDTH, 'base-width-invalid');
-    addFailure(frame?.baseCodedHeight === EXPECTED_BASE_HEIGHT, 'base-height-invalid');
+    addFailure(frame?.baseCodedWidth === configuration.expectedBaseWidth, 'base-width-invalid');
+    addFailure(frame?.baseCodedHeight === configuration.expectedBaseHeight, 'base-height-invalid');
     addFailure(frame?.enhancementFormat === 'I420P10', 'enhancement-format-invalid');
     addFailure(frame?.enhancementBitDepth === 10, 'enhancement-bit-depth-invalid');
     addFailure(
-        frame?.enhancementCodedWidth === EXPECTED_ENHANCEMENT_WIDTH,
+        frame?.enhancementCodedWidth === expectedEnhancementDimensions.width,
         'enhancement-width-invalid'
     );
     addFailure(
-        frame?.enhancementCodedHeight === EXPECTED_ENHANCEMENT_HEIGHT,
+        frame?.enhancementCodedHeight === expectedEnhancementDimensions.height,
         'enhancement-height-invalid'
     );
     addFailure(frame?.sameBuffer === true, 'compound-buffer-not-shared');
@@ -459,8 +486,14 @@ async function main() {
             );
         }
         const result = evaluation.result?.value;
-        const failures = validateResult(result);
+        const failures = validateResult(result, configuration);
         const report = {
+            expectedGeometry: {
+                baseHeight: configuration.expectedBaseHeight,
+                baseWidth: configuration.expectedBaseWidth,
+                enhancementHeight: getExpectedEnhancementDimensions(configuration).height,
+                enhancementWidth: getExpectedEnhancementDimensions(configuration).width
+            },
             failures,
             result,
             schemaVersion: 1,

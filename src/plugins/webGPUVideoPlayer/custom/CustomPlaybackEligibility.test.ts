@@ -714,6 +714,105 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
+    it('selects the base track from Jellyfin separate-track Profile 7 metadata', () => {
+        const profile7Options = createOptions({
+            mediaSource: {
+                Container: 'mp4',
+                DefaultAudioStreamIndex: 2,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 24,
+                        BitDepth: 10,
+                        BitRate: 24_000_000,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    },
+                    {
+                        AverageFrameRate: 24,
+                        BitDepth: 10,
+                        BlPresentFlag: 0,
+                        Codec: 'hevc',
+                        DvBlSignalCompatibilityId: 6,
+                        DvProfile: 7,
+                        ElPresentFlag: 1,
+                        Height: 1_080,
+                        Index: 1,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RpuPresentFlag: 1,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithEL',
+                        Width: 1_920
+                    },
+                    {
+                        Channels: 2,
+                        Codec: 'aac',
+                        Index: 2,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            profile7Options,
+            createCapabilities(),
+            {
+                allowDolbyVisionProfile7: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            audioTrackIndex: 0,
+            eligible: true,
+            hdr: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        });
+    });
+
+    it('rejects multiple independent video tracks', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams.splice(1, 0, {
+            AverageFrameRate: 24,
+            BitDepth: 8,
+            Codec: 'h264',
+            Height: 720,
+            Index: 2,
+            IsInterlaced: false,
+            Profile: 'High',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_280
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'video-track-unavailable' });
+    });
+
     it.each([
         { codec: 'h264', label: 'H264' },
         { codec: 'hevc', label: 'HEVC' }

@@ -401,8 +401,13 @@ maximum channel errors of approximately `0.00198` and `0.00190` respectively.
 The official FFmpeg `dovi-p7-hvce` FATE sample separately passed the worker
 smoke: 3840x2160 BL, 1920x1080 EL, exact PTS pairing, one parsed RPU, one shared
 31,242,240-byte ownership buffer, `decoded-fel`, natural EOF, and acknowledged
-shutdown. Full Jellyfin playback remained gated because that run's 4K Main10
-qualification measured 28.49 fps, below the production 30 fps threshold.
+shutdown. Generic bundled 4K Main10 playback remained gated because that run's
+qualification measured 28.49 fps, below the production 30 fps threshold. This
+does not gate separately qualified native Profile 5 decode: a live Jellyfin
+Wolfwalkers session direct-played 3840x2076 Profile 5 HEVC with bundled E-AC-3
+PCM audio, per-frame RPU reconstruction, WebGPU HDR-to-SDR presentation, zero
+dropped frames, and clean pause, seek, fullscreen, stop, repeated-session, and
+device-loss-recovery smoke coverage.
 
 The same source sample, SHA-256
 `3287bac8deade11e1c57bd65b9c7c8750a1e38e286666cbb4fa39eac264875df`,
@@ -435,6 +440,49 @@ passed the worker smoke with a Mediabunny codec-null EL track,
 container-derived `hvcC`, three lockstep packet pairs, one parsed EL-side RPU
 per frame, a shared 31,242,240-byte compound buffer, full `decoded-fel` output,
 natural EOF, and acknowledged shutdown.
+
+Jellyfin 10.11.6 indexed the generated MP4 as an HDR10 HEVC BL followed by a
+Profile 7 `dvh1` HEVC EL with RPU/EL enabled and BL disabled. It indexed the
+equivalent Matroska pair with the same geometry and frame rate but reported BL
+enabled on the EL. [`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)
+therefore recognizes both server representations only when there are exactly
+two HEVC video tracks, one is an unambiguous 10-bit PQ BL, the other is an exact
+Profile 7.6 RPU-bearing EL, and their frame rates and expected full- or
+half-resolution geometry match. It returns the BL's video-track ordinal for
+custom decode. Independent multi-video files and malformed pairs remain
+ineligible.
+
+[`create-profile7-playback-fixture.mjs`](./scripts/webgpu/create-profile7-playback-fixture.mjs)
+turns the same separate-track source into a deterministic five-second,
+1920x1080 structural fixture for full Jellyfin playback on machines that fail
+the separate conservative 4K bundled-decoder throughput gate. For source
+SHA-256 `d17456a94378165ff5312f46424819dd6bcd056d80d7841f62377abbdcd4fdb1`,
+the generated MP4 is 5,345,427 bytes with SHA-256
+`f3f3afb162063a21e039bd98098d05a471a72bb29998c5e6eb9781a9f86a6fa2`.
+Its worker smoke decoded matching 1920x1080 I420P10 BL and EL frames, paired
+their timestamps exactly, parsed one 3,232-byte RPU, transferred one
+12,718,080-byte compound buffer, reported `decoded-fel`, and stopped cleanly.
+After Jellyfin indexed that exact MP4, the Chrome 151 browser smoke selected
+direct custom playback and reached natural end. It decoded and presented all 30
+BL frames with 30 paired EL frames and 30 RPUs, reported every frame as full
+FEL, dropped no frames, performed no fallback, drained both queues, and emitted
+one clean stopped event with no browser error or ownership warning.
+
+This fixture exposed two integration defects before that pass. A failing decode
+stream cancelled its sibling and then suppressed its own worker error; the
+concurrent-stream boundary now retains and reports the initiating failure after
+draining cancelled siblings. The reported failure then showed that Mediabunny
+used the HEVC display size, 1920x1080, while the SPS used a normal conformance
+crop from 1920x1088. The bundled decoder now accepts a configuration matching
+either exact coded dimensions or bounded SPS display dimensions, preserves the
+cropped display geometry, and includes the bounded padding in its allocation
+ceiling. It still rejects inconsistent or oversized SPS dimensions.
+
+The structural fixture is not a color reference: its BL is downscaled and
+re-encoded while its EL/RPU track is copied. It validates server metadata,
+track selection, dual decode, ownership, RPU association, WebGPU presentation,
+and lifecycle behavior only. Color fidelity still requires an unmodified
+licensed reference and comparison against the pinned mpv/libplacebo pipeline.
 
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
@@ -538,6 +586,14 @@ only when there are exactly two HEVC video tracks, exactly one other track has
 Profile 7 with RPU and EL flags, and the selected track is the remaining BL.
 Duplicate track numbers and ambiguous topologies fail closed.
 
+[`ISOBaseMediaDolbyVisionConfiguration.ts`](./src/plugins/webGPUVideoPlayer/custom/ISOBaseMediaDolbyVisionConfiguration.ts)
+provides the corresponding bounded legacy ISO BMFF boundary. It limits `moov`
+to 16 MiB, validates compact box nesting and unique track IDs, selects an
+ordinary `hvc1`/`hev1` HEVC BL, and accepts exactly one Profile 7
+`dvh1`/`dvhe` EL whose `tref`/`vdep` points to that BL. The EL must carry a
+bounded Main10 `hvcC` record and `dvcC`/`dvvC` metadata with RPU and EL enabled
+and BL disabled. Mediabunny remains responsible for samples and packet timing.
+
 The worker validates an `hvcE` or separate-track decoder description as Main10
 4:2:0 HVCC with VPS/SPS/PPS, expected coded EL geometry, and bounded display
 geometry before configuring the second decoder. Separate-track packets come
@@ -548,10 +604,10 @@ attached to the BL presentation timestamp. Malformed, missing, ambiguous,
 unreachable, or mismatched metadata retires the EL route while the existing
 HDR10 BL session continues.
 
-Mediabunny remains the packet demuxer. The local reader does not parse clusters,
-rewrite access units, alter source negotiation, or expose general Matroska
-metadata. Block-additional EL payloads and non-Matroska dependency-stream
-representations remain outside this narrow workaround.
+Mediabunny remains the packet demuxer. The local readers do not parse clusters
+or media-data boxes, rewrite access units, alter source negotiation, or expose
+general container metadata. Block-additional EL payloads, fragmented ISO BMFF,
+and MPEG-TS dependency streams remain outside these narrow workarounds.
 
 ## Browser and WebGPU constraints
 
@@ -831,11 +887,12 @@ The minimum playback matrix is:
 4. Profile 7 MEL.
 5. Profile 7 FEL with interleaved NAL type 63.
 6. Profile 7 FEL with separate Matroska BL and EL/RPU tracks.
-7. Profile 7 with missing or malformed EL configuration.
-8. Missing, malformed, reused, and scene-refresh RPU data.
-9. B-frames and duplicate-nearby timestamps.
-10. Seek to multiple random-access points.
-11. Rapid seek, stop, source replacement, and next-item generation changes.
+7. Profile 7 FEL with legacy dual-track ISO BMFF `vdep` BL/EL tracks.
+8. Profile 7 with missing or malformed EL configuration.
+9. Missing, malformed, reused, and scene-refresh RPU data.
+10. B-frames and duplicate-nearby timestamps.
+11. Seek to multiple random-access points.
+12. Rapid seek, stop, source replacement, and next-item generation changes.
 
 Dolby's official browser test kit can provide licensed Profile 5 and 8.4
 coverage:

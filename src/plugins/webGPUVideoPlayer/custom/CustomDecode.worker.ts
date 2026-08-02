@@ -15,6 +15,7 @@ import {
 } from 'mediabunny';
 
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
+import { getDolbyVisionEnhancementDimensions } from '../DolbyVisionGeometry';
 import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { downmixFivePointOneToStereo } from './CustomAudioDownmix';
@@ -109,7 +110,6 @@ const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
 const OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK = 16;
-const DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH = 1_920;
 const DOLBY_VISION_ENHANCEMENT_CODEC = 'hev1.2.4.L153.B0';
 const ANNEX_B_HEVC_NAL_FORMAT: HEVCNALFormat = { kind: 'annex-b' };
 const OWNED_HEVC_PACKET_OPTIONS = {
@@ -468,10 +468,12 @@ function getDefaultDolbyVisionEnhancementGeometry(
     preparedVideoTrack: PreparedVideoTrack
 ): RawVideoFrameGeometry {
     const baseGeometry = preparedVideoTrack.geometry;
-    const resolutionDivisor = baseGeometry.codedWidth
-        > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
-    const codedWidth = Math.ceil(baseGeometry.codedWidth / resolutionDivisor);
-    const codedHeight = Math.ceil(baseGeometry.codedHeight / resolutionDivisor);
+    const enhancementDimensions = getDolbyVisionEnhancementDimensions(
+        baseGeometry.codedWidth,
+        baseGeometry.codedHeight
+    );
+    const codedWidth = enhancementDimensions.width;
+    const codedHeight = enhancementDimensions.height;
     return {
         codedHeight,
         codedWidth,
@@ -2274,6 +2276,7 @@ function streamPreparedAudio(
 }
 
 async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest, { type: 'start' }>): Promise<void> {
+    let reportDecodeStreamFailure = false;
     try {
         const input = new Input({
             formats: ALL_FORMATS,
@@ -2310,12 +2313,16 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (preparedAudioTrack) {
             streamPromises.push(streamPreparedAudio(run, request, preparedAudioTrack));
         }
-        await settleConcurrentDecodeStreams(streamPromises, (): void => stopRun(run));
+        await settleConcurrentDecodeStreams(streamPromises, (): void => {
+            // Preserve the first active-stream failure after cancelling siblings
+            reportDecodeStreamFailure = !run.cancelled;
+            stopRun(run);
+        });
         if (!run.cancelled) {
             postResponse({ generation: run.generation, type: 'ended' });
         }
     } catch (error) {
-        if (!run.cancelled) {
+        if (!run.cancelled || reportDecodeStreamFailure) {
             postResponse({
                 failureKind: classifyFailure(error),
                 generation: run.generation,

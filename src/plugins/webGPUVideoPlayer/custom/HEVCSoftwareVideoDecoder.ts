@@ -35,9 +35,18 @@ const MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
 const MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH = 1024 * 1024;
 const MAXIMUM_HEVC_CODED_HEIGHT = 2_160;
 const MAXIMUM_HEVC_CODED_WIDTH = 3_840;
+const MAXIMUM_HEVC_CONFORMANCE_PADDING = 64;
+const MAXIMUM_HEVC_SPS_CODED_HEIGHT = MAXIMUM_HEVC_CODED_HEIGHT
+    + MAXIMUM_HEVC_CONFORMANCE_PADDING;
+const MAXIMUM_HEVC_SPS_CODED_WIDTH = MAXIMUM_HEVC_CODED_WIDTH
+    + MAXIMUM_HEVC_CONFORMANCE_PADDING;
 const MAXIMUM_DECODED_FRAME_BYTE_LENGTH = (
-    MAXIMUM_HEVC_CODED_WIDTH * MAXIMUM_HEVC_CODED_HEIGHT
-    + (2 * Math.ceil(MAXIMUM_HEVC_CODED_WIDTH / 2) * Math.ceil(MAXIMUM_HEVC_CODED_HEIGHT / 2))
+    MAXIMUM_HEVC_SPS_CODED_WIDTH * MAXIMUM_HEVC_SPS_CODED_HEIGHT
+    + (
+        2
+        * Math.ceil(MAXIMUM_HEVC_SPS_CODED_WIDTH / 2)
+        * Math.ceil(MAXIMUM_HEVC_SPS_CODED_HEIGHT / 2)
+    )
 ) * Uint16Array.BYTES_PER_ELEMENT;
 export const MAXIMUM_HEVC_PENDING_PICTURE_COUNT = 64;
 
@@ -472,14 +481,27 @@ function validateSPSDimensionsAgainstConfig(
     spsConfiguration: HEVCSPSConfiguration,
     config: VideoDecoderConfig
 ): void {
+    const configuredWidth = Number(config.codedWidth);
+    const configuredHeight = Number(config.codedHeight);
+    const matchesCodedDimensions = spsConfiguration.codedWidth === configuredWidth
+        && spsConfiguration.codedHeight === configuredHeight;
+    const hasValidDisplayDimensions =
+        spsConfiguration.codedWidth >= spsConfiguration.displayWidth
+        && spsConfiguration.codedHeight >= spsConfiguration.displayHeight;
+    const matchesDisplayDimensionsWithBoundedPadding =
+        spsConfiguration.displayWidth === configuredWidth
+        && spsConfiguration.displayHeight === configuredHeight
+        && hasValidDisplayDimensions
+        && spsConfiguration.codedWidth - spsConfiguration.displayWidth
+            <= MAXIMUM_HEVC_CONFORMANCE_PADDING
+        && spsConfiguration.codedHeight - spsConfiguration.displayHeight
+            <= MAXIMUM_HEVC_CONFORMANCE_PADDING;
     if (
         !hasSupportedConfiguredDimensions(config)
-        || spsConfiguration.codedWidth > MAXIMUM_HEVC_CODED_WIDTH
-        || spsConfiguration.codedHeight > MAXIMUM_HEVC_CODED_HEIGHT
-        || spsConfiguration.codedWidth !== config.codedWidth
-        || spsConfiguration.codedHeight !== config.codedHeight
-        || spsConfiguration.displayWidth > config.codedWidth
-        || spsConfiguration.displayHeight > config.codedHeight
+        || spsConfiguration.codedWidth > MAXIMUM_HEVC_SPS_CODED_WIDTH
+        || spsConfiguration.codedHeight > MAXIMUM_HEVC_SPS_CODED_HEIGHT
+        || !hasValidDisplayDimensions
+        || (!matchesCodedDimensions && !matchesDisplayDimensionsWithBoundedPadding)
     ) {
         throw new TypeError('The HEVC SPS dimensions contradict the bounded decoder configuration');
     }
@@ -589,7 +611,8 @@ function checkedPlaneSampleCount(width: number, height: number, label: string): 
 function getDisplayDimensions(
     config: VideoDecoderConfig,
     codedWidth: number,
-    codedHeight: number
+    codedHeight: number,
+    spsConfiguration: HEVCSPSConfiguration
 ): { displayHeight: number; displayWidth: number } {
     const displayWidth = config.displayAspectWidth;
     const displayHeight = config.displayAspectHeight;
@@ -600,6 +623,15 @@ function getDisplayDimensions(
         && isPositiveSafeInteger(displayHeight)
     ) {
         return { displayHeight, displayWidth };
+    }
+    if (
+        spsConfiguration.displayWidth <= codedWidth
+        && spsConfiguration.displayHeight <= codedHeight
+    ) {
+        return {
+            displayHeight: spsConfiguration.displayHeight,
+            displayWidth: spsConfiguration.displayWidth
+        };
     }
     return { displayHeight: codedHeight, displayWidth: codedWidth };
 }
@@ -929,7 +961,12 @@ export default class HEVCSoftwareVideoDecoder {
         const sampleData = this.packFramePlanes(frame, totalSampleCount);
         const lumaByteLength = lumaSampleCount * bytesPerSample;
         const chromaByteLength = chromaSampleCount * bytesPerSample;
-        const displayDimensions = getDisplayDimensions(this.config, frame.width, frame.height);
+        const displayDimensions = getDisplayDimensions(
+            this.config,
+            frame.width,
+            frame.height,
+            spsConfiguration
+        );
         return new VideoSample(sampleData, {
             codedHeight: frame.height,
             codedWidth: frame.width,

@@ -394,7 +394,7 @@ async function executeFFmpeg(executable, argumentsList) {
     });
 }
 
-async function createFixture(configuration) {
+export async function createDualTrackDolbyVisionMP4Fixture(configuration) {
     const sourceFile = await stat(configuration.inputPath);
     if (!sourceFile.isFile() || sourceFile.size > MAXIMUM_FIXTURE_BYTE_LENGTH) {
         throw new FixtureError('The source fixture size is unsupported');
@@ -446,7 +446,11 @@ async function main() {
         console.log(USAGE);
         return;
     }
-    console.log(JSON.stringify(await createFixture(configuration), null, 2));
+    console.log(JSON.stringify(
+        await createDualTrackDolbyVisionMP4Fixture(configuration),
+        null,
+        2
+    ));
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;

@@ -354,10 +354,13 @@ node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
     --media-url http://localhost:8096/web/dovi-p7-fel.bin
 ```
 
-The gate requires a 3840x2160 I420P10 BL, 1920x1080 I420P10 EL, one shared
-atomic buffer, PTS agreement within one microsecond, schema-versioned
-`decoded-fel` metadata, one parsed RPU, and clean worker shutdown. The fixture
-is not checked in; record its provenance and hash in the validation result.
+By default the gate requires a 3840x2160 I420P10 BL and 1920x1080 I420P10 EL.
+Use `--expected-base-width` and `--expected-base-height` for a bounded structural
+fixture; the expected EL dimensions follow the same full- versus half-resolution
+Profile 7 rule as production. Every size requires one shared atomic buffer, PTS
+agreement within one microsecond, schema-versioned `decoded-fel` metadata, one
+parsed RPU, and clean worker shutdown. Fixtures are not checked in; record their
+provenance and hashes in the validation result.
 
 To prove the container-only `hvcE` route, transform the official FFmpeg
 `dovi-p7-hvce` FATE sample into a same-size validation copy. The tool preserves
@@ -448,6 +451,49 @@ with:
 ```powershell
 node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs
 ```
+
+For server-metadata validation, copy the `.mp4` into an ignored Jellyfin test
+library and refresh it. Jellyfin 10.11.6 must expose exactly two HEVC video
+streams: a 10-bit PQ BL and a matching Profile 7.6 RPU/EL track. The MP4 EL is
+expected to report `BlPresentFlag=0`; the equivalent separate-track Matroska
+fixture currently reports `BlPresentFlag=1`. Eligibility accepts either value
+only with exact P7 flags, matching frame rates, and the expected EL geometry.
+It must still reject ordinary files containing multiple independent video
+tracks.
+
+The conservative bundled-HEVC capability probe can correctly reject 4K while
+the two-track protocol still needs a complete Jellyfin playback test. Generate
+a validation-only 1920x1080 structural fixture without weakening that runtime
+gate:
+
+```powershell
+node scripts/webgpu/create-profile7-playback-fixture.mjs `
+    "$env:TEMP\dovi-p7-separate-track.mkv" `
+    "$env:TEMP\dovi-p7-1080p-structural.mp4" `
+    --mkvtoolnix-directory "C:\Program Files\MKVToolNix"
+
+Copy-Item "$env:TEMP\dovi-p7-1080p-structural.mp4" `
+    scripts/webgpu/validation-media/dovi-p7-1080p-structural.mp4
+
+Copy-Item "$env:TEMP\dovi-p7-1080p-structural.mp4" `
+    dist/webgpu-dovi-p7-1080p-structural.bin
+
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/webgpu-dovi-p7-1080p-structural.bin `
+    --expected-base-width 1920 `
+    --expected-base-height 1080
+
+node --test scripts/webgpu/create-profile7-playback-fixture.node-test.mjs
+```
+
+The generator repeats the short source, re-encodes only the BL as 10-bit PQ
+HEVC, copies the EL/RPU track, normalizes both timelines with MKVToolNix, and
+then invokes the legacy dual-track MP4 patcher. It is deterministic for fixed
+tool versions and input. Because the BL is scaled and re-encoded, this output
+is only a topology, ownership, decoder, presentation, and lifecycle fixture. It
+must not be used for Dolby Vision color-fidelity comparisons.
 
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route

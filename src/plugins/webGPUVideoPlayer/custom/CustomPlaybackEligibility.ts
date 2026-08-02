@@ -1,5 +1,6 @@
 import {
     getDolbyVisionPresentationDescriptor,
+    getDolbyVisionPresentationSelection,
     getPresentationInputColorMetadata
 } from '../PresentationInput';
 import {
@@ -899,7 +900,10 @@ function parsePlaybackSource(
     };
 }
 
-function selectVideoStream(streams: readonly MediaStream[]): VideoStreamSelection {
+function selectVideoStream(
+    options: unknown,
+    streams: readonly MediaStream[]
+): VideoStreamSelection {
     const videoStreams: TypedStreamCandidate[] = [];
     for (let streamPosition = 0; streamPosition < streams.length; streamPosition += 1) {
         const stream = streams[streamPosition];
@@ -916,14 +920,26 @@ function selectVideoStream(streams: readonly MediaStream[]): VideoStreamSelectio
         });
     }
 
-    if (videoStreams.length !== 1) {
+    if (videoStreams.length === 1) {
+        return {
+            status: 'selected',
+            stream: videoStreams[0].stream,
+            trackOrdinal: 0
+        };
+    }
+
+    const dolbyVisionSelection = getDolbyVisionPresentationSelection(options);
+    if (
+        !dolbyVisionSelection
+        || dolbyVisionSelection.baseLayerVideoTrackOrdinal >= videoStreams.length
+    ) {
         return { status: 'invalid' };
     }
 
     return {
         status: 'selected',
-        stream: videoStreams[0].stream,
-        trackOrdinal: 0
+        stream: videoStreams[dolbyVisionSelection.baseLayerVideoTrackOrdinal].stream,
+        trackOrdinal: dolbyVisionSelection.baseLayerVideoTrackOrdinal
     };
 }
 
@@ -941,7 +957,7 @@ export function getCustomPlaybackEligibility(
         return { eligible: false, reason: parsedSource.reason };
     }
 
-    const selectedVideo = selectVideoStream(parsedSource.streams);
+    const selectedVideo = selectVideoStream(options, parsedSource.streams);
     if (selectedVideo.status === 'invalid') {
         return { eligible: false, reason: 'video-track-unavailable' };
     }

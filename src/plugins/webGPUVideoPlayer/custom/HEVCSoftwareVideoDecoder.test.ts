@@ -83,6 +83,9 @@ const MAIN_SPS = createBytesFromHex(
 const MAIN10_SPS = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804820000030002000003000210'
 );
+const CROPPED_1080P_MAIN10_SPS = createBytesFromHex(
+    '420101022000000300900000030000030078a003c0801107cad96e92930bc05a848804db0800001f480002ee0040'
+);
 const OVERSIZED_MAIN10_SPS = createBytesFromHex(
     '420101022000000300900000030000030096a00080080087136595952930bc05a84880482000000300200000030301'
 );
@@ -330,6 +333,16 @@ describe('HEVCSoftwareVideoDecoder', () => {
             codedHeight: 360,
             codedWidth: 640,
             description: main10Description
+        })).toBe(true);
+        expect(HEVCSoftwareVideoDecoder.supports('hevc', {
+            codec: 'hev1.2.4.L120.90',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            description: createHVCCDescription(2, 10, 4, [
+                createNALUnit(32, [ 1 ]),
+                CROPPED_1080P_MAIN10_SPS,
+                createNALUnit(34, [ 3 ])
+            ])
         })).toBe(true);
         expect(HEVCSoftwareVideoDecoder.supports('hevc', {
             codec: 'hvc1.2.4.L120.B0',
