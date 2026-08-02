@@ -119,6 +119,14 @@ raw route executes its distinct I420P10 plane shader. A successful result from
 one route cannot authorize the other, and their device-profile limits remain
 alternative route limits rather than being intersected.
 
+Profile 7 has two raw-plane authorizations. The base route covers MEL
+reconstruction and explicit FEL HDR10-base degradation. The independent FEL
+route covers half-resolution EL sampling and LINEAR_DZ residual composition.
+An interleaved stream can use the full route only when the first selected key
+access unit contains in-band EL parameter sets, the second bundled decoder
+produces a PTS-matched EL frame, and the exact FEL GPU route is authorized.
+Otherwise the same BL session continues through the base route.
+
 ## Bundled codec licensing and distribution
 
 ### HEVC

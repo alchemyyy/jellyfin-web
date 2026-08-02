@@ -1,8 +1,9 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and
-exact-device runtime authorization implemented; Profile 7 FEL currently uses
-an explicit HDR10-base fallback while full residual composition remains pending
+Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
+interleaved Profile 7 FEL decode/residual path are implemented with separate
+exact-device authorization; container-provided `hvcE` initialization remains
+pending for streams without in-band EL parameter sets
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -87,11 +88,13 @@ Each HEVC worker generation now owns and prewarms one parser session. RPU NAL
 units are parsed sequentially in packet decode order before the cleaned base
 layer packet reaches the decoder. Ordinary HEVC packets do not wait for parser
 initialization. Parsed snapshots are paired with decoder output by exact signed
-integer-microsecond PTS and transferred under protocol schema version 3. The
-compressed enhancement access unit and raw RPU bytes remain worker-local. Only
-the packed RPU snapshot and an `absent`, `discarded-mel`, or `discarded-fel`
-disposition cross the worker boundary. Stop, seek, failure, and generation
-retirement reset and close the parser exactly once.
+integer-microsecond PTS and transferred under protocol schema version 4. The
+compressed enhancement access unit and raw RPU bytes remain worker-local. The
+packed RPU snapshot and an `absent`, `discarded-mel`, `discarded-fel`,
+`decoded-mel`, or `decoded-fel` disposition cross the worker boundary. A
+decoded BL/EL pair shares one transferred `ArrayBuffer`, so acknowledgement
+returns one atomic ownership unit to the worker. Stop, seek, failure, and
+generation retirement reset and close the parser and both decoder queues.
 
 The presentation path now consumes those snapshots through a fixed WebGPU
 storage buffer and follows libplacebo's reshape, nonlinear matrix, PQ EOTF,
@@ -111,13 +114,14 @@ cannot authorize another. Device recovery repeats the applicable authorization
 and creates a new per-frame storage buffer before presentation resumes.
 
 Profile 7 MEL applies RPU reconstruction to the HDR10-compatible base image.
-Profile 7 FEL is currently identified exactly but deliberately presents the
-HDR10 base instead of applying the RPU without its residual. Full FEL requires
-the worker-local enhancement packet to feed a second decoder, exact-PTS BL/EL
-pairing, LINEAR_DZ composition, and new device authorization fixtures.
-Presentation telemetry counts successful Profile 7 MEL frames separately from
-FEL HDR10-base fallback frames so a session cannot report full FEL fidelity by
-omission.
+For an interleaved Profile 7 FEL key access unit containing in-band EL
+VPS/SPS/PPS, the worker removes the NAL type 63 wrapper, feeds a second bundled
+HEVC decoder, pairs BL/EL output within one microsecond, uploads both planar
+images, applies LINEAR_DZ residual composition after reshape and before the
+nonlinear matrix, and then enters the ordinary BT.2020/PQ tone-mapping path.
+Missing, late, or failed EL degrades that frame/session to the HDR10 base
+without restarting playback. Presentation telemetry counts MEL, full FEL, and
+FEL base-fallback frames separately.
 
 ## Profile support matrix
 
@@ -125,7 +129,7 @@ omission.
 | --- | --- | --- | --- |
 | 5 | Full RPU reshape | Full RPU reshape | No generic base-layer fallback. Use a qualified native HTML path or server transcode |
 | 7 MEL | HDR10 base; optional L1-assisted generic tone mapping | RPU reshape; trivial NLQ means no useful EL residual | HDR10 base |
-| 7 FEL | HDR10 base; FEL fidelity is lost | BL plus second EL decode, LINEAR_DZ residual merge, and RPU reshape | HDR10 base or explicitly reported BL-only approximation |
+| 7 FEL | HDR10 base; FEL fidelity is lost | BL plus second EL decode, LINEAR_DZ residual merge, and RPU reshape | Full reconstruction for qualified interleaved EL; otherwise HDR10 base with explicit telemetry |
 | 8.1 | Full RPU reshape | Full RPU reshape | HDR10 base |
 | 8.4 | Full RPU reshape | Full RPU reshape | HLG base |
 | Other 8.x | Generic 8.x implementation exists | Same | Depends on the BL signal compatibility ID; do not advertise without fixtures |
@@ -344,22 +348,25 @@ decode. `DolbyVisionEncodedMetadataQueue`:
 - joins those copies to decoded frames by exact integer-microsecond PTS;
 - rejects unmatched output, silent packet loss, and unbounded metadata windows.
 
-Packed RPU snapshots and enhancement dispositions cross the worker boundary
-with schema version 3 and explicit transfer ownership. Raw RPU bytes and the
-bounded encoded enhancement access unit remain worker-local for the future
-second decoder. Session telemetry counts DV frames, parsed RPUs, and
-enhancement access units. The bundled HEVC path passes repeated playback and
-natural-EOF browser smoke tests after this refactor. The native HEVC path uses
+Packed RPU snapshots, enhancement dispositions, and optional raw EL frame
+descriptors cross the worker boundary with schema version 4 and explicit
+transfer ownership. Raw RPU bytes and bounded encoded enhancement access units
+remain worker-local. BL and EL decoders feed a bounded 16-frame PTS pairer;
+raw copies reserve one compound buffer and session acknowledgement recycles it
+exactly once. Session telemetry counts DV frames, parsed RPUs, enhancement
+access units, full FEL presentation, MEL presentation, and FEL base fallback.
+The bundled HEVC path passes repeated playback and natural-EOF browser smoke
+tests after this refactor. The native HEVC path uses
 one directly owned `VideoDecoder`, preserves Chromium's first-access-unit
 sanitization and leading RASL handling, bounds its decode and decoded-sample
 queues, and passes a natural-EOF Chrome smoke test with 240 decoded and
 presented frames.
 
-This completes packet ownership, decode-order parsing, exact-PTS metadata
-transfer, single-layer shader consumption, MEL reconstruction, and explicit
-FEL HDR10-base fallback. A missing, duplicate, stale, or incompatible RPU or
-enhancement disposition causes the Dolby Vision presentation route to fail
-closed.
+This completes packet ownership, decode-order parsing, exact-PTS metadata and
+BL/EL transfer, single-layer and MEL reconstruction, interleaved FEL residual
+composition, and explicit FEL HDR10-base degradation. A missing, duplicate,
+stale, or incompatible RPU or enhancement disposition causes the Dolby Vision
+presentation route to fail closed.
 
 ### Dolby Vision routes are separately modeled and authorized
 
@@ -381,17 +388,18 @@ enhancement-layer route.
 
 [`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
 runs bounded exact-device shader fixtures and records authorization telemetry.
-The Profile 7 route validates both MEL reconstruction and the explicit FEL
-HDR10-base fallback in 18 readback samples. Authorization is scoped to the GPU
-device, target format, and route and is repeated after device loss. No live
-Profile 7 media fixture has yet completed the browser smoke harness, so this is
-not evidence for container-level or decoder-level Profile 7 interoperability.
-During a Chrome 151 Wolfwalkers Profile 5 regression smoke, the prewarmed
-Profile 7 route authorized all 18 samples on the active `bgra8unorm` device with
-a maximum channel error of approximately `0.00198`. The same run independently
-authorized the nine-sample external Profile 5 route and completed playback,
-pause, resume, seek, fullscreen, resize, and stop checks without fallback or
-browser errors.
+The Profile 7 base route validates MEL reconstruction and explicit FEL
+HDR10-base fallback in 18 readback samples. The independent full-FEL route
+uploads deterministic half-resolution EL planes and validates LINEAR_DZ
+residual reconstruction in nine samples. Authorization is scoped to the GPU
+device, target format, shader signature, and route and is repeated after device
+loss. Chrome 153 authorized the base and full-FEL routes on `bgra8unorm` with
+maximum channel errors of approximately `0.00198` and `0.00190` respectively.
+The official FFmpeg `dovi-p7-hvce` FATE sample separately passed the worker
+smoke: 3840x2160 BL, 1920x1080 EL, exact PTS pairing, one parsed RPU, one shared
+31,242,240-byte ownership buffer, `decoded-fel`, natural EOF, and acknowledged
+shutdown. Full Jellyfin playback remained gated because that run's 4K Main10
+qualification measured 28.49 fps, below the production 30 fps threshold.
 
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
@@ -430,8 +438,9 @@ packet to either `OwnedNativeHEVCVideoDecoder` or the bundled software decoder.
 RPU NAL units are parsed before base-layer decode, and the resulting immutable
 snapshot remains associated with the owned decoded output by exact
 integer-microsecond PTS. Native output transfers its `VideoFrame` directly;
-bundled output transfers independently owned raw planes. Encoded enhancement
-data remains separately owned inside the worker for the later FEL decoder.
+bundled output transfers independently owned raw planes. Interleaved
+enhancement packets feed a second bundled decoder and the worker transfers the
+paired raw BL/EL planes as one compound buffer.
 
 The pinned Mediabunny 1.52.2 package exposes `EncodedPacketSink` at
 `node_modules/mediabunny/src/media-sink.ts:147`. It yields packets in decode
@@ -471,7 +480,7 @@ branches before the conventional YUV matrix for raw Dolby Vision, reconstructs
 BT.2020/PQ, and then reuses the existing linear-nits, gamut mapping, tone map,
 display controls, and dither stages.
 
-### Container metadata is incomplete
+### Container metadata limitation
 
 The installed Mediabunny 1.52.2 source contains no parsing for Dolby Vision
 `dvcC`, `dvvC`, or HEVC enhancement configuration `hvcE`.
@@ -486,8 +495,10 @@ the latter as EL HEVC configuration:
 [FFmpeg matroskadec.c](https://github.com/FFmpeg/FFmpeg/blob/406c5a37aa666d648928a142d367483fe1acdd17/libavformat/matroskadec.c#L2507-L2571).
 
 Profile 5 and 8.x can begin with RPU NAL data in the main HEVC access units.
-Profile 7 FEL cannot be considered complete until the container-specific EL
-configuration is available.
+Profile 7 works when the first selected interleaved key access unit contains EL
+VPS/SPS/PPS inside NAL type 63, as the validated FFmpeg FATE fixture does.
+Streams that rely exclusively on container `hvcE` initialization still degrade
+to the HDR10 base until that mapping is exposed or parsed.
 
 ## Browser and WebGPU constraints
 
@@ -613,13 +624,13 @@ output, shader output, and the exact decoder backend as one route.
 ### Stage 3: Profile 7 MEL
 
 Status: implemented through raw I420P10 base-layer reconstruction, exact-device
-authorization, and separate `DOVIWithEL` capability gating. Live Profile 7
-media validation remains pending.
+authorization, separate `DOVIWithEL` capability gating, and the live FATE
+worker validation.
 
 The parser determines whether Profile 7 NLQ is trivial. For verified MEL:
 
 - apply RPU reshape to the base image;
-- skip the second decoder when the NLQ residual is trivial;
+- skip residual composition when the NLQ data is trivial;
 - retain HDR10 BL fallback if parsing or rendering fails.
 
 Do not infer MEL only from Jellyfin's `ElPresentFlag`. Classification must use
@@ -627,20 +638,23 @@ the parsed NLQ values.
 
 ### Stage 4: Profile 7 FEL
 
-Status: FEL is classified from active NLQ and uses an explicit HDR10-compatible
-base-layer fallback. Compressed EL packets are worker-local and owned, but a
-second decoder and residual composition are not implemented. Full FEL fidelity
-therefore remains pending.
+Status: implemented for interleaved NAL type 63 streams whose first selected key
+access unit carries in-band EL parameter sets. Full residual presentation has a
+separate exact-device authorization and retains explicit HDR10-base degradation.
 
-1. Extend container parsing for `dvcC`, `dvvC`, and `hvcE`.
-2. Split NAL type 63 and remove its two-byte outer header.
-3. Configure a second HEVC decoder with the EL configuration.
-4. Pair BL and EL outputs by exact integer-microsecond PTS.
-5. Use a maximum pending window of 16 frames, matching mpv's current design.
-6. Upload the EL planes and left-site/upscale them to the BL grid.
-7. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
-8. On EL decode, map, upload, or sample failure, release EL resources and
+Implemented behavior:
+
+1. Split NAL type 63 and remove its two-byte outer header.
+2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS.
+3. Pair BL and EL outputs by exact integer-microsecond PTS with a 16-frame bound.
+4. Transfer and recycle one atomic compound raw-frame buffer.
+5. Upload the EL planes and left-site/upscale them to the BL grid.
+6. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
+7. On EL decode, pairing, upload, or sample failure, release EL resources and
    continue BL-only without renegotiating or restarting playback.
+
+Remaining container work is parsing or otherwise exposing `hvcE` for streams
+whose EL parameter sets are not repeated in-band.
 
 If later evidence contradicts the left-siting assumption for a fixture, reject
 that route rather than silently presenting a misaligned residual.

@@ -334,11 +334,30 @@ objects or source details.
 Raw Dolby Vision uses its dedicated authorization telemetry instead. Profile 5
 and 8 require route `I420P10:dovi-rpu-v1`. Profile 7 requires the separately
 gated `I420P10:dovi-profile7-base-v1` route and all 18 MEL plus FEL-base fixture
-samples. This proves exact-device shader behavior only; a Profile 7 smoke item
-is still required to validate container parsing, decoding, and per-frame
-enhancement disposition end to end.
+samples. Full FEL presentation additionally requires the nine-sample
+`I420P10:dovi-profile7-fel-v1` route.
 An active Profile 7 smoke additionally requires a nonzero, bounded sum of the
-MEL-presented and FEL-base-fallback presentation counters.
+MEL-presented, FEL-presented, and FEL-base-fallback presentation counters. Any
+nonzero FEL-presented count requires exact FEL authorization in the same
+snapshot.
+
+The worker-only Profile 7 smoke bypasses Jellyfin device-profile selection so
+decoder/protocol correctness can still be tested when a machine correctly
+fails the conservative 4K throughput gate. Serve a documented Profile 7 FEL
+fixture from the same frontend origin with a registered static suffix such as
+`.bin`, keep a Chromium page open on that origin, and run:
+
+```powershell
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/dovi-p7-fel.bin
+```
+
+The gate requires a 3840x2160 I420P10 BL, 1920x1080 I420P10 EL, one shared
+atomic buffer, PTS agreement within one microsecond, schema-versioned
+`decoded-fel` metadata, one parsed RPU, and clean worker shutdown. The fixture
+is not checked in; record its provenance and hash in the validation result.
 
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route

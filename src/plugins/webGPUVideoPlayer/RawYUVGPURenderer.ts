@@ -11,7 +11,11 @@ import {
 } from './custom/RawVideoFrameCopy';
 
 const FLOATS_PER_PRESENTATION_UNIFORM = 4;
+const WORDS_PER_ENHANCEMENT_UNIFORM = 4;
 const RAW_YUV_VERTEX_COUNT = 6;
+
+export const RAW_YUV_ENHANCEMENT_UNIFORM_BYTE_LENGTH =
+    WORDS_PER_ENHANCEMENT_UNIFORM * Uint32Array.BYTES_PER_ELEMENT;
 
 export type RawYUVTexturePresentation = {
     textureOffsetX: number
@@ -46,7 +50,10 @@ export type RawYUVRenderResources = {
 
 export type RawYUVRenderRequest = RawYUVRenderResources & {
     device: GPUDevice
+    dolbyVisionEnhancementUniformBuffer?: GPUBuffer
     dolbyVisionRPUStorageBuffer?: GPUBuffer
+    enhancementFrame?: TransferableRawVideoFrame | null
+    enhancementTextureSet?: RawPlaneTextureSet | null
     frame: TransferableRawVideoFrame
     presentation: RawYUVTexturePresentation
     targetView: GPUTextureView
@@ -54,6 +61,7 @@ export type RawYUVRenderRequest = RawYUVRenderResources & {
 };
 
 export type RawYUVRenderResult = {
+    enhancementTextureSet: RawPlaneTextureSet | null
     presentationUniformValues: Float32Array
     textureSet: RawPlaneTextureSet
 };
@@ -147,7 +155,17 @@ export function hasValidRawVideoFrameLayout(frame: TransferableRawVideoFrame): b
         return false;
     }
 
-    let expectedByteOffset = 0;
+    const firstPlane = frame.planes[0];
+    if (
+        !firstPlane
+        || !Number.isSafeInteger(firstPlane.byteOffset)
+        || firstPlane.byteOffset < 0
+        || firstPlane.byteOffset % RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT !== 0
+    ) {
+        return false;
+    }
+    const frameByteOffset = firstPlane.byteOffset;
+    let expectedByteOffset = frameByteOffset;
     for (let planeIndex = 0; planeIndex < expectedPlanes.length; planeIndex += 1) {
         const expectedPlane = expectedPlanes[planeIndex];
         const plane = frame.planes[planeIndex];
@@ -173,8 +191,8 @@ export function hasValidRawVideoFrameLayout(frame: TransferableRawVideoFrame): b
     }
 
     return Number.isSafeInteger(expectedByteOffset)
-        && expectedByteOffset > 0
-        && frame.data.byteLength === expectedByteOffset;
+        && expectedByteOffset > frameByteOffset
+        && expectedByteOffset <= frame.data.byteLength;
 }
 
 /** Creates the exact render pipeline shared by production and authorization probes. */
@@ -224,6 +242,15 @@ export function createRawYUVRenderSettingsUniformBuffer(device: GPUDevice): GPUB
     return device.createBuffer({
         label: 'WebGPU video render settings uniforms',
         size: RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
+    });
+}
+
+/** Creates the fixed flag buffer that makes optional EL bindings deterministic. */
+export function createRawYUVEnhancementUniformBuffer(device: GPUDevice): GPUBuffer {
+    return device.createBuffer({
+        label: 'WebGPU Dolby Vision enhancement uniforms',
+        size: RAW_YUV_ENHANCEMENT_UNIFORM_BYTE_LENGTH,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
     });
 }
@@ -342,6 +369,78 @@ function uploadRawPlanes(
     }
 }
 
+function getUploadedEnhancementTextureSet(
+    request: RawYUVRenderRequest,
+    textureSet: RawPlaneTextureSet | null
+): RawPlaneTextureSet | null {
+    const enhancementFrame = request.enhancementFrame ?? null;
+    if (!enhancementFrame) {
+        destroyRawPlaneTextureSet(textureSet);
+        return null;
+    }
+    if (
+        !hasValidRawVideoFrameLayout(enhancementFrame)
+        || enhancementFrame.data !== request.frame.data
+    ) {
+        throw new RangeError('Raw Dolby Vision enhancement frame layout is invalid');
+    }
+
+    const uploadedTextureSet = getOrCreateRawPlaneTextures(
+        request.device,
+        enhancementFrame,
+        textureSet
+    );
+    try {
+        uploadRawPlanes(request.device, uploadedTextureSet, enhancementFrame);
+        return uploadedTextureSet;
+    } catch (error) {
+        if (uploadedTextureSet !== textureSet) {
+            destroyRawPlaneTextureSet(uploadedTextureSet);
+        }
+        throw error;
+    }
+}
+
+function appendDolbyVisionEnhancementBindings(
+    request: RawYUVRenderRequest,
+    bindGroupEntries: GPUBindGroupEntry[],
+    textureSet: RawPlaneTextureSet,
+    enhancementTextureSet: RawPlaneTextureSet | null
+): void {
+    const uniformBuffer = request.dolbyVisionEnhancementUniformBuffer;
+    if (!uniformBuffer) {
+        return;
+    }
+
+    const enhancementUniformValues = new Uint32Array(
+        WORDS_PER_ENHANCEMENT_UNIFORM
+    );
+    enhancementUniformValues[0] = request.enhancementFrame ? 1 : 0;
+    request.device.queue.writeBuffer(
+        uniformBuffer,
+        0,
+        enhancementUniformValues
+    );
+    const enhancementPlanes = enhancementTextureSet?.planes ?? textureSet.planes;
+    if (enhancementPlanes.length !== 3) {
+        throw new Error('Dolby Vision enhancement binding requires planar YUV');
+    }
+    for (
+        let planeIndex = 0;
+        planeIndex < enhancementPlanes.length;
+        planeIndex += 1
+    ) {
+        bindGroupEntries.push({
+            binding: planeIndex + 6,
+            resource: enhancementPlanes[planeIndex].view
+        });
+    }
+    bindGroupEntries.push({
+        binding: 9,
+        resource: { buffer: uniformBuffer }
+    });
+}
+
 function createPresentationUniformValues(
     frame: TransferableRawVideoFrame,
     presentation: RawYUVTexturePresentation
@@ -371,8 +470,13 @@ export function renderRawYUVFrame(request: RawYUVRenderRequest): RawYUVRenderRes
         request.frame,
         request.textureSet
     );
+    let enhancementTextureSet = request.enhancementTextureSet ?? null;
     try {
         uploadRawPlanes(request.device, textureSet, request.frame);
+        enhancementTextureSet = getUploadedEnhancementTextureSet(
+            request,
+            enhancementTextureSet
+        );
 
         const presentationUniformValues = createPresentationUniformValues(
             request.frame,
@@ -405,6 +509,12 @@ export function renderRawYUVFrame(request: RawYUVRenderRequest): RawYUVRenderRes
                 resource: { buffer: request.dolbyVisionRPUStorageBuffer }
             });
         }
+        appendDolbyVisionEnhancementBindings(
+            request,
+            bindGroupEntries,
+            textureSet,
+            enhancementTextureSet
+        );
         const bindGroup = request.device.createBindGroup({
             entries: bindGroupEntries,
             layout: request.pipeline.getBindGroupLayout(0)
@@ -433,12 +543,16 @@ export function renderRawYUVFrame(request: RawYUVRenderRequest): RawYUVRenderRes
         request.device.queue.submit([ commandEncoder.finish() ]);
 
         return {
+            enhancementTextureSet,
             presentationUniformValues,
             textureSet
         };
     } catch (error) {
         if (textureSet !== request.textureSet) {
             destroyRawPlaneTextureSet(textureSet);
+        }
+        if (enhancementTextureSet !== request.enhancementTextureSet) {
+            destroyRawPlaneTextureSet(enhancementTextureSet);
         }
         throw error;
     }

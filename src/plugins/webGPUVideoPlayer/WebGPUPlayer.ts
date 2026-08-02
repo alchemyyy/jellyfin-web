@@ -1164,6 +1164,11 @@ export default class WebGPUPlayer {
         return this.presenter.getProfile7DolbyVisionAuthorizationTelemetry();
     }
 
+    /** Returns exact Profile 7 FEL residual authorization telemetry. */
+    getProfile7FELDolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
+        return this.presenter.getProfile7FELDolbyVisionAuthorizationTelemetry();
+    }
+
     /** Returns bounded exact-device external Profile 5 authorization state. */
     getExternalDolbyVisionAuthorizationTelemetry(): ExternalDolbyVisionAuthorizationTelemetry {
         return this.presenter.getExternalDolbyVisionAuthorizationTelemetry();

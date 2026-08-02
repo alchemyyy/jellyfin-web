@@ -450,6 +450,33 @@ function createRawFrame(
     };
 }
 
+function createCompoundDolbyVisionRawFrames(): {
+    baseFrame: TransferableRawVideoFrame
+    enhancementFrame: TransferableRawVideoFrame
+} {
+    const metadata = createPQColorMetadata();
+    const baseFrameTemplate = createRawFrame('I420P10', metadata, 8, 4);
+    const enhancementFrameTemplate = createRawFrame('I420P10', metadata, 4, 2);
+    const enhancementByteOffset = baseFrameTemplate.data.byteLength;
+    const data = new ArrayBuffer(
+        enhancementByteOffset + enhancementFrameTemplate.data.byteLength
+    );
+    return {
+        baseFrame: {
+            ...baseFrameTemplate,
+            data
+        },
+        enhancementFrame: {
+            ...enhancementFrameTemplate,
+            data,
+            planes: enhancementFrameTemplate.planes.map(plane => ({
+                ...plane,
+                byteOffset: plane.byteOffset + enhancementByteOffset
+            }))
+        }
+    };
+}
+
 function createDolbyVisionEncodedMetadata(
     packedRPUData = createDolbyVisionAuthorizationRPUFixture(),
     enhancementLayerDisposition: TransferableDolbyVisionEncodedFrameMetadata[
@@ -1244,6 +1271,71 @@ describe('WebGPUPresenter', () => {
             .map((call: unknown[]) => call[2]);
         expect(RPUBuffers).toContain(melRPUData);
         expect(RPUBuffers).toContain(felRPUData);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+    });
+
+    it('presents an atomically owned Profile 7 FEL enhancement frame', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 7,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+
+        const deviceHarness = gpuHarness.devices[0];
+        const fullFELShader = deviceHarness.createShaderModule.mock.calls
+            .map((call: unknown[]) => call[0] as { code: string })
+            .find(descriptor => descriptor.code.includes(
+                '@group(0) @binding(9) var<uniform> enhancement'
+            ));
+        expect(fullFELShader?.code).toContain(
+            'reconstructDolbyVisionBT2020PQWithEnhancement'
+        );
+
+        const { baseFrame, enhancementFrame } = createCompoundDolbyVisionRawFrames();
+        const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: baseFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(
+                packedRPUData,
+                'decoded-fel',
+                true
+            ),
+            enhancementFrame,
+            frame: baseFrame,
+            mediaTimeMicroseconds: baseFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        expect(deviceHarness.createTexture).toHaveBeenCalledTimes(6);
+        expect(deviceHarness.queueWriteTexture).toHaveBeenCalledTimes(6);
+        const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
+            entries: GPUBindGroupEntry[]
+        };
+        expect(bindGroupDescriptor.entries.map(entry => entry.binding))
+            .toEqual([ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 ]);
+        expect(presenter.getTelemetry()).toMatchObject({
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
+            dolbyVisionProfile7FELPresentedFrameCount: 1,
+            dolbyVisionProfile7MELPresentedFrameCount: 0
+        });
         expect(fallbackHandler).not.toHaveBeenCalled();
     });
 

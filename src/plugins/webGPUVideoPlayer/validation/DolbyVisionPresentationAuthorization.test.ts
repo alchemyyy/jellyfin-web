@@ -7,8 +7,10 @@ import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthoriza
 import {
     createDolbyVisionShaderSignature,
     createExpectedDolbyVisionAuthorizationObservations,
+    createExpectedDolbyVisionFELAuthorizationObservations,
     DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
     DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY,
+    DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY,
     DolbyVisionPresentationAuthorizationRegistry,
     DolbyVisionPresentationAuthorizationRunner,
     type DolbyVisionAuthorizationDecision
@@ -297,6 +299,29 @@ describe('Dolby Vision presentation authorization', () => {
             status: 'authorized'
         });
         expect(harness.draw).toHaveBeenCalledTimes(2);
+    });
+
+    it('separately authorizes reduced-resolution Profile 7 FEL composition', async () => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const harness = createDeviceHarness(
+            createExpectedDolbyVisionFELAuthorizationObservations(settings)
+        );
+        const runner = new DolbyVisionPresentationAuthorizationRunner('profile7-fel');
+
+        const decision = await runner.validate(harness.device, 'bgra8unorm');
+
+        expect(decision).toMatchObject({
+            failureReason: null,
+            routeKey: DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY,
+            sampleCount: 9,
+            status: 'authorized'
+        });
+        expect(harness.draw).toHaveBeenCalledOnce();
+        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual(
+            expect.arrayContaining([ 5, 6, 7, 8, 9 ])
+        );
     });
 
     it('rejects a bounded pixel mismatch', async () => {

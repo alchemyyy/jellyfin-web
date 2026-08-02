@@ -14,6 +14,7 @@ import {
     createExternalDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
+    createRawDolbyVisionProfile7FELColorPipelineWGSL,
     createRawYUVColorPipelineWGSL
 } from './ColorPipelineShader';
 
@@ -289,5 +290,29 @@ describe('createRawDolbyVisionProfile7ColorPipelineWGSL', () => {
         );
 
         expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('createRawDolbyVisionProfile7FELColorPipelineWGSL', () => {
+    it('binds, sites, and composes the decoded EL before Dolby color matrices', () => {
+        const shader = createRawDolbyVisionProfile7FELColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).toContain('@binding(6) var enhancementLumaTexture');
+        expect(shader).toContain('@binding(7) var enhancementChromaUTexture');
+        expect(shader).toContain('@binding(8) var enhancementChromaVTexture');
+        expect(shader).toContain('@binding(9) var<uniform> enhancement');
+        expect(shader).toContain('-0.5 / dimensions.x');
+        expect(shader).toContain('-1.0 / lumaDimensions.x');
+        expect(fragmentFunction).toContain('enhancement.enhancementPresent != 0u');
+        expect(fragmentFunction).toContain(
+            'reconstructDolbyVisionBT2020PQWithEnhancement'
+        );
+        expect(fragmentFunction).toContain(
+            'convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal))'
+        );
     });
 });

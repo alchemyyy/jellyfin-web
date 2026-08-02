@@ -761,6 +761,22 @@ export function hasAuthorizedRawHDRPlaybackRoute(snapshot) {
         && authorization.authorizedRouteKeys.includes(routeKey);
 }
 
+/** Confirms exact-device authorization for Profile 7 FEL residual reconstruction. */
+export function hasAuthorizedProfile7FELPlaybackRoute(snapshot) {
+    const authorization = snapshot?.profile7FELDolbyVisionValidation;
+    return snapshot?.dolbyVisionProfile === 7
+        && authorization?.status === 'authorized'
+        && (authorization.targetFormat === 'bgra8unorm'
+            || authorization.targetFormat === 'rgba8unorm')
+        && Number.isSafeInteger(authorization.fixtureVersion)
+        && authorization.fixtureVersion > 0
+        && Number.isSafeInteger(authorization.renderSettingsVersion)
+        && authorization.renderSettingsVersion > 0
+        && authorization.routeKey === 'I420P10:dovi-profile7-fel-v1'
+        && Number.isSafeInteger(authorization.sampleCount)
+        && authorization.sampleCount >= 9;
+}
+
 function hasAuthorizedExternalDolbyVisionPlaybackRoute(snapshot) {
     const authorization = snapshot?.externalDolbyVisionValidation;
     return snapshot?.dolbyVisionProfile === 5
@@ -987,19 +1003,31 @@ function validateRawHDRAuthorizationSnapshot(failures, snapshot) {
                 snapshot.presentation?.dolbyVisionProfile7MELPresentedFrameCount;
             const profile7FELBaseFallbackFrameCount = snapshot.presentation
                 ?.dolbyVisionProfile7FELBaseFallbackPresentedFrameCount;
+            const profile7FELFrameCount = snapshot.presentation
+                ?.dolbyVisionProfile7FELPresentedFrameCount;
             const totalProfile7FrameCount = profile7MELFrameCount
-                + profile7FELBaseFallbackFrameCount;
+                + profile7FELBaseFallbackFrameCount
+                + profile7FELFrameCount;
             addFailure(
                 failures,
                 Number.isSafeInteger(profile7MELFrameCount)
                     && profile7MELFrameCount >= 0
                     && Number.isSafeInteger(profile7FELBaseFallbackFrameCount)
                     && profile7FELBaseFallbackFrameCount >= 0
+                    && Number.isSafeInteger(profile7FELFrameCount)
+                    && profile7FELFrameCount >= 0
                     && totalProfile7FrameCount > 0
                     && totalProfile7FrameCount
                         <= (snapshot.presentation?.presentedFrameCount ?? -1),
                 'dolby-vision-profile7-disposition-telemetry-invalid'
             );
+            if (profile7FELFrameCount > 0) {
+                addFailure(
+                    failures,
+                    hasAuthorizedProfile7FELPlaybackRoute(snapshot),
+                    'dolby-vision-profile7-fel-route-unauthorized'
+                );
+            }
         }
         return;
     }

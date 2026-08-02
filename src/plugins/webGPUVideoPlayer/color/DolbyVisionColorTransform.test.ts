@@ -21,8 +21,10 @@ import DolbyVisionRPUParser, {
 } from '../custom/DolbyVisionRPUParser';
 import type { ColorTriplet } from './ColorPipeline';
 import {
+    composeDolbyVisionEnhancementSignal,
     createDolbyVisionColorTransformWGSL,
     reconstructDolbyVisionBT2020PQ,
+    reconstructDolbyVisionBT2020PQWithEnhancement,
     reshapeDolbyVisionSignal
 } from './DolbyVisionColorTransform';
 import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
@@ -213,6 +215,34 @@ describe('Dolby Vision CPU color reconstruction', () => {
             packedRPUData
         )[1]).toBeCloseTo(0.4, REFERENCE_DECIMAL_PRECISION);
     });
+
+    it('composes Profile 7 FEL LINEAR_DZ residuals after BL reshape', () => {
+        const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const baseSignal: ColorTriplet = [ 0.2, 0.4, 0.7 ];
+        const enhancementSignal: ColorTriplet = [ 0.5, 0.25, 0 ];
+        const reshapedSignal = reshapeDolbyVisionSignal(baseSignal, packedRPUData);
+
+        expectColorClose(
+            composeDolbyVisionEnhancementSignal(
+                reshapedSignal,
+                enhancementSignal,
+                packedRPUData
+            ),
+            [
+                reshapedSignal[0] + 0.0725,
+                reshapedSignal[1] + 0.04125,
+                reshapedSignal[2]
+            ]
+        );
+        expect(reconstructDolbyVisionBT2020PQWithEnhancement(
+            baseSignal,
+            enhancementSignal,
+            packedRPUData
+        )).not.toEqual(reconstructDolbyVisionBT2020PQ(
+            baseSignal,
+            packedRPUData
+        ));
+    });
 });
 
 describe('createDolbyVisionColorTransformWGSL', () => {
@@ -229,11 +259,15 @@ describe('createDolbyVisionColorTransformWGSL', () => {
         expect(shader).toContain(`dolbyVisionRPU.words[2] == ${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}u`);
         expect(shader).toContain(`dolbyVisionRPU.words[4] == ${DOLBY_VISION_RPU_PARSER_REVISION_PREFIX}u`);
         expect(shader).toContain('fn isDolbyVisionFEL() -> bool');
+        expect(shader).toContain('fn applyDolbyVisionEnhancementResidual');
         expect(shader).toContain('& 64u) != 0u');
         expect(shader).toContain('fn evaluateDolbyVisionMMR');
         expect(shader).toContain('mmrVectorIndex * 4u');
         expect(shader).toContain('quadraticCoefficient * componentSignal');
         expect(reconstruction.indexOf('reshapeDolbyVisionComponent')).toBeLessThan(
+            reconstruction.indexOf('applyDolbyVisionEnhancementResidual')
+        );
+        expect(reconstruction.indexOf('applyDolbyVisionEnhancementResidual')).toBeLessThan(
             reconstruction.indexOf('multiplyDolbyVisionMatrix')
         );
         expect(reconstruction.indexOf('multiplyDolbyVisionMatrix')).toBeLessThan(

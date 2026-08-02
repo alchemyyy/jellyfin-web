@@ -1005,13 +1005,28 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return;
         }
 
-        const presentationFrame: DecodedPresentationFrame = {
-            durationMicroseconds: message.durationMicroseconds,
-            encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
-            frame: message.frame,
-            mediaTimeMicroseconds: message.mediaTimeMicroseconds,
-            outputMode: message.outputMode
-        } as DecodedPresentationFrame;
+        let presentationFrame: DecodedPresentationFrame;
+        switch (message.outputMode) {
+            case 'raw-planes':
+                presentationFrame = {
+                    durationMicroseconds: message.durationMicroseconds,
+                    encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    enhancementFrame: message.enhancementFrame,
+                    frame: message.frame,
+                    mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+                    outputMode: message.outputMode
+                };
+                break;
+            case 'video-frame':
+                presentationFrame = {
+                    durationMicroseconds: message.durationMicroseconds,
+                    encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    frame: message.frame,
+                    mediaTimeMicroseconds: message.mediaTimeMicroseconds,
+                    outputMode: message.outputMode
+                };
+                break;
+        }
         const queuedFrame: QueuedFrame = {
             presentationFrame,
             workerRecord

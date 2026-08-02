@@ -26,6 +26,7 @@ export type ProcessedDolbyVisionHEVCPacket = {
     baseLayerPacket: EncodedPacket | null
     enhancementLayerPacket: EncodedPacket | null
     hasBaseLayerVCL: boolean
+    hasEnhancementLayerVCL: boolean
 };
 
 export type DolbyVisionRPUDataParser = {
@@ -130,7 +131,8 @@ export default class DolbyVisionEncodedMetadataQueue {
 
     public constructor(
         private readonly inputFormat: HEVCNALFormat,
-        private readonly rpuParser: DolbyVisionRPUDataParser
+        private readonly rpuParser: DolbyVisionRPUDataParser,
+        private readonly enhancementOutputFormat: HEVCNALFormat = inputFormat
     ) {}
 
     /** Removes DV NAL units from one packet and records bounded frame metadata. */
@@ -139,10 +141,14 @@ export default class DolbyVisionEncodedMetadataQueue {
             packet.microsecondTimestamp,
             'Encoded HEVC packet timestamp'
         );
-        const splitResult = splitDolbyVisionHEVCAccessUnit(packet.data, this.inputFormat);
-        const hasDolbyVisionData = splitResult.rpuNALUnits.length > 0
-            || splitResult.enhancementLayerData !== null;
-        if (hasDolbyVisionData && !splitResult.hasBaseLayerVCL) {
+        const splitResult = splitDolbyVisionHEVCAccessUnit(
+            packet.data,
+            this.inputFormat,
+            this.enhancementOutputFormat
+        );
+        const hasDolbyVisionFrameData = splitResult.rpuNALUnits.length > 0
+            || splitResult.hasEnhancementLayerVCL;
+        if (hasDolbyVisionFrameData && !splitResult.hasBaseLayerVCL) {
             throw new TypeError('Dolby Vision metadata is not paired with a base-layer picture');
         }
 
@@ -156,13 +162,15 @@ export default class DolbyVisionEncodedMetadataQueue {
                 splitResult.rpuNALUnits,
                 parsedRPUData
             );
-            const enhancementLayerDisposition = getEnhancementLayerDisposition(
-                splitResult.enhancementLayerData,
-                parsedRPUData
-            );
+            const enhancementLayerDisposition = splitResult.hasEnhancementLayerVCL ?
+                getEnhancementLayerDisposition(
+                    splitResult.enhancementLayerData,
+                    parsedRPUData
+                ) :
+                'absent';
             this.enqueueFrame(timestampMicroseconds, {
                 byteLength: metadataByteLength,
-                metadata: hasDolbyVisionData ? {
+                metadata: hasDolbyVisionFrameData ? {
                     enhancementLayerDisposition,
                     hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL,
                     parsedRPUData,
@@ -179,7 +187,8 @@ export default class DolbyVisionEncodedMetadataQueue {
             enhancementLayerPacket: splitResult.enhancementLayerData ?
                 packet.clone({ data: splitResult.enhancementLayerData }) :
                 null,
-            hasBaseLayerVCL: splitResult.hasBaseLayerVCL
+            hasBaseLayerVCL: splitResult.hasBaseLayerVCL,
+            hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL
         };
     }
 

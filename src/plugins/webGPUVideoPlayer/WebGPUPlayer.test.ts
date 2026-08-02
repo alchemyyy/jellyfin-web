@@ -448,6 +448,7 @@ vi.mock('./WebGPUPresenter', () => {
             decodedFrameCount: 0,
             deviceRecoveryCount: 0,
             dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
+            dolbyVisionProfile7FELPresentedFrameCount: 0,
             dolbyVisionProfile7MELPresentedFrameCount: 0,
             fallbackReason: null,
             firstFrameLatencyMicroseconds: null,
@@ -511,11 +512,21 @@ vi.mock('./WebGPUPresenter', () => {
         }));
         getProfile7DolbyVisionAuthorizationTelemetry = vi.fn(() => ({
             failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
-            fixtureVersion: 3,
+            fixtureVersion: 4,
             maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
             renderSettingsVersion: 4,
             routeKey: 'I420P10:dovi-profile7-base-v1',
             sampleCount: 18,
+            status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
+            targetFormat: 'bgra8unorm'
+        }));
+        getProfile7FELDolbyVisionAuthorizationTelemetry = vi.fn(() => ({
+            failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
+            fixtureVersion: 4,
+            maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-profile7-fel-v1',
+            sampleCount: 9,
             status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
             targetFormat: 'bgra8unorm'
         }));

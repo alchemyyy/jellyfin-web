@@ -11,12 +11,22 @@ import {
 } from '../color/ColorPipeline';
 import {
     createRawDolbyVisionColorPipelineWGSL,
-    createRawDolbyVisionProfile7ColorPipelineWGSL
+    createRawDolbyVisionProfile7ColorPipelineWGSL,
+    createRawDolbyVisionProfile7FELColorPipelineWGSL
 } from '../color/ColorPipelineShader';
-import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
-import type { SupportedRawVideoFrameFormat } from '../custom/RawVideoFrameCopy';
 import {
+    reconstructDolbyVisionBT2020PQ,
+    reconstructDolbyVisionBT2020PQWithEnhancement
+} from '../color/DolbyVisionColorTransform';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
+import {
+    RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
+    type RawVideoPlaneDescriptor,
+    type SupportedRawVideoFrameFormat,
+    type TransferableRawVideoFrame
+} from '../custom/RawVideoFrameCopy';
+import {
+    createRawYUVEnhancementUniformBuffer,
     createRawYUVRenderPipeline,
     createRawYUVRenderResources,
     destroyRawPlaneTextureSet,
@@ -39,15 +49,21 @@ import {
     type RawHDRFixtureObservation
 } from './RawHDRPresentationAuthorization';
 
-export const DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 3;
+export const DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 4;
 export const DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-rpu-v1';
 export const DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY =
     'I420P10:dovi-profile7-base-v1';
+export const DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY =
+    'I420P10:dovi-profile7-fel-v1';
 
-export type DolbyVisionAuthorizationRoute = 'profile7-base' | 'single-layer';
+export type DolbyVisionAuthorizationRoute =
+    | 'profile7-base'
+    | 'profile7-fel'
+    | 'single-layer';
 export type DolbyVisionAuthorizationRouteKey =
     | typeof DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
-    | typeof DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY;
+    | typeof DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY
+    | typeof DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
 
 const MAXIMUM_10_BIT_CODE = 1_023;
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
@@ -100,12 +116,15 @@ type DeviceProbeCache = {
 };
 
 type DolbyVisionAuthorizationScenario = {
+    enhancementFrame: TransferableRawVideoFrame | null
     expectedObservations: readonly RawHDRFixtureObservation[]
+    frame: TransferableRawVideoFrame
     packedRPUData: ArrayBuffer
 };
 
 export type DolbyVisionAuthorizationObservationMode =
     | 'fel-hdr10-base'
+    | 'fel-residual'
     | 'reconstruct';
 
 const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
@@ -133,6 +152,234 @@ function createSettings(): HDRToSDRRenderSettings {
     });
 }
 
+function alignPlaneBytesPerRow(rowByteLength: number): number {
+    return Math.ceil(rowByteLength / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT)
+        * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
+}
+
+function createFELPlaneDescriptor(
+    kind: 'u' | 'v' | 'y',
+    width: number,
+    height: number,
+    byteOffset: number
+): RawVideoPlaneDescriptor {
+    const rowByteLength = width * Uint16Array.BYTES_PER_ELEMENT;
+    const bytesPerRow = alignPlaneBytesPerRow(rowByteLength);
+    return {
+        byteLength: bytesPerRow * height,
+        byteOffset,
+        bytesPerComponent: 2,
+        bytesPerRow,
+        componentsPerTexel: 1,
+        height,
+        kind,
+        rowByteLength,
+        width
+    };
+}
+
+function setFELPlaneCode(
+    data: ArrayBuffer,
+    plane: RawVideoPlaneDescriptor,
+    x: number,
+    y: number,
+    code: number
+): void {
+    new DataView(data).setUint16(
+        plane.byteOffset
+            + (y * plane.bytesPerRow)
+            + (x * Uint16Array.BYTES_PER_ELEMENT),
+        code,
+        true
+    );
+}
+
+function createFELAuthorizationFrames(): {
+    baseFrame: TransferableRawVideoFrame
+    enhancementFrame: TransferableRawVideoFrame
+} {
+    const baseFrame = createRawHDRAuthorizationFixture(
+        'I420P10:bt2020-ncl:bt2020:limited:pq'
+    );
+    const codedWidth = baseFrame.codedWidth / 2;
+    const codedHeight = baseFrame.codedHeight / 2;
+    const chromaWidth = Math.ceil(codedWidth / 2);
+    const chromaHeight = Math.ceil(codedHeight / 2);
+    const lumaPlane = createFELPlaneDescriptor('y', codedWidth, codedHeight, 0);
+    const chromaUPlane = createFELPlaneDescriptor(
+        'u',
+        chromaWidth,
+        chromaHeight,
+        lumaPlane.byteLength
+    );
+    const chromaVPlane = createFELPlaneDescriptor(
+        'v',
+        chromaWidth,
+        chromaHeight,
+        lumaPlane.byteLength + chromaUPlane.byteLength
+    );
+    const enhancementData = new ArrayBuffer(
+        lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength
+    );
+    for (let y = 0; y < lumaPlane.height; y += 1) {
+        for (let x = 0; x < lumaPlane.width; x += 1) {
+            setFELPlaneCode(
+                enhancementData,
+                lumaPlane,
+                x,
+                y,
+                96 + ((x * 113 + y * 67) % 800)
+            );
+        }
+    }
+    for (let y = 0; y < chromaUPlane.height; y += 1) {
+        for (let x = 0; x < chromaUPlane.width; x += 1) {
+            setFELPlaneCode(
+                enhancementData,
+                chromaUPlane,
+                x,
+                y,
+                160 + ((x * 173 + y * 89) % 700)
+            );
+            setFELPlaneCode(
+                enhancementData,
+                chromaVPlane,
+                x,
+                y,
+                224 + ((x * 71 + y * 191) % 650)
+            );
+        }
+    }
+
+    const enhancementByteOffset = alignPlaneBytesPerRow(baseFrame.data.byteLength);
+    const compoundData = new ArrayBuffer(
+        enhancementByteOffset + enhancementData.byteLength
+    );
+    new Uint8Array(compoundData).set(new Uint8Array(baseFrame.data));
+    new Uint8Array(compoundData).set(
+        new Uint8Array(enhancementData),
+        enhancementByteOffset
+    );
+    baseFrame.data = compoundData;
+    const enhancementFrame: TransferableRawVideoFrame = {
+        bitDepth: 10,
+        codedHeight,
+        codedWidth,
+        colorSpace: {
+            fullRange: false,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            transfer: 'smpte2084'
+        },
+        data: compoundData,
+        displayHeight: codedHeight,
+        displayWidth: codedWidth,
+        durationMicroseconds: baseFrame.durationMicroseconds,
+        format: 'I420P10',
+        planes: [ lumaPlane, chromaUPlane, chromaVPlane ].map(
+            (plane: RawVideoPlaneDescriptor): RawVideoPlaneDescriptor => ({
+                ...plane,
+                byteOffset: plane.byteOffset + enhancementByteOffset
+            })
+        ),
+        timestampMicroseconds: baseFrame.timestampMicroseconds,
+        visibleRectangle: {
+            height: codedHeight,
+            width: codedWidth,
+            x: 0,
+            y: 0
+        }
+    };
+    return { baseFrame, enhancementFrame };
+}
+
+function getRawPlane(
+    frame: TransferableRawVideoFrame,
+    kind: 'u' | 'v' | 'y'
+): RawVideoPlaneDescriptor {
+    const plane = frame.planes.find(
+        (candidate: RawVideoPlaneDescriptor): boolean => candidate.kind === kind
+    );
+    if (!plane) {
+        throw new TypeError(`The FEL authorization frame has no ${kind} plane`);
+    }
+    return plane;
+}
+
+function readFELPlaneCode(
+    frame: TransferableRawVideoFrame,
+    plane: RawVideoPlaneDescriptor,
+    x: number,
+    y: number
+): number {
+    const clampedX = Math.min(Math.max(x, 0), plane.width - 1);
+    const clampedY = Math.min(Math.max(y, 0), plane.height - 1);
+    return new DataView(frame.data).getUint16(
+        plane.byteOffset
+            + (clampedY * plane.bytesPerRow)
+            + (clampedX * Uint16Array.BYTES_PER_ELEMENT),
+        true
+    );
+}
+
+function sampleFELPlane(
+    frame: TransferableRawVideoFrame,
+    plane: RawVideoPlaneDescriptor,
+    textureCoordinateX: number,
+    textureCoordinateY: number,
+    horizontalOffset: number
+): number {
+    const sampleX = (textureCoordinateX + horizontalOffset) * plane.width - 0.5;
+    const sampleY = textureCoordinateY * plane.height - 0.5;
+    const baseX = Math.floor(sampleX);
+    const baseY = Math.floor(sampleY);
+    const fractionX = sampleX - baseX;
+    const fractionY = sampleY - baseY;
+    const top = readFELPlaneCode(frame, plane, baseX, baseY)
+        * (1 - fractionX)
+        + readFELPlaneCode(frame, plane, baseX + 1, baseY) * fractionX;
+    const bottom = readFELPlaneCode(frame, plane, baseX, baseY + 1)
+        * (1 - fractionX)
+        + readFELPlaneCode(frame, plane, baseX + 1, baseY + 1) * fractionX;
+    return top * (1 - fractionY) + bottom * fractionY;
+}
+
+function sampleFELAuthorizationFrame(
+    frame: TransferableRawVideoFrame,
+    sampleX: number,
+    sampleY: number,
+    targetWidth: number,
+    targetHeight: number
+): ColorTriplet {
+    const textureCoordinateX = (sampleX + 0.5) / targetWidth;
+    const textureCoordinateY = (sampleY + 0.5) / targetHeight;
+    const lumaHorizontalOffset = -0.5 / frame.codedWidth;
+    const chromaHorizontalOffset = -1 / frame.codedWidth;
+    return [
+        sampleFELPlane(
+            frame,
+            getRawPlane(frame, 'y'),
+            textureCoordinateX,
+            textureCoordinateY,
+            lumaHorizontalOffset
+        ),
+        sampleFELPlane(
+            frame,
+            getRawPlane(frame, 'u'),
+            textureCoordinateX,
+            textureCoordinateY,
+            chromaHorizontalOffset
+        ),
+        sampleFELPlane(
+            frame,
+            getRawPlane(frame, 'v'),
+            textureCoordinateX,
+            textureCoordinateY,
+            chromaHorizontalOffset
+        )
+    ];
+}
+
 /** Creates a stable identity for the exact DV fixture, shader, and target. */
 export function createDolbyVisionShaderSignature(
     targetFormat: GPUTextureFormat,
@@ -157,9 +404,11 @@ export function createDolbyVisionShaderSignature(
 export function createExpectedDolbyVisionAuthorizationObservations(
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings,
-    mode: DolbyVisionAuthorizationObservationMode = 'reconstruct'
+    mode: DolbyVisionAuthorizationObservationMode = 'reconstruct',
+    frameValue?: TransferableRawVideoFrame,
+    enhancementFrame: TransferableRawVideoFrame | null = null
 ): readonly RawHDRFixtureObservation[] {
-    const frame = createRawHDRAuthorizationFixture(
+    const frame = frameValue ?? createRawHDRAuthorizationFixture(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
     const outputMetadata = createPQColorMetadata({ range: 'full' });
@@ -170,29 +419,62 @@ export function createExpectedDolbyVisionAuthorizationObservations(
             rawSignal[1] / MAXIMUM_10_BIT_CODE,
             rawSignal[2] / MAXIMUM_10_BIT_CODE
         ];
-        const referenceRGB = mode === 'fel-hdr10-base' ?
-            processEncodedYUV(
-                normalizedSignal,
-                createPQColorMetadata(),
-                settings
-            ) :
-            processEncodedRGB(
-                reconstructDolbyVisionBT2020PQ(
+        let reconstructedSignal: ColorTriplet;
+        switch (mode) {
+            case 'fel-hdr10-base':
+                reconstructedSignal = processEncodedYUV(
                     normalizedSignal,
-                    packedRPUData
-                ),
-                outputMetadata,
-                settings
-            );
+                    createPQColorMetadata(),
+                    settings
+                );
+                break;
+            case 'fel-residual': {
+                if (!enhancementFrame) {
+                    throw new TypeError('FEL authorization requires an enhancement frame');
+                }
+                const rawEnhancementSignal = sampleFELAuthorizationFrame(
+                    enhancementFrame,
+                    sample.sampleX,
+                    sample.sampleY,
+                    frame.displayWidth,
+                    frame.displayHeight
+                );
+                const normalizedEnhancementSignal: ColorTriplet = [
+                    rawEnhancementSignal[0] / MAXIMUM_10_BIT_CODE,
+                    rawEnhancementSignal[1] / MAXIMUM_10_BIT_CODE,
+                    rawEnhancementSignal[2] / MAXIMUM_10_BIT_CODE
+                ];
+                reconstructedSignal = processEncodedRGB(
+                    reconstructDolbyVisionBT2020PQWithEnhancement(
+                        normalizedSignal,
+                        normalizedEnhancementSignal,
+                        packedRPUData
+                    ),
+                    outputMetadata,
+                    settings
+                );
+                break;
+            }
+            case 'reconstruct':
+                reconstructedSignal = processEncodedRGB(
+                    reconstructDolbyVisionBT2020PQ(
+                        normalizedSignal,
+                        packedRPUData
+                    ),
+                    outputMetadata,
+                    settings
+                );
+                break;
+        }
         const dither = calculateRawHDRAuthorizationOutputDither(
             sample.sampleX,
             sample.sampleY
         );
         return {
             linearRGB: [
-                clamp(referenceRGB[0] + dither, 0, 1),
-                clamp(referenceRGB[1] + dither, 0, 1),
-                clamp(referenceRGB[2] + dither, 0, 1)
+                clamp(reconstructedSignal[0] + dither, 0, 1),
+                clamp(reconstructedSignal[1] + dither, 0, 1),
+                clamp(reconstructedSignal[2] + dither, 0, 1)
             ],
             sampleX: sample.sampleX,
             sampleY: sample.sampleY
@@ -200,21 +482,46 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     });
 }
 
+/** Returns the exact CPU reference for the reduced-resolution FEL probe. */
+export function createExpectedDolbyVisionFELAuthorizationObservations(
+    settings: HDRToSDRRenderSettings
+): readonly RawHDRFixtureObservation[] {
+    const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+    const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
+    return createExpectedDolbyVisionAuthorizationObservations(
+        packedRPUData,
+        settings,
+        'fel-residual',
+        baseFrame,
+        enhancementFrame
+    );
+}
+
 function getAuthorizationRouteKey(
     route: DolbyVisionAuthorizationRoute
 ): DolbyVisionAuthorizationRouteKey {
-    return route === 'profile7-base' ?
-        DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY :
-        DOLBY_VISION_AUTHORIZATION_ROUTE_KEY;
+    switch (route) {
+        case 'profile7-base':
+            return DOLBY_VISION_PROFILE7_AUTHORIZATION_ROUTE_KEY;
+        case 'profile7-fel':
+            return DOLBY_VISION_PROFILE7_FEL_AUTHORIZATION_ROUTE_KEY;
+        case 'single-layer':
+            return DOLBY_VISION_AUTHORIZATION_ROUTE_KEY;
+    }
 }
 
 function createAuthorizationShader(
     route: DolbyVisionAuthorizationRoute,
     settings: HDRToSDRRenderSettings
 ): string {
-    return route === 'profile7-base' ?
-        createRawDolbyVisionProfile7ColorPipelineWGSL(settings, 'I420P10') :
-        createRawDolbyVisionColorPipelineWGSL(settings, 'I420P10');
+    switch (route) {
+        case 'profile7-base':
+            return createRawDolbyVisionProfile7ColorPipelineWGSL(settings, 'I420P10');
+        case 'profile7-fel':
+            return createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, 'I420P10');
+        case 'single-layer':
+            return createRawDolbyVisionColorPipelineWGSL(settings, 'I420P10');
+    }
 }
 
 function createAuthorizationScenarios(
@@ -224,31 +531,66 @@ function createAuthorizationScenarios(
     const scenarios: DolbyVisionAuthorizationScenario[] = [];
     if (route === 'single-layer') {
         const packedRPUData = createDolbyVisionAuthorizationRPUFixture();
+        const frame = createRawHDRAuthorizationFixture(
+            'I420P10:bt2020-ncl:bt2020:limited:pq'
+        );
         scenarios.push({
+            enhancementFrame: null,
             expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
                 packedRPUData,
-                settings
+                settings,
+                'reconstruct',
+                frame
             ),
+            frame,
             packedRPUData
         });
         return scenarios;
     }
 
+    if (route === 'profile7-fel') {
+        const packedRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
+        const { baseFrame, enhancementFrame } = createFELAuthorizationFrames();
+        scenarios.push({
+            enhancementFrame,
+            expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
+                packedRPUData,
+                settings,
+                'fel-residual',
+                baseFrame,
+                enhancementFrame
+            ),
+            frame: baseFrame,
+            packedRPUData
+        });
+        return scenarios;
+    }
+
+    const frame = createRawHDRAuthorizationFixture(
+        'I420P10:bt2020-ncl:bt2020:limited:pq'
+    );
     const melRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'mel');
     scenarios.push({
+        enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
             melRPUData,
-            settings
+            settings,
+            'reconstruct',
+            frame
         ),
+        frame,
         packedRPUData: melRPUData
     });
     const felRPUData = createDolbyVisionAuthorizationRPUFixture(7, 'fel');
     scenarios.push({
+        enhancementFrame: null,
         expectedObservations: createExpectedDolbyVisionAuthorizationObservations(
             felRPUData,
             settings,
-            'fel-hdr10-base'
+            'fel-hdr10-base',
+            frame
         ),
+        frame,
         packedRPUData: felRPUData
     });
     return scenarios;
@@ -349,6 +691,8 @@ export class DolbyVisionPresentationAuthorizationRunner {
 
         let targetTexture: GPUTexture | null = null;
         let textureSet: RawPlaneTextureSet | null = null;
+        let enhancementTextureSet: RawPlaneTextureSet | null = null;
+        let enhancementUniformBuffer: GPUBuffer | null = null;
         let presentationUniformBuffer: GPUBuffer | null = null;
         let renderSettingsUniformBuffer: GPUBuffer | null = null;
         let RPUStorageBuffer: GPUBuffer | null = null;
@@ -368,9 +712,10 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 size: DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
             });
-            const frame = createRawHDRAuthorizationFixture(
-                'I420P10:bt2020-ncl:bt2020:limited:pq'
-            );
+            if (this.route === 'profile7-fel') {
+                enhancementUniformBuffer = createRawYUVEnhancementUniformBuffer(device);
+            }
+            const frame = scenarios[0].frame;
             targetTexture = device.createTexture({
                 dimension: '2d',
                 format: targetFormat,
@@ -397,12 +742,17 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 const renderResult = renderRawYUVFrame({
                     ...resources,
                     device,
+                    dolbyVisionEnhancementUniformBuffer:
+                        enhancementUniformBuffer ?? undefined,
                     dolbyVisionRPUStorageBuffer: RPUStorageBuffer,
-                    frame,
+                    enhancementFrame: scenario.enhancementFrame,
+                    enhancementTextureSet,
+                    frame: scenario.frame,
                     presentation: FULL_FRAME_PRESENTATION,
                     targetView: targetTexture.createView(),
                     textureSet
                 });
+                enhancementTextureSet = renderResult.enhancementTextureSet;
                 textureSet = renderResult.textureSet;
                 await deadline.wait(device.queue.onSubmittedWorkDone());
                 const validationPromise = device.popErrorScope();
@@ -490,6 +840,8 @@ export class DolbyVisionPresentationAuthorizationRunner {
             }
             pixelReader?.destroy();
             destroyRawPlaneTextureSet(textureSet);
+            destroyRawPlaneTextureSet(enhancementTextureSet);
+            enhancementUniformBuffer?.destroy();
             presentationUniformBuffer?.destroy();
             renderSettingsUniformBuffer?.destroy();
             RPUStorageBuffer?.destroy();

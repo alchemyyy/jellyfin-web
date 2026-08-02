@@ -6,6 +6,8 @@ import {
     DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
     DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET,
+    DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET,
+    DOLBY_VISION_RPU_NLQ_WORD_OFFSET,
     MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT,
     MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT
 } from '../custom/DolbyVisionRPUDataLayout';
@@ -242,12 +244,29 @@ export function reconstructDolbyVisionBT2020PQ(
     const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
     const view = new DataView(packedRPUData);
     const reshapedSignal = reshapeDolbyVisionSignal(normalizedBaseSignal, packedRPUData);
-    const codeScale = (2 ** snapshot.baseLayerBitDepth)
-        / ((2 ** snapshot.baseLayerBitDepth) - 1);
+    return reconstructDolbyVisionReshapedBT2020PQ(
+        reshapedSignal,
+        snapshot.baseLayerBitDepth,
+        view
+    );
+}
+
+function reconstructDolbyVisionReshapedBT2020PQ(
+    reshapedSignal: ColorTriplet,
+    baseLayerBitDepth: number,
+    view: DataView
+): ColorTriplet {
+    const codeScale = (2 ** baseLayerBitDepth)
+        / ((2 ** baseLayerBitDepth) - 1);
+    const nonlinearOffset: ColorTriplet = [
+        readFloat(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET),
+        readFloat(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 1),
+        readFloat(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 2)
+    ];
     const offsetSignal: ColorTriplet = [
-        reshapedSignal[0] - (snapshot.nonlinearOffset[0] * codeScale),
-        reshapedSignal[1] - (snapshot.nonlinearOffset[1] * codeScale),
-        reshapedSignal[2] - (snapshot.nonlinearOffset[2] * codeScale)
+        reshapedSignal[0] - (nonlinearOffset[0] * codeScale),
+        reshapedSignal[1] - (nonlinearOffset[1] * codeScale),
+        reshapedSignal[2] - (nonlinearOffset[2] * codeScale)
     ];
     const nonlinearMatrix = readMatrixRows(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 4);
     const linearMatrix = readMatrixRows(view, DOLBY_VISION_RPU_COLOR_WORD_OFFSET + 16);
@@ -264,6 +283,57 @@ export function reconstructDolbyVisionBT2020PQ(
         applyPQOETF(linearBT2020[1]),
         applyPQOETF(linearBT2020[2])
     ];
+}
+
+/** Applies Profile 7 LINEAR_DZ residual composition before the Dolby matrices. */
+export function reconstructDolbyVisionBT2020PQWithEnhancement(
+    normalizedBaseSignal: ColorTriplet,
+    normalizedEnhancementSignal: ColorTriplet,
+    packedRPUData: ArrayBuffer
+): ColorTriplet {
+    const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+    if (snapshot.layerMode !== 'fel' || !snapshot.nlqActive) {
+        throw new TypeError('Dolby Vision enhancement reconstruction requires active FEL NLQ');
+    }
+    const reshapedSignal = reshapeDolbyVisionSignal(normalizedBaseSignal, packedRPUData);
+    const reconstructedSignal = composeDolbyVisionEnhancementSignal(
+        reshapedSignal,
+        normalizedEnhancementSignal,
+        packedRPUData
+    );
+    return reconstructDolbyVisionReshapedBT2020PQ(
+        reconstructedSignal,
+        snapshot.baseLayerBitDepth,
+        new DataView(packedRPUData)
+    );
+}
+
+/** Composes normalized LINEAR_DZ EL residuals into an already reshaped BL signal. */
+export function composeDolbyVisionEnhancementSignal(
+    reshapedSignal: ColorTriplet,
+    normalizedEnhancementSignal: ColorTriplet,
+    packedRPUData: ArrayBuffer
+): ColorTriplet {
+    const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+    if (snapshot.layerMode !== 'fel' || !snapshot.nlqActive) {
+        throw new TypeError('Dolby Vision enhancement composition requires active FEL NLQ');
+    }
+    const reconstructedSignal: [number, number, number] = [ 0, 0, 0 ];
+    for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
+        const nlq = snapshot.nlq[componentIndex];
+        const centeredEnhancement = clamp(
+            normalizedEnhancementSignal[componentIndex],
+            0,
+            1
+        ) - nlq.offset;
+        const residual = Math.sign(centeredEnhancement)
+            * (
+                Math.abs(centeredEnhancement) * nlq.deadzoneSlope
+                + nlq.deadzoneThreshold
+            );
+        reconstructedSignal[componentIndex] = reshapedSignal[componentIndex] + residual;
+    }
+    return reconstructedSignal;
 }
 
 function requireBinding(binding: number): number {
@@ -298,6 +368,37 @@ fn isDolbyVisionFEL() -> bool {
     return hasCompatibleDolbyVisionRPU()
         && (dolbyVisionRPU.words[${DOLBY_VISION_RPU_FLAGS_WORD_OFFSET}]
             & ${DOLBY_VISION_RPU_FEL_FLAG}u) != 0u;
+}
+
+fn applyDolbyVisionEnhancementResidual(
+    reshapedSignal: vec3f,
+    rawEnhancementSignal: vec3f
+) -> vec3f {
+    let enhancementLayerBitDepth = dolbyVisionRPU.words[
+        ${DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET}
+    ];
+    if (enhancementLayerBitDepth < 8u || enhancementLayerBitDepth > 16u) {
+        return reshapedSignal;
+    }
+    let enhancementCodeMaximum = exp2(f32(enhancementLayerBitDepth)) - 1.0;
+    let normalizedEnhancement = clamp(
+        rawEnhancementSignal / enhancementCodeMaximum,
+        vec3f(0.0),
+        vec3f(1.0)
+    );
+    var reconstructedSignal = reshapedSignal;
+    for (var componentIndex = 0u; componentIndex < 3u; componentIndex += 1u) {
+        let nlqWordOffset = ${DOLBY_VISION_RPU_NLQ_WORD_OFFSET}u
+            + (componentIndex * 4u);
+        let centeredEnhancement = normalizedEnhancement[componentIndex]
+            - loadDolbyVisionFloat(nlqWordOffset);
+        let residual = sign(centeredEnhancement) * (
+            abs(centeredEnhancement) * loadDolbyVisionFloat(nlqWordOffset + 1u)
+                + loadDolbyVisionFloat(nlqWordOffset + 2u)
+        );
+        reconstructedSignal[componentIndex] += residual;
+    }
+    return reconstructedSignal;
 }
 
 fn multiplyDolbyVisionMatrix(matrixWordOffset: u32, signal: vec3f) -> vec3f {
@@ -422,7 +523,11 @@ fn applyDolbyVisionPQOETF(linearValue: f32) -> f32 {
     );
 }
 
-fn reconstructDolbyVisionBT2020PQ(rawBaseSignal: vec3f) -> vec3f {
+fn reconstructDolbyVisionBT2020PQWithEnhancement(
+    rawBaseSignal: vec3f,
+    rawEnhancementSignal: vec3f,
+    enhancementPresent: bool
+) -> vec3f {
     if (!hasCompatibleDolbyVisionRPU()) {
         return vec3f(0.0);
     }
@@ -434,11 +539,17 @@ fn reconstructDolbyVisionBT2020PQ(rawBaseSignal: vec3f) -> vec3f {
     }
     let codeValueCount = exp2(f32(baseLayerBitDepth));
     let sourceSignal = clamp(rawBaseSignal / (codeValueCount - 1.0), vec3f(0.0), vec3f(1.0));
-    let reshapedSignal = vec3f(
+    var reshapedSignal = vec3f(
         reshapeDolbyVisionComponent(sourceSignal, 0u),
         reshapeDolbyVisionComponent(sourceSignal, 1u),
         reshapeDolbyVisionComponent(sourceSignal, 2u)
     );
+    if (enhancementPresent && isDolbyVisionFEL()) {
+        reshapedSignal = applyDolbyVisionEnhancementResidual(
+            reshapedSignal,
+            rawEnhancementSignal
+        );
+    }
     let offsetScale = codeValueCount / (codeValueCount - 1.0);
     let nonlinearOffset = vec3f(
         loadDolbyVisionFloat(${DOLBY_VISION_RPU_COLOR_WORD_OFFSET}u),
@@ -467,6 +578,15 @@ fn reconstructDolbyVisionBT2020PQ(rawBaseSignal: vec3f) -> vec3f {
         applyDolbyVisionPQOETF(linearBT2020.r),
         applyDolbyVisionPQOETF(linearBT2020.g),
         applyDolbyVisionPQOETF(linearBT2020.b)
+    );
+}
+
+
+fn reconstructDolbyVisionBT2020PQ(rawBaseSignal: vec3f) -> vec3f {
+    return reconstructDolbyVisionBT2020PQWithEnhancement(
+        rawBaseSignal,
+        vec3f(0.0),
+        false
     );
 }
 `;

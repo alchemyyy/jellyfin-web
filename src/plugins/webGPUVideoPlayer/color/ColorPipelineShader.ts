@@ -412,6 +412,73 @@ fn sampleRawYUV(textureCoordinate: vec2f) -> vec3f {
 }`;
 }
 
+function createDolbyVisionEnhancementTextureBindingsWGSL(): string {
+    return `
+struct DolbyVisionEnhancementUniforms {
+    enhancementPresent: u32,
+    padding0: u32,
+    padding1: u32,
+    padding2: u32,
+}
+
+@group(0) @binding(6) var enhancementLumaTexture: texture_2d<u32>;
+@group(0) @binding(7) var enhancementChromaUTexture: texture_2d<u32>;
+@group(0) @binding(8) var enhancementChromaVTexture: texture_2d<u32>;
+@group(0) @binding(9) var<uniform> enhancement: DolbyVisionEnhancementUniforms;
+
+fn sampleEnhancementLuma(textureCoordinate: vec2f) -> f32 {
+    let dimensions = vec2f(textureDimensions(enhancementLumaTexture));
+    let layerCoordinate = textureCoordinate + vec2f(-0.5 / dimensions.x, 0.0);
+    let samplePosition = layerCoordinate * dimensions - vec2f(0.5);
+    let basePosition = vec2i(floor(samplePosition));
+    let fraction = fract(samplePosition);
+    let maximumPosition = vec2i(textureDimensions(enhancementLumaTexture)) - vec2i(1);
+    let topLeft = f32(textureLoad(enhancementLumaTexture, clamp(basePosition, vec2i(0), maximumPosition), 0).r);
+    let topRight = f32(textureLoad(enhancementLumaTexture, clamp(basePosition + vec2i(1, 0), vec2i(0), maximumPosition), 0).r);
+    let bottomLeft = f32(textureLoad(enhancementLumaTexture, clamp(basePosition + vec2i(0, 1), vec2i(0), maximumPosition), 0).r);
+    let bottomRight = f32(textureLoad(enhancementLumaTexture, clamp(basePosition + vec2i(1), vec2i(0), maximumPosition), 0).r);
+    return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
+}
+
+fn sampleEnhancementChromaU(textureCoordinate: vec2f) -> f32 {
+    let lumaDimensions = vec2f(textureDimensions(enhancementLumaTexture));
+    let dimensions = vec2f(textureDimensions(enhancementChromaUTexture));
+    let layerAndSitingCoordinate = textureCoordinate + vec2f(-1.0 / lumaDimensions.x, 0.0);
+    let samplePosition = layerAndSitingCoordinate * dimensions - vec2f(0.5);
+    let basePosition = vec2i(floor(samplePosition));
+    let fraction = fract(samplePosition);
+    let maximumPosition = vec2i(textureDimensions(enhancementChromaUTexture)) - vec2i(1);
+    let topLeft = f32(textureLoad(enhancementChromaUTexture, clamp(basePosition, vec2i(0), maximumPosition), 0).r);
+    let topRight = f32(textureLoad(enhancementChromaUTexture, clamp(basePosition + vec2i(1, 0), vec2i(0), maximumPosition), 0).r);
+    let bottomLeft = f32(textureLoad(enhancementChromaUTexture, clamp(basePosition + vec2i(0, 1), vec2i(0), maximumPosition), 0).r);
+    let bottomRight = f32(textureLoad(enhancementChromaUTexture, clamp(basePosition + vec2i(1), vec2i(0), maximumPosition), 0).r);
+    return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
+}
+
+fn sampleEnhancementChromaV(textureCoordinate: vec2f) -> f32 {
+    let lumaDimensions = vec2f(textureDimensions(enhancementLumaTexture));
+    let dimensions = vec2f(textureDimensions(enhancementChromaVTexture));
+    let layerAndSitingCoordinate = textureCoordinate + vec2f(-1.0 / lumaDimensions.x, 0.0);
+    let samplePosition = layerAndSitingCoordinate * dimensions - vec2f(0.5);
+    let basePosition = vec2i(floor(samplePosition));
+    let fraction = fract(samplePosition);
+    let maximumPosition = vec2i(textureDimensions(enhancementChromaVTexture)) - vec2i(1);
+    let topLeft = f32(textureLoad(enhancementChromaVTexture, clamp(basePosition, vec2i(0), maximumPosition), 0).r);
+    let topRight = f32(textureLoad(enhancementChromaVTexture, clamp(basePosition + vec2i(1, 0), vec2i(0), maximumPosition), 0).r);
+    let bottomLeft = f32(textureLoad(enhancementChromaVTexture, clamp(basePosition + vec2i(0, 1), vec2i(0), maximumPosition), 0).r);
+    let bottomRight = f32(textureLoad(enhancementChromaVTexture, clamp(basePosition + vec2i(1), vec2i(0), maximumPosition), 0).r);
+    return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
+}
+
+fn sampleRawEnhancementYUV(textureCoordinate: vec2f) -> vec3f {
+    return vec3f(
+        sampleEnhancementLuma(textureCoordinate),
+        sampleEnhancementChromaU(textureCoordinate),
+        sampleEnhancementChromaV(textureCoordinate)
+    );
+}`;
+}
+
 /** Generates a complete external-texture shader with the reference color stages. */
 export function createColorPipelineWGSL(
     metadata: InputColorMetadata,
@@ -691,12 +758,27 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
-/** Generates Profile 7 MEL reconstruction with explicit FEL HDR10-base fallback. */
-export function createRawDolbyVisionProfile7ColorPipelineWGSL(
+function createRawDolbyVisionProfile7ColorPipelineWGSLInternal(
     settings: HDRToSDRRenderSettings,
-    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>,
+    enhancementEnabled: boolean
 ): string {
     assertValidRenderSettings(settings);
+
+    const enhancementBindings = enhancementEnabled ?
+        createDolbyVisionEnhancementTextureBindingsWGSL() :
+        '';
+    const felReconstruction = enhancementEnabled ?
+        `if (enhancement.enhancementPresent != 0u) {
+            encodedBT2020PQ = reconstructDolbyVisionBT2020PQWithEnhancement(
+                rawBaseSignal,
+                sampleRawEnhancementYUV(textureCoordinate),
+                true
+            );
+        } else {
+            encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));
+        }` :
+        'encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));';
 
     return /* wgsl */ `
 struct VertexOutput {
@@ -711,6 +793,7 @@ struct PresentationUniforms {
 
 @group(0) @binding(0) var<uniform> presentation: PresentationUniforms;
 ${createRawYUVTextureBindingsWGSL(format)}
+${enhancementBindings}
 ${createRenderSettingsUniformWGSL(settings, 4)}
 ${createDolbyVisionColorTransformWGSL(5)}
 ${createRawYUVRangeWGSL(DOLBY_VISION_PROFILE7_BASE_METADATA)}
@@ -751,11 +834,35 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     let rawBaseSignal = sampleRawYUV(textureCoordinate);
     var encodedBT2020PQ: vec3f;
     if (isDolbyVisionFEL()) {
-        encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));
+        ${felReconstruction}
     } else {
         encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(rawBaseSignal);
     }
     return vec4f(processColor(encodedBT2020PQ, input.position.xy), 1.0);
 }
 `;
+}
+
+/** Generates Profile 7 MEL reconstruction with explicit FEL HDR10-base fallback. */
+export function createRawDolbyVisionProfile7ColorPipelineWGSL(
+    settings: HDRToSDRRenderSettings,
+    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+): string {
+    return createRawDolbyVisionProfile7ColorPipelineWGSLInternal(
+        settings,
+        format,
+        false
+    );
+}
+
+/** Generates full Profile 7 FEL residual reconstruction with BL-only degradation. */
+export function createRawDolbyVisionProfile7FELColorPipelineWGSL(
+    settings: HDRToSDRRenderSettings,
+    format: Extract<RawDolbyVisionVideoFrameFormat, 'I420P10'>
+): string {
+    return createRawDolbyVisionProfile7ColorPipelineWGSLInternal(
+        settings,
+        format,
+        true
+    );
 }

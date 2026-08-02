@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+    copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
+    getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameCopyError,
@@ -498,5 +500,135 @@ describe('copyVideoFrameToRawPlanes', () => {
 
         expect(transferList).toEqual([ result.data ]);
         expect(transferList).not.toBe(getRawVideoFrameTransferList(result));
+    });
+});
+
+describe('copyVideoFramePairToRawPlanes', () => {
+    const enhancementGeometry = {
+        codedHeight: 2,
+        codedWidth: 2,
+        displayHeight: 2,
+        displayWidth: 2
+    };
+
+    it('copies BL and EL plane regions into one atomic transferable buffer', async () => {
+        const baseHarness = createFrameHarness({ format: 'I420P10' });
+        const enhancementHarness = createFrameHarness({
+            codedHeight: 2,
+            codedWidth: 2,
+            format: 'I420P10'
+        });
+
+        const result = await copyVideoFramePairToRawPlanes(
+            baseHarness.frame,
+            enhancementHarness.frame,
+            {
+                enhancementExpectedGeometry: enhancementGeometry,
+                format: 'I420P10'
+            }
+        );
+
+        expect(result.enhancementFrame).not.toBeNull();
+        expect(result.enhancementFrame?.data).toBe(result.baseFrame.data);
+        expect(result.baseFrame.data.byteLength).toBe(2_048);
+        expect(result.baseFrame.planes.map(plane => plane.byteOffset)).toEqual([
+            0,
+            512,
+            768
+        ]);
+        expect(result.enhancementFrame?.planes.map(plane => plane.byteOffset)).toEqual([
+            1_024,
+            1_536,
+            1_792
+        ]);
+        expect(baseHarness.copyTo.mock.calls[0]?.[0]).toBe(result.baseFrame.data);
+        expect(enhancementHarness.copyTo.mock.calls[0]?.[0]).toBe(result.baseFrame.data);
+        expect(baseHarness.close).toHaveBeenCalledOnce();
+        expect(enhancementHarness.close).toHaveBeenCalledOnce();
+        expect(getRawVideoFramePairTransferList(result)).toEqual([
+            result.baseFrame.data
+        ]);
+    });
+
+    it('reserves the same compound allocation after EL degradation', async () => {
+        const pairedBaseHarness = createFrameHarness({ format: 'I420P10' });
+        const enhancementHarness = createFrameHarness({
+            codedHeight: 2,
+            codedWidth: 2,
+            format: 'I420P10'
+        });
+        const pairedResult = await copyVideoFramePairToRawPlanes(
+            pairedBaseHarness.frame,
+            enhancementHarness.frame,
+            {
+                enhancementExpectedGeometry: enhancementGeometry,
+                format: 'I420P10'
+            }
+        );
+        const baseOnlyHarness = createFrameHarness({ format: 'I420P10' });
+
+        const baseOnlyResult = await copyVideoFramePairToRawPlanes(
+            baseOnlyHarness.frame,
+            null,
+            {
+                enhancementExpectedGeometry: enhancementGeometry,
+                format: 'I420P10',
+                requireReusableBuffer: true,
+                reusableBuffer: pairedResult.baseFrame.data
+            }
+        );
+
+        expect(baseOnlyResult.baseFrame.data).toBe(pairedResult.baseFrame.data);
+        expect(baseOnlyResult.enhancementFrame).toBeNull();
+        expect(baseOnlyHarness.copyTo).toHaveBeenCalledOnce();
+        expect(baseOnlyHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('closes both owned frames when either plane copy fails', async () => {
+        const baseHarness = createFrameHarness({ format: 'I420P10' });
+        const enhancementHarness = createFrameHarness({
+            codedHeight: 2,
+            codedWidth: 2,
+            copyTo: vi.fn(async (): Promise<PlaneLayout[]> => {
+                throw new Error('enhancement copy failed');
+            }),
+            format: 'I420P10'
+        });
+
+        await expect(copyVideoFramePairToRawPlanes(
+            baseHarness.frame,
+            enhancementHarness.frame,
+            {
+                enhancementExpectedGeometry: enhancementGeometry,
+                format: 'I420P10'
+            }
+        )).rejects.toMatchObject({
+            code: 'copy-failed',
+            message: 'enhancement copy failed'
+        });
+        expect(baseHarness.close).toHaveBeenCalledOnce();
+        expect(enhancementHarness.close).toHaveBeenCalledOnce();
+    });
+
+    it('rejects an EL geometry mismatch before either copy begins', async () => {
+        const baseHarness = createFrameHarness({ format: 'I420P10' });
+        const enhancementHarness = createFrameHarness({
+            codedHeight: 4,
+            codedWidth: 4,
+            format: 'I420P10'
+        });
+
+        await expectCopyFailure(copyVideoFramePairToRawPlanes(
+            baseHarness.frame,
+            enhancementHarness.frame,
+            {
+                enhancementExpectedGeometry: enhancementGeometry,
+                format: 'I420P10'
+            }
+        ), 'invalid-dimensions');
+        expect(baseHarness.copyTo).not.toHaveBeenCalled();
+        expect(enhancementHarness.copyTo).not.toHaveBeenCalled();
+        expect(baseHarness.close).toHaveBeenCalledOnce();
+        expect(enhancementHarness.close).toHaveBeenCalledOnce();
     });
 });

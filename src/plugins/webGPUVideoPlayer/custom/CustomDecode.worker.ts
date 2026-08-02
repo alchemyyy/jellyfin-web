@@ -52,6 +52,13 @@ import {
 import DolbyVisionEncodedMetadataQueue, {
     getHEVCNALFormat
 } from './DolbyVisionEncodedMetadata';
+import DolbyVisionFramePairQueue, {
+    type DolbyVisionFramePair
+} from './DolbyVisionFramePairQueue';
+import {
+    splitDolbyVisionHEVCAccessUnit,
+    type HEVCNALFormat
+} from './DolbyVisionHEVCSplitter';
 import {
     getDolbyVisionEncodedMetadataTransferList,
     takeTransferableDolbyVisionEncodedFrameMetadata,
@@ -75,7 +82,9 @@ import {
 } from './MediaFetchPolicy';
 import RawFrameBufferPool from './RawFrameBufferPool';
 import {
+    copyVideoFramePairToRawPlanes,
     copyVideoFrameToRawPlanes,
+    getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
     type RawVideoFrameGeometry
 } from './RawVideoFrameCopy';
@@ -90,8 +99,10 @@ const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
-const MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT = 8;
 const OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK = 16;
+const DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH = 1_920;
+const DOLBY_VISION_ENHANCEMENT_CODEC = 'hev1.2.4.L153.B0';
+const ANNEX_B_HEVC_NAL_FORMAT: HEVCNALFormat = { kind: 'annex-b' };
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -125,6 +136,11 @@ type PreparedVideoTrack = {
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
     videoTrack: InputVideoTrack
+};
+
+type DolbyVisionEnhancementDecoderConfiguration = {
+    decoderConfig: VideoDecoderConfig
+    geometry: RawVideoFrameGeometry
 };
 
 type PreparedAudioTrack = {
@@ -399,6 +415,34 @@ async function prepareVideoTrack(
     };
 }
 
+function createDolbyVisionEnhancementDecoderConfiguration(
+    preparedVideoTrack: PreparedVideoTrack
+): DolbyVisionEnhancementDecoderConfiguration {
+    const baseGeometry = preparedVideoTrack.geometry;
+    const resolutionDivisor = baseGeometry.codedWidth
+        > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
+    const codedWidth = Math.ceil(baseGeometry.codedWidth / resolutionDivisor);
+    const codedHeight = Math.ceil(baseGeometry.codedHeight / resolutionDivisor);
+    const geometry: RawVideoFrameGeometry = {
+        codedHeight,
+        codedWidth,
+        displayHeight: codedHeight,
+        displayWidth: codedWidth
+    };
+    return {
+        decoderConfig: {
+            codec: DOLBY_VISION_ENHANCEMENT_CODEC,
+            codedHeight,
+            codedWidth,
+            displayAspectHeight: codedHeight,
+            displayAspectWidth: codedWidth,
+            hardwareAcceleration: 'prefer-software',
+            optimizeForLatency: true
+        },
+        geometry
+    };
+}
+
 async function prepareAudioTrack(
     input: Input,
     run: DecodeRun,
@@ -650,6 +694,105 @@ async function postRawVideoFrame(
     postResponse(response, transferables);
 }
 
+type RawVideoFramePairPostRequest = {
+    baseFrame: VideoFrame
+    baseGeometry: RawVideoFrameGeometry
+    durationMicroseconds: Microseconds
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    enhancementFrame: VideoFrame | null
+    enhancementGeometry: RawVideoFrameGeometry
+    mediaTimeMicroseconds: Microseconds
+};
+
+async function postRawVideoFramePair(
+    run: DecodeRun,
+    request: RawVideoFramePairPostRequest
+): Promise<void> {
+    const {
+        baseFrame,
+        baseGeometry,
+        durationMicroseconds,
+        encodedDolbyVisionMetadata,
+        enhancementFrame,
+        enhancementGeometry,
+        mediaTimeMicroseconds
+    } = request;
+    const rawVideoFrameFormat = run.rawVideoFrameFormat;
+    if (rawVideoFrameFormat === null) {
+        baseFrame.close();
+        enhancementFrame?.close();
+        throw new UnsupportedCustomDecodeSourceError(
+            'The compound raw video frame output format is unavailable'
+        );
+    }
+    const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
+    if (!bufferLease) {
+        baseFrame.close();
+        enhancementFrame?.close();
+        throw new UnsupportedCustomDecodeSourceError(
+            'The compound raw video frame buffer pool was exhausted'
+        );
+    }
+    const rawFramePair = await copyVideoFramePairToRawPlanes(
+        baseFrame,
+        enhancementFrame,
+        {
+            baseExpectedGeometry: baseGeometry,
+            enhancementExpectedGeometry: enhancementGeometry,
+            format: rawVideoFrameFormat,
+            requireReusableBuffer: bufferLease.kind === 'reuse',
+            reusableBuffer: bufferLease.kind === 'reuse' ?
+                bufferLease.buffer :
+                undefined
+        }
+    );
+    if (run.cancelled || currentRun !== run) {
+        return;
+    }
+    if (rawFramePair.baseFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The decoded compound raw frame timestamp did not match its media sample'
+        );
+    }
+    if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The compound raw video frame buffer window exceeded its bound'
+        );
+    }
+
+    run.outstandingRawFrameBufferCount += 1;
+    if (rawFramePair.enhancementFrame && encodedDolbyVisionMetadata) {
+        switch (encodedDolbyVisionMetadata.enhancementLayerDisposition) {
+            case 'discarded-fel':
+                encodedDolbyVisionMetadata.enhancementLayerDisposition = 'decoded-fel';
+                break;
+            case 'discarded-mel':
+                encodedDolbyVisionMetadata.enhancementLayerDisposition = 'decoded-mel';
+                break;
+            case 'absent':
+            case 'decoded-fel':
+            case 'decoded-mel':
+                break;
+        }
+    }
+    const response: MutableDecodeWorkerFrameResponse = {
+        durationMicroseconds: rawFramePair.baseFrame.durationMicroseconds
+            ?? durationMicroseconds,
+        enhancementFrame: rawFramePair.enhancementFrame,
+        frame: rawFramePair.baseFrame,
+        generation: run.generation,
+        mediaTimeMicroseconds,
+        outputMode: 'raw-planes',
+        type: 'frame'
+    };
+    const transferables = getRawVideoFramePairTransferList(rawFramePair);
+    transferables.push(...attachDolbyVisionEncodedMetadata(
+        response,
+        encodedDolbyVisionMetadata
+    ));
+    postResponse(response, transferables);
+}
+
 function postTransferredVideoFrame(
     run: DecodeRun,
     frame: VideoFrame,
@@ -677,9 +820,12 @@ async function postVideoFrame(
     run: DecodeRun,
     output: OwnedDecodedVideoOutput,
     expectedGeometry: RawVideoFrameGeometry,
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null = null
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null = null,
+    enhancementOutput: OwnedDecodedVideoOutput | null = null,
+    enhancementExpectedGeometry: RawVideoFrameGeometry | null = null
 ): Promise<void> {
     let frame: VideoFrame | null = null;
+    let enhancementFrame: VideoFrame | null = null;
     try {
         const decodedFrame = takeOwnedVideoFrame(output);
         const durationMicroseconds = decodedFrame.durationMicroseconds;
@@ -701,11 +847,39 @@ async function postVideoFrame(
         if (run.cancelled || currentRun !== run) {
             return;
         }
+        if (enhancementOutput) {
+            const decodedEnhancementFrame = takeOwnedVideoFrame(enhancementOutput);
+            enhancementFrame = decodedEnhancementFrame.frame;
+            if (
+                Math.abs(
+                    decodedEnhancementFrame.mediaTimeMicroseconds
+                    - mediaTimeMicroseconds
+                ) > 1
+            ) {
+                throw new UnsupportedCustomDecodeSourceError(
+                    'The decoded Dolby Vision layers have mismatched timestamps'
+                );
+            }
+        }
 
         switch (run.videoOutputMode) {
             case 'raw-planes': {
                 const ownedFrame = frame;
                 frame = null;
+                if (enhancementExpectedGeometry) {
+                    const ownedEnhancementFrame = enhancementFrame;
+                    enhancementFrame = null;
+                    await postRawVideoFramePair(run, {
+                        baseFrame: ownedFrame,
+                        baseGeometry: decodedVideoGeometry,
+                        durationMicroseconds,
+                        encodedDolbyVisionMetadata,
+                        enhancementFrame: ownedEnhancementFrame,
+                        enhancementGeometry: enhancementExpectedGeometry,
+                        mediaTimeMicroseconds
+                    });
+                    return;
+                }
                 await postRawVideoFrame(
                     run,
                     ownedFrame,
@@ -729,6 +903,7 @@ async function postVideoFrame(
         }
     } finally {
         frame?.close();
+        enhancementFrame?.close();
     }
 }
 
@@ -963,8 +1138,12 @@ function createOwnedHEVCVideoDecoderPort(
 }
 
 class OwnedHEVCStreamState {
-    private readonly decodedOutputs: OwnedDecodedVideoOutput[] = [];
     private decoderFailure: unknown = null;
+    private enhancementDecoderFailed = false;
+    private readonly framePairs = new DolbyVisionFramePairQueue<
+        OwnedDecodedVideoOutput,
+        OwnedDecodedVideoOutput
+    >(closeOwnedDecodedVideoOutput, closeOwnedDecodedVideoOutput);
     private firstPresentationOutputQueued = false;
     private frameCreditHeld = false;
     private preStartOutput: OwnedDecodedVideoOutput | null = null;
@@ -972,11 +1151,29 @@ class OwnedHEVCStreamState {
 
     public constructor(
         private readonly metadataQueue: DolbyVisionEncodedMetadataQueue,
-        private readonly startTimeMicroseconds: Microseconds
-    ) {}
+        private readonly startTimeMicroseconds: Microseconds,
+        private readonly enhancementExpectedGeometry: RawVideoFrameGeometry | null
+    ) {
+        if (!enhancementExpectedGeometry) {
+            this.framePairs.finishEnhancement();
+        }
+    }
 
     public recordDecoderFailure(error: unknown): void {
         this.decoderFailure ??= error;
+    }
+
+    public recordEnhancementDecoderFailure(): void {
+        if (this.enhancementDecoderFailed) {
+            return;
+        }
+        this.enhancementDecoderFailed = true;
+        this.framePairs.finishEnhancement();
+    }
+
+    public canDecodeEnhancement(): boolean {
+        return this.enhancementExpectedGeometry !== null
+            && !this.enhancementDecoderFailed;
     }
 
     public enqueueDecodedOutput(source: OwnedDecodedVideoSource): void {
@@ -1004,7 +1201,35 @@ class OwnedHEVCStreamState {
             }
 
             this.queueFirstPresentationOutput();
-            this.queueDecodedOutput(decodedOutput);
+            this.queueBaseOutput(decodedOutput);
+            decodedOutput = null;
+        } finally {
+            closeOwnedDecodedVideoOutput(decodedOutput);
+            if (sourceOwned) {
+                closeOwnedDecodedVideoSource(source);
+            }
+        }
+    }
+
+    public enqueueEnhancementDecodedOutput(source: OwnedDecodedVideoSource): void {
+        let decodedOutput: OwnedDecodedVideoOutput | null = null;
+        let sourceOwned = true;
+        try {
+            if (!this.canDecodeEnhancement()) {
+                return;
+            }
+            const timing = getOwnedDecodedVideoTiming(source);
+            decodedOutput = {
+                durationMicroseconds: timing.durationMicroseconds,
+                encodedDolbyVisionMetadata: null,
+                mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
+                source
+            };
+            sourceOwned = false;
+            this.framePairs.enqueueEnhancementFrame({
+                frame: decodedOutput,
+                mediaTimeMicroseconds: decodedOutput.mediaTimeMicroseconds
+            });
             decodedOutput = null;
         } finally {
             closeOwnedDecodedVideoOutput(decodedOutput);
@@ -1016,9 +1241,25 @@ class OwnedHEVCStreamState {
 
     public async decodePacket(
         packet: EncodedPacket,
-        decoder: OwnedHEVCVideoDecoderPort
+        decoder: OwnedHEVCVideoDecoderPort,
+        enhancementDecoder: OwnedHEVCVideoDecoderPort | null
     ): Promise<void> {
         const processedPacket = await this.metadataQueue.processPacket(packet);
+        const enhancementDecoderPacket = processedPacket.enhancementLayerPacket;
+        if (
+            enhancementDecoderPacket
+            && enhancementDecoder
+            && this.canDecodeEnhancement()
+        ) {
+            try {
+                const packetAccepted = enhancementDecoder.decode(enhancementDecoderPacket);
+                if (!packetAccepted && processedPacket.hasEnhancementLayerVCL) {
+                    this.recordEnhancementDecoderFailure();
+                }
+            } catch {
+                this.recordEnhancementDecoderFailure();
+            }
+        }
         const decoderPacket = processedPacket.baseLayerPacket;
         if (decoderPacket) {
             const packetAccepted = decoder.decode(decoderPacket);
@@ -1029,9 +1270,22 @@ class OwnedHEVCStreamState {
         this.throwDecoderFailure();
     }
 
-    public async finishPackets(decoder: OwnedHEVCVideoDecoderPort): Promise<void> {
+    public async finishPackets(
+        decoder: OwnedHEVCVideoDecoderPort,
+        enhancementDecoder: OwnedHEVCVideoDecoderPort | null
+    ): Promise<void> {
         await decoder.flush();
         this.throwDecoderFailure();
+        if (enhancementDecoder && this.canDecodeEnhancement()) {
+            try {
+                await enhancementDecoder.flush();
+            } catch {
+                this.recordEnhancementDecoderFailure();
+            }
+        }
+        if (this.enhancementExpectedGeometry) {
+            this.framePairs.finishEnhancement();
+        }
         this.metadataQueue.requireDrained();
         this.queueFirstPresentationOutput();
         this.packetsEnded = true;
@@ -1041,19 +1295,24 @@ class OwnedHEVCStreamState {
         run: DecodeRun,
         expectedGeometry: RawVideoFrameGeometry
     ): Promise<OwnedOutputPostResult> {
-        if (this.decodedOutputs.length === 0) {
+        if (!this.framePairs.hasReadyPair()) {
             return 'none';
         }
         if (!await this.acquireFrameCredit(run)) {
             return 'stopped';
         }
 
-        const decodedOutput = this.decodedOutputs.shift() as OwnedDecodedVideoOutput;
+        const framePair = this.framePairs.takeReadyPair() as DolbyVisionFramePair<
+            OwnedDecodedVideoOutput,
+            OwnedDecodedVideoOutput
+        >;
         await postVideoFrame(
             run,
-            decodedOutput,
+            framePair.baseFrame,
             expectedGeometry,
-            decodedOutput.encodedDolbyVisionMetadata
+            framePair.baseFrame.encodedDolbyVisionMetadata,
+            framePair.enhancementFrame,
+            this.enhancementExpectedGeometry
         );
         this.frameCreditHeld = false;
         return 'posted';
@@ -1068,7 +1327,7 @@ class OwnedHEVCStreamState {
 
     public async waitForDecoderProgress(run: DecodeRun): Promise<void> {
         this.throwDecoderFailure();
-        if (this.decodedOutputs.length > 0 || run.cancelled) {
+        if (this.framePairs.hasReadyPair() || run.cancelled) {
             return;
         }
         await new Promise<void>(resolve => {
@@ -1080,18 +1339,15 @@ class OwnedHEVCStreamState {
     public close(): void {
         closeOwnedDecodedVideoOutput(this.preStartOutput);
         this.preStartOutput = null;
-        for (const decodedOutput of this.decodedOutputs) {
-            closeOwnedDecodedVideoOutput(decodedOutput);
-        }
-        this.decodedOutputs.length = 0;
+        this.framePairs.close();
         this.metadataQueue.clear();
     }
 
-    private queueDecodedOutput(decodedOutput: OwnedDecodedVideoOutput): void {
-        if (this.decodedOutputs.length >= MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT) {
-            throw new Error('The owned decoded video sample queue exceeded its bound');
-        }
-        this.decodedOutputs.push(decodedOutput);
+    private queueBaseOutput(decodedOutput: OwnedDecodedVideoOutput): void {
+        this.framePairs.enqueueBaseFrame({
+            frame: decodedOutput,
+            mediaTimeMicroseconds: decodedOutput.mediaTimeMicroseconds
+        });
     }
 
     private queueFirstPresentationOutput(): void {
@@ -1100,7 +1356,7 @@ class OwnedHEVCStreamState {
         }
         this.firstPresentationOutputQueued = true;
         if (this.preStartOutput) {
-            this.queueDecodedOutput(this.preStartOutput);
+            this.queueBaseOutput(this.preStartOutput);
             this.preStartOutput = null;
         }
     }
@@ -1116,6 +1372,7 @@ async function pumpOwnedHEVCFrames(
     run: DecodeRun,
     packetIterator: MediaSampleIterator<EncodedPacket>,
     decoder: OwnedHEVCVideoDecoderPort,
+    enhancementDecoder: OwnedHEVCVideoDecoderPort | null,
     state: OwnedHEVCStreamState,
     expectedGeometry: RawVideoFrameGeometry
 ): Promise<void> {
@@ -1134,7 +1391,13 @@ async function pumpOwnedHEVCFrames(
         if (state.packetsEnded) {
             return;
         }
-        if (decoder.getDecodeQueueSize() > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK) {
+        if (
+            decoder.getDecodeQueueSize() > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK
+            || (state.canDecodeEnhancement()
+                && enhancementDecoder !== null
+                && enhancementDecoder.getDecodeQueueSize()
+                    > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK)
+        ) {
             await state.waitForDecoderProgress(run);
             continue;
         }
@@ -1147,7 +1410,7 @@ async function pumpOwnedHEVCFrames(
             return;
         }
         if (packetResult.done) {
-            await state.finishPackets(decoder);
+            await state.finishPackets(decoder, enhancementDecoder);
             continue;
         }
         packetCount += 1;
@@ -1161,7 +1424,11 @@ async function pumpOwnedHEVCFrames(
             packetCount,
             packetMediaTimeMicroseconds
         );
-        await state.decodePacket(packetResult.value, decoder);
+        await state.decodePacket(
+            packetResult.value,
+            decoder,
+            enhancementDecoder
+        );
         postVideoStartupProgress(
             run,
             'video-packet-decoded',
@@ -1207,12 +1474,25 @@ async function streamOwnedHEVCFrames(
     const packetIterator = packetSink.packets(keyPacket, undefined, packetOptions);
     run.videoIterator = packetIterator;
     const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
+    const keyPacketSplit = splitDolbyVisionHEVCAccessUnit(
+        keyPacket.data,
+        inputFormat,
+        ANNEX_B_HEVC_NAL_FORMAT
+    );
+    const enhancementConfiguration = keyPacketSplit.hasEnhancementLayerVCL ?
+        createDolbyVisionEnhancementDecoderConfiguration(preparedVideoTrack) :
+        null;
     const rpuParser = DolbyVisionRPUParserSession.create(
         request.dolbyVisionRPUParserWASMURL
     );
     const state = new OwnedHEVCStreamState(
-        new DolbyVisionEncodedMetadataQueue(inputFormat, rpuParser),
-        request.startTimeMicroseconds
+        new DolbyVisionEncodedMetadataQueue(
+            inputFormat,
+            rpuParser,
+            enhancementConfiguration ? ANNEX_B_HEVC_NAL_FORMAT : inputFormat
+        ),
+        request.startTimeMicroseconds,
+        enhancementConfiguration?.geometry ?? null
     );
     const notifyDecoderProgress = (): void => {
         wakeWaiters(run.wakeVideoDecodeWaiters);
@@ -1232,8 +1512,38 @@ async function streamOwnedHEVCFrames(
             onProgress: notifyDecoderProgress
         }
     );
+    const enhancementDecoder = enhancementConfiguration ?
+        createOwnedBundledHEVCVideoDecoderPort(
+            enhancementConfiguration.decoderConfig,
+            {
+                onError: (): void => {
+                    state.recordEnhancementDecoderFailure();
+                    notifyDecoderProgress();
+                },
+                onOutput: (output: OwnedDecodedVideoSource): void => {
+                    state.enqueueEnhancementDecodedOutput(output);
+                },
+                onProgress: notifyDecoderProgress
+            }
+        ) :
+        null;
     try {
-        await decoder.init();
+        const decoderInitializationPromise = decoder.init();
+        const enhancementInitializationPromise = enhancementDecoder ?
+            enhancementDecoder.init() :
+            Promise.resolve();
+        const initializationResults = await Promise.allSettled([
+            decoderInitializationPromise,
+            enhancementInitializationPromise
+        ]);
+        const enhancementInitializationResult = initializationResults[1];
+        if (enhancementInitializationResult.status === 'rejected') {
+            state.recordEnhancementDecoderFailure();
+        }
+        const decoderInitializationResult = initializationResults[0];
+        if (decoderInitializationResult.status === 'rejected') {
+            throw decoderInitializationResult.reason;
+        }
         postVideoStartupProgress(
             run,
             'video-decoder-ready',
@@ -1244,6 +1554,7 @@ async function streamOwnedHEVCFrames(
             run,
             packetIterator,
             decoder,
+            enhancementDecoder,
             state,
             preparedVideoTrack.geometry
         );
@@ -1256,6 +1567,7 @@ async function streamOwnedHEVCFrames(
             // Input disposal is the authoritative cancellation signal
         }
         decoder.close();
+        enhancementDecoder?.close();
     }
 }
 
@@ -1525,9 +1837,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (run.iteratorRetirementPromise) {
             await run.iteratorRetirementPromise;
         }
-        if (run.videoDecoderBackend === 'bundled-hevc') {
-            await waitForHEVCSoftwareVideoDecoderShutdown();
-        }
+        await waitForHEVCSoftwareVideoDecoderShutdown();
         if (currentRun === run) {
             currentRun = null;
         }

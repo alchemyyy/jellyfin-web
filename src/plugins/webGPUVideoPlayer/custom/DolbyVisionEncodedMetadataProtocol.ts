@@ -4,7 +4,7 @@ import {
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH
 } from './DolbyVisionRPUParser';
 
-export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 3;
+export const DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION = 4;
 export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT = 16;
 export const MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH =
     MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH;
@@ -14,6 +14,8 @@ export const MAXIMUM_DOLBY_VISION_RPU_FRAME_BYTE_LENGTH =
 
 export type DolbyVisionEnhancementLayerDisposition =
     | 'absent'
+    | 'decoded-fel'
+    | 'decoded-mel'
     | 'discarded-fel'
     | 'discarded-mel';
 
@@ -66,6 +68,8 @@ function isEnhancementLayerDisposition(
 ): value is DolbyVisionEnhancementLayerDisposition {
     switch (value) {
         case 'absent':
+        case 'decoded-fel':
+        case 'decoded-mel':
         case 'discarded-fel':
         case 'discarded-mel':
             return true;
@@ -111,8 +115,10 @@ export function isTransferableDolbyVisionEncodedFrameMetadata(
     switch (metadata.enhancementLayerDisposition) {
         case 'absent':
             return true;
+        case 'decoded-fel':
         case 'discarded-fel':
             return layerModes.length === 1 && layerModes[0] === 'fel';
+        case 'decoded-mel':
         case 'discarded-mel':
             return layerModes.length === 1 && layerModes[0] === 'mel';
     }

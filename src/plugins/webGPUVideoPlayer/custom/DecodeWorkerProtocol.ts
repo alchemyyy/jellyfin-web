@@ -8,6 +8,7 @@ import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from './NativeMediaAudioLimits';
 import {
+    MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH,
     MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
     MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
     MAXIMUM_RAW_VIDEO_CODED_WIDTH,
@@ -150,6 +151,7 @@ export type DecodeWorkerVideoFrameResponse = DecodeWorkerFrameResponseBase & {
 };
 
 export type DecodeWorkerRawFrameResponse = DecodeWorkerFrameResponseBase & {
+    enhancementFrame?: TransferableRawVideoFrame | null
     frame: TransferableRawVideoFrame
     outputMode: 'raw-planes'
 };
@@ -408,8 +410,17 @@ function isRawVideoPlane(
 }
 
 function isTransferableRawVideoFrame(value: unknown): value is TransferableRawVideoFrame {
+    const frameEndOffset = getTransferableRawVideoFrameEndOffset(value, 0);
+    return frameEndOffset !== null
+        && (value as TransferableRawVideoFrame).data.byteLength === frameEndOffset;
+}
+
+function getTransferableRawVideoFrameEndOffset(
+    value: unknown,
+    expectedStartOffset: number
+): number | null {
     if (!isRecord(value)) {
-        return false;
+        return null;
     }
 
     const formatValidation = getRawVideoFormatValidation(value.format);
@@ -434,10 +445,10 @@ function isTransferableRawVideoFrame(value: unknown): value is TransferableRawVi
         || !Array.isArray(value.planes)
         || value.planes.length !== formatValidation.planeKinds.length
     ) {
-        return false;
+        return null;
     }
 
-    let expectedByteOffset = 0;
+    let expectedByteOffset = expectedStartOffset;
     for (let planeIndex = 0; planeIndex < value.planes.length; planeIndex += 1) {
         const plane = value.planes[planeIndex];
         if (!isRawVideoPlane(
@@ -448,12 +459,54 @@ function isTransferableRawVideoFrame(value: unknown): value is TransferableRawVi
             codedHeight,
             expectedByteOffset
         )) {
-            return false;
+            return null;
         }
         expectedByteOffset += Number((plane as RawVideoPlaneDescriptor).byteLength);
     }
-    return expectedByteOffset === value.data.byteLength
-        && expectedByteOffset <= MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH;
+    const frameByteLength = expectedByteOffset - expectedStartOffset;
+    return frameByteLength > 0
+        && frameByteLength <= MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH
+        && expectedByteOffset <= value.data.byteLength ?
+        expectedByteOffset :
+        null;
+}
+
+function isTransferableRawVideoFramePair(
+    baseFrameValue: unknown,
+    enhancementFrameValue: unknown
+): boolean {
+    const baseFrameEndOffset = getTransferableRawVideoFrameEndOffset(baseFrameValue, 0);
+    if (baseFrameEndOffset === null) {
+        return false;
+    }
+    const baseFrame = baseFrameValue as TransferableRawVideoFrame;
+    if (
+        baseFrame.data.byteLength <= baseFrameEndOffset
+        || baseFrame.data.byteLength > MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
+    ) {
+        return false;
+    }
+    if (enhancementFrameValue === null) {
+        return true;
+    }
+
+    const enhancementFrameOffset = Math.ceil(
+        baseFrameEndOffset / RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT
+    ) * RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT;
+    const enhancementFrameEndOffset = getTransferableRawVideoFrameEndOffset(
+        enhancementFrameValue,
+        enhancementFrameOffset
+    );
+    if (enhancementFrameEndOffset === null) {
+        return false;
+    }
+    const enhancementFrame = enhancementFrameValue as TransferableRawVideoFrame;
+    return enhancementFrame.data === baseFrame.data
+        && enhancementFrameEndOffset === baseFrame.data.byteLength
+        && enhancementFrame.format === baseFrame.format
+        && Math.abs(
+            enhancementFrame.timestampMicroseconds - baseFrame.timestampMicroseconds
+        ) <= 1;
 }
 
 function isFailureKind(value: unknown): value is CustomDecodeFailureKind {
@@ -584,11 +637,23 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
         case 'video-frame':
             return isRecord(value.frame)
                 && typeof value.frame.close === 'function';
-        case 'raw-planes':
-            return isTransferableRawVideoFrame(value.frame)
-                && value.frame.timestampMicroseconds === value.mediaTimeMicroseconds
-                && (value.frame.durationMicroseconds === null
-                    || value.frame.durationMicroseconds === value.durationMicroseconds);
+        case 'raw-planes': {
+            const hasValidFrame = (
+                Object.prototype.hasOwnProperty.call(value, 'enhancementFrame') ?
+                    isTransferableRawVideoFramePair(
+                        value.frame,
+                        value.enhancementFrame
+                    ) :
+                    isTransferableRawVideoFrame(value.frame)
+            );
+            if (!hasValidFrame) {
+                return false;
+            }
+            const frame = value.frame as TransferableRawVideoFrame;
+            return frame.timestampMicroseconds === value.mediaTimeMicroseconds
+                && (frame.durationMicroseconds === null
+                    || frame.durationMicroseconds === value.durationMicroseconds);
+        }
         default:
             return false;
     }

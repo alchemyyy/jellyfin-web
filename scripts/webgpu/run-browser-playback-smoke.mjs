@@ -960,6 +960,12 @@ function createPlayerSnapshotExpression(accessKey) {
         const customEligibility = typeof player.getCustomPlaybackEligibility === 'function'
             ? player.getCustomPlaybackEligibility()
             : null;
+        const customDecodeCapabilities = typeof player.getCustomDecodeCapabilities === 'function'
+            ? player.getCustomDecodeCapabilities()
+            : null;
+        const customDeviceProfile = typeof player.getCustomDeviceProfileTelemetry === 'function'
+            ? player.getCustomDeviceProfileTelemetry()
+            : null;
         const nativeMediaAudioCapabilities =
             typeof player.getNativeMediaAudioCapabilities === 'function'
                 ? player.getNativeMediaAudioCapabilities()
@@ -972,6 +978,10 @@ function createPlayerSnapshotExpression(accessKey) {
         const profile7DolbyVisionAuthorization =
             typeof player.getProfile7DolbyVisionAuthorizationTelemetry === 'function' ?
                 player.getProfile7DolbyVisionAuthorizationTelemetry() :
+                null;
+        const profile7FELDolbyVisionAuthorization =
+            typeof player.getProfile7FELDolbyVisionAuthorizationTelemetry === 'function' ?
+                player.getProfile7FELDolbyVisionAuthorizationTelemetry() :
                 null;
         const externalDolbyVisionAuthorization =
             typeof player.getExternalDolbyVisionAuthorizationTelemetry === 'function' ?
@@ -1115,6 +1125,22 @@ function createPlayerSnapshotExpression(accessKey) {
                     ? customEligibility.videoOutputMode
                     : null
             } : null,
+            customDecodeCapabilities: customDecodeCapabilities ? {
+                bundledHEVC: customDecodeCapabilities.bundledHEVC,
+                nativeDolbyVisionHEVC: customDecodeCapabilities.nativeDolbyVisionHEVC,
+                rawHDRHEVC: customDecodeCapabilities.rawHDRVideo?.hevc ?? null,
+                videoHEVC: customDecodeCapabilities.video?.hevc ?? null
+            } : null,
+            customDeviceProfile: customDeviceProfile ? {
+                addedAudioProfileCount: customDeviceProfile.addedAudioProfileCount,
+                addedProfileCount: customDeviceProfile.addedProfileCount,
+                addedVideoProfileCount: customDeviceProfile.addedVideoProfileCount,
+                reason: customDeviceProfile.reason,
+                supportedAudioCodecs: [ ...customDeviceProfile.supportedAudioCodecs ],
+                supportedVideoCodecs: [ ...customDeviceProfile.supportedVideoCodecs ],
+                widenedHDRCodecProfileCount:
+                    customDeviceProfile.widenedHDRCodecProfileCount
+            } : null,
             dom: {
                 canvasBackingHeight: primaryCanvas?.height ?? null,
                 canvasBackingWidth: primaryCanvas?.width ?? null,
@@ -1183,6 +1209,8 @@ function createPlayerSnapshotExpression(accessKey) {
                 deviceRecoveryCount: presentation.deviceRecoveryCount,
                 dolbyVisionProfile7FELBaseFallbackPresentedFrameCount:
                     presentation.dolbyVisionProfile7FELBaseFallbackPresentedFrameCount,
+                dolbyVisionProfile7FELPresentedFrameCount:
+                    presentation.dolbyVisionProfile7FELPresentedFrameCount,
                 dolbyVisionProfile7MELPresentedFrameCount:
                     presentation.dolbyVisionProfile7MELPresentedFrameCount,
                 fallbackReason: presentation.fallbackReason,
@@ -1205,6 +1233,18 @@ function createPlayerSnapshotExpression(accessKey) {
                 sampleCount: profile7DolbyVisionAuthorization.sampleCount,
                 status: profile7DolbyVisionAuthorization.status,
                 targetFormat: profile7DolbyVisionAuthorization.targetFormat
+            } : null,
+            profile7FELDolbyVisionValidation: profile7FELDolbyVisionAuthorization ? {
+                failureReason: profile7FELDolbyVisionAuthorization.failureReason,
+                fixtureVersion: profile7FELDolbyVisionAuthorization.fixtureVersion,
+                maximumChannelError:
+                    profile7FELDolbyVisionAuthorization.maximumChannelError,
+                renderSettingsVersion:
+                    profile7FELDolbyVisionAuthorization.renderSettingsVersion,
+                routeKey: profile7FELDolbyVisionAuthorization.routeKey,
+                sampleCount: profile7FELDolbyVisionAuthorization.sampleCount,
+                status: profile7FELDolbyVisionAuthorization.status,
+                targetFormat: profile7FELDolbyVisionAuthorization.targetFormat
             } : null,
             rawHDRValidation: rawHDRAuthorization ? {
                 authorizedRouteKeys: [ ...rawHDRAuthorization.authorizedRouteKeys ],

@@ -160,6 +160,31 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         queue.requireDrained();
     });
 
+    it('forwards standalone enhancement parameter sets without inventing frame metadata', async () => {
+        const rpuParser = createRPUParser();
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            rpuParser,
+            { kind: 'annex-b' }
+        );
+        const enhancementVPS = createNALUnit(32, [ 1, 2, 3 ]);
+        const enhancementWrapper = createNALUnit(63, Array.from(enhancementVPS));
+
+        const processedPacket = await queue.processPacket(createPacket(
+            encodeAnnexBNALUnits([ enhancementWrapper ]),
+            2.5
+        ));
+
+        expect(processedPacket.baseLayerPacket).toBeNull();
+        expect(processedPacket.hasBaseLayerVCL).toBe(false);
+        expect(processedPacket.hasEnhancementLayerVCL).toBe(false);
+        expect(getAnnexBNALUnitTypes(
+            processedPacket.enhancementLayerPacket?.data ?? new Uint8Array()
+        )).toEqual([ 32 ]);
+        expect(rpuParser.parse).not.toHaveBeenCalled();
+        queue.requireDrained();
+    });
+
     it('preserves decode-order entries that share a presentation timestamp', async () => {
         const queue = new DolbyVisionEncodedMetadataQueue(
             { kind: 'annex-b' },

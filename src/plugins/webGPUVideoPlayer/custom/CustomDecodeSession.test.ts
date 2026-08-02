@@ -161,6 +161,39 @@ function createRawFrame(
     };
 }
 
+function createCompoundRawFrames(
+    mediaTimeMicroseconds: Microseconds
+): {
+        baseFrame: TransferableRawVideoFrame
+        enhancementFrame: TransferableRawVideoFrame
+    } {
+    const baseFrameTemplate = createRawFrame(mediaTimeMicroseconds);
+    const enhancementFrameTemplate = createRawFrame(mediaTimeMicroseconds, {
+        codedHeight: 1,
+        codedWidth: 2,
+        displayHeight: 1,
+        displayWidth: 2
+    });
+    const enhancementByteOffset = baseFrameTemplate.data.byteLength;
+    const data = new ArrayBuffer(
+        enhancementByteOffset + enhancementFrameTemplate.data.byteLength
+    );
+    return {
+        baseFrame: {
+            ...baseFrameTemplate,
+            data
+        },
+        enhancementFrame: {
+            ...enhancementFrameTemplate,
+            data,
+            planes: enhancementFrameTemplate.planes.map(plane => ({
+                ...plane,
+                byteOffset: plane.byteOffset + enhancementByteOffset
+            }))
+        }
+    };
+}
+
 function createDeferred<Value>(): {
     promise: Promise<Value>
     resolve: (value: Value) => void
@@ -477,6 +510,61 @@ describe('CustomDecodeSession', () => {
             buffer: secondRawFrame.data,
             generation: 12,
             type: 'recycle-frame'
+        });
+    });
+
+    it('recycles a compound Dolby Vision frame through one atomic buffer transfer', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        startSession(session, 32, undefined, 'raw-planes');
+        emitRawReady(worker, 32);
+        const mediaTimeMicroseconds = secondsToMicroseconds(1.1);
+        const { baseFrame, enhancementFrame } = createCompoundRawFrames(
+            mediaTimeMicroseconds
+        );
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerDisposition: 'decoded-fel',
+                hasEnhancementLayerVCL: true,
+                parsedRPUData: [
+                    createDolbyVisionAuthorizationRPUFixture(7, 'fel')
+                ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            },
+            enhancementFrame,
+            frame: baseFrame,
+            generation: 32,
+            mediaTimeMicroseconds,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        });
+
+        const presentationFrame = session.takeFrame(mediaTimeMicroseconds);
+        if (!presentationFrame || presentationFrame.outputMode !== 'raw-planes') {
+            throw new Error('Expected a compound decoded raw frame');
+        }
+        expect(presentationFrame.frame).toBe(baseFrame);
+        expect(presentationFrame.enhancementFrame).toBe(enhancementFrame);
+        expect(presentationFrame.enhancementFrame?.data).toBe(
+            presentationFrame.frame.data
+        );
+        expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            buffer: baseFrame.data,
+            generation: 32,
+            type: 'recycle-frame'
+        });
+        expect(worker.postedTransfers.at(-1)).toEqual([ baseFrame.data ]);
+        expect(session.getTelemetry()).toMatchObject({
+            pendingFrameCount: 0,
+            receivedDolbyVisionEnhancementFrameCount: 1,
+            receivedDolbyVisionFrameCount: 1,
+            recycledRawFrameCount: 1
         });
     });
 

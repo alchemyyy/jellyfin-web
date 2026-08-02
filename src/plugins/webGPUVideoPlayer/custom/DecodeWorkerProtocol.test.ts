@@ -88,6 +88,22 @@ function createRawFrame(): TransferableRawVideoFrame {
     };
 }
 
+function createCompoundRawFrames(): {
+    baseFrame: TransferableRawVideoFrame
+    enhancementFrame: TransferableRawVideoFrame
+} {
+    const baseFrame = createRawFrame();
+    const enhancementFrame = createRawFrame();
+    const data = new ArrayBuffer(2_048);
+    baseFrame.data = data;
+    enhancementFrame.data = data;
+    enhancementFrame.planes = enhancementFrame.planes.map(plane => ({
+        ...plane,
+        byteOffset: plane.byteOffset + 1_024
+    }));
+    return { baseFrame, enhancementFrame };
+}
+
 describe('DecodeWorkerProtocol', () => {
     it('selects acceleration for native raw output and the bundled HEVC backend', () => {
         expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('prefer-software');
@@ -197,6 +213,67 @@ describe('DecodeWorkerProtocol', () => {
             outputMode: 'raw-planes',
             type: 'frame'
         })).toBe(true);
+    });
+
+    it('accepts one shared and bounded BL/EL raw-frame ownership unit', () => {
+        const { baseFrame, enhancementFrame } = createCompoundRawFrames();
+
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            enhancementFrame,
+            frame: baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(true);
+
+        const baseOnlyFrames = createCompoundRawFrames();
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            enhancementFrame: null,
+            frame: baseOnlyFrames.baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(true);
+    });
+
+    it('rejects non-atomic or mistimed compound raw frames', () => {
+        const separateFrames = createCompoundRawFrames();
+        separateFrames.enhancementFrame.data = new ArrayBuffer(2_048);
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            enhancementFrame: separateFrames.enhancementFrame,
+            frame: separateFrames.baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(false);
+
+        const mistimedFrames = createCompoundRawFrames();
+        mistimedFrames.enhancementFrame.timestampMicroseconds = secondsToMicroseconds(-0.499998);
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            enhancementFrame: mistimedFrames.enhancementFrame,
+            frame: mistimedFrames.baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(false);
+
+        const undeclaredCompoundFrames = createCompoundRawFrames();
+        expect(isDecodeWorkerResponse({
+            durationMicroseconds: 41_708,
+            frame: undeclaredCompoundFrames.baseFrame,
+            generation: 2,
+            mediaTimeMicroseconds: -500_000,
+            outputMode: 'raw-planes',
+            type: 'frame'
+        })).toBe(false);
     });
 
     it('accepts only versioned and bounded encoded Dolby Vision frame metadata', () => {

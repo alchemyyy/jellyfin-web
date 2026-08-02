@@ -12,6 +12,7 @@ import {
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
     hasAuthorizedHDRPlaybackRoute,
+    hasAuthorizedProfile7FELPlaybackRoute,
     hasAuthorizedRawHDRPlaybackRoute,
     hasConsumedCustomAudio,
     hasReadyNativeMediaAudio,
@@ -895,6 +896,35 @@ test('requires the route-specific Dolby Vision authorization fixture', () => {
     }), true);
 });
 
+test('requires the exact Profile 7 FEL authorization fixture', () => {
+    const snapshot = {
+        dolbyVisionProfile: 7,
+        profile7FELDolbyVisionValidation: {
+            fixtureVersion: 4,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-profile7-fel-v1',
+            sampleCount: 9,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        }
+    };
+    assert.equal(hasAuthorizedProfile7FELPlaybackRoute(snapshot), true);
+    assert.equal(hasAuthorizedProfile7FELPlaybackRoute({
+        ...snapshot,
+        profile7FELDolbyVisionValidation: {
+            ...snapshot.profile7FELDolbyVisionValidation,
+            sampleCount: 8
+        }
+    }), false);
+    assert.equal(hasAuthorizedProfile7FELPlaybackRoute({
+        ...snapshot,
+        profile7FELDolbyVisionValidation: {
+            ...snapshot.profile7FELDolbyVisionValidation,
+            routeKey: 'I420P10:dovi-profile7-base-v1'
+        }
+    }), false);
+});
+
 test('requires exact external Profile 5 authorization', () => {
     const snapshot = {
         dolbyVisionProfile: 5,
@@ -1601,6 +1631,7 @@ test('validates the active Profile 7 authorization independently', () => {
         presentation: {
             ...createActiveSnapshot().presentation,
             dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 4,
+            dolbyVisionProfile7FELPresentedFrameCount: 0,
             dolbyVisionProfile7MELPresentedFrameCount: 6,
             mode: 'hdr-to-sdr'
         },
@@ -1620,6 +1651,39 @@ test('validates the active Profile 7 authorization independently', () => {
         }
     }, rawDolbyVisionExpectations).includes(
         'dolby-vision-playback-route-unauthorized'
+    ));
+
+    const fullFELSnapshot = {
+        ...laterSnapshot,
+        presentation: {
+            ...laterSnapshot.presentation,
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
+            dolbyVisionProfile7FELPresentedFrameCount: 4
+        },
+        profile7FELDolbyVisionValidation: {
+            failureReason: null,
+            fixtureVersion: 4,
+            maximumChannelError: 0,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-profile7-fel-v1',
+            sampleCount: 9,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        }
+    };
+    assert.deepEqual(validateActivePlaybackSnapshot(
+        initialSnapshot,
+        fullFELSnapshot,
+        rawDolbyVisionExpectations
+    ), []);
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...fullFELSnapshot,
+        profile7FELDolbyVisionValidation: {
+            ...fullFELSnapshot.profile7FELDolbyVisionValidation,
+            status: 'rejected'
+        }
+    }, rawDolbyVisionExpectations).includes(
+        'dolby-vision-profile7-fel-route-unauthorized'
     ));
 });
 
