@@ -113,6 +113,7 @@ describe.each<1 | 2 | 3 | 4>([ 1, 2, 3, 4 ])(
             expect(decodeNALUnitTypes(result.enhancementLayerData, inputFormat)).toEqual([ 1 ]);
             expect(result.hasBaseLayerVCL).toBe(true);
             expect(result.hasEnhancementLayerVCL).toBe(true);
+            expect(result.hasRequiredEnhancementLayerParameterSets).toBe(false);
             expect(result.rpuNALUnits).toHaveLength(1);
             expect(result.rpuNALUnits[0]).toEqual(rpu);
         });
@@ -168,7 +169,31 @@ describe('DolbyVisionHEVCSplitter Annex B', () => {
         expect(result.enhancementLayerData).toBeNull();
         expect(result.hasBaseLayerVCL).toBe(false);
         expect(result.hasEnhancementLayerVCL).toBe(false);
+        expect(result.hasRequiredEnhancementLayerParameterSets).toBe(false);
         expect(result.rpuNALUnits[0]).toEqual(rpu);
+    });
+
+    it('requires all three enhancement-layer random-access parameter sets', () => {
+        const enhancementNALUnits = [
+            createNALUnit(32, [ 1 ]),
+            createNALUnit(33, [ 2 ]),
+            createNALUnit(34, [ 3 ]),
+            createNALUnit(19, [ 4 ])
+        ];
+        const wrappers = enhancementNALUnits.map((nalUnit: Uint8Array): Uint8Array => (
+            createNALUnit(63, Array.from(nalUnit))
+        ));
+        const complete = splitDolbyVisionHEVCAccessUnit(
+            encodeAnnexBNALUnits(wrappers),
+            { kind: 'annex-b' }
+        );
+        const incomplete = splitDolbyVisionHEVCAccessUnit(
+            encodeAnnexBNALUnits(wrappers.filter((_: Uint8Array, index: number): boolean => index !== 1)),
+            { kind: 'annex-b' }
+        );
+
+        expect(complete.hasRequiredEnhancementLayerParameterSets).toBe(true);
+        expect(incomplete.hasRequiredEnhancementLayerParameterSets).toBe(false);
     });
 });
 

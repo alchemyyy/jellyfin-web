@@ -1,6 +1,9 @@
 const ANNEX_B_START_CODE = new Uint8Array([ 0, 0, 0, 1 ]);
 const DOLBY_VISION_RPU_NAL_UNIT_TYPE = 62;
 const DOLBY_VISION_ENHANCEMENT_WRAPPER_NAL_UNIT_TYPE = 63;
+const HEVC_VPS_NAL_UNIT_TYPE = 32;
+const HEVC_SPS_NAL_UNIT_TYPE = 33;
+const HEVC_PPS_NAL_UNIT_TYPE = 34;
 const MAXIMUM_ACCESS_UNIT_BYTE_LENGTH = 64 * 1_024 * 1_024;
 const MAXIMUM_NAL_UNIT_COUNT = 4_096;
 const MINIMUM_NAL_UNIT_BYTE_LENGTH = 2;
@@ -15,6 +18,7 @@ export type DolbyVisionHEVCSplitResult = {
     enhancementLayerData: Uint8Array | null
     hasBaseLayerVCL: boolean
     hasEnhancementLayerVCL: boolean
+    hasRequiredEnhancementLayerParameterSets: boolean
     rpuNALUnits: readonly Uint8Array[]
 };
 
@@ -219,6 +223,7 @@ export function splitDolbyVisionHEVCAccessUnit(
     const nalUnits = parseNALUnits(data, inputFormat);
     const baseLayerNALUnits: Uint8Array[] = [];
     const enhancementLayerNALUnits: Uint8Array[] = [];
+    const enhancementLayerParameterSetTypes = new Set<number>();
     const rpuNALUnits: Uint8Array[] = [];
     let hasBaseLayerVCL = false;
     let hasEnhancementLayerVCL = false;
@@ -232,6 +237,13 @@ export function splitDolbyVisionHEVCAccessUnit(
                 const enhancementLayerNALUnit = nalUnit.data.subarray(2);
                 const enhancementLayerType = getNALUnitType(enhancementLayerNALUnit);
                 hasEnhancementLayerVCL ||= enhancementLayerType <= 31;
+                if (
+                    enhancementLayerType === HEVC_VPS_NAL_UNIT_TYPE
+                    || enhancementLayerType === HEVC_SPS_NAL_UNIT_TYPE
+                    || enhancementLayerType === HEVC_PPS_NAL_UNIT_TYPE
+                ) {
+                    enhancementLayerParameterSetTypes.add(enhancementLayerType);
+                }
                 enhancementLayerNALUnits.push(enhancementLayerNALUnit);
                 break;
             }
@@ -250,6 +262,10 @@ export function splitDolbyVisionHEVCAccessUnit(
         ),
         hasBaseLayerVCL,
         hasEnhancementLayerVCL,
+        hasRequiredEnhancementLayerParameterSets:
+            enhancementLayerParameterSetTypes.has(HEVC_VPS_NAL_UNIT_TYPE)
+            && enhancementLayerParameterSetTypes.has(HEVC_SPS_NAL_UNIT_TYPE)
+            && enhancementLayerParameterSetTypes.has(HEVC_PPS_NAL_UNIT_TYPE),
         rpuNALUnits
     };
 }

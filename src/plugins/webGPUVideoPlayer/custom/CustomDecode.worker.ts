@@ -68,9 +68,12 @@ import { DolbyVisionRPUParseError } from './DolbyVisionRPUParser';
 import DolbyVisionRPUParserSession from './DolbyVisionRPUParserSession';
 import {
     createOwnedHEVCSoftwareVideoDecoder,
+    hasRequiredHEVCParameterSets,
+    parseHEVCDecoderConfiguration,
     registerHEVCSoftwareVideoDecoder,
     waitForHEVCSoftwareVideoDecoderShutdown
 } from './HEVCSoftwareVideoDecoder';
+import { parseHEVCSPS } from './HEVCSPSParser';
 import {
     requireValidByteRangeResponse,
     UnsupportedRangeResponseError
@@ -94,6 +97,7 @@ import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4RemuxOutput
 } from './NativeMediaAudioFMP4Remuxer';
 import OwnedNativeHEVCVideoDecoder from './OwnedNativeHEVCVideoDecoder';
+import { readMatroskaDolbyVisionHVCE } from './MatroskaDolbyVisionHVCE';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -120,6 +124,7 @@ type DecodeRun = {
     iteratorRetirementPromise: Promise<void> | null
     maximumCodedHeight: number
     maximumCodedWidth: number
+    metadataAbortController: AbortController | null
     outstandingRawFrameBufferCount: number
     rawFrameBufferPool: RawFrameBufferPool | null
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
@@ -133,6 +138,7 @@ type DecodeRun = {
 
 type PreparedVideoTrack = {
     codec: VideoCodec
+    containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
     videoTrack: InputVideoTrack
@@ -141,6 +147,7 @@ type PreparedVideoTrack = {
 type DolbyVisionEnhancementDecoderConfiguration = {
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
+    packetFormat: HEVCNALFormat
 };
 
 type PreparedAudioTrack = {
@@ -307,6 +314,8 @@ function stopRun(run: DecodeRun): void {
     }
 
     run.cancelled = true;
+    run.metadataAbortController?.abort();
+    run.metadataAbortController = null;
     wakeWaiters(run.wakeAudioCreditWaiters);
     wakeWaiters(run.wakeFrameCreditWaiters);
     wakeWaiters(run.wakeVideoDecodeWaiters);
@@ -406,40 +415,115 @@ async function prepareVideoTrack(
             'The selected video track exceeds its negotiated decode route'
         );
     }
+    if (!Number.isSafeInteger(videoTrack.id) || videoTrack.id <= 0) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected video container track number is invalid'
+        );
+    }
 
     return {
         codec,
+        containerTrackNumber: videoTrack.id,
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
         videoTrack
     };
 }
 
-function createDolbyVisionEnhancementDecoderConfiguration(
+function getDefaultDolbyVisionEnhancementGeometry(
     preparedVideoTrack: PreparedVideoTrack
-): DolbyVisionEnhancementDecoderConfiguration {
+): RawVideoFrameGeometry {
     const baseGeometry = preparedVideoTrack.geometry;
     const resolutionDivisor = baseGeometry.codedWidth
         > DOLBY_VISION_ENHANCEMENT_FULL_RESOLUTION_MAXIMUM_WIDTH ? 2 : 1;
     const codedWidth = Math.ceil(baseGeometry.codedWidth / resolutionDivisor);
     const codedHeight = Math.ceil(baseGeometry.codedHeight / resolutionDivisor);
-    const geometry: RawVideoFrameGeometry = {
+    return {
         codedHeight,
         codedWidth,
         displayHeight: codedHeight,
         displayWidth: codedWidth
     };
+}
+
+function getContainerDolbyVisionEnhancementConfiguration(
+    preparedVideoTrack: PreparedVideoTrack,
+    description: Uint8Array
+): DolbyVisionEnhancementDecoderConfiguration | null {
+    try {
+        const decoderConfiguration = parseHEVCDecoderConfiguration(description);
+        if (
+            decoderConfiguration.profileIDC !== 2
+            || decoderConfiguration.bitDepth !== 10
+            || decoderConfiguration.chromaFormat !== 1
+            || decoderConfiguration.sequenceParameterSets.length === 0
+            || !hasRequiredHEVCParameterSets(description)
+        ) {
+            return null;
+        }
+        const spsConfiguration = parseHEVCSPS(
+            decoderConfiguration.sequenceParameterSets[0]
+        );
+        const expectedGeometry = getDefaultDolbyVisionEnhancementGeometry(preparedVideoTrack);
+        if (
+            spsConfiguration.codedHeight !== expectedGeometry.codedHeight
+            || spsConfiguration.codedWidth !== expectedGeometry.codedWidth
+            || spsConfiguration.displayHeight > spsConfiguration.codedHeight
+            || spsConfiguration.displayWidth > spsConfiguration.codedWidth
+        ) {
+            return null;
+        }
+        const geometry: RawVideoFrameGeometry = {
+            codedHeight: spsConfiguration.codedHeight,
+            codedWidth: spsConfiguration.codedWidth,
+            displayHeight: spsConfiguration.displayHeight,
+            displayWidth: spsConfiguration.displayWidth
+        };
+        return {
+            decoderConfig: {
+                codec: DOLBY_VISION_ENHANCEMENT_CODEC,
+                codedHeight: geometry.codedHeight,
+                codedWidth: geometry.codedWidth,
+                description: description.slice(),
+                displayAspectHeight: geometry.displayHeight,
+                displayAspectWidth: geometry.displayWidth,
+                hardwareAcceleration: 'prefer-software',
+                optimizeForLatency: true
+            },
+            geometry,
+            packetFormat: {
+                kind: 'length-prefixed',
+                lengthSize: decoderConfiguration.lengthSize
+            }
+        };
+    } catch {
+        return null;
+    }
+}
+
+function createDolbyVisionEnhancementDecoderConfiguration(
+    preparedVideoTrack: PreparedVideoTrack,
+    description: Uint8Array | null = null
+): DolbyVisionEnhancementDecoderConfiguration | null {
+    if (description) {
+        return getContainerDolbyVisionEnhancementConfiguration(
+            preparedVideoTrack,
+            description
+        );
+    }
+    const geometry = getDefaultDolbyVisionEnhancementGeometry(preparedVideoTrack);
     return {
         decoderConfig: {
             codec: DOLBY_VISION_ENHANCEMENT_CODEC,
-            codedHeight,
-            codedWidth,
-            displayAspectHeight: codedHeight,
-            displayAspectWidth: codedWidth,
+            codedHeight: geometry.codedHeight,
+            codedWidth: geometry.codedWidth,
+            displayAspectHeight: geometry.displayHeight,
+            displayAspectWidth: geometry.displayWidth,
             hardwareAcceleration: 'prefer-software',
             optimizeForLatency: true
         },
-        geometry
+        geometry,
+        packetFormat: ANNEX_B_HEVC_NAL_FORMAT
     };
 }
 
@@ -1438,6 +1522,96 @@ async function pumpOwnedHEVCFrames(
     }
 }
 
+async function readDolbyVisionMetadataByteRange(
+    run: DecodeRun,
+    url: string,
+    abortController: AbortController,
+    offset: number,
+    byteLength: number
+): Promise<Uint8Array | null> {
+    if (
+        run.cancelled
+        || !Number.isSafeInteger(offset)
+        || offset < 0
+        || !Number.isSafeInteger(byteLength)
+        || byteLength <= 0
+    ) {
+        return null;
+    }
+    const lastByte = offset + byteLength - 1;
+    if (!Number.isSafeInteger(lastByte)) {
+        return null;
+    }
+    const response = await validatedRangeFetch(url, {
+        headers: {
+            Range: `bytes=${offset}-${lastByte}`
+        },
+        signal: abortController.signal
+    });
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength === 0 || data.byteLength > byteLength) {
+        return null;
+    }
+    return data;
+}
+
+async function readContainerDolbyVisionEnhancementDescription(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    containerTrackNumber: number
+): Promise<Uint8Array | null> {
+    if (run.cancelled) {
+        return null;
+    }
+    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+    const abortController = new AbortController();
+    run.metadataAbortController = abortController;
+    try {
+        return await readMatroskaDolbyVisionHVCE(
+            (offset: number, byteLength: number): Promise<Uint8Array | null> => (
+                readDolbyVisionMetadataByteRange(
+                    run,
+                    request.url,
+                    abortController,
+                    offset,
+                    byteLength
+                )
+            ),
+            containerTrackNumber
+        );
+    } finally {
+        if (run.metadataAbortController === abortController) {
+            run.metadataAbortController = null;
+        }
+    }
+}
+
+async function resolveDolbyVisionEnhancementDecoderConfiguration(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack,
+    keyPacketSplit: ReturnType<typeof splitDolbyVisionHEVCAccessUnit>
+): Promise<DolbyVisionEnhancementDecoderConfiguration | null> {
+    if (!keyPacketSplit.hasEnhancementLayerVCL) {
+        return null;
+    }
+    if (keyPacketSplit.hasRequiredEnhancementLayerParameterSets) {
+        return createDolbyVisionEnhancementDecoderConfiguration(preparedVideoTrack);
+    }
+    const description = await readContainerDolbyVisionEnhancementDescription(
+        run,
+        request,
+        preparedVideoTrack.containerTrackNumber
+    );
+    if (!description || run.cancelled) {
+        return null;
+    }
+    return createDolbyVisionEnhancementDecoderConfiguration(
+        preparedVideoTrack,
+        description
+    );
+}
+
 async function streamOwnedHEVCFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -1479,9 +1653,16 @@ async function streamOwnedHEVCFrames(
         inputFormat,
         ANNEX_B_HEVC_NAL_FORMAT
     );
-    const enhancementConfiguration = keyPacketSplit.hasEnhancementLayerVCL ?
-        createDolbyVisionEnhancementDecoderConfiguration(preparedVideoTrack) :
-        null;
+    const enhancementConfiguration = await resolveDolbyVisionEnhancementDecoderConfiguration(
+        run,
+        request,
+        preparedVideoTrack,
+        keyPacketSplit
+    );
+    if (run.cancelled) {
+        await retireIterator(packetIterator);
+        return;
+    }
     const rpuParser = DolbyVisionRPUParserSession.create(
         request.dolbyVisionRPUParserWASMURL
     );
@@ -1489,7 +1670,7 @@ async function streamOwnedHEVCFrames(
         new DolbyVisionEncodedMetadataQueue(
             inputFormat,
             rpuParser,
-            enhancementConfiguration ? ANNEX_B_HEVC_NAL_FORMAT : inputFormat
+            enhancementConfiguration?.packetFormat ?? inputFormat
         ),
         request.startTimeMicroseconds,
         enhancementConfiguration?.geometry ?? null
@@ -1876,6 +2057,7 @@ function handleRequest(requestValue: unknown): void {
                 iteratorRetirementPromise: null,
                 maximumCodedHeight: requestValue.maximumCodedHeight,
                 maximumCodedWidth: requestValue.maximumCodedWidth,
+                metadataAbortController: null,
                 outstandingRawFrameBufferCount: 0,
                 rawFrameBufferPool: createRawFrameBufferPool(requestValue.videoOutputMode),
                 rawVideoFrameFormat: requestValue.rawVideoFrameFormat,

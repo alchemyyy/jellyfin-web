@@ -2,8 +2,8 @@
 
 Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
 interleaved Profile 7 FEL decode/residual path are implemented with separate
-exact-device authorization; container-provided `hvcE` initialization remains
-pending for streams without in-band EL parameter sets
+exact-device authorization. Interleaved Profile 7 also supports container
+`hvcE` initialization when a selected key access unit omits EL parameter sets.
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -401,6 +401,18 @@ smoke: 3840x2160 BL, 1920x1080 EL, exact PTS pairing, one parsed RPU, one shared
 shutdown. Full Jellyfin playback remained gated because that run's 4K Main10
 qualification measured 28.49 fps, below the production 30 fps threshold.
 
+The same source sample, SHA-256
+`3287bac8deade11e1c57bd65b9c7c8750a1e38e286666cbb4fa39eac264875df`,
+was transformed by
+[`create-container-only-hvce-fixture.mjs`](./scripts/webgpu/create-container-only-hvce-fixture.mjs).
+The tool replaces the single wrapped EL VPS, SPS, and PPS with same-size filler
+NAL units without changing the container `hvcE`. The resulting validation-only
+copy, SHA-256
+`e67945bd75c4c62536bc7e5e89374c4be0daafe18cba27c435b4ed08862e2080`,
+passed the same worker smoke with full `decoded-fel` output. That route cannot
+initialize from the access unit and therefore proves container-derived `hvcE`
+decoder setup rather than merely exercising the in-band path.
+
 [`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
 imports it through `GPUExternalTexture`, executes the production Profile 5 RPU
@@ -480,7 +492,7 @@ branches before the conventional YUV matrix for raw Dolby Vision, reconstructs
 BT.2020/PQ, and then reuses the existing linear-nits, gamut mapping, tone map,
 display controls, and dither stages.
 
-### Container metadata limitation
+### Container metadata boundary
 
 The installed Mediabunny 1.52.2 source contains no parsing for Dolby Vision
 `dvcC`, `dvvC`, or HEVC enhancement configuration `hvcE`.
@@ -494,11 +506,20 @@ FFmpeg's reference Matroska handling parses `dvcC`/`dvvC` and `hvcE`, storing
 the latter as EL HEVC configuration:
 [FFmpeg matroskadec.c](https://github.com/FFmpeg/FFmpeg/blob/406c5a37aa666d648928a142d367483fe1acdd17/libavformat/matroskadec.c#L2507-L2571).
 
-Profile 5 and 8.x can begin with RPU NAL data in the main HEVC access units.
-Profile 7 works when the first selected interleaved key access unit contains EL
-VPS/SPS/PPS inside NAL type 63, as the validated FFmpeg FATE fixture does.
-Streams that rely exclusively on container `hvcE` initialization still degrade
-to the HDR10 base until that mapping is exposed or parsed.
+[`MatroskaDolbyVisionHVCE.ts`](./src/plugins/webGPUVideoPlayer/custom/MatroskaDolbyVisionHVCE.ts)
+works around only the missing `hvcE` boundary. It performs bounded random-access
+EBML reads, limits `Tracks` metadata to 4 MiB, matches the selected Mediabunny
+`TrackNumber`, requires an HEVC video track, and copies one unambiguous `hvcE`
+record. The worker validates that record as Main10 4:2:0 HVCC with VPS/SPS/PPS,
+the expected coded EL geometry, and bounded display geometry before configuring
+the second decoder. Malformed,
+missing, ambiguous, or unreachable metadata leaves the existing HDR10 BL
+session running.
+
+Mediabunny remains the packet demuxer. The local reader does not parse clusters,
+rewrite access units, alter source negotiation, or expose general Matroska
+metadata. `dvcC`, `dvvC`, block-additional EL data, and separate-track Profile 7
+remain outside this narrow workaround.
 
 ## Browser and WebGPU constraints
 
@@ -638,23 +659,27 @@ the parsed NLQ values.
 
 ### Stage 4: Profile 7 FEL
 
-Status: implemented for interleaved NAL type 63 streams whose first selected key
-access unit carries in-band EL parameter sets. Full residual presentation has a
-separate exact-device authorization and retains explicit HDR10-base degradation.
+Status: implemented for interleaved NAL type 63 streams using either in-band EL
+parameter sets or a validated Matroska `hvcE` record. Full residual presentation
+has separate exact-device authorization and retains explicit HDR10-base
+degradation.
 
 Implemented behavior:
 
 1. Split NAL type 63 and remove its two-byte outer header.
-2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS.
-3. Pair BL and EL outputs by exact integer-microsecond PTS with a 16-frame bound.
-4. Transfer and recycle one atomic compound raw-frame buffer.
-5. Upload the EL planes and left-site/upscale them to the BL grid.
-6. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
-7. On EL decode, pairing, upload, or sample failure, release EL resources and
+2. Configure a second bundled HEVC decoder from in-band EL VPS/SPS/PPS or the
+   selected Matroska track's bounded `hvcE` record.
+3. Convert wrapped EL NAL units to the framing declared by the selected decoder
+   configuration.
+4. Pair BL and EL outputs by exact integer-microsecond PTS with a 16-frame bound.
+5. Transfer and recycle one atomic compound raw-frame buffer.
+6. Upload the EL planes and left-site/upscale them to the BL grid.
+7. Apply LINEAR_DZ residual composition before the nonlinear RPU matrix.
+8. On EL decode, pairing, upload, metadata, or sample failure, release EL resources and
    continue BL-only without renegotiating or restarting playback.
 
-Remaining container work is parsing or otherwise exposing `hvcE` for streams
-whose EL parameter sets are not repeated in-band.
+Remaining Profile 7 container work is separate-track BL/EL pairing and any
+future block-additional representation demonstrated by real fixtures.
 
 If later evidence contradicts the left-siting assumption for a fixture, reject
 that route rather than silently presenting a misaligned residual.

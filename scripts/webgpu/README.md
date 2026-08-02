@@ -359,6 +359,33 @@ atomic buffer, PTS agreement within one microsecond, schema-versioned
 `decoded-fel` metadata, one parsed RPU, and clean worker shutdown. The fixture
 is not checked in; record its provenance and hash in the validation result.
 
+To prove the container-only `hvcE` route, transform the official FFmpeg
+`dovi-p7-hvce` FATE sample into a same-size validation copy. The tool preserves
+the Matroska `hvcE` mapping but replaces the wrapped EL VPS/SPS/PPS with valid
+filler NAL units:
+
+```powershell
+node scripts/webgpu/create-container-only-hvce-fixture.mjs `
+    "$env:TEMP\dovi-p7-hvce.mkv" `
+    "$env:TEMP\dovi-p7-container-only-hvce.mkv"
+
+Copy-Item "$env:TEMP\dovi-p7-container-only-hvce.mkv" `
+    dist/webgpu-dovi-p7-container-only-hvce.bin
+
+node scripts/webgpu/run-dolby-vision-worker-smoke.mjs `
+    --debug-url http://127.0.0.1:9226 `
+    --frontend-url http://localhost:8096/web/ `
+    --media-url http://localhost:8096/web/webgpu-dovi-p7-container-only-hvce.bin
+```
+
+Use a static suffix accepted by the running Jellyfin frontend, such as `.bin`.
+Remove the served copy after validation; neither source fixture is checked in.
+Run the transformer's unit coverage with:
+
+```powershell
+node --test scripts/webgpu/create-container-only-hvce-fixture.node-test.mjs
+```
+
 Native decoded Profile 5 is also HDR despite using `video-frame` output. The
 harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely
