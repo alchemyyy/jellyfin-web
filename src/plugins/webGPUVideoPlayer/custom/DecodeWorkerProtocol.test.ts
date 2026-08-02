@@ -13,6 +13,10 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS
 } from './DecodeWorkerProtocol';
+import {
+    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
+    MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH
+} from './DolbyVisionEncodedMetadataProtocol';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
 import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
 
@@ -141,6 +145,55 @@ describe('DecodeWorkerProtocol', () => {
             outputMode: 'raw-planes',
             type: 'frame'
         })).toBe(true);
+    });
+
+    it('accepts only versioned and bounded encoded Dolby Vision frame metadata', () => {
+        const baseFrame = {
+            durationMicroseconds: 41_708,
+            frame: { close: vi.fn() },
+            generation: 1,
+            mediaTimeMicroseconds: 500_000,
+            outputMode: 'video-frame',
+            type: 'frame'
+        } as const;
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: new ArrayBuffer(32),
+                hasEnhancementLayerVCL: true,
+                rpuNALUnits: [ new ArrayBuffer(16) ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: null,
+                hasEnhancementLayerVCL: false,
+                rpuNALUnits: [ new ArrayBuffer(0) ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: null,
+                hasEnhancementLayerVCL: false,
+                rpuNALUnits: [
+                    new ArrayBuffer(MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_BYTE_LENGTH + 1)
+                ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            encodedDolbyVisionMetadata: {
+                enhancementLayerData: null,
+                hasEnhancementLayerVCL: true,
+                rpuNALUnits: [ new ArrayBuffer(16) ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            }
+        })).toBe(false);
     });
 
     it('requires a raw format that matches the selected output mode', () => {

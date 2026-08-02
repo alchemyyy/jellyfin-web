@@ -1058,6 +1058,12 @@ function createPlayerSnapshotExpression(accessKey) {
                     pendingFrameCount: custom.videoDecode.pendingFrameCount,
                     queuedFrameCount: custom.videoDecode.queuedFrameCount,
                     receivedAudioFrameCount: custom.videoDecode.receivedAudioFrameCount,
+                    receivedDolbyVisionEnhancementFrameCount:
+                        custom.videoDecode.receivedDolbyVisionEnhancementFrameCount,
+                    receivedDolbyVisionFrameCount:
+                        custom.videoDecode.receivedDolbyVisionFrameCount,
+                    receivedDolbyVisionRPUCount:
+                        custom.videoDecode.receivedDolbyVisionRPUCount,
                     receivedFrameCount: custom.videoDecode.receivedFrameCount,
                     receivedNativeAudioSegmentCount:
                         custom.videoDecode.receivedNativeAudioSegmentCount,

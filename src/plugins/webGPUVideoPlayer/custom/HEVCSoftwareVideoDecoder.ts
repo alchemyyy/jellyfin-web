@@ -86,6 +86,11 @@ type MutableHEVCSoftwareVideoDecoderContract = {
     onSample: (sample: VideoSample) => unknown
 };
 
+export type OwnedHEVCSoftwareVideoDecoderCallbacks = {
+    onError: (error: unknown) => void
+    onSample: (sample: VideoSample) => unknown
+};
+
 let softwareDecoderRegistered = false;
 const pendingSoftwareDecoderLifecycles: HEVCSoftwareVideoDecoderLifecycle[] = [];
 const softwareDecoderShutdownPromises = new Set<Promise<void>>();
@@ -982,6 +987,24 @@ export default class HEVCSoftwareVideoDecoder {
             this.spsConfiguration = nextConfiguration;
         }
     }
+}
+
+/** Creates a directly owned decoder without Mediabunny's sample-sink wrapper. */
+export function createOwnedHEVCSoftwareVideoDecoder(
+    config: VideoDecoderConfig,
+    callbacks: OwnedHEVCSoftwareVideoDecoderCallbacks,
+    dependencies: HEVCSoftwareVideoDecoderDependencies = DEFAULT_DEPENDENCIES
+): HEVCSoftwareVideoDecoder {
+    const decoder = new HEVCSoftwareVideoDecoder(dependencies);
+    const decoderContract = decoder as unknown as MutableHEVCSoftwareVideoDecoderContract;
+    decoderContract.codec = 'hevc';
+    decoderContract.config = config;
+    decoderContract.onError = (error: unknown): undefined => {
+        callbacks.onError(error);
+        return undefined;
+    };
+    decoderContract.onSample = callbacks.onSample;
+    return decoder;
 }
 
 /** Prevents a failed custom operation from poisoning Mediabunny's serialized close call. */

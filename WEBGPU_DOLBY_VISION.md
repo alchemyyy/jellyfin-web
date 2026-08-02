@@ -264,6 +264,27 @@ Vision reconstruction and tone mapping, not Dolby Vision display passthrough.
 Line references in this section describe the repository on the research date.
 Symbols are the durable reference if later edits move the lines.
 
+### Encoded-packet ownership checkpoint
+
+The bundled HEVC playback route now owns Mediabunny `EncodedPacketSink`
+packets before decode. `DolbyVisionEncodedMetadataQueue`:
+
+- derives the HVCC length size or Annex B mode from the decoder configuration;
+- removes NAL types 62 and 63 from the base-layer packet;
+- owns bounded copies of RPU and enhancement-layer access-unit data;
+- joins those copies to decoded frames by exact integer-microsecond PTS;
+- rejects unmatched output, silent packet loss, and unbounded metadata windows.
+
+Encoded metadata crosses the worker boundary with schema version 1 and explicit
+transfer ownership. Session telemetry counts DV frames, RPUs, and enhancement
+access units. The complete bundled HEVC path passes repeated playback and
+natural-EOF browser smoke tests after this refactor.
+
+This is only the packet-ownership prerequisite. Native HEVC still uses the
+Mediabunny sample sink, the RPU is not parsed or applied by a shader, and Dolby
+Vision remains ineligible. Profile 5 must stay rejected until parser and
+reconstruction validation are complete.
+
 ### Dolby Vision is deliberately rejected
 
 [`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)

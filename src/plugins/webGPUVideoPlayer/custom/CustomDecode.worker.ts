@@ -10,6 +10,7 @@ import {
     type EncodedPacket,
     type InputAudioTrack,
     type InputVideoTrack,
+    type VideoCodec,
     type VideoSample
 } from 'mediabunny';
 
@@ -41,8 +42,16 @@ import {
     DecodedVideoGeometryError,
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
+import DolbyVisionEncodedMetadataQueue, {
+    getHEVCNALFormat
+} from './DolbyVisionEncodedMetadata';
 import {
-    armHEVCSoftwareVideoDecoderLifecycle,
+    getDolbyVisionEncodedMetadataTransferList,
+    takeTransferableDolbyVisionEncodedFrameMetadata,
+    type DolbyVisionEncodedFrameMetadata
+} from './DolbyVisionEncodedMetadataProtocol';
+import {
+    createOwnedHEVCSoftwareVideoDecoder,
     registerHEVCSoftwareVideoDecoder,
     waitForHEVCSoftwareVideoDecoderShutdown
 } from './HEVCSoftwareVideoDecoder';
@@ -71,6 +80,7 @@ const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
+const MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT = 8;
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -93,12 +103,13 @@ type DecodeRun = {
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
-    videoIterator: MediaSampleIterator<VideoSample> | null
+    videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
     wakeAudioCreditWaiters: Array<() => void>
     wakeFrameCreditWaiters: Array<() => void>
 };
 
 type PreparedVideoTrack = {
+    codec: VideoCodec
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
     videoTrack: InputVideoTrack
@@ -346,6 +357,7 @@ async function prepareVideoTrack(
     }
 
     return {
+        codec,
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
         videoTrack
@@ -505,10 +517,108 @@ function takeVideoFrame(sample: VideoSample): {
     }
 }
 
+type MutableDecodeWorkerFrameResponse = Extract<DecodeWorkerResponse, { type: 'frame' }>;
+
+function attachDolbyVisionEncodedMetadata(
+    response: MutableDecodeWorkerFrameResponse,
+    metadata: DolbyVisionEncodedFrameMetadata | null
+): Transferable[] {
+    const transferableMetadata = takeTransferableDolbyVisionEncodedFrameMetadata(metadata);
+    if (transferableMetadata) {
+        response.encodedDolbyVisionMetadata = transferableMetadata;
+    }
+    return getDolbyVisionEncodedMetadataTransferList(transferableMetadata);
+}
+
+async function postRawVideoFrame(
+    run: DecodeRun,
+    frame: VideoFrame,
+    decodedVideoGeometry: RawVideoFrameGeometry,
+    durationMicroseconds: Microseconds,
+    mediaTimeMicroseconds: Microseconds,
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+): Promise<void> {
+    const rawVideoFrameFormat = run.rawVideoFrameFormat;
+    if (rawVideoFrameFormat === null) {
+        frame.close();
+        throw new UnsupportedCustomDecodeSourceError(
+            'The raw video frame output format is unavailable'
+        );
+    }
+    const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
+    if (!bufferLease) {
+        frame.close();
+        throw new UnsupportedCustomDecodeSourceError(
+            'The raw video frame buffer pool was exhausted'
+        );
+    }
+    const rawFrame = await copyVideoFrameToRawPlanes(frame, {
+        expectedGeometry: decodedVideoGeometry,
+        format: rawVideoFrameFormat,
+        requireReusableBuffer: bufferLease.kind === 'reuse',
+        reusableBuffer: bufferLease.kind === 'reuse' ?
+            bufferLease.buffer :
+            undefined
+    });
+    if (run.cancelled || currentRun !== run) {
+        return;
+    }
+    if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The decoded raw frame timestamp did not match its media sample'
+        );
+    }
+    if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The raw video frame buffer window exceeded its bound'
+        );
+    }
+
+    run.outstandingRawFrameBufferCount += 1;
+    const response: MutableDecodeWorkerFrameResponse = {
+        durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
+        frame: rawFrame,
+        generation: run.generation,
+        mediaTimeMicroseconds,
+        outputMode: 'raw-planes',
+        type: 'frame'
+    };
+    const transferables = getRawVideoFrameTransferList(rawFrame);
+    transferables.push(...attachDolbyVisionEncodedMetadata(
+        response,
+        encodedDolbyVisionMetadata
+    ));
+    postResponse(response, transferables);
+}
+
+function postTransferredVideoFrame(
+    run: DecodeRun,
+    frame: VideoFrame,
+    durationMicroseconds: Microseconds,
+    mediaTimeMicroseconds: Microseconds,
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+): void {
+    const response: MutableDecodeWorkerFrameResponse = {
+        durationMicroseconds,
+        frame,
+        generation: run.generation,
+        mediaTimeMicroseconds,
+        outputMode: 'video-frame',
+        type: 'frame'
+    };
+    const transferables: Transferable[] = [ frame as unknown as Transferable ];
+    transferables.push(...attachDolbyVisionEncodedMetadata(
+        response,
+        encodedDolbyVisionMetadata
+    ));
+    postResponse(response, transferables);
+}
+
 async function postVideoFrame(
     run: DecodeRun,
     sample: VideoSample,
-    expectedGeometry: RawVideoFrameGeometry
+    expectedGeometry: RawVideoFrameGeometry,
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null = null
 ): Promise<void> {
     let frame: VideoFrame | null = null;
     try {
@@ -525,64 +635,31 @@ async function postVideoFrame(
             return;
         }
 
-        if (run.videoOutputMode === 'raw-planes') {
-            const rawVideoFrameFormat = run.rawVideoFrameFormat;
-            if (rawVideoFrameFormat === null) {
-                throw new UnsupportedCustomDecodeSourceError(
-                    'The raw video frame output format is unavailable'
+        switch (run.videoOutputMode) {
+            case 'raw-planes': {
+                const ownedFrame = frame;
+                frame = null;
+                await postRawVideoFrame(
+                    run,
+                    ownedFrame,
+                    decodedVideoGeometry,
+                    durationMicroseconds,
+                    mediaTimeMicroseconds,
+                    encodedDolbyVisionMetadata
                 );
-            }
-            const bufferLease = run.rawFrameBufferPool?.acquire() ?? null;
-            if (!bufferLease) {
-                throw new UnsupportedCustomDecodeSourceError(
-                    'The raw video frame buffer pool was exhausted'
-                );
-            }
-            const ownedFrame = frame;
-            frame = null;
-            const rawFrame = await copyVideoFrameToRawPlanes(ownedFrame, {
-                expectedGeometry: decodedVideoGeometry,
-                format: rawVideoFrameFormat,
-                requireReusableBuffer: bufferLease.kind === 'reuse',
-                reusableBuffer: bufferLease.kind === 'reuse' ?
-                    bufferLease.buffer :
-                    undefined
-            });
-            if (run.cancelled || currentRun !== run) {
                 return;
             }
-
-            if (rawFrame.timestampMicroseconds !== mediaTimeMicroseconds) {
-                throw new UnsupportedCustomDecodeSourceError(
-                    'The decoded raw frame timestamp did not match its media sample'
+            case 'video-frame':
+                postTransferredVideoFrame(
+                    run,
+                    frame,
+                    durationMicroseconds,
+                    mediaTimeMicroseconds,
+                    encodedDolbyVisionMetadata
                 );
-            }
-            if (run.outstandingRawFrameBufferCount >= MAX_DECODED_RAW_FRAME_CREDITS) {
-                throw new UnsupportedCustomDecodeSourceError(
-                    'The raw video frame buffer window exceeded its bound'
-                );
-            }
-            run.outstandingRawFrameBufferCount += 1;
-            postResponse({
-                durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
-                frame: rawFrame,
-                generation: run.generation,
-                mediaTimeMicroseconds,
-                outputMode: 'raw-planes',
-                type: 'frame'
-            }, getRawVideoFrameTransferList(rawFrame));
-            return;
+                frame = null;
+                return;
         }
-
-        postResponse({
-            durationMicroseconds,
-            frame,
-            generation: run.generation,
-            mediaTimeMicroseconds,
-            outputMode: 'video-frame',
-            type: 'frame'
-        }, [ frame as unknown as Transferable ]);
-        frame = null;
     } finally {
         frame?.close();
     }
@@ -655,11 +732,260 @@ function postAudioSample(
     }
 }
 
+type OwnedDecodedVideoSample = {
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    sample: VideoSample
+};
+
+type OwnedHEVCSoftwareVideoDecoder = ReturnType<
+    typeof createOwnedHEVCSoftwareVideoDecoder
+>;
+
+type OwnedSamplePostResult = 'none' | 'posted' | 'stopped';
+
+function closeOwnedDecodedVideoSample(decodedSample: OwnedDecodedVideoSample | null): void {
+    try {
+        decodedSample?.sample.close();
+    } catch {
+        // Ownership ends even when a decoder implementation throws while closing
+    }
+}
+
+class OwnedBundledHEVCStreamState {
+    private readonly decodedSamples: OwnedDecodedVideoSample[] = [];
+    private decoderFailure: unknown = null;
+    private firstPresentationSampleQueued = false;
+    private frameCreditHeld = false;
+    private preStartSample: OwnedDecodedVideoSample | null = null;
+    public packetsEnded = false;
+
+    public constructor(
+        private readonly metadataQueue: DolbyVisionEncodedMetadataQueue,
+        private readonly startTimeMicroseconds: Microseconds
+    ) {}
+
+    public recordDecoderFailure(error: unknown): void {
+        this.decoderFailure ??= error;
+    }
+
+    public enqueueDecodedSample(sample: VideoSample): void {
+        let decodedSample: OwnedDecodedVideoSample | null = null;
+        try {
+            const mediaTimeMicroseconds = requireMicroseconds(
+                sample.microsecondTimestamp,
+                'Owned decoded HEVC frame timestamp'
+            );
+            decodedSample = {
+                encodedDolbyVisionMetadata: this.metadataQueue.takeFrameMetadata(
+                    mediaTimeMicroseconds
+                ),
+                sample
+            };
+            if (
+                mediaTimeMicroseconds < this.startTimeMicroseconds
+                && !this.firstPresentationSampleQueued
+            ) {
+                closeOwnedDecodedVideoSample(this.preStartSample);
+                this.preStartSample = decodedSample;
+                decodedSample = null;
+                return;
+            }
+
+            this.queueFirstPresentationSample();
+            this.queueDecodedSample(decodedSample);
+            decodedSample = null;
+        } finally {
+            closeOwnedDecodedVideoSample(decodedSample);
+        }
+    }
+
+    public decodePacket(
+        packet: EncodedPacket,
+        decoder: OwnedHEVCSoftwareVideoDecoder
+    ): void {
+        const processedPacket = this.metadataQueue.processPacket(packet);
+        if (processedPacket.baseLayerPacket) {
+            decoder.decode(processedPacket.baseLayerPacket);
+        }
+        this.throwDecoderFailure();
+    }
+
+    public finishPackets(decoder: OwnedHEVCSoftwareVideoDecoder): void {
+        decoder.flush();
+        this.throwDecoderFailure();
+        this.metadataQueue.requireDrained();
+        this.queueFirstPresentationSample();
+        this.packetsEnded = true;
+    }
+
+    public async postNextSample(
+        run: DecodeRun,
+        expectedGeometry: RawVideoFrameGeometry
+    ): Promise<OwnedSamplePostResult> {
+        if (this.decodedSamples.length === 0) {
+            return 'none';
+        }
+        if (!await this.acquireFrameCredit(run)) {
+            return 'stopped';
+        }
+
+        const decodedSample = this.decodedSamples.shift() as OwnedDecodedVideoSample;
+        await postVideoFrame(
+            run,
+            decodedSample.sample,
+            expectedGeometry,
+            decodedSample.encodedDolbyVisionMetadata
+        );
+        this.frameCreditHeld = false;
+        return 'posted';
+    }
+
+    public async acquireFrameCredit(run: DecodeRun): Promise<boolean> {
+        if (!this.frameCreditHeld) {
+            this.frameCreditHeld = await waitForFrameCredit(run);
+        }
+        return this.frameCreditHeld;
+    }
+
+    public close(): void {
+        closeOwnedDecodedVideoSample(this.preStartSample);
+        this.preStartSample = null;
+        for (const decodedSample of this.decodedSamples) {
+            closeOwnedDecodedVideoSample(decodedSample);
+        }
+        this.decodedSamples.length = 0;
+        this.metadataQueue.clear();
+    }
+
+    private queueDecodedSample(decodedSample: OwnedDecodedVideoSample): void {
+        if (this.decodedSamples.length >= MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT) {
+            throw new Error('The owned decoded video sample queue exceeded its bound');
+        }
+        this.decodedSamples.push(decodedSample);
+    }
+
+    private queueFirstPresentationSample(): void {
+        if (this.firstPresentationSampleQueued) {
+            return;
+        }
+        this.firstPresentationSampleQueued = true;
+        if (this.preStartSample) {
+            this.queueDecodedSample(this.preStartSample);
+            this.preStartSample = null;
+        }
+    }
+
+    private throwDecoderFailure(): void {
+        if (this.decoderFailure) {
+            throw this.decoderFailure;
+        }
+    }
+}
+
+async function pumpOwnedBundledHEVCFrames(
+    run: DecodeRun,
+    packetIterator: MediaSampleIterator<EncodedPacket>,
+    decoder: OwnedHEVCSoftwareVideoDecoder,
+    state: OwnedBundledHEVCStreamState,
+    expectedGeometry: RawVideoFrameGeometry
+): Promise<void> {
+    while (!run.cancelled) {
+        const postResult = await state.postNextSample(run, expectedGeometry);
+        switch (postResult) {
+            case 'posted':
+                continue;
+            case 'stopped':
+                return;
+            case 'none':
+                break;
+        }
+
+        if (state.packetsEnded) {
+            return;
+        }
+        if (!await state.acquireFrameCredit(run)) {
+            return;
+        }
+
+        const packetResult = await packetIterator.next();
+        if (run.cancelled) {
+            return;
+        }
+        if (packetResult.done) {
+            state.finishPackets(decoder);
+            continue;
+        }
+        state.decodePacket(packetResult.value, decoder);
+    }
+}
+
+async function streamOwnedBundledHEVCFrames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack
+): Promise<void> {
+    if (preparedVideoTrack.codec !== 'hevc') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The owned bundled decoder requires an HEVC track'
+        );
+    }
+
+    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const packetOptions = {
+        metadataOnly: false,
+        verifyKeyPackets: true
+    } as const;
+    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
+    const keyPacket = await packetSink.getKeyPacket(startTimeSeconds, packetOptions)
+        ?? await packetSink.getFirstKeyPacket(packetOptions);
+    if (!keyPacket || run.cancelled) {
+        return;
+    }
+
+    const packetIterator = packetSink.packets(keyPacket, undefined, packetOptions);
+    run.videoIterator = packetIterator;
+    const state = new OwnedBundledHEVCStreamState(
+        new DolbyVisionEncodedMetadataQueue(
+            getHEVCNALFormat(preparedVideoTrack.decoderConfig)
+        ),
+        request.startTimeMicroseconds
+    );
+    const decoder = createOwnedHEVCSoftwareVideoDecoder(
+        preparedVideoTrack.decoderConfig,
+        {
+            onError: (error: unknown): void => state.recordDecoderFailure(error),
+            onSample: (sample: VideoSample): void => state.enqueueDecodedSample(sample)
+        }
+    );
+    try {
+        await decoder.init();
+        await pumpOwnedBundledHEVCFrames(
+            run,
+            packetIterator,
+            decoder,
+            state,
+            preparedVideoTrack.geometry
+        );
+    } finally {
+        state.close();
+        try {
+            await packetIterator.return?.();
+        } catch {
+            // Input disposal is the authoritative cancellation signal
+        }
+        decoder.close();
+    }
+}
+
 async function streamVideoFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
+    if (run.videoDecoderBackend === 'bundled-hevc') {
+        return streamOwnedBundledHEVCFrames(run, request, preparedVideoTrack);
+    }
+
     const sampleSink = new VideoSampleSink(preparedVideoTrack.videoTrack, {
         hardwareAcceleration: getCustomDecodeHardwareAcceleration(
             run.videoOutputMode,
@@ -667,39 +993,22 @@ async function streamVideoFrames(
         ),
         optimizeForLatency: true
     });
-    // Mediabunny creates its decoder after asynchronous track probes
-    const cancelDecoderLifecycle = run.videoDecoderBackend === 'bundled-hevc' ?
-        armHEVCSoftwareVideoDecoderLifecycle() :
-        null;
-    let iterator: MediaSampleIterator<VideoSample>;
-    try {
-        iterator = sampleSink.samples(
-            microsecondsToSeconds(request.startTimeMicroseconds)
-        ) as unknown as MediaSampleIterator<VideoSample>;
-    } catch (error) {
-        cancelDecoderLifecycle?.();
-        throw error;
-    }
+    const iterator = sampleSink.samples(
+        microsecondsToSeconds(request.startTimeMicroseconds)
+    ) as unknown as MediaSampleIterator<VideoSample>;
     run.videoIterator = iterator;
 
-    try {
-        while (await waitForFrameCredit(run)) {
-            const iteratorResult = await iterator.next();
-            if (run.cancelled) {
-                iteratorResult.value?.close();
-                return;
-            }
-            if (iteratorResult.done) {
-                return;
-            }
+    while (await waitForFrameCredit(run)) {
+        const iteratorResult = await iterator.next();
+        if (run.cancelled) {
+            iteratorResult.value?.close();
+            return;
+        }
+        if (iteratorResult.done) {
+            return;
+        }
 
-            await postVideoFrame(run, iteratorResult.value, preparedVideoTrack.geometry);
-        }
-    } catch (error) {
-        if (!run.cancelled) {
-            cancelDecoderLifecycle?.();
-        }
-        throw error;
+        await postVideoFrame(run, iteratorResult.value, preparedVideoTrack.geometry);
     }
 }
 

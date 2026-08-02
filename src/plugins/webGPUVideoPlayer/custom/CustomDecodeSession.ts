@@ -92,6 +92,9 @@ export type CustomDecodeSessionTelemetry = {
     queuedFrameCount: number
     receivedAudioFrameCount: number
     receivedAudioSampleCount: number
+    receivedDolbyVisionEnhancementFrameCount: number
+    receivedDolbyVisionFrameCount: number
+    receivedDolbyVisionRPUCount: number
     receivedNativeAudioSegmentCount: number
     receivedFrameCount: number
     recycledRawFrameCount: number
@@ -157,6 +160,9 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
+        receivedDolbyVisionEnhancementFrameCount: 0,
+        receivedDolbyVisionFrameCount: 0,
+        receivedDolbyVisionRPUCount: 0,
         receivedNativeAudioSegmentCount: 0,
         receivedFrameCount: 0,
         recycledRawFrameCount: 0,
@@ -990,6 +996,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
 
         const presentationFrame: DecodedPresentationFrame = {
             durationMicroseconds: message.durationMicroseconds,
+            encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
             frame: message.frame,
             mediaTimeMicroseconds: message.mediaTimeMicroseconds,
             outputMode: message.outputMode
@@ -1017,7 +1024,21 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             this.queuedFrames.length + this.pendingFrames.size
         );
         this.telemetry.receivedFrameCount += 1;
+        this.recordDolbyVisionMetadata(message);
         this.emitReadyEventIfMediaReady(workerRecord);
+    }
+
+    private recordDolbyVisionMetadata(message: DecodeWorkerFrameResponse): void {
+        const metadata = message.encodedDolbyVisionMetadata;
+        if (!metadata) {
+            return;
+        }
+
+        this.telemetry.receivedDolbyVisionFrameCount += 1;
+        this.telemetry.receivedDolbyVisionRPUCount += metadata.rpuNALUnits.length;
+        if (metadata.enhancementLayerData) {
+            this.telemetry.receivedDolbyVisionEnhancementFrameCount += 1;
+        }
     }
 
     private validateRawFrameGeometry(

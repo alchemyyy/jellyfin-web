@@ -1,5 +1,9 @@
 import type { Microseconds } from '../MediaTime';
 import {
+    isTransferableDolbyVisionEncodedFrameMetadata,
+    type TransferableDolbyVisionEncodedFrameMetadata
+} from './DolbyVisionEncodedMetadataProtocol';
+import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from './NativeMediaAudioLimits';
@@ -126,6 +130,7 @@ export type DecodeWorkerReadyResponse = {
 
 type DecodeWorkerFrameResponseBase = {
     durationMicroseconds: Microseconds
+    encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     generation: number
     mediaTimeMicroseconds: Microseconds
     type: 'frame'
@@ -453,6 +458,13 @@ function isChannelData(
     return true;
 }
 
+function hasValidOptionalDolbyVisionMetadata(value: Record<string, unknown>): boolean {
+    return value.encodedDolbyVisionMetadata === undefined
+        || isTransferableDolbyVisionEncodedFrameMetadata(
+            value.encodedDolbyVisionMetadata
+        );
+}
+
 /** Validates a message before the decode worker acts on it. */
 export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequest {
     if (!isRecord(value) || !isGeneration(value.generation)) {
@@ -529,6 +541,7 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             if (!isMicroseconds(value.mediaTimeMicroseconds)
                 || !isMicroseconds(value.durationMicroseconds)
                 || Number(value.durationMicroseconds) < 0
+                || !hasValidOptionalDolbyVisionMetadata(value)
             ) {
                 return false;
             }

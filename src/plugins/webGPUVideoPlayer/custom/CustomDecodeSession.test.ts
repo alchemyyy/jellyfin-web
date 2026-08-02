@@ -16,6 +16,9 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS
 } from './DecodeWorkerProtocol';
+import {
+    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+} from './DolbyVisionEncodedMetadataProtocol';
 import type {
     OwnedNativeMediaAudioEventHandler,
     OwnedNativeMediaAudioTelemetry
@@ -250,6 +253,46 @@ function emitRawFrame(
 }
 
 describe('CustomDecodeSession', () => {
+    it('forwards encoded Dolby Vision ownership and records extraction telemetry', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            (): void => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 31);
+        emitRawReady(worker, 31);
+        const frame = createFrame();
+        const encodedDolbyVisionMetadata = {
+            enhancementLayerData: new ArrayBuffer(32),
+            hasEnhancementLayerVCL: true,
+            rpuNALUnits: [ new ArrayBuffer(16), new ArrayBuffer(24) ],
+            schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+        } as const;
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            encodedDolbyVisionMetadata,
+            frame,
+            generation: 31,
+            mediaTimeMicroseconds: 1_100_000,
+            outputMode: 'video-frame',
+            type: 'frame'
+        });
+
+        const presentationFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        expect(presentationFrame?.encodedDolbyVisionMetadata)
+            .toBe(encodedDolbyVisionMetadata);
+        expect(session.getTelemetry()).toMatchObject({
+            receivedDolbyVisionEnhancementFrameCount: 1,
+            receivedDolbyVisionFrameCount: 1,
+            receivedDolbyVisionRPUCount: 2
+        });
+        if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
+            throw new Error('Expected a transferred decoded video frame');
+        }
+        expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
+        presentationFrame.frame.close();
+    });
+
     it('starts with four credits and replenishes only consumed queue entries', () => {
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];

@@ -25,6 +25,9 @@ import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from './custom/RawVideoFrameCopy';
+import type {
+    TransferableDolbyVisionEncodedFrameMetadata
+} from './custom/DolbyVisionEncodedMetadataProtocol';
 import {
     createRawYUVRenderSettingsUniformBuffer,
     createRawYUVRenderPipeline,
@@ -134,6 +137,7 @@ export type PresentationTelemetry = {
 
 export type DecodedVideoPresentationFrame = {
     durationMicroseconds: Microseconds
+    encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     frame: VideoFrame
     mediaTimeMicroseconds: Microseconds
     outputMode: 'video-frame'
@@ -141,6 +145,7 @@ export type DecodedVideoPresentationFrame = {
 
 export type DecodedRawPresentationFrame = {
     durationMicroseconds: Microseconds
+    encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     frame: TransferableRawVideoFrame
     mediaTimeMicroseconds: Microseconds
     outputMode: 'raw-planes'
