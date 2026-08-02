@@ -32,6 +32,7 @@ import type { BundledHEVCExactTierCapability } from './HEVCExactCapabilityProbe'
 import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
 
 export type CustomDeviceProfileOptions = {
+    allowDolbyVision?: boolean
     allowRawHDR?: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     isRetry?: boolean
@@ -120,6 +121,11 @@ const AUDIO_SAMPLE_RATE_PROPERTY = 'AudioSampleRate';
 const EQUALS_ANY_CONDITION = 'EqualsAny';
 const LESS_THAN_EQUAL_CONDITION = 'LessThanEqual';
 const MAXIMUM_RAW_HDR_VIDEO_BIT_DEPTH = 10;
+const DOLBY_VISION_VIDEO_RANGE_TYPES = [
+    'DOVI',
+    'DOVIWithHDR10',
+    'DOVIWithHLG'
+] as const;
 
 function getAuthorizedRawHDRVideoRangeTypes(
     routeKeys: readonly RawHDRAuthorizationRouteKey[]
@@ -254,15 +260,18 @@ function cloneDeviceProfile(profile: DeviceProfile): DeviceProfile {
 
 function getSupportedVideoCodecs(
     capabilities: CustomDecodeCapabilities,
-    allowRawHDR: boolean
+    allowRawHDR: boolean,
+    allowDolbyVision = false
 ): CustomVideoCodec[] {
     const supportedCodecs: CustomVideoCodec[] = [];
     for (const codec of CUSTOM_VIDEO_CODECS) {
         const rawCapability = codec === 'hevc' || codec === 'vp9' || codec === 'av1' ?
             capabilities.rawHDRVideo[codec] :
             null;
+        const rawPresentationAllowed = allowRawHDR
+            || (allowDolbyVision && codec === 'hevc');
         if (supportsNativeVideoCodec(codec, capabilities)
-            || (allowRawHDR && rawCapability?.status === 'supported')) {
+            || (rawPresentationAllowed && rawCapability?.status === 'supported')) {
             supportedCodecs.push(codec);
         }
     }
@@ -986,17 +995,38 @@ function getCodecProfileKey(profile: CodecProfile): string {
     });
 }
 
+function getMeasuredCodecRangeTypes(
+    codec: CustomVideoCodec,
+    rawHDRVideoRangeTypes: readonly string[],
+    dolbyVisionVideoRangeTypes: readonly string[]
+): string[] {
+    const codecRangeTypes: string[] = [ ...rawHDRVideoRangeTypes ];
+    if (codec === 'hevc') {
+        codecRangeTypes.push(...dolbyVisionVideoRangeTypes);
+    }
+    return codecRangeTypes;
+}
+
 function appendMeasuredVideoRouteProfiles(
     profile: DeviceProfile,
     capabilities: CustomDecodeCapabilities,
     supportedVideoCodecs: readonly CustomVideoCodec[],
-    rawHDRVideoRangeTypes: readonly string[]
+    rawHDRVideoRangeTypes: readonly string[],
+    dolbyVisionVideoRangeTypes: readonly string[]
 ): void {
     const codecProfiles = profile.CodecProfiles ?? [];
     profile.CodecProfiles = codecProfiles;
     const existingProfileKeys = new Set(codecProfiles.map(getCodecProfileKey));
     for (const codec of supportedVideoCodecs) {
-        const routes = getMeasuredVideoRoutes(codec, capabilities, rawHDRVideoRangeTypes);
+        const routes = getMeasuredVideoRoutes(
+            codec,
+            capabilities,
+            getMeasuredCodecRangeTypes(
+                codec,
+                rawHDRVideoRangeTypes,
+                dolbyVisionVideoRangeTypes
+            )
+        );
         if (routes.length === 0) {
             continue;
         }
@@ -1030,6 +1060,40 @@ function appendMeasuredVideoRouteProfiles(
             existingProfileKeys.add(profileKey);
         }
     }
+}
+
+function widenAuthorizedHDRCodecProfiles(
+    profile: DeviceProfile,
+    capabilities: CustomDecodeCapabilities,
+    supportedRawHDRVideoCodecs: readonly CustomVideoCodec[],
+    supportedNativeVideoCodecs: readonly CustomVideoCodec[],
+    rawHDRVideoRangeTypes: readonly string[],
+    dolbyVisionVideoRangeTypes: readonly string[]
+): number {
+    const supportsDolbyVisionHEVC = supportedRawHDRVideoCodecs.includes('hevc')
+        && dolbyVisionVideoRangeTypes.length > 0;
+    let widenedProfileCount = 0;
+    if (supportsDolbyVisionHEVC) {
+        widenedProfileCount += widenRawHDRCodecProfiles(
+            profile,
+            [ 'hevc' ],
+            supportedNativeVideoCodecs,
+            capabilities,
+            [ ...rawHDRVideoRangeTypes, ...dolbyVisionVideoRangeTypes ]
+        );
+    }
+    if (rawHDRVideoRangeTypes.length === 0) {
+        return widenedProfileCount;
+    }
+    return widenedProfileCount + widenRawHDRCodecProfiles(
+        profile,
+        supportedRawHDRVideoCodecs.filter(codec => (
+            codec !== 'hevc' || !supportsDolbyVisionHEVC
+        )),
+        supportedNativeVideoCodecs,
+        capabilities,
+        rawHDRVideoRangeTypes
+    );
 }
 
 function createMeasuredAudioRouteProfile(
@@ -1170,9 +1234,17 @@ export function augmentDeviceProfileForCustomDecode(
     const rawHDRVideoRangeTypes = options.allowRawHDR === true ?
         getAuthorizedRawHDRVideoRangeTypes(options.authorizedRawHDRRouteKeys ?? []) :
         [];
-    const allowRawHDR = rawHDRVideoRangeTypes.length > 0;
+    const dolbyVisionVideoRangeTypes = options.allowDolbyVision === true ?
+        [ ...DOLBY_VISION_VIDEO_RANGE_TYPES ] :
+        [];
+    const allowRawHDR = rawHDRVideoRangeTypes.length > 0
+        || dolbyVisionVideoRangeTypes.length > 0;
     const supportedNativeVideoCodecs = getSupportedVideoCodecs(capabilities, false);
-    const supportedVideoCodecs = getSupportedVideoCodecs(capabilities, allowRawHDR);
+    const supportedVideoCodecs = getSupportedVideoCodecs(
+        capabilities,
+        rawHDRVideoRangeTypes.length > 0,
+        dolbyVisionVideoRangeTypes.length > 0
+    );
     const supportedAudioCodecs = getSupportedAudioCodecs(
         capabilities,
         options.nativeMediaAudioCapabilities
@@ -1219,19 +1291,21 @@ export function augmentDeviceProfileForCustomDecode(
     }
 
     const widenedHDRCodecProfileCount = allowRawHDR ?
-        widenRawHDRCodecProfiles(
+        widenAuthorizedHDRCodecProfiles(
             clonedProfile,
+            capabilities,
             supportedRawHDRVideoCodecs,
             supportedNativeVideoCodecs,
-            capabilities,
-            rawHDRVideoRangeTypes
+            rawHDRVideoRangeTypes,
+            dolbyVisionVideoRangeTypes
         ) :
         0;
     appendMeasuredVideoRouteProfiles(
         clonedProfile,
         capabilities,
         supportedVideoCodecs,
-        rawHDRVideoRangeTypes
+        rawHDRVideoRangeTypes,
+        dolbyVisionVideoRangeTypes
     );
     appendMeasuredAudioRouteProfiles(
         clonedProfile,

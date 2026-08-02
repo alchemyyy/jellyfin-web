@@ -14,9 +14,7 @@ import {
 } from '../color/ColorPipeline';
 import { createRawYUVColorPipelineWGSL } from '../color/ColorPipelineShader';
 import {
-    microsecondsToMilliseconds,
-    millisecondsToMicroseconds,
-    type Microseconds
+    millisecondsToMicroseconds
 } from '../MediaTime';
 import {
     createRawYUVRenderPipeline,
@@ -36,9 +34,13 @@ import {
     GPUCanvasPixelReader,
     getValidationTextureUsage
 } from './GPUCanvasReadback';
+import GPUAuthorizationDeadline, {
+    GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS
+} from './GPUAuthorizationDeadline';
 
 export const RAW_HDR_AUTHORIZATION_FIXTURE_VERSION = 1;
-export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
+export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS =
+    GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
 
 const FIXTURE_HEIGHT = 8;
 const FIXTURE_WIDTH = 16;
@@ -126,7 +128,7 @@ type TelemetryAccumulator = {
     rejectedRouteKeys: RawHDRAuthorizationRouteKey[]
 };
 
-const FIXTURE_SAMPLES: readonly FixtureSample[] = [
+export const RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES: readonly FixtureSample[] = [
     { sampleX: 0, sampleY: 0 },
     { sampleX: 3, sampleY: 0 },
     { sampleX: 7, sampleY: 0 },
@@ -397,7 +399,11 @@ function getPlane(
     return plane;
 }
 
-function calculateOutputDither(sampleX: number, sampleY: number): number {
+/** Reproduces the production shader's bounded output dither at one pixel. */
+export function calculateRawHDRAuthorizationOutputDither(
+    sampleX: number,
+    sampleY: number
+): number {
     const pixelCoordinateX = sampleX + 0.5;
     const pixelCoordinateY = sampleY + 0.5;
     const innerValue = (pixelCoordinateX * 0.06711056) + (pixelCoordinateY * 0.00583715);
@@ -406,25 +412,41 @@ function calculateOutputDither(sampleX: number, sampleY: number): number {
     return ((noiseValue - Math.floor(noiseValue)) - 0.5) / 255;
 }
 
+/** Samples one padded planar fixture through the production bilinear filter. */
+export function sampleRawI420P10Frame(
+    frame: TransferableRawVideoFrame,
+    sampleX: number,
+    sampleY: number
+): ColorTriplet {
+    const textureCoordinateX = (sampleX + 0.5) / frame.displayWidth;
+    const textureCoordinateY = (sampleY + 0.5) / frame.displayHeight;
+    return [
+        samplePlaneCode(frame, getPlane(frame, 'y'), textureCoordinateX, textureCoordinateY),
+        samplePlaneCode(frame, getPlane(frame, 'u'), textureCoordinateX, textureCoordinateY),
+        samplePlaneCode(frame, getPlane(frame, 'v'), textureCoordinateX, textureCoordinateY)
+    ];
+}
+
 /** Computes CPU-reference observations independently from the GPU render. */
 export function createExpectedRawHDRFixtureObservations(
     frame: TransferableRawVideoFrame,
     metadata: InputColorMetadata,
     settings: HDRToSDRRenderSettings
 ): readonly RawHDRFixtureObservation[] {
-    const lumaPlane = getPlane(frame, 'y');
-    const chromaUPlane = getPlane(frame, 'u');
-    const chromaVPlane = getPlane(frame, 'v');
-    return FIXTURE_SAMPLES.map((sample: FixtureSample): RawHDRFixtureObservation => {
-        const textureCoordinateX = (sample.sampleX + 0.5) / frame.displayWidth;
-        const textureCoordinateY = (sample.sampleY + 0.5) / frame.displayHeight;
+    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map((
+        sample: FixtureSample
+    ): RawHDRFixtureObservation => {
+        const rawYUV = sampleRawI420P10Frame(frame, sample.sampleX, sample.sampleY);
         const encodedYUV: ColorTriplet = [
-            samplePlaneCode(frame, lumaPlane, textureCoordinateX, textureCoordinateY) / MAXIMUM_CODE,
-            samplePlaneCode(frame, chromaUPlane, textureCoordinateX, textureCoordinateY) / MAXIMUM_CODE,
-            samplePlaneCode(frame, chromaVPlane, textureCoordinateX, textureCoordinateY) / MAXIMUM_CODE
+            rawYUV[0] / MAXIMUM_CODE,
+            rawYUV[1] / MAXIMUM_CODE,
+            rawYUV[2] / MAXIMUM_CODE
         ];
         const referenceRGB = processEncodedYUV(encodedYUV, metadata, settings);
-        const dither = calculateOutputDither(sample.sampleX, sample.sampleY);
+        const dither = calculateRawHDRAuthorizationOutputDither(
+            sample.sampleX,
+            sample.sampleY
+        );
         return {
             linearRGB: [
                 clamp(referenceRGB[0] + dither, 0, 1),
@@ -467,117 +489,6 @@ export function evaluateRawHDRFixtureObservations(
         accepted: maximumChannelError <= AUTHORIZATION_TOLERANCE,
         maximumChannelError
     };
-}
-
-type RawHDRAuthorizationCancellationReason = 'device-lost' | 'timeout';
-type RawHDRAuthorizationCancellationListener = (
-    reason: RawHDRAuthorizationCancellationReason
-) => void;
-
-function getMonotonicTimeMicroseconds(): Microseconds {
-    const timeMilliseconds = typeof globalThis.performance?.now === 'function' ?
-        globalThis.performance.now() :
-        Date.now();
-    return millisecondsToMicroseconds(timeMilliseconds);
-}
-
-/** Applies one monotonic deadline to every asynchronous operation in a route probe. */
-class RawHDRAuthorizationDeadline {
-    private readonly cancellationListeners = new Set<
-        RawHDRAuthorizationCancellationListener
-    >();
-    private readonly expirationTimeMicroseconds: Microseconds;
-    private readonly timeout: ReturnType<typeof globalThis.setTimeout>;
-    private cancellationReason: RawHDRAuthorizationCancellationReason | null = null;
-    private destroyed = false;
-
-    public constructor(device: GPUDevice) {
-        this.expirationTimeMicroseconds = (
-            Number(getMonotonicTimeMicroseconds())
-            + Number(RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS)
-        ) as Microseconds;
-        this.timeout = globalThis.setTimeout((): void => {
-            this.cancel('timeout');
-        }, microsecondsToMilliseconds(RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS));
-        this.scheduleDeviceLossObservation(device);
-    }
-
-    public wait<Value>(
-        operation: Promise<Value>,
-        cancelOperation: () => void = (): void => undefined
-    ): Promise<Value> {
-        this.expireIfNeeded();
-        return new Promise<Value>((resolve, reject) => {
-            let settled = false;
-            const settle = (callback: () => void): void => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                this.cancellationListeners.delete(cancelListener);
-                callback();
-            };
-            const cancelListener = (
-                reason: RawHDRAuthorizationCancellationReason
-            ): void => {
-                settle((): void => {
-                    try {
-                        cancelOperation();
-                    } catch {
-                        // Cancellation must preserve the original deadline failure
-                    }
-                    reject(new Error(reason));
-                });
-            };
-
-            this.cancellationListeners.add(cancelListener);
-            operation.then(
-                (value: Value): void => settle((): void => resolve(value)),
-                (error: unknown): void => settle((): void => reject(error))
-            );
-            if (this.cancellationReason) {
-                cancelListener(this.cancellationReason);
-            }
-        });
-    }
-
-    public destroy(): void {
-        if (this.destroyed) {
-            return;
-        }
-        this.destroyed = true;
-        globalThis.clearTimeout(this.timeout);
-        this.cancellationListeners.clear();
-    }
-
-    private expireIfNeeded(): void {
-        if (
-            !this.cancellationReason
-            && Number(getMonotonicTimeMicroseconds())
-                >= Number(this.expirationTimeMicroseconds)
-        ) {
-            this.cancel('timeout');
-        }
-    }
-
-    private scheduleDeviceLossObservation(device: GPUDevice): void {
-        void Promise.resolve().then((): void => {
-            void device.lost.then((): void => {
-                this.cancel('device-lost');
-            });
-        });
-    }
-
-    private cancel(reason: RawHDRAuthorizationCancellationReason): void {
-        if (this.destroyed || this.cancellationReason) {
-            return;
-        }
-        this.cancellationReason = reason;
-        globalThis.clearTimeout(this.timeout);
-        for (const listener of [ ...this.cancellationListeners ]) {
-            listener(reason);
-        }
-    }
 }
 
 function classifyFailure(error: unknown): RawHDRAuthorizationFailureReason {
@@ -705,7 +616,10 @@ export class RawHDRPresentationAuthorizationRunner {
         let renderSettingsUniformBuffer: GPUBuffer | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
         let errorScopePushed = false;
-        const deadline = new RawHDRAuthorizationDeadline(device);
+        const deadline = new GPUAuthorizationDeadline(
+            device,
+            RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS
+        );
         try {
             const pipeline = await deadline.wait(
                 createRawYUVRenderPipeline(device, targetFormat, shaderCode)
@@ -753,10 +667,10 @@ export class RawHDRPresentationAuthorizationRunner {
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: FIXTURE_SAMPLES.length
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
             });
             const actualObservations: RawHDRFixtureObservation[] = [];
-            for (const sample of FIXTURE_SAMPLES) {
+            for (const sample of RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES) {
                 const readback = await deadline.wait(
                     pixelReader.readPixel(
                         sample.sampleX,

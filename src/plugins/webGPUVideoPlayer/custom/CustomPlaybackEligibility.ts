@@ -1,4 +1,7 @@
-import { getPresentationInputColorMetadata } from '../PresentationInput';
+import {
+    getDolbyVisionPresentationDescriptor,
+    getPresentationInputColorMetadata
+} from '../PresentationInput';
 import {
     jellyfinTicksToMicroseconds,
     type Microseconds
@@ -219,6 +222,7 @@ export type CustomPlaybackIneligibilityReason =
     | 'video-track-unavailable';
 
 export type CustomPlaybackEligibilityOptions = {
+    allowDolbyVision?: boolean
     allowRawHDR: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
@@ -651,14 +655,65 @@ function supportsRawHDRVideo(
     return bundledTier !== null && matchesBundledHEVCTier(stream, bundledTier);
 }
 
+function selectDolbyVisionVideoOutput(
+    options: unknown,
+    capabilities: CustomDecodeCapabilities,
+    allowDolbyVision: boolean,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream
+): VideoOutputSelection | null {
+    if (!getDolbyVisionPresentationDescriptor(options)) {
+        return null;
+    }
+    const rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat = 'I420P10';
+    if (!allowDolbyVision) {
+        return { reason: 'hdr-presentation-unavailable', status: 'invalid' };
+    }
+    if (
+        videoCodec !== 'hevc'
+        || !supportsRawHDRVideo(
+            capabilities,
+            videoCodec,
+            videoStream,
+            rawVideoFrameFormat
+        )
+    ) {
+        return { reason: 'hdr-codec-unsupported', status: 'invalid' };
+    }
+    const rawVideoCapability = capabilities.rawHDRVideo.hevc;
+    return {
+        hdr: true,
+        maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
+        maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
+        nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
+        rawVideoFrameFormat,
+        status: 'selected',
+        videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
+            'bundled-hevc' :
+            'native',
+        videoOutputMode: 'raw-planes'
+    };
+}
+
 function selectVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
+    allowDolbyVision: boolean,
     allowRawHDR: boolean,
     authorizedRawHDRRouteKeys: readonly RawHDRAuthorizationRouteKey[],
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream
 ): VideoOutputSelection {
+    const dolbyVisionSelection = selectDolbyVisionVideoOutput(
+        options,
+        capabilities,
+        allowDolbyVision,
+        videoCodec,
+        videoStream
+    );
+    if (dolbyVisionSelection) {
+        return dolbyVisionSelection;
+    }
     const colorMetadata = getPresentationInputColorMetadata(options);
     if (!colorMetadata) {
         return { reason: 'metadata-unsupported', status: 'invalid' };
@@ -846,6 +901,7 @@ export function getCustomPlaybackEligibility(
     const videoOutput = selectVideoOutput(
         options,
         capabilities,
+        eligibilityOptions.allowDolbyVision === true,
         eligibilityOptions.allowRawHDR,
         eligibilityOptions.authorizedRawHDRRouteKeys ?? [],
         videoCodec,

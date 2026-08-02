@@ -5,6 +5,26 @@ import { MediaError } from 'types/mediaError';
 import Events from 'utils/events';
 
 import { microsecondsToMilliseconds, secondsToMicroseconds } from './MediaTime';
+import type {
+    NativeMediaAudioCapabilities,
+    NativeMediaAudioChannelCount,
+    NativeMediaAudioCodec,
+    NativeMediaAudioCodecCapability,
+    NativeMediaAudioLayoutCapability
+} from './custom/NativeMediaAudioCapabilities';
+
+type MockAudioEligibilityOverride = {
+    audioOutputMode?: 'native-media'
+    audioTrackIndex?: number
+    eligible: boolean
+    reason?: string
+};
+
+type MockEligibilityOptions = {
+    allowDolbyVision?: boolean
+    allowRawHDR: boolean
+    nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
+};
 
 const htmlPlayerMockState = vi.hoisted(() => ({
     instances: [] as object[],
@@ -12,6 +32,7 @@ const htmlPlayerMockState = vi.hoisted(() => ({
 }));
 const presenterMockState = vi.hoisted(() => ({
     authorizedRawHDRRouteKeys: [] as string[],
+    dolbyVisionAuthorized: false,
     instances: [] as object[]
 }));
 const webSettingsMockState = vi.hoisted(() => ({
@@ -20,8 +41,13 @@ const webSettingsMockState = vi.hoisted(() => ({
     hdrToneMappingEnabled: false
 }));
 const customDecodeMockState = vi.hoisted(() => ({
+    audioEligibilityOverride: null as ((
+        options: unknown,
+        eligibilityOptions: MockEligibilityOptions
+    ) => MockAudioEligibilityOverride) | null,
     audioOutputMode: 'decoded-pcm' as 'decoded-pcm' | 'native-media',
     audioTrackIndex: null as number | null,
+    dolbyVision: false,
     eligible: false,
     hdr: false,
     instances: [] as object[],
@@ -77,14 +103,25 @@ vi.mock('scripts/settings/webSettings', () => ({
 }));
 
 vi.mock('./custom/CustomPlaybackEligibility', () => ({
-    getCustomPlaybackEligibility: vi.fn((_options: unknown, _capabilities: unknown, eligibilityOptions: {
-        allowRawHDR: boolean
-    }) => customDecodeMockState.eligible
-        && (!customDecodeMockState.hdr || eligibilityOptions.allowRawHDR) ? {
-            audioOutputMode: customDecodeMockState.audioTrackIndex === null ?
-                null :
-                customDecodeMockState.audioOutputMode,
-            audioTrackIndex: customDecodeMockState.audioTrackIndex,
+    getCustomPlaybackEligibility: vi.fn((options: unknown, _capabilities: unknown, eligibilityOptions: MockEligibilityOptions) => {
+        let HDRPresentationAllowed = eligibilityOptions.allowRawHDR;
+        if (customDecodeMockState.dolbyVision) {
+            HDRPresentationAllowed = eligibilityOptions.allowDolbyVision === true;
+        }
+        const audioEligibilityOverride = customDecodeMockState.audioEligibilityOverride?.(
+            options,
+            eligibilityOptions
+        ) ?? null;
+        const eligible = customDecodeMockState.eligible
+            && (!customDecodeMockState.hdr || HDRPresentationAllowed)
+            && audioEligibilityOverride?.eligible !== false;
+        return eligible ? {
+            audioOutputMode: audioEligibilityOverride?.audioOutputMode
+                ?? (customDecodeMockState.audioTrackIndex === null ?
+                    null :
+                    customDecodeMockState.audioOutputMode),
+            audioTrackIndex: audioEligibilityOverride?.audioTrackIndex
+                ?? customDecodeMockState.audioTrackIndex,
             durationMicroseconds: 60_000_000,
             eligible: true,
             hdr: customDecodeMockState.hdr,
@@ -100,8 +137,9 @@ vi.mock('./custom/CustomPlaybackEligibility', () => ({
             videoTrackIndex: 0
         } : {
             eligible: false,
-            reason: 'invalid-options'
-        })
+            reason: audioEligibilityOverride?.reason ?? 'invalid-options'
+        };
+    })
 }));
 
 vi.mock('./custom/BrowserAudioContextPrewarm', () => ({
@@ -194,6 +232,7 @@ vi.mock('./custom/CustomPlaybackController', () => {
     class MockCustomPlaybackController {
         readonly eventHandler: (event: object) => void;
         readonly fallbackHook: (request: object) => Promise<void>;
+        readonly nativeAudioBridgeFactory: (() => object) | undefined;
         currentTimeMicroseconds = 1_000_000;
         durationMicroseconds: number | null = 60_000_000;
         playbackRate = 1;
@@ -204,9 +243,11 @@ vi.mock('./custom/CustomPlaybackController', () => {
         constructor(options: {
             eventHandler: (event: object) => void
             fallbackHook: (request: object) => Promise<void>
+            nativeAudioBridgeFactory?: () => object
         }) {
             this.eventHandler = options.eventHandler;
             this.fallbackHook = options.fallbackHook;
+            this.nativeAudioBridgeFactory = options.nativeAudioBridgeFactory;
             customDecodeMockState.instances.push(this);
         }
 
@@ -422,6 +463,11 @@ vi.mock('./WebGPUPresenter', () => {
         ));
         prewarmRawHDRPresentationAuthorization = vi.fn(() => Promise.resolve());
         waitForRawHDRAuthorizationPrewarm = vi.fn(() => Promise.resolve());
+        prewarmDolbyVisionPresentationAuthorization = vi.fn(() => Promise.resolve());
+        waitForDolbyVisionAuthorizationPrewarm = vi.fn(() => Promise.resolve());
+        isDolbyVisionPresentationAuthorized = vi.fn(() => (
+            presenterMockState.dolbyVisionAuthorized
+        ));
         getAuthorizedRawHDRRouteKeys = vi.fn(() => (
             [ ...presenterMockState.authorizedRawHDRRouteKeys ]
         ));
@@ -435,6 +481,16 @@ vi.mock('./WebGPUPresenter', () => {
             status: presenterMockState.authorizedRawHDRRouteKeys.length > 0 ?
                 'authorized' :
                 'unavailable',
+            targetFormat: 'bgra8unorm'
+        }));
+        getDolbyVisionAuthorizationTelemetry = vi.fn(() => ({
+            failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
+            fixtureVersion: 1,
+            maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-rpu-v1',
+            sampleCount: 4,
+            status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
             targetFormat: 'bgra8unorm'
         }));
     }
@@ -618,16 +674,20 @@ type MockPresenter = {
     refresh: MockFunction
     seek: MockFunction
     presentDecodedFrame: MockFunction
+    prewarmDolbyVisionPresentationAuthorization: MockFunction
     setDecodedFrameProvider: MockFunction
     setDecodedFramePushMode: MockFunction
     startSession: MockFunction
     updateRenderSettings: MockFunction
     validationDevice: GPUDevice
+    waitForDolbyVisionAuthorizationPrewarm: MockFunction
+    waitForRawHDRAuthorizationPrewarm: MockFunction
 };
 
 type MockCustomPlaybackController = {
     eventHandler: (event: object) => void
     fallbackHook: (request: object) => Promise<void>
+    nativeAudioBridgeFactory: (() => object) | undefined
     getTelemetry: MockFunction
     play: MockFunction
     seek: MockFunction
@@ -712,6 +772,124 @@ function createKnownSDRAudioPlayOptions(sampleRate: unknown = 48_000): Record<st
     };
 }
 
+function createKnownSDRNativeAudioPlayOptions(channelCount: number): Record<string, unknown> {
+    return {
+        playMethod: 'DirectPlay',
+        mediaSource: {
+            DefaultAudioStreamIndex: 1,
+            MediaStreams: [
+                { Index: 0, Type: 'Video', VideoRangeType: 'SDR' },
+                {
+                    Channels: channelCount,
+                    Codec: 'eac3',
+                    Index: 1,
+                    SampleRate: 48_000,
+                    Type: 'Audio'
+                }
+            ]
+        }
+    };
+}
+
+function createPartialNativeMediaAudioCapabilities(): NativeMediaAudioCapabilities {
+    const supportedRouteKey = 'eac3:6:48000';
+    const audio = {} as Record<NativeMediaAudioCodec, NativeMediaAudioCodecCapability>;
+    for (const codec of [ 'ac3', 'eac3' ] as const) {
+        const codecString = codec === 'ac3' ? 'ac-3' : 'ec-3';
+        const mimeType = `audio/mp4; codecs="${codecString}"`;
+        const layouts = {} as Record<
+            NativeMediaAudioChannelCount,
+            NativeMediaAudioLayoutCapability
+        >;
+        let codecSupported = false;
+        for (const channelCount of [ 2, 6 ] as const) {
+            const supported = `${codec}:${channelCount}:48000` === supportedRouteKey;
+            codecSupported ||= supported;
+            layouts[channelCount] = {
+                channelCount,
+                codec,
+                codecString,
+                mimeType,
+                reason: supported ? 'decoded-playback-advanced' : 'playback-not-advanced',
+                sampleRate: 48_000,
+                status: supported ? 'supported' : 'unsupported'
+            };
+        }
+        audio[codec] = {
+            codec,
+            codecString,
+            layouts,
+            mimeType,
+            status: codecSupported ? 'supported' : 'unsupported'
+        };
+    }
+    return {
+        audio,
+        telemetry: {
+            probeCount: 4,
+            supportedLayoutCount: 1,
+            unknownLayoutCount: 0
+        }
+    };
+}
+
+function selectExactNativeAudioRouteForMock(
+    options: unknown,
+    eligibilityOptions: MockEligibilityOptions
+): MockAudioEligibilityOverride {
+    const unsupported: MockAudioEligibilityOverride = {
+        eligible: false,
+        reason: 'audio-layout-unsupported'
+    };
+    if (!options || typeof options !== 'object') {
+        return unsupported;
+    }
+    const mediaSource = (options as Record<string, unknown>).mediaSource;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return unsupported;
+    }
+    const mediaSourceRecord = mediaSource as Record<string, unknown>;
+    if (!Array.isArray(mediaSourceRecord.MediaStreams)) {
+        return unsupported;
+    }
+
+    const audioStreams: Array<Record<string, unknown>> = [];
+    for (const mediaStream of mediaSourceRecord.MediaStreams) {
+        if (mediaStream
+            && typeof mediaStream === 'object'
+            && (mediaStream as Record<string, unknown>).Type === 'Audio') {
+            audioStreams.push(mediaStream as Record<string, unknown>);
+        }
+    }
+    const selectedStreamIndex = mediaSourceRecord.DefaultAudioStreamIndex;
+    const audioTrackIndex = audioStreams.findIndex(
+        audioStream => audioStream.Index === selectedStreamIndex
+    );
+    if (audioTrackIndex < 0) {
+        return unsupported;
+    }
+
+    const selectedAudioStream = audioStreams[audioTrackIndex];
+    const codec = selectedAudioStream.Codec;
+    const channelCount = selectedAudioStream.Channels;
+    if ((codec !== 'ac3' && codec !== 'eac3')
+        || (channelCount !== 2 && channelCount !== 6)) {
+        return unsupported;
+    }
+    const layout = eligibilityOptions.nativeMediaAudioCapabilities
+        ?.audio[codec].layouts[channelCount];
+    if (layout?.status !== 'supported'
+        || layout.sampleRate !== selectedAudioStream.SampleRate) {
+        return unsupported;
+    }
+
+    return {
+        audioOutputMode: 'native-media',
+        audioTrackIndex,
+        eligible: true
+    };
+}
+
 function createKnownHDRPlayOptions(
     properties: Record<string, unknown> = {}
 ): Record<string, unknown> {
@@ -729,6 +907,29 @@ function createKnownHDRPlayOptions(
                 Type: 'Video',
                 VideoRange: 'HDR',
                 VideoRangeType: 'HDR10'
+            }]
+        }
+    };
+}
+
+function createKnownDolbyVisionPlayOptions(
+    properties: Record<string, unknown> = {}
+): Record<string, unknown> {
+    return {
+        ...properties,
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                DvBlSignalCompatibilityId: 1,
+                DvProfile: 8,
+                ElPresentFlag: false,
+                Index: 0,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithHDR10'
             }]
         }
     };
@@ -777,10 +978,13 @@ describe('WebGPUPlayer HTML delegation', () => {
         htmlPlayerMockState.owners.length = 0;
         presenterMockState.instances.length = 0;
         presenterMockState.authorizedRawHDRRouteKeys = [];
+        presenterMockState.dolbyVisionAuthorized = false;
         webSettingsMockState.customDecodeEnabled = false;
         webSettingsMockState.customDecodeEnabledPromises.length = 0;
         webSettingsMockState.hdrToneMappingEnabled = false;
+        customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
+        customDecodeMockState.dolbyVision = false;
         customDecodeMockState.hdr = false;
         customDecodeMockState.audioOutputMode = 'decoded-pcm';
         customDecodeMockState.audioTrackIndex = null;
@@ -872,6 +1076,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(profile).not.toBe(backend.profile);
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
+                allowDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: [],
                 isRetry: false,
@@ -882,6 +1087,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         await player.getDeviceProfile(item, { isRetry: true });
         expect(customProfileMockState.augmentationCalls[1]?.options).toEqual({
+            allowDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
             isRetry: true,
@@ -891,6 +1097,36 @@ describe('WebGPUPlayer HTML delegation', () => {
             reason: 'augmented',
             supportedVideoCodecs: [ 'h264' ]
         });
+    });
+
+    it('passes a partial native-media audio capability into non-retry profile augmentation', async () => {
+        const player = new WebGPUPlayer();
+        const capabilities = createPartialNativeMediaAudioCapabilities();
+        webSettingsMockState.customDecodeEnabled = true;
+        nativeAudioCapabilityMockState.capabilities = capabilities;
+
+        await player.getDeviceProfile({ Id: 'native-audio-item' }, { isRetry: false });
+
+        expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
+            isRetry: false,
+            nativeMediaAudioCapabilities: capabilities
+        });
+        expect(player.getNativeMediaAudioCapabilities()).toEqual(capabilities);
+    });
+
+    it('does not pass a measured native-media audio capability into retry widening', async () => {
+        const player = new WebGPUPlayer();
+        const capabilities = createPartialNativeMediaAudioCapabilities();
+        webSettingsMockState.customDecodeEnabled = true;
+        nativeAudioCapabilityMockState.capabilities = capabilities;
+
+        await player.getDeviceProfile({ Id: 'native-audio-item' }, { isRetry: true });
+
+        expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
+            isRetry: true,
+            nativeMediaAudioCapabilities: null
+        });
+        expect(player.getNativeMediaAudioCapabilities()).toBeNull();
     });
 
     it('widens custom profile HDR ranges only when raw HDR presentation is enabled', async () => {
@@ -906,10 +1142,35 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
+                allowDolbyVision: false,
                 allowRawHDR: true,
                 authorizedRawHDRRouteKeys: [
                     'I420P10:bt2020-ncl:bt2020:limited:pq'
                 ],
+                isRetry: false,
+                nativeMediaAudioCapabilities: null
+            },
+            profile: backend.profile
+        });
+    });
+
+    it('widens Dolby Vision capability only after exact-device authorization', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+
+        await player.getDeviceProfile({ Id: 'dolby-vision-item' }, { isRetry: false });
+
+        expect(presenter.waitForRawHDRAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(presenter.waitForDolbyVisionAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(customProfileMockState.augmentationCalls[0]).toEqual({
+            options: {
+                allowDolbyVision: true,
+                allowRawHDR: false,
+                authorizedRawHDRRouteKeys: [],
                 isRetry: false,
                 nativeMediaAudioCapabilities: null
             },
@@ -980,6 +1241,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         await player.getDeviceProfile({ Id: 'hdr-item' }, { isRetry: false });
 
         expect(customProfileMockState.augmentationCalls[0]?.options).toEqual({
+            allowDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
             isRetry: false,
@@ -1195,6 +1457,48 @@ describe('WebGPUPlayer HTML delegation', () => {
         );
     });
 
+    it('selects the per-frame Dolby Vision reconstruction pipeline', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        customDecodeMockState.dolbyVision = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.hdr = true;
+        customDecodeMockState.videoDecoderBackend = 'bundled-hevc';
+        customDecodeMockState.videoOutputMode = 'raw-planes';
+
+        const options = createKnownDolbyVisionPlayOptions({ playMethod: 'DirectPlay' });
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(presenter.prewarmDolbyVisionPresentationAuthorization).toHaveBeenCalled();
+        expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            inputMode: 'raw-dolby-vision',
+            profile: 8,
+            rawFrameFormat: 'I420P10',
+            settings: expect.objectContaining({
+                mode: 'hdr-to-sdr',
+                outputTransfer: 'srgb',
+                toneMapping: expect.objectContaining({ inputPeakNits: 4_000 })
+            })
+        }, 1);
+        expect(customPlaybackController.play).toHaveBeenCalledWith(
+            expect.objectContaining({
+                rawVideoFrameFormat: 'I420P10',
+                videoDecoderBackend: 'bundled-hevc',
+                videoOutputMode: 'raw-planes'
+            })
+        );
+    });
+
     it('keeps HDR on native video when custom tone mapping is disabled', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -1268,6 +1572,70 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.getCustomPlaybackEligibility()).toMatchObject({
             audioOutputMode: 'native-media',
             eligible: true
+        });
+    });
+
+    it('supplies the owned native-audio bridge factory to an audio controller', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioOutputMode = 'native-media';
+        customDecodeMockState.audioTrackIndex = 1;
+
+        await player.play(createKnownSDRAudioPlayOptions());
+
+        expect(getCustomPlaybackController().nativeAudioBridgeFactory).toEqual(
+            expect.any(Function)
+        );
+    });
+
+    it.each([
+        { channelCount: 6, expectedAudioOutputMode: 'native-media' },
+        { channelCount: 2, expectedAudioOutputMode: null }
+    ])('selects native media only for the exact measured layout %#', async ({
+        channelCount,
+        expectedAudioOutputMode
+    }) => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.audioEligibilityOverride = selectExactNativeAudioRouteForMock;
+        customDecodeMockState.eligible = true;
+        nativeAudioCapabilityMockState.capabilities =
+            createPartialNativeMediaAudioCapabilities();
+        const options = createKnownSDRNativeAudioPlayOptions(channelCount);
+
+        await player.play(options);
+
+        if (expectedAudioOutputMode === 'native-media') {
+            const customPlaybackController = getCustomPlaybackController();
+            expect(backend.play).not.toHaveBeenCalled();
+            expect(customPlaybackController.play).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    audioOutputMode: 'native-media',
+                    audioTrackIndex: 0
+                })
+            );
+            expect(player.getNativeMediaAudioCapabilities()).toEqual(
+                nativeAudioCapabilityMockState.capabilities
+            );
+            return;
+        }
+
+        expect(customDecodeMockState.instances).toHaveLength(0);
+        expect(backend.play).toHaveBeenCalledWith(options);
+        expect(player.getCustomPlaybackEligibility()).toEqual({
+            eligible: false,
+            reason: 'audio-layout-unsupported'
         });
     });
 
@@ -2183,6 +2551,32 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.currentTime()).toBe(2_000);
     });
 
+    it('renegotiates a widened source when custom decode is disabled before play', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        const errorListener = vi.fn();
+        Events.on(player, 'error', errorListener);
+        await player.getDeviceProfile({ Id: 'item' }, { isRetry: false });
+        webSettingsMockState.customDecodeEnabled = false;
+
+        const result = await player.play(createKnownSDRPlayOptions({
+            playMethod: 'DirectPlay',
+            playerStartPositionTicks: 20_000_000
+        }));
+
+        expect(result).toBe(PLAYBACK_SUPERSEDED);
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(errorListener.mock.calls[0][1]).toEqual({
+            type: MediaError.MEDIA_NOT_SUPPORTED
+        });
+        expect(player.currentTime()).toBe(2_000);
+    });
+
     it('bounds custom setup and retries a widened source from its session start', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -2483,6 +2877,7 @@ describe('WebGPUPlayer event and lifecycle contract', () => {
         htmlPlayerMockState.owners.length = 0;
         presenterMockState.instances.length = 0;
         webSettingsMockState.customDecodeEnabled = false;
+        customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.audioOutputMode = 'decoded-pcm';
         customDecodeMockState.audioTrackIndex = null;

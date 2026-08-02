@@ -36,6 +36,12 @@ type PlaybackOptions = {
     }
 };
 
+export type DolbyVisionPresentationDescriptor = {
+    baseLayerBitDepth: 10
+    baseLayerSignalCompatibilityID: 0 | 1 | 4 | null
+    profile: 5 | 8
+};
+
 const SDR_VIDEO_RANGE = 'SDR';
 const HDR_VIDEO_RANGE = 'HDR';
 const HDR_COLOR_TRANSFERS = new Set([
@@ -259,6 +265,70 @@ function hasDolbyVisionMetadata(videoStream: MediaStreamMetadata): boolean {
         || hasEnabledMetadataFlag(videoStream.BlPresentFlag)
         || hasEnabledMetadataFlag(videoStream.ElPresentFlag)
         || hasEnabledMetadataFlag(videoStream.RpuPresentFlag);
+}
+
+function parseDolbyVisionInteger(value: unknown): number | null {
+    const numericValue = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(numericValue) && numericValue >= 0 ? numericValue : null;
+}
+
+function parseDolbyVisionDescriptor(
+    videoStream: MediaStreamMetadata
+): DolbyVisionPresentationDescriptor | null {
+    const profile = parseDolbyVisionInteger(videoStream.DvProfile);
+    if (
+        (profile !== 5 && profile !== 8)
+        || !hasEnabledMetadataFlag(videoStream.BlPresentFlag)
+        || !hasEnabledMetadataFlag(videoStream.RpuPresentFlag)
+        || hasEnabledMetadataFlag(videoStream.ElPresentFlag)
+    ) {
+        return null;
+    }
+    const bitDepth = parseBitDepth(videoStream.BitDepth, DEFAULT_HDR_BIT_DEPTH);
+    if (bitDepth !== 10) {
+        return null;
+    }
+    const compatibilityID = videoStream.DvBlSignalCompatibilityId == null ?
+        null :
+        parseDolbyVisionInteger(videoStream.DvBlSignalCompatibilityId);
+    if (videoStream.DvBlSignalCompatibilityId != null && compatibilityID === null) {
+        return null;
+    }
+    if (
+        (profile === 5 && compatibilityID !== null && compatibilityID !== 0)
+        || (profile === 8 && compatibilityID !== 1 && compatibilityID !== 4)
+    ) {
+        return null;
+    }
+    return {
+        baseLayerBitDepth: 10,
+        baseLayerSignalCompatibilityID: compatibilityID as 0 | 1 | 4 | null,
+        profile
+    };
+}
+
+/** Returns one exact single-layer Profile 5 or 8 presentation descriptor. */
+export function getDolbyVisionPresentationDescriptor(
+    options: unknown
+): DolbyVisionPresentationDescriptor | null {
+    if (!options || typeof options !== 'object') {
+        return null;
+    }
+    const mediaStreams = (options as PlaybackOptions).mediaSource?.MediaStreams;
+    if (!Array.isArray(mediaStreams)) {
+        return null;
+    }
+    const videoStreams: MediaStreamMetadata[] = [];
+    for (const stream of mediaStreams) {
+        if (
+            stream
+            && typeof stream === 'object'
+            && normalizeMetadataValue((stream as MediaStreamMetadata).Type) === 'VIDEO'
+        ) {
+            videoStreams.push(stream as MediaStreamMetadata);
+        }
+    }
+    return videoStreams.length === 1 ? parseDolbyVisionDescriptor(videoStreams[0]) : null;
 }
 
 /**

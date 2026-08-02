@@ -11,6 +11,7 @@ import {
 } from './ColorMetadata';
 import {
     createColorPipelineWGSL,
+    createRawDolbyVisionColorPipelineWGSL,
     createRawYUVColorPipelineWGSL
 } from './ColorPipelineShader';
 
@@ -162,6 +163,50 @@ describe('createRawYUVColorPipelineWGSL', () => {
                 toneMapping: { inputPeakNits: 2_000 }
             }),
             'I420P10'
+        );
+
+        expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('createRawDolbyVisionColorPipelineWGSL', () => {
+    it('reconstructs raw base-layer code values before the HDR pipeline', () => {
+        const shader = createRawDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P10'
+        );
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).not.toContain('texture_external');
+        expect(shader).toContain('@binding(1) var lumaTexture: texture_2d<u32>');
+        expect(shader).toContain('@binding(2) var chromaUTexture: texture_2d<u32>');
+        expect(shader).toContain('@binding(3) var chromaVTexture: texture_2d<u32>');
+        expect(shader).toContain('@binding(4) var<uniform> renderSettings');
+        expect(shader).toContain('@binding(5) var<storage, read> dolbyVisionRPU');
+        expect(shader).not.toContain('fn normalizeRawYUV');
+        expect(shader).not.toContain('fn convertRawYUVToEncodedRGB');
+        expect(shader).toContain(
+            'rawBaseSignal / (codeValueCount - 1.0)'
+        );
+        expect(fragmentFunction).toContain(`let encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
+        sampleRawYUV(textureCoordinate)
+    );`);
+        expect(fragmentFunction.indexOf('reconstructDolbyVisionBT2020PQ')).toBeLessThan(
+            fragmentFunction.indexOf('processColor')
+        );
+    });
+
+    it('keeps the Dolby Vision shader stable across live setting changes', () => {
+        const firstShader = createRawDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings(),
+            'I420P12'
+        );
+        const secondShader = createRawDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings({
+                display: { brightness: 0.1, contrast: 1.2, saturation: 0.8 },
+                toneMapping: { inputPeakNits: 4_000 }
+            }),
+            'I420P12'
         );
 
         expect(secondShader).toBe(firstShader);

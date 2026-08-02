@@ -1,3 +1,17 @@
+import {
+    DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH,
+    DOLBY_VISION_RPU_PACKED_COMPONENT_BYTE_LENGTH,
+    DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT,
+    DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET,
+    DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET,
+    DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET,
+    DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH,
+    DOLBY_VISION_RPU_PACKED_NLQ_BYTE_LENGTH,
+    MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT,
+    MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT,
+    MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT
+} from './DolbyVisionRPUDataLayout';
+
 export const DOLBY_VISION_RPU_PARSER_WASM_ASSET =
     'libraries/libdovi/dovi-rpu-parser.wasm';
 export const DOLBY_VISION_RPU_SCHEMA_VERSION = 1;
@@ -9,20 +23,9 @@ export const MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH = 16 * 1_024 * 1
 
 const MAXIMUM_PARSER_ARTIFACT_BYTE_LENGTH = 2 * 1_024 * 1_024;
 const MAXIMUM_PARSER_ERROR_BYTE_LENGTH = 512;
-const PACKED_HEADER_BYTE_LENGTH = 192;
-const PACKED_COLOR_BYTE_LENGTH = 112;
-const PACKED_NLQ_BYTE_LENGTH = 48;
-const PACKED_COMPONENT_BYTE_LENGTH = 960;
-const PACKED_COMPONENT_COUNT = 3;
-const PACKED_COMPONENT_OFFSET = PACKED_HEADER_BYTE_LENGTH
-    + PACKED_COLOR_BYTE_LENGTH
-    + PACKED_NLQ_BYTE_LENGTH;
-const PACKED_COMPONENT_PIVOT_OFFSET = 16;
-const PACKED_COMPONENT_SEGMENT_OFFSET = 64;
-const PACKED_COMPONENT_MMR_OFFSET = 192;
-const MAXIMUM_PIVOT_COUNT = 9;
-const MAXIMUM_SEGMENT_COUNT = 8;
-const MAXIMUM_MMR_VECTOR_COUNT = 48;
+const PACKED_COMPONENT_OFFSET = DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH
+    + DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH
+    + DOLBY_VISION_RPU_PACKED_NLQ_BYTE_LENGTH;
 const KNOWN_SCHEMA_FLAGS = 0x1FF;
 const MISSING_UNSIGNED_INTEGER = 0xFFFF_FFFF;
 
@@ -239,8 +242,13 @@ function readPaddedMatrix(view: DataView, byteOffset: number, name: string): num
 
 function readNLQ(view: DataView): DolbyVisionRPUNLQData[] {
     const nlq: DolbyVisionRPUNLQData[] = [];
-    const nlqOffset = PACKED_HEADER_BYTE_LENGTH + PACKED_COLOR_BYTE_LENGTH;
-    for (let componentIndex = 0; componentIndex < PACKED_COMPONENT_COUNT; componentIndex += 1) {
+    const nlqOffset = DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH
+        + DOLBY_VISION_RPU_PACKED_COLOR_BYTE_LENGTH;
+    for (
+        let componentIndex = 0;
+        componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT;
+        componentIndex += 1
+    ) {
         const componentOffset = nlqOffset + (componentIndex * 16);
         nlq.push({
             deadzoneSlope: requireFinite(
@@ -273,7 +281,9 @@ function readComponentPivots(
     for (let pivotIndex = 0; pivotIndex < numPivots; pivotIndex += 1) {
         const pivot = requireFinite(
             view.getFloat32(
-                componentOffset + PACKED_COMPONENT_PIVOT_OFFSET + (pivotIndex * 4),
+                componentOffset
+                    + DOLBY_VISION_RPU_PACKED_COMPONENT_PIVOT_OFFSET
+                    + (pivotIndex * 4),
                 true
             ),
             'Dolby Vision pivot'
@@ -296,7 +306,7 @@ function readSegmentValues(
     segmentIndex: number
 ): number[] {
     const segmentOffset = componentOffset
-        + PACKED_COMPONENT_SEGMENT_OFFSET
+        + DOLBY_VISION_RPU_PACKED_COMPONENT_SEGMENT_OFFSET
         + (segmentIndex * 16);
     const segmentValues: number[] = [];
     for (let valueIndex = 0; valueIndex < 4; valueIndex += 1) {
@@ -331,7 +341,11 @@ function validateComponentSegments(
     mmrVectorCount: number,
     segmentCount: number
 ): void {
-    for (let segmentIndex = 0; segmentIndex < MAXIMUM_SEGMENT_COUNT; segmentIndex += 1) {
+    for (
+        let segmentIndex = 0;
+        segmentIndex < MAXIMUM_DOLBY_VISION_RPU_SEGMENT_COUNT;
+        segmentIndex += 1
+    ) {
         const segmentValues = readSegmentValues(view, componentOffset, segmentIndex);
         if (segmentIndex >= segmentCount) {
             continue;
@@ -346,10 +360,16 @@ function validateComponentSegments(
 }
 
 function validateComponentMMRData(view: DataView, componentOffset: number): void {
-    for (let valueIndex = 0; valueIndex < MAXIMUM_MMR_VECTOR_COUNT * 4; valueIndex += 1) {
+    for (
+        let valueIndex = 0;
+        valueIndex < MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT * 4;
+        valueIndex += 1
+    ) {
         requireFinite(
             view.getFloat32(
-                componentOffset + PACKED_COMPONENT_MMR_OFFSET + (valueIndex * 4),
+                componentOffset
+                    + DOLBY_VISION_RPU_PACKED_COMPONENT_MMR_OFFSET
+                    + (valueIndex * 4),
                 true
             ),
             'Dolby Vision MMR coefficient'
@@ -373,14 +393,17 @@ function readComponent(
     componentIndex: number
 ): DolbyVisionRPUComponentSummary {
     const componentOffset = PACKED_COMPONENT_OFFSET
-        + (componentIndex * PACKED_COMPONENT_BYTE_LENGTH);
+        + (componentIndex * DOLBY_VISION_RPU_PACKED_COMPONENT_BYTE_LENGTH);
     const numPivots = view.getUint32(componentOffset, true);
     const mmrVectorCount = view.getUint32(componentOffset + 4, true);
     const componentFlags = view.getUint32(componentOffset + 8, true);
-    if (numPivots < 2 || numPivots > MAXIMUM_PIVOT_COUNT) {
+    if (numPivots < 2 || numPivots > MAXIMUM_DOLBY_VISION_RPU_PIVOT_COUNT) {
         throw new TypeError('Dolby Vision packed pivot count is invalid');
     }
-    if (mmrVectorCount > MAXIMUM_MMR_VECTOR_COUNT || mmrVectorCount % 2 !== 0) {
+    if (
+        mmrVectorCount > MAXIMUM_DOLBY_VISION_RPU_MMR_VECTOR_COUNT
+        || mmrVectorCount % 2 !== 0
+    ) {
         throw new TypeError('Dolby Vision packed MMR vector count is invalid');
     }
     const mappingMethod = getComponentMappingMethod(componentFlags);
@@ -506,24 +529,31 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     const validatedFlags = validateSnapshotFlags(profile, flags);
 
     const components: DolbyVisionRPUComponentSummary[] = [];
-    for (let componentIndex = 0; componentIndex < PACKED_COMPONENT_COUNT; componentIndex += 1) {
+    for (
+        let componentIndex = 0;
+        componentIndex < DOLBY_VISION_RPU_PACKED_COMPONENT_COUNT;
+        componentIndex += 1
+    ) {
         components.push(readComponent(view, componentIndex));
     }
     const nonlinearOffset: number[] = [];
     for (let componentIndex = 0; componentIndex < 3; componentIndex += 1) {
         nonlinearOffset.push(requireFinite(
-            view.getFloat32(PACKED_HEADER_BYTE_LENGTH + (componentIndex * 4), true),
+            view.getFloat32(
+                DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + (componentIndex * 4),
+                true
+            ),
             'Dolby Vision nonlinear offset'
         ));
     }
     const nonlinearMatrix = readPaddedMatrix(
         view,
-        PACKED_HEADER_BYTE_LENGTH + 16,
+        DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 16,
         'Dolby Vision nonlinear matrix'
     );
     const linearMatrix = readPaddedMatrix(
         view,
-        PACKED_HEADER_BYTE_LENGTH + 64,
+        DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 64,
         'Dolby Vision linear matrix'
     );
     const previousMappingID = readOptionalUnsignedInteger(view.getUint32(88, true));

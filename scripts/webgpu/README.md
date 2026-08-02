@@ -479,9 +479,11 @@ Session one is the post-GC steady-state baseline because the player may retain
 one warmed presenter device and pipeline. Sessions two onward must stay within
 these release gates:
 
-The harness also records a pre-playback resource snapshot. Audio-resource
-counts are measured relative to that snapshot so an unrelated page-owned audio
-object cannot hide an extra player allocation or cause a false failure.
+The harness also records a pre-playback resource snapshot to prove that no
+controlled-page custom decode worker was already active and to retain ambient
+resource counts for diagnosis. Custom-audio resource gates use absolute
+stopped-page totals, so an existing same-page audio object cannot hide an extra
+player allocation.
 
 - JavaScript and embedder heap: at most 16 MiB growth and a 256 KiB/session
   Theil-Sen slope.
@@ -490,12 +492,11 @@ object cannot hide an extra player allocation or cause a false failure.
   event listeners: at most 16 growth and a 0.25/session slope.
 - Every available queried media/WebGPU object type: at most baseline plus one
   and a 0.1 object/session slope. A custom-audio run additionally requires
-  exactly one more `AudioContext`, `AudioWorkletNode`, and
-  `AudioWorkletProcessors` Performance object than the pre-playback snapshot
-  after every stop. An owned native-audio run requires the exact pre-playback
-  `AudioContext`, `AudioWorkletNode`, and processor counts after its unused PCM
-  prewarm closes. An audio-disabled run requires no worklet node or processor
-  increase; its unused prewarm may leave one suspended `AudioContext`.
+  exactly one total `AudioContext`, `AudioWorkletNode`, and
+  `AudioWorkletProcessors` Performance object after every stop. Owned
+  native-media and audio-disabled runs require zero worklet nodes and
+  processors. Their unused PCM prewarm may leave one suspended `AudioContext`,
+  so that context remains subject to the generic bounded-growth gate.
 - Available `AudioHandlers` and `WorkerGlobalScopes` Performance counts: no
   positive final, last-three-median, or Theil-Sen slope from the warmed
   session-one baseline. `ArrayBufferContents` may grow by at most 32 with a

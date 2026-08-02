@@ -629,6 +629,39 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(true);
     });
 
+    it('advertises authorized Dolby Vision ranges only for raw HEVC', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc,vp9',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'hevc', 'vp9' ], [ 'aac' ], [ 'hevc', 'vp9' ]),
+            { allowDolbyVision: true, allowRawHDR: false }
+        );
+        const HEVCProfiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Codec?.split(',').includes('hevc')
+        )) ?? [];
+        const VP9Profiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Codec?.split(',').includes('vp9')
+        )) ?? [];
+
+        expect(HEVCProfiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'VideoRangeType'
+            && condition.Value === 'SDR|DOVI|DOVIWithHDR10|DOVIWithHLG'
+        )))).toBe(true);
+        expect(VP9Profiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Value?.includes('DOVI')
+        )))).toBe(false);
+    });
+
     it('keeps non-custom containers on the original native video range constraints', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {

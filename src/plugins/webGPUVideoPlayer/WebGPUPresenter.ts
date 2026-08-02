@@ -19,14 +19,20 @@ import {
     type InputColorMetadata
 } from './color/ColorMetadata';
 import {
+    createRawDolbyVisionColorPipelineWGSL,
     createRawYUVColorPipelineWGSL
 } from './color/ColorPipelineShader';
+import {
+    decodeDolbyVisionRPUSnapshot,
+    DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
+} from './custom/DolbyVisionRPUParser';
 import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from './custom/RawVideoFrameCopy';
-import type {
-    TransferableDolbyVisionEncodedFrameMetadata
+import {
+    isTransferableDolbyVisionEncodedFrameMetadata,
+    type TransferableDolbyVisionEncodedFrameMetadata
 } from './custom/DolbyVisionEncodedMetadataProtocol';
 import {
     createRawYUVRenderSettingsUniformBuffer,
@@ -41,6 +47,10 @@ import {
     calculateTexturePresentationGeometry,
     type TexturePresentationGeometry
 } from './PresentationGeometry';
+import {
+    DolbyVisionPresentationAuthorizationRegistry,
+    type DolbyVisionAuthorizationTelemetry
+} from './validation/DolbyVisionPresentationAuthorization';
 import {
     getRawHDRAuthorizationRouteKey,
     RawHDRPresentationAuthorizationRegistry,
@@ -108,6 +118,7 @@ export type PresentationFallbackReason =
     | 'device-recovery-failed'
     | 'device-request-failed'
     | 'decoded-frame-color-mismatch'
+    | 'dolby-vision-metadata-invalid'
     | 'frame-import-failed'
     | 'frame-render-failed'
     | 'gpu-unavailable'
@@ -171,8 +182,16 @@ export type RawHDRColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
+export type RawDolbyVisionColorPipelineConfiguration = {
+    inputMode: 'raw-dolby-vision'
+    profile: 5 | 8
+    rawFrameFormat: 'I420P10'
+    settings: HDRToSDRRenderSettings
+};
+
 export type PresentationColorPipelineConfiguration =
     | IdentityColorPipelineConfiguration
+    | RawDolbyVisionColorPipelineConfiguration
     | RawHDRColorPipelineConfiguration;
 
 type PresentationFallbackHandler = (
@@ -199,7 +218,8 @@ type PendingColorConfiguration = {
 };
 
 type PreparedColorPipeline = {
-    inputMode: 'external-texture' | 'raw-yuv'
+    dolbyVisionProfile: 5 | 8 | null
+    inputMode: 'external-texture' | 'raw-dolby-vision' | 'raw-yuv'
     inputColorMetadata: InputColorMetadata | null
     rawFrameFormat: SupportedRawVideoFrameFormat | null
     settings: RenderSettings
@@ -316,16 +336,62 @@ function rawFrameDescriptorMatches(
         && hasValidRawVideoFrameLayout(frame);
 }
 
+function rawDolbyVisionFrameDescriptorMatches(
+    decodedFrame: DecodedRawPresentationFrame,
+    format: SupportedRawVideoFrameFormat
+): boolean {
+    const frame = decodedFrame.frame;
+    return format === 'I420P10'
+        && frame.format === format
+        && frame.bitDepth === 10
+        && frame.timestampMicroseconds === decodedFrame.mediaTimeMicroseconds
+        && (frame.durationMicroseconds === null
+            || frame.durationMicroseconds === decodedFrame.durationMicroseconds)
+        && hasValidRawVideoFrameLayout(frame);
+}
+
+function getSingleLayerDolbyVisionRPUData(
+    decodedFrame: DecodedRawPresentationFrame,
+    expectedProfile: 5 | 8
+): ArrayBuffer | null {
+    const metadata = decodedFrame.encodedDolbyVisionMetadata;
+    if (
+        !isTransferableDolbyVisionEncodedFrameMetadata(metadata)
+        || metadata.hasEnhancementLayerVCL
+        || metadata.enhancementLayerData !== null
+        || metadata.parsedRPUData.length !== 1
+    ) {
+        return null;
+    }
+    try {
+        const packedRPUData = metadata.parsedRPUData[0];
+        const snapshot = decodeDolbyVisionRPUSnapshot(packedRPUData);
+        return snapshot.profile === expectedProfile
+            && snapshot.layerMode === 'single-layer'
+            && snapshot.baseLayerBitDepth === decodedFrame.frame.bitDepth
+            && snapshot.disableResidual
+            && !snapshot.nlqActive ?
+            packedRPUData :
+            null;
+    } catch {
+        return null;
+    }
+}
+
 /** Presents frames from an owned HTML video without taking over playback. */
 export default class WebGPUPresenter {
     private readonly fallbackHandler: PresentationFallbackHandler;
     private readonly decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler;
     private readonly presentationUniformValues = new Float32Array(FLOATS_PER_PRESENTATION_UNIFORM);
+    private readonly dolbyVisionAuthorization =
+        new DolbyVisionPresentationAuthorizationRegistry();
     private readonly rawHDRAuthorization = new RawHDRPresentationAuthorizationRegistry();
 
     private activeGeneration = 0;
+    private activeDolbyVisionProfile: 5 | 8 | null = null;
     private activeInputColorMetadata: InputColorMetadata | null = null;
-    private activeInputMode: 'external-texture' | 'raw-yuv' = 'external-texture';
+    private activeInputMode: 'external-texture' | 'raw-dolby-vision' | 'raw-yuv' =
+        'external-texture';
     private activeRawFrameFormat: SupportedRawVideoFrameFormat | null = null;
     private cachedPresentationLayout: CachedPresentationLayout | null = null;
     private canvas: HTMLCanvasElement | null = null;
@@ -339,6 +405,7 @@ export default class WebGPUPresenter {
     private decodedFrameProvider: DecodedFrameProvider | null = null;
     private decodedFramePushActive = false;
     private fallbackLatched = false;
+    private dolbyVisionRPUStorageBuffer: GPUBuffer | null = null;
     private initializationFailureReason: PresentationFallbackReason = 'gpu-unavailable';
     private initializationPromise: Promise<boolean> | null = null;
     private pendingFrameCallback: PendingFrameCallback | null = null;
@@ -364,12 +431,13 @@ export default class WebGPUPresenter {
     ) {
         this.fallbackHandler = fallbackHandler;
         this.decodedPresentationRefreshHandler = decodedPresentationRefreshHandler;
-        this.scheduleRawHDRPresentationAuthorizationPrewarm();
+        this.scheduleColorPresentationAuthorizationPrewarm();
     }
 
-    private scheduleRawHDRPresentationAuthorizationPrewarm(): void {
+    private scheduleColorPresentationAuthorizationPrewarm(): void {
         void Promise.resolve().then((): void => {
             void this.prewarmRawHDRPresentationAuthorization();
+            void this.prewarmDolbyVisionPresentationAuthorization();
         });
     }
 
@@ -379,8 +447,10 @@ export default class WebGPUPresenter {
         this.unbindResizeHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
+        this.destroyDolbyVisionRPUStorageBuffer();
 
         this.activeGeneration = generation;
+        this.activeDolbyVisionProfile = null;
         this.activeInputColorMetadata = null;
         this.activeInputMode = 'external-texture';
         this.activeRawFrameFormat = null;
@@ -456,6 +526,7 @@ export default class WebGPUPresenter {
         this.activeGeneration = generation;
         this.colorConfigurationRevision += 1;
         this.sessionActive = false;
+        this.activeDolbyVisionProfile = null;
         this.activeInputColorMetadata = null;
         this.activeInputMode = 'external-texture';
         this.activeRawFrameFormat = null;
@@ -467,6 +538,7 @@ export default class WebGPUPresenter {
         this.unbindResizeHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
+        this.destroyDolbyVisionRPUStorageBuffer();
         this.surface = null;
         this.telemetry.state = 'idle';
     }
@@ -521,6 +593,19 @@ export default class WebGPUPresenter {
         }
     }
 
+    /** Starts the exact Dolby Vision storage-buffer probe without delaying playback. */
+    async prewarmDolbyVisionPresentationAuthorization(): Promise<void> {
+        const featureEnabled = await getWebGPUHDRToneMappingEnabled();
+        if (!featureEnabled || !await this.ensureDevice()) {
+            return;
+        }
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        if (device && targetFormat) {
+            this.dolbyVisionAuthorization.prewarm(device, targetFormat);
+        }
+    }
+
     /** Waits a tightly bounded already-running prewarm before profile negotiation. */
     async waitForRawHDRAuthorizationPrewarm(): Promise<void> {
         await waitForRawHDRNegotiationProbe(
@@ -529,6 +614,19 @@ export default class WebGPUPresenter {
                 const targetFormat = this.canvasFormat;
                 return device && targetFormat ?
                     this.rawHDRAuthorization.waitForPending(device, targetFormat) :
+                    Promise.resolve();
+            })
+        );
+    }
+
+    /** Waits a tightly bounded already-running Dolby Vision probe. */
+    async waitForDolbyVisionAuthorizationPrewarm(): Promise<void> {
+        await waitForRawHDRNegotiationProbe(
+            this.prewarmDolbyVisionPresentationAuthorization().then((): Promise<void> => {
+                const device = this.device;
+                const targetFormat = this.canvasFormat;
+                return device && targetFormat ?
+                    this.dolbyVisionAuthorization.waitForPending(device, targetFormat) :
                     Promise.resolve();
             })
         );
@@ -545,6 +643,21 @@ export default class WebGPUPresenter {
     /** Returns bounded raw authorization state without exposing GPU objects. */
     getRawHDRAuthorizationTelemetry(): RawHDRAuthorizationTelemetry {
         return this.rawHDRAuthorization.getTelemetry(this.device, this.canvasFormat);
+    }
+
+    /** Returns bounded Dolby Vision authorization state without GPU objects. */
+    getDolbyVisionAuthorizationTelemetry(): DolbyVisionAuthorizationTelemetry {
+        return this.dolbyVisionAuthorization.getTelemetry(this.device, this.canvasFormat);
+    }
+
+    /** Returns only settled exact-device Dolby Vision authorization. */
+    isDolbyVisionPresentationAuthorized(): boolean {
+        return this.settings.mode === 'hdr-to-sdr' ?
+            this.isActiveDolbyVisionAuthorized('I420P10') :
+            this.dolbyVisionAuthorization.getTelemetry(
+                this.device,
+                this.canvasFormat
+            ).status === 'authorized';
     }
 
     /** Selects an optional custom decoder as the frame source for this generation. */
@@ -603,21 +716,9 @@ export default class WebGPUPresenter {
             let submission: FrameSubmission | null;
             switch (decodedFrame.outputMode) {
                 case 'raw-planes': {
-                    const metadata = this.activeInputColorMetadata;
-                    const format = this.activeRawFrameFormat;
-                    if (
-                        this.activeInputMode !== 'raw-yuv'
-                        || !metadata
-                        || !format
-                        || !this.isActiveRawHDRAuthorized(metadata, format)
-                        || !rawFrameDescriptorMatches(decodedFrame, metadata, format)
-                    ) {
-                        this.fallback(generation, 'decoded-frame-color-mismatch');
-                        return false;
-                    }
                     frameWidth = decodedFrame.frame.displayWidth;
                     frameHeight = decodedFrame.frame.displayHeight;
-                    submission = this.renderRawFrame(decodedFrame.frame);
+                    submission = this.renderDecodedRawFrame(decodedFrame, generation);
                     break;
                 }
                 case 'video-frame':
@@ -726,8 +827,19 @@ export default class WebGPUPresenter {
             );
             return false;
         }
+        if (
+            preparedPipeline.inputMode === 'raw-dolby-vision'
+            && !this.createDolbyVisionRPUStorageBuffer()
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'pipeline-creation-failed'
+            );
+            return false;
+        }
 
         this.desiredShaderCode = preparedPipeline.shaderCode;
+        this.activeDolbyVisionProfile = preparedPipeline.dolbyVisionProfile;
         this.activeInputMode = preparedPipeline.inputMode;
         this.activeInputColorMetadata = preparedPipeline.inputColorMetadata ?
             { ...preparedPipeline.inputColorMetadata } :
@@ -799,8 +911,19 @@ export default class WebGPUPresenter {
         configuration: PresentationColorPipelineConfiguration,
         pendingConfiguration: PendingColorConfiguration
     ): Promise<PreparedColorPipeline | null> {
-        if ('inputMode' in configuration && configuration.inputMode === 'raw-yuv') {
-            return this.prepareRawHDRColorPipeline(configuration, pendingConfiguration);
+        if ('inputMode' in configuration) {
+            switch (configuration.inputMode) {
+                case 'raw-dolby-vision':
+                    return this.prepareRawDolbyVisionColorPipeline(
+                        configuration,
+                        pendingConfiguration
+                    );
+                case 'raw-yuv':
+                    return this.prepareRawHDRColorPipeline(
+                        configuration,
+                        pendingConfiguration
+                    );
+            }
         }
 
         try {
@@ -814,6 +937,7 @@ export default class WebGPUPresenter {
             return null;
         }
         return {
+            dolbyVisionProfile: null,
             inputMode: 'external-texture',
             inputColorMetadata: null,
             rawFrameFormat: null,
@@ -887,12 +1011,114 @@ export default class WebGPUPresenter {
         }
 
         return {
+            dolbyVisionProfile: null,
             inputMode: 'raw-yuv',
             inputColorMetadata: { ...configuration.metadata },
             rawFrameFormat: configuration.rawFrameFormat,
             settings: cloneRenderSettings(configuration.settings),
             shaderCode
         };
+    }
+
+    private async prepareRawDolbyVisionColorPipeline(
+        configuration: RawDolbyVisionColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        try {
+            assertValidRenderSettings(configuration.settings);
+        } catch (error) {
+            console.warn('Invalid WebGPU Dolby Vision color configuration', error);
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+        if (configuration.settings.mode !== 'hdr-to-sdr') {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+
+        const featureEnabled = await getWebGPUHDRToneMappingEnabled();
+        if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        if (!featureEnabled) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-tone-mapping-disabled'
+            );
+            return null;
+        }
+        const initialized = await this.ensureDevice();
+        if (!initialized || !this.isColorConfigurationCurrent(pendingConfiguration)) {
+            return null;
+        }
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        if (
+            !device
+            || !targetFormat
+            || !this.dolbyVisionAuthorization.isAuthorized(
+                device,
+                targetFormat,
+                configuration.settings,
+                configuration.rawFrameFormat
+            )
+        ) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-authorization-unavailable'
+            );
+            return null;
+        }
+
+        let shaderCode: string;
+        try {
+            shaderCode = createRawDolbyVisionColorPipelineWGSL(
+                configuration.settings,
+                configuration.rawFrameFormat
+            );
+        } catch (error) {
+            console.warn('Invalid WebGPU Dolby Vision shader configuration', error);
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid'
+            );
+            return null;
+        }
+        return {
+            dolbyVisionProfile: configuration.profile,
+            inputMode: 'raw-dolby-vision',
+            inputColorMetadata: null,
+            rawFrameFormat: configuration.rawFrameFormat,
+            settings: cloneRenderSettings(configuration.settings),
+            shaderCode
+        };
+    }
+
+    private createDolbyVisionRPUStorageBuffer(): boolean {
+        if (this.dolbyVisionRPUStorageBuffer) {
+            return true;
+        }
+        const device = this.device;
+        if (!device) {
+            return false;
+        }
+        try {
+            this.dolbyVisionRPUStorageBuffer = device.createBuffer({
+                label: 'WebGPU Dolby Vision per-frame RPU',
+                size: DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
+            });
+            return true;
+        } catch (error) {
+            console.warn('Unable to create WebGPU Dolby Vision RPU buffer', error);
+            return false;
+        }
     }
 
     private validateRawHDRColorConfiguration(
@@ -949,12 +1175,29 @@ export default class WebGPUPresenter {
             );
     }
 
+    private isActiveDolbyVisionAuthorized(
+        format: SupportedRawVideoFrameFormat
+    ): boolean {
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        return this.settings.mode === 'hdr-to-sdr'
+            && device !== null
+            && targetFormat !== null
+            && this.dolbyVisionAuthorization.isAuthorized(
+                device,
+                targetFormat,
+                this.settings,
+                format
+            );
+    }
+
     private suspendForColorConfiguration(): void {
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
         this.unbindResizeHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
+        this.destroyDolbyVisionRPUStorageBuffer();
         this.telemetry.state = 'initializing';
     }
 
@@ -1017,7 +1260,7 @@ export default class WebGPUPresenter {
                     device,
                     canvasFormat,
                     shaderCode,
-                    inputMode === 'raw-yuv'
+                    inputMode !== 'external-texture'
                 )
             );
             if (pipelineResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
@@ -1134,7 +1377,7 @@ export default class WebGPUPresenter {
                     device,
                     canvasFormat,
                     shaderCode,
-                    this.activeInputMode === 'raw-yuv'
+                    this.activeInputMode !== 'external-texture'
                 )
             );
         } catch (error) {
@@ -1247,7 +1490,7 @@ export default class WebGPUPresenter {
                     device,
                     canvasFormat,
                     shaderCode,
-                    this.activeInputMode === 'raw-yuv'
+                    this.activeInputMode !== 'external-texture'
                 )
             );
             if (pipelineResult === WEBGPU_RESOURCE_OPERATION_TIMEOUT) {
@@ -1289,6 +1532,7 @@ export default class WebGPUPresenter {
             void getWebGPUHDRToneMappingEnabled().then((enabled: boolean): void => {
                 if (enabled && this.device === device && this.canvasFormat === canvasFormat) {
                     this.rawHDRAuthorization.prewarm(device, canvasFormat);
+                    this.dolbyVisionAuthorization.prewarm(device, canvasFormat);
                 }
             });
             device.addEventListener('uncapturederror', event => {
@@ -1355,7 +1599,7 @@ export default class WebGPUPresenter {
         if (
             !video
             || !this.isCurrent(generation)
-            || this.activeInputMode === 'raw-yuv'
+            || this.activeInputMode !== 'external-texture'
             || this.decodedFramePushActive
             || this.pendingFrameCallback
             || this.pendingSubmissionValidation
@@ -1468,19 +1712,7 @@ export default class WebGPUPresenter {
         generation: number
     ): FrameSubmission | null {
         if (decodedFrame?.outputMode === 'raw-planes') {
-            const inputColorMetadata = this.activeInputColorMetadata;
-            const format = this.activeRawFrameFormat;
-            if (
-                this.activeInputMode !== 'raw-yuv'
-                || !inputColorMetadata
-                || !format
-                || !this.isActiveRawHDRAuthorized(inputColorMetadata, format)
-                || !rawFrameDescriptorMatches(decodedFrame, inputColorMetadata, format)
-            ) {
-                this.fallback(generation, 'decoded-frame-color-mismatch');
-                return null;
-            }
-            return this.renderRawFrame(decodedFrame.frame);
+            return this.renderDecodedRawFrame(decodedFrame, generation);
         }
 
         if (this.activeInputMode !== 'external-texture') {
@@ -1488,6 +1720,63 @@ export default class WebGPUPresenter {
             return null;
         }
         return this.renderCurrentFrame(decodedFrame?.frame ?? video);
+    }
+
+    private renderDecodedRawFrame(
+        decodedFrame: DecodedRawPresentationFrame,
+        generation: number
+    ): FrameSubmission | null {
+        const format = this.activeRawFrameFormat;
+        if (!format) {
+            this.fallback(generation, 'decoded-frame-color-mismatch');
+            return null;
+        }
+        switch (this.activeInputMode) {
+            case 'raw-yuv': {
+                const inputColorMetadata = this.activeInputColorMetadata;
+                if (
+                    !inputColorMetadata
+                    || !this.isActiveRawHDRAuthorized(inputColorMetadata, format)
+                    || !rawFrameDescriptorMatches(
+                        decodedFrame,
+                        inputColorMetadata,
+                        format
+                    )
+                ) {
+                    this.fallback(generation, 'decoded-frame-color-mismatch');
+                    return null;
+                }
+                return this.renderRawFrame(decodedFrame.frame);
+            }
+            case 'raw-dolby-vision': {
+                const device = this.device;
+                const profile = this.activeDolbyVisionProfile;
+                const storageBuffer = this.dolbyVisionRPUStorageBuffer;
+                if (
+                    !device
+                    || !profile
+                    || !storageBuffer
+                    || !this.isActiveDolbyVisionAuthorized(format)
+                    || !rawDolbyVisionFrameDescriptorMatches(decodedFrame, format)
+                ) {
+                    this.fallback(generation, 'decoded-frame-color-mismatch');
+                    return null;
+                }
+                const packedRPUData = getSingleLayerDolbyVisionRPUData(
+                    decodedFrame,
+                    profile
+                );
+                if (!packedRPUData) {
+                    this.fallback(generation, 'dolby-vision-metadata-invalid');
+                    return null;
+                }
+                device.queue.writeBuffer(storageBuffer, 0, packedRPUData);
+                return this.renderRawFrame(decodedFrame.frame);
+            }
+            case 'external-texture':
+                this.fallback(generation, 'decoded-frame-color-mismatch');
+                return null;
+        }
     }
 
     private hasReadyPresentationResources(): boolean {
@@ -1501,6 +1790,10 @@ export default class WebGPUPresenter {
             && (
                 this.settings.mode === 'identity-sdr'
                 || this.renderSettingsUniformBuffer !== null
+            )
+            && (
+                this.activeInputMode !== 'raw-dolby-vision'
+                || this.dolbyVisionRPUStorageBuffer !== null
             );
     }
 
@@ -1627,7 +1920,7 @@ export default class WebGPUPresenter {
         const presentationUniformBuffer = this.presentationUniformBuffer;
         const renderSettingsUniformBuffer = this.renderSettingsUniformBuffer;
         if (
-            this.activeInputMode !== 'raw-yuv'
+            this.activeInputMode === 'external-texture'
             || this.activeRawFrameFormat !== frame.format
             || !surface
             || !canvas
@@ -1659,6 +1952,9 @@ export default class WebGPUPresenter {
         try {
             const renderResult = renderRawYUVFrame({
                 device,
+                dolbyVisionRPUStorageBuffer: this.activeInputMode === 'raw-dolby-vision' ?
+                    this.dolbyVisionRPUStorageBuffer ?? undefined :
+                    undefined,
                 frame,
                 pipeline,
                 presentation: layout.presentation,
@@ -2039,7 +2335,7 @@ export default class WebGPUPresenter {
         const video = this.surface?.video;
         if (
             !this.isCurrent(generation)
-            || this.activeInputMode === 'raw-yuv'
+            || this.activeInputMode !== 'external-texture'
             || !video
             || video.readyState < VIDEO_READY_STATE_CURRENT_DATA
             || !this.canvas
@@ -2136,6 +2432,16 @@ export default class WebGPUPresenter {
         }
     }
 
+    private destroyDolbyVisionRPUStorageBuffer(): void {
+        const storageBuffer = this.dolbyVisionRPUStorageBuffer;
+        this.dolbyVisionRPUStorageBuffer = null;
+        try {
+            storageBuffer?.destroy();
+        } catch (error) {
+            console.warn('Unable to destroy WebGPU Dolby Vision RPU buffer', error);
+        }
+    }
+
     private async handleDeviceLoss(lostDevice: GPUDevice, deviceLostInfo: GPUDeviceLostInfo): Promise<void> {
         if (this.device !== lostDevice) {
             return;
@@ -2148,6 +2454,7 @@ export default class WebGPUPresenter {
         this.unbindResizeHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
+        this.destroyDolbyVisionRPUStorageBuffer();
         this.device = null;
         this.pipeline = null;
         this.pipelineShaderCode = null;
@@ -2180,10 +2487,20 @@ export default class WebGPUPresenter {
             return;
         }
 
-        if (
-            this.activeInputMode === 'raw-yuv'
-            && !await this.reauthorizeRawHDRPresentation(generation)
-        ) {
+        let presentationReauthorized = true;
+        switch (this.activeInputMode) {
+            case 'external-texture':
+                break;
+            case 'raw-dolby-vision':
+                presentationReauthorized = await this.reauthorizeDolbyVisionPresentation(
+                    generation
+                ) && this.createDolbyVisionRPUStorageBuffer();
+                break;
+            case 'raw-yuv':
+                presentationReauthorized = await this.reauthorizeRawHDRPresentation(generation);
+                break;
+        }
+        if (!presentationReauthorized) {
             if (this.isCurrent(generation) && !this.fallbackLatched) {
                 this.fallback(generation, 'device-recovery-failed');
             }
@@ -2247,6 +2564,40 @@ export default class WebGPUPresenter {
         );
     }
 
+    private async reauthorizeDolbyVisionPresentation(
+        generation: number
+    ): Promise<boolean> {
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        const rawFrameFormat = this.activeRawFrameFormat;
+        if (
+            !device
+            || !targetFormat
+            || !rawFrameFormat
+            || this.settings.mode !== 'hdr-to-sdr'
+        ) {
+            return false;
+        }
+        const decision = await this.dolbyVisionAuthorization.authorize(
+            device,
+            targetFormat
+        );
+        if (
+            !this.isCurrent(generation)
+            || this.fallbackLatched
+            || this.device !== device
+            || decision.status !== 'authorized'
+        ) {
+            return false;
+        }
+        return this.dolbyVisionAuthorization.isAuthorized(
+            device,
+            targetFormat,
+            this.settings,
+            rawFrameFormat
+        );
+    }
+
     private handleUncapturedError(device: GPUDevice, event: GPUUncapturedErrorEvent): void {
         if (this.device !== device) {
             return;
@@ -2277,9 +2628,11 @@ export default class WebGPUPresenter {
         this.unbindResizeHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
+        this.destroyDolbyVisionRPUStorageBuffer();
         this.decodedFrameProvider = null;
         this.decodedFramePushActive = false;
         this.activeInputColorMetadata = null;
+        this.activeDolbyVisionProfile = null;
         this.activeInputMode = 'external-texture';
         this.activeRawFrameFormat = null;
         this.surface = null;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+    getExpectedRetentionAudioObjectCounts,
     median,
     nearestRankPercentile,
     p95,
@@ -412,6 +413,28 @@ test('accepts release DOM limits and an empty optional live-object record', () =
 
     assert.equal(completeResult.passed, true);
     assert.equal(emptyResult.passed, true);
+});
+
+test('defines absolute retained audio totals for each supported output path', () => {
+    assert.deepEqual(getExpectedRetentionAudioObjectCounts('ready'), {
+        expectedAudioContextCount: 1,
+        expectedAudioWorkletNodeCount: 1,
+        expectedAudioWorkletProcessorCount: 1
+    });
+    assert.deepEqual(getExpectedRetentionAudioObjectCounts('native-media'), {
+        expectedAudioContextCount: null,
+        expectedAudioWorkletNodeCount: 0,
+        expectedAudioWorkletProcessorCount: 0
+    });
+    assert.deepEqual(getExpectedRetentionAudioObjectCounts('disabled'), {
+        expectedAudioContextCount: null,
+        expectedAudioWorkletNodeCount: 0,
+        expectedAudioWorkletProcessorCount: 0
+    });
+    assert.throws(
+        () => getExpectedRetentionAudioObjectCounts('automatic'),
+        /disabled, native-media, or ready/u
+    );
 });
 
 test('requires the reusable AudioWorkletNode count to match its expected bound', () => {

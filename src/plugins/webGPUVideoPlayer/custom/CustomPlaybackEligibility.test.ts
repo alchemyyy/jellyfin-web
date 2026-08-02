@@ -542,6 +542,63 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
+    it('selects raw-plane output only for an authorized single-layer Dolby Vision source', () => {
+        const dolbyVisionOptions = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        BitDepth: 10,
+                        BitRate: 24_000_000,
+                        BlPresentFlag: true,
+                        Codec: 'hevc',
+                        DvBlSignalCompatibilityId: 0,
+                        DvProfile: 5,
+                        ElPresentFlag: false,
+                        Height: 2_076,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 150,
+                        Profile: 'Main 10',
+                        RealFrameRate: 24,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVI',
+                        Width: 3_840
+                    },
+                    { Channels: 2, Codec: 'flac', Index: 1, SampleRate: 48_000, Type: 'Audio' }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            dolbyVisionOptions,
+            createCapabilities(),
+            {
+                allowDolbyVision: false,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(
+            dolbyVisionOptions,
+            createCapabilities(),
+            {
+                allowDolbyVision: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            hdr: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
     it.each([
         { codec: 'h264', label: 'H264' },
         { codec: 'hevc', label: 'HEVC' }

@@ -1,10 +1,74 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    getDolbyVisionPresentationDescriptor,
     getPresentationInputColorMetadata,
     isKnownSDRPresentationInput,
     parseVideoStreamColorMetadata
 } from './PresentationInput';
+
+describe('getDolbyVisionPresentationDescriptor', () => {
+    it('accepts exact single-layer Profile 5 metadata', () => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 5,
+                    ElPresentFlag: false,
+                    RpuPresentFlag: true,
+                    Type: 'Video'
+                }]
+            }
+        })).toEqual({
+            baseLayerBitDepth: 10,
+            baseLayerSignalCompatibilityID: 0,
+            profile: 5
+        });
+    });
+
+    it.each([ 1, 4 ])('accepts Profile 8 compatibility ID %i', compatibilityID => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: '1',
+                    DvBlSignalCompatibilityId: compatibilityID,
+                    DvProfile: '8',
+                    RpuPresentFlag: 1,
+                    Type: 'Video'
+                }]
+            }
+        })).toMatchObject({
+            baseLayerSignalCompatibilityID: compatibilityID,
+            profile: 8
+        });
+    });
+
+    it.each([
+        { DvProfile: 7 },
+        { DvProfile: 5, ElPresentFlag: true },
+        { DvProfile: 5, RpuPresentFlag: false },
+        { BlPresentFlag: false, DvProfile: 5 },
+        { BitDepth: 12, DvProfile: 5 },
+        { DvBlSignalCompatibilityId: 2, DvProfile: 8 },
+        { DvBlSignalCompatibilityId: 'invalid', DvProfile: 5 }
+    ])('rejects an unsupported Dolby Vision descriptor: %o', metadata => {
+        expect(getDolbyVisionPresentationDescriptor({
+            mediaSource: {
+                MediaStreams: [{
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    ElPresentFlag: false,
+                    RpuPresentFlag: true,
+                    Type: 'Video',
+                    ...metadata
+                }]
+            }
+        })).toBeNull();
+    });
+});
 
 describe('isKnownSDRPresentationInput', () => {
     it('accepts explicitly identified SDR video input', () => {

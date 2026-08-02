@@ -46,6 +46,7 @@ export type RawYUVRenderResources = {
 
 export type RawYUVRenderRequest = RawYUVRenderResources & {
     device: GPUDevice
+    dolbyVisionRPUStorageBuffer?: GPUBuffer
     frame: TransferableRawVideoFrame
     presentation: RawYUVTexturePresentation
     targetView: GPUTextureView
@@ -398,6 +399,12 @@ export function renderRawYUVFrame(request: RawYUVRenderRequest): RawYUVRenderRes
             binding: request.frame.format === 'NV12' ? 3 : 4,
             resource: { buffer: request.renderSettingsUniformBuffer }
         });
+        if (request.dolbyVisionRPUStorageBuffer) {
+            bindGroupEntries.push({
+                binding: 5,
+                resource: { buffer: request.dolbyVisionRPUStorageBuffer }
+            });
+        }
         const bindGroup = request.device.createBindGroup({
             entries: bindGroupEntries,
             layout: request.pipeline.getBindGroupLayout(0)

@@ -755,6 +755,27 @@ function getExpectedCount(options, propertyName, label) {
     return expectedCount;
 }
 
+/** Returns exact stopped-page audio resource totals for the selected output path. */
+export function getExpectedRetentionAudioObjectCounts(expectedAudioPath) {
+    switch (expectedAudioPath) {
+        case 'ready':
+            return {
+                expectedAudioContextCount: 1,
+                expectedAudioWorkletNodeCount: 1,
+                expectedAudioWorkletProcessorCount: 1
+            };
+        case 'disabled':
+        case 'native-media':
+            return {
+                expectedAudioContextCount: null,
+                expectedAudioWorkletNodeCount: 0,
+                expectedAudioWorkletProcessorCount: 0
+            };
+        default:
+            throw new TypeError('Expected audio path must be disabled, native-media, or ready');
+    }
+}
+
 function validateLiveObjectCountSeries(
     name,
     observations,

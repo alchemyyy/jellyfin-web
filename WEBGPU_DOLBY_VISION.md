@@ -1,7 +1,8 @@
 # WebGPU Dolby Vision Implementation Record
 
-Status: research, HEVC packet ownership, bounded RPU parsing, and timestamped
-metadata integration complete; runtime shader reconstruction pending
+Status: single-layer Profile 5 and 8 reconstruction, exact-device runtime
+authorization, and capability gating implemented; Profile 7 enhancement-layer
+reconstruction pending
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -51,7 +52,7 @@ The Profile 7 work landed in May 2026, after the v0.41.0 release. It is in
 current mpv development sources but not the latest stable release as of the
 research date.
 
-## Implemented parser and metadata checkpoint
+## Implemented single-layer reconstruction checkpoint
 
 The repository now contains a pinned `wasm32-unknown-unknown` wrapper around
 libdovi revision `38adec045bf183c24df38149836c920398072281`. It has no WASM
@@ -91,9 +92,22 @@ enhancement access unit under protocol schema version 2. Raw RPU bytes remain
 worker-internal. Stop, seek, failure, and generation retirement reset and close
 the parser exactly once.
 
-This checkpoint still does not advertise Dolby Vision or alter presentation.
-The next integration step is the libplacebo-equivalent WGSL reconstruction
-route, followed by frame-level conformance validation before eligibility changes.
+The presentation path now consumes those snapshots through a fixed WebGPU
+storage buffer and follows libplacebo's reshape, nonlinear matrix, PQ EOTF,
+RGB-to-LMS, HPE LMS-to-BT.2020, and PQ OETF order. Profile 5 and single-layer
+Profile 8 are represented by a separate presentation descriptor rather than by
+overloading ordinary PQ or HLG metadata.
+
+The route is fail-closed. It requires an exact per-frame RPU, 10-bit I420 raw
+output, no enhancement-layer payload, a supported profile, and a successful
+exact-device GPU authorization fixture. The player advertises Jellyfin's DOVI
+range types only when the parser, raw HEVC route, shader, target format, and
+current GPU have passed that authorization. Device recovery repeats
+authorization and creates a new per-frame storage buffer before presentation
+resumes.
+
+The next implementation step is Profile 7 MEL/FEL enhancement-layer pairing
+and LINEAR_DZ residual composition. Profile 7 remains unadvertised.
 
 ## Profile support matrix
 
@@ -330,47 +344,28 @@ sanitization and leading RASL handling, bounds its decode and decoded-sample
 queues, and passes a natural-EOF Chrome smoke test with 240 decoded and
 presented frames.
 
-This completes packet ownership, decode-order parsing, and exact-PTS metadata
-transfer. The parsed RPU is not yet applied by a shader, so Dolby Vision remains
-ineligible. Profile 5 must stay rejected until reconstruction validation is
-complete.
+This completes packet ownership, decode-order parsing, exact-PTS metadata
+transfer, and single-layer shader consumption. A missing, duplicate, stale, or
+incompatible RPU causes the Dolby Vision presentation route to fail closed.
 
-### Dolby Vision is deliberately rejected
+### Single-layer Dolby Vision is separately modeled and authorized
 
 [`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)
-currently detects Dolby Vision but does not model it:
-
-- `resolveTransfer`, lines 196-228, rejects a Dolby Vision transfer.
-- `hasDolbyVisionMetadata`, lines 252-262, detects all Jellyfin DV fields and
-  flags.
-- `parseVideoStreamColorMetadata`, lines 268-319, returns `null` for any Dolby
-  Vision stream.
-
-This is correct until the RPU path exists. Removing the rejection alone would
-make Profile 5 render incorrectly.
-
-[`ColorMetadata.ts`](./src/plugins/webGPUVideoPlayer/color/ColorMetadata.ts)
-defines only `sdr`, `pq`, and `hlg`. Dolby Vision requires a separate structured
-input model rather than another transfer-string value.
+returns a dedicated descriptor only for 10-bit Profile 5 and single-layer
+Profile 8 with supported BL compatibility IDs. Ordinary color metadata remains
+limited to `sdr`, `pq`, and `hlg`; Dolby Vision is not misrepresented as one of
+those standard transfers.
 
 [`CustomPlaybackEligibility.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.ts)
-uses `getPresentationInputColorMetadata` in `selectVideoOutput`, lines 587-660.
-The current Dolby Vision rejection becomes `metadata-unsupported`.
+selects raw I420P10 HEVC output only when exact-device Dolby Vision
+authorization is active. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
+then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the authorized
+HEVC route. Profile 7 and enhancement-layer streams remain rejected.
 
-[`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
-maps authorized raw HDR routes only to `HLG` and `HDR10` in
-`getAuthorizedRawHDRVideoRangeTypes`, lines 116-134.
-
-[`RawHDRPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/RawHDRPresentationAuthorization.ts)
-defines only these raw routes at lines 53-60:
-
-```text
-I420P10:bt2020-ncl:bt2020:limited:pq
-I420P10:bt2020-ncl:bt2020:limited:hlg
-```
-
-No `DOVI` range should be added to the Jellyfin device profile until the exact
-profile, container, decoder, parser, and shader route passes validation.
+[`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
+runs a bounded exact-device shader fixture and records authorization telemetry.
+Authorization is scoped to the GPU device and target format and is repeated
+after device loss.
 
 ### The HEVC decode path now exposes parsed Dolby Vision data
 
@@ -412,17 +407,14 @@ Profile 5 must therefore use an explicit Dolby Vision descriptor and validate
 that `VideoFrame.copyTo()` preserves the decoded component code values. It must
 not trust `VideoFrame.colorSpace` to describe the RPU representation.
 
-### The current shader starts with a conventional YUV matrix
+### The shader reconstructs before the ordinary HDR pipeline
 
+[`DolbyVisionColorTransform.ts`](./src/plugins/webGPUVideoPlayer/color/DolbyVisionColorTransform.ts)
+implements the fixed-schema CPU reference and equivalent WGSL reconstruction.
 [`ColorPipelineShader.ts`](./src/plugins/webGPUVideoPlayer/color/ColorPipelineShader.ts)
-generates conventional range normalization and BT.709/BT.2020 YUV-to-RGB
-matrices in `createRawYUVRangeWGSL` and `createRawYUVMatrixWGSL`, around lines
-268-313. Dolby Vision reconstruction must branch before that conventional
-matrix and consume the per-frame RPU reshape and matrices instead.
-
-The existing raw-frame upload, standard PQ EOTF, linear-nits working space,
-gamut conversion, tone map, display controls, and dither stages remain useful
-after Dolby Vision has been reconstructed to BT.2020/PQ.
+branches before the conventional YUV matrix for raw Dolby Vision, reconstructs
+BT.2020/PQ, and then reuses the existing linear-nits, gamut mapping, tone map,
+display controls, and dither stages.
 
 ### Container metadata is incomplete
 
@@ -516,8 +508,8 @@ The following HEVC packet steps apply to both native and bundled decoders:
 7. Join each output `VideoFrame.timestamp` to the corresponding snapshot.
 8. Bound all pending metadata and decoder-output queues.
 
-Steps 1-5 and 8 are implemented. Step 7 currently joins encoded metadata;
-steps 6-7 must be extended to immutable parsed RPU snapshots.
+All eight steps are implemented for the base-layer decoder. Enhancement-layer
+decode and pairing are separate Stage 4 work.
 
 A small WASM wrapper over MIT-licensed libdovi is the preferred parser starting
 point. Its C API exposes the RPU header, mapping data, and display-management
@@ -533,6 +525,10 @@ verified key packet, and process all packets from that point. A stale parser
 snapshot must never attach to a later generation.
 
 ### Stage 2: Profile 5 and 8.x WebGPU reconstruction
+
+Status: implemented for Profile 5 and supported single-layer Profile 8
+descriptors, with exact-device authorization and fail-closed per-frame RPU
+validation.
 
 Extend the decoded raw presentation protocol with an immutable per-frame DV
 snapshot containing:
@@ -654,8 +650,16 @@ with each presentation timestamp.
 
 ### Shader golden tests
 
-Generate golden frames with the pinned mpv, FFmpeg, and libplacebo revisions.
-Compare at these boundaries:
+The CPU reconstruction test parses the checked-in `profile84.bin` fixture and
+compares six input triplets against `pl_shader_decode_color_ex` output from
+libplacebo revision `4d82c6898551068d4ae6a6b5538efcddc2c7cf64`. The reference
+was rendered into a Vulkan float target with 10-bit input representation. The
+maximum absolute component error is `1e-5`, which covers the expected
+JavaScript double-versus-GPU float evaluation difference without hiding a
+10-bit code-value error.
+
+Continue generating golden frames with the pinned mpv, FFmpeg, and libplacebo
+revisions. Compare at these boundaries:
 
 1. normalized BL components;
 2. RPU reshape output;

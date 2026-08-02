@@ -7,6 +7,11 @@ const rawHDRAuthorizationMockState = vi.hoisted(() => ({
     authorized: true,
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
+const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
+    authorizeCalls: [] as GPUDevice[],
+    authorized: true,
+    prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
+}));
 
 vi.mock('scripts/settings/webSettings', () => ({
     getWebGPUHDRToneMappingEnabled: vi.fn(
@@ -51,13 +56,49 @@ vi.mock('./validation/RawHDRPresentationAuthorization', () => ({
     }
 }));
 
+vi.mock('./validation/DolbyVisionPresentationAuthorization', () => ({
+    DolbyVisionPresentationAuthorizationRegistry: class MockDolbyVisionAuthorizationRegistry {
+        authorize = vi.fn(async (device: GPUDevice) => {
+            dolbyVisionAuthorizationMockState.authorizeCalls.push(device);
+            return {
+                status: dolbyVisionAuthorizationMockState.authorized ? 'authorized' : 'rejected'
+            };
+        });
+
+        prewarm = vi.fn((device: GPUDevice, targetFormat: GPUTextureFormat): void => {
+            dolbyVisionAuthorizationMockState.prewarmCalls.push({ device, targetFormat });
+        });
+
+        waitForPending = vi.fn((): Promise<void> => Promise.resolve());
+
+        isAuthorized = vi.fn((): boolean => dolbyVisionAuthorizationMockState.authorized);
+
+        getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
+            failureReason: dolbyVisionAuthorizationMockState.authorized ? null : 'pixel-mismatch',
+            fixtureVersion: 1,
+            maximumChannelError: dolbyVisionAuthorizationMockState.authorized ? 0 : 1,
+            renderSettingsVersion: 4,
+            routeKey: 'I420P10:dovi-rpu-v1',
+            sampleCount: 4,
+            status: dolbyVisionAuthorizationMockState.authorized ? 'authorized' : 'rejected',
+            targetFormat
+        }));
+    }
+}));
+
 import { createPQColorMetadata, type InputColorMetadata } from './color/ColorMetadata';
 import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from './custom/RawVideoFrameCopy';
+import {
+    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
+    type TransferableDolbyVisionEncodedFrameMetadata
+} from './custom/DolbyVisionEncodedMetadataProtocol';
+import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from './custom/DolbyVisionRPUParser';
 import { microsecondsToMilliseconds, secondsToMicroseconds } from './MediaTime';
 import { createHDRToSDRRenderSettings } from './RenderSettings';
+import { createDolbyVisionAuthorizationRPUFixture } from './validation/DolbyVisionAuthorizationFixture';
 import WebGPUPresenter, {
     type PresentationSurface,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
@@ -174,6 +215,7 @@ function createDeviceHarness(): DeviceHarness {
     const createShaderModule = vi.fn(() => ({}));
     const createBindGroup = vi.fn(() => ({}));
     const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => ({
+        destroy: vi.fn(),
         label: descriptor.label
     }));
     const textureDestroy = vi.fn();
@@ -408,6 +450,17 @@ function createRawFrame(
     };
 }
 
+function createDolbyVisionEncodedMetadata(
+    packedRPUData = createDolbyVisionAuthorizationRPUFixture()
+): TransferableDolbyVisionEncodedFrameMetadata {
+    return {
+        enhancementLayerData: null,
+        hasEnhancementLayerVCL: false,
+        parsedRPUData: [ packedRPUData ],
+        schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+    };
+}
+
 function installGPU(gpu: GPU): void {
     Object.defineProperty(navigator, 'gpu', {
         configurable: true,
@@ -441,6 +494,9 @@ describe('WebGPUPresenter', () => {
         webSettingsMockState.hdrToneMappingEnabled = false;
         rawHDRAuthorizationMockState.authorized = true;
         rawHDRAuthorizationMockState.prewarmCalls = [];
+        dolbyVisionAuthorizationMockState.authorizeCalls = [];
+        dolbyVisionAuthorizationMockState.authorized = true;
+        dolbyVisionAuthorizationMockState.prewarmCalls = [];
         Object.defineProperty(window, 'isSecureContext', {
             configurable: true,
             value: true
@@ -453,7 +509,7 @@ describe('WebGPUPresenter', () => {
             configurable: true,
             // WebGPU defines these external names
             // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 8, UNIFORM: 64 }
+            value: { COPY_DST: 8, STORAGE: 128, UNIFORM: 64 }
         });
         Object.defineProperty(globalThis, 'GPUValidationError', {
             configurable: true,
@@ -1042,6 +1098,159 @@ describe('WebGPUPresenter', () => {
         expect(deviceHarness.textureDestroy).toHaveBeenCalledTimes(6);
     });
 
+    it('uploads, binds, and releases exactly one per-frame Dolby Vision RPU', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 8,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: { inputPeakNits: 4_000 }
+            })
+        }, 1)).resolves.toBe(true);
+
+        const deviceHarness = gpuHarness.devices[0];
+        const RPUBufferCallIndex = deviceHarness.createBuffer.mock.calls.findIndex(
+            (call: unknown[]) => (
+                (call[0] as GPUBufferDescriptor).label === 'WebGPU Dolby Vision per-frame RPU'
+            )
+        );
+        expect(RPUBufferCallIndex).toBeGreaterThanOrEqual(0);
+        const RPUBufferDescriptor = deviceHarness.createBuffer.mock.calls[
+            RPUBufferCallIndex
+        ][0] as GPUBufferDescriptor;
+        expect(RPUBufferDescriptor).toMatchObject({
+            size: DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
+        });
+        const RPUBuffer = deviceHarness.createBuffer.mock.results[RPUBufferCallIndex].value as {
+            destroy: MockFunction
+            label: string
+        };
+        deviceHarness.queueWriteBuffer.mockClear();
+
+        const packedRPUData = createDolbyVisionAuthorizationRPUFixture();
+        const rawFrame = createRawFrame('I420P10', createPQColorMetadata());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: rawFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(packedRPUData),
+            frame: rawFrame,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+
+        const RPUWrite = deviceHarness.queueWriteBuffer.mock.calls.find(
+            (call: unknown[]) => call[0] === RPUBuffer
+        );
+        expect(RPUWrite).toBeDefined();
+        expect(RPUWrite?.[1]).toBe(0);
+        expect(RPUWrite?.[2]).toBe(packedRPUData);
+        const bindGroupDescriptor = deviceHarness.createBindGroup.mock.calls.at(-1)?.[0] as {
+            entries: GPUBindGroupEntry[]
+        };
+        expect(bindGroupDescriptor.entries.map(entry => entry.binding))
+            .toEqual([ 0, 1, 2, 3, 4, 5 ]);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+
+        presenter.endSession(2);
+        expect(RPUBuffer.destroy).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        {
+            name: 'missing metadata',
+            profile: 8 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata | undefined => undefined
+        },
+        {
+            name: 'multiple RPUs',
+            profile: 8 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
+                ...createDolbyVisionEncodedMetadata(),
+                parsedRPUData: [
+                    createDolbyVisionAuthorizationRPUFixture(),
+                    createDolbyVisionAuthorizationRPUFixture()
+                ]
+            })
+        },
+        {
+            name: 'enhancement-layer data',
+            profile: 8 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
+                ...createDolbyVisionEncodedMetadata(),
+                enhancementLayerData: new ArrayBuffer(1),
+                hasEnhancementLayerVCL: true
+            })
+        },
+        {
+            name: 'an incompatible protocol schema',
+            profile: 8 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => ({
+                ...createDolbyVisionEncodedMetadata(),
+                schemaVersion: 1
+            } as unknown as TransferableDolbyVisionEncodedFrameMetadata)
+        },
+        {
+            name: 'an RPU profile mismatch',
+            profile: 5 as const,
+            toMetadata: (): TransferableDolbyVisionEncodedFrameMetadata => (
+                createDolbyVisionEncodedMetadata()
+            )
+        }
+    ])('fails closed for $name in a Dolby Vision frame', async ({ profile, toMetadata }) => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+        const rawFrame = createRawFrame('I420P10', createPQColorMetadata());
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: rawFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: toMetadata(),
+            frame: rawFrame,
+            mediaTimeMicroseconds: rawFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(false);
+        expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'dolby-vision-metadata-invalid'
+        );
+        expect(gpuHarness.devices[0].queueWriteTexture).not.toHaveBeenCalled();
+    });
+
     it('rejects malformed raw frame layouts before creating or uploading textures', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();
@@ -1174,6 +1383,75 @@ describe('WebGPUPresenter', () => {
 
         gpuHarness.devices[1].lost.resolve({
             message: 'second raw device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
+    });
+
+    it('reauthorizes Dolby Vision presentation on one replacement device', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness(2);
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 8,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+
+        const firstFrame = createRawFrame('I420P10', createPQColorMetadata());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: firstFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(),
+            frame: firstFrame,
+            mediaTimeMicroseconds: firstFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        gpuHarness.devices[0].lost.resolve({
+            message: 'first Dolby Vision device loss',
+            reason: 'unknown'
+        } as GPUDeviceLostInfo);
+        await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1));
+        expect(dolbyVisionAuthorizationMockState.authorizeCalls)
+            .toEqual([ gpuHarness.devices[1].device ]);
+        expect(gpuHarness.devices[1].createBuffer.mock.calls.some(
+            (call: unknown[]) => (
+                (call[0] as GPUBufferDescriptor).label
+                === 'WebGPU Dolby Vision per-frame RPU'
+            )
+        )).toBe(true);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+
+        const recoveredFrame = createRawFrame('I420P10', createPQColorMetadata());
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: recoveredFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(),
+            frame: recoveredFrame,
+            mediaTimeMicroseconds: recoveredFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+
+        gpuHarness.devices[1].lost.resolve({
+            message: 'second Dolby Vision device loss',
             reason: 'unknown'
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());

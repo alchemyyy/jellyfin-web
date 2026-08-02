@@ -34,6 +34,7 @@ import {
 } from './browser-smoke-helpers.mjs';
 import { collectCDPRetentionSnapshot } from './cdp-retention-snapshot.mjs';
 import {
+    getExpectedRetentionAudioObjectCounts,
     validateDOMAndObjectCountSeries,
     validateHTMLVersusCustomStartupSamples,
     validateHTMLVersusPresentationStartupSamples,
@@ -965,11 +966,19 @@ function createPlayerSnapshotExpression(accessKey) {
         const presentation = typeof player.getPresentationTelemetry === 'function'
             ? player.getPresentationTelemetry()
             : null;
-        const rawHDRAuthorization = customEligibility?.eligible === true
+        const presentationInputMode = player.presenter?.activeInputMode ?? null;
+        const rawHDRAuthorization = presentationInputMode === 'raw-yuv'
+            && customEligibility?.eligible === true
             && customEligibility.hdr === true
             && customEligibility.videoOutputMode === 'raw-planes'
             && typeof player.getRawHDRAuthorizationTelemetry === 'function' ?
             player.getRawHDRAuthorizationTelemetry() :
+            null;
+        const dolbyVisionAuthorization = presentationInputMode === 'raw-dolby-vision'
+            && customEligibility?.eligible === true
+            && customEligibility.hdr === true
+            && typeof player.getDolbyVisionAuthorizationTelemetry === 'function' ?
+            player.getDolbyVisionAuthorizationTelemetry() :
             null;
         const activeRawFrameFormat = player.presenter?.activeRawFrameFormat;
         const activeRawColorMetadata = player.presenter?.activeInputColorMetadata;
@@ -1134,6 +1143,7 @@ function createPlayerSnapshotExpression(accessKey) {
             nativeMediaAudioCapabilities,
             performanceNowMilliseconds: performance.now(),
             playerID: String(player.id || ''),
+            presentationInputMode,
             sessionGeneration: Number.isSafeInteger(player.backendSessionGeneration)
                 ? player.backendSessionGeneration
                 : null,
@@ -1158,6 +1168,16 @@ function createPlayerSnapshotExpression(accessKey) {
                 renderSettingsVersion: rawHDRAuthorization.renderSettingsVersion,
                 status: rawHDRAuthorization.status,
                 targetFormat: rawHDRAuthorization.targetFormat
+            } : null,
+            dolbyVisionValidation: dolbyVisionAuthorization ? {
+                failureReason: dolbyVisionAuthorization.failureReason,
+                fixtureVersion: dolbyVisionAuthorization.fixtureVersion,
+                maximumChannelError: dolbyVisionAuthorization.maximumChannelError,
+                renderSettingsVersion: dolbyVisionAuthorization.renderSettingsVersion,
+                routeKey: dolbyVisionAuthorization.routeKey,
+                sampleCount: dolbyVisionAuthorization.sampleCount,
+                status: dolbyVisionAuthorization.status,
+                targetFormat: dolbyVisionAuthorization.targetFormat
             } : null,
             rawHDRPlaybackRouteKey,
             stoppedEventCount: capture.eventCounts.stopped,
@@ -1684,6 +1704,19 @@ async function createStartupConfigurationInterceptor(client, configuration) {
 }
 
 function hasAuthorizedRawHDRPlaybackRoute(snapshot) {
+    if (snapshot?.presentationInputMode === 'raw-dolby-vision') {
+        const authorization = snapshot.dolbyVisionValidation;
+        return authorization?.status === 'authorized'
+            && (authorization.targetFormat === 'bgra8unorm'
+                || authorization.targetFormat === 'rgba8unorm')
+            && Number.isSafeInteger(authorization.fixtureVersion)
+            && authorization.fixtureVersion > 0
+            && Number.isSafeInteger(authorization.renderSettingsVersion)
+            && authorization.renderSettingsVersion > 0
+            && authorization.routeKey === 'I420P10:dovi-rpu-v1'
+            && Number.isSafeInteger(authorization.sampleCount)
+            && authorization.sampleCount > 0;
+    }
     const authorization = snapshot?.rawHDRValidation;
     const routeKey = snapshot?.rawHDRPlaybackRouteKey;
     return authorization?.status === 'authorized'
@@ -2903,62 +2936,6 @@ function createAvailablePerformanceObjectSeries(sessionObservations, failures) {
     return performanceObjectCounts;
 }
 
-function requireRetentionBaselineCount(value, failureCode, failures) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-        failures.push(failureCode);
-        return null;
-    }
-    return value;
-}
-
-function addExpectedRetentionCount(baselineCount, additionalCount) {
-    if (baselineCount === null) {
-        return null;
-    }
-    const expectedCount = baselineCount + additionalCount;
-    if (!Number.isSafeInteger(expectedCount)) {
-        throw new SmokeHarnessError(
-            'retention-baseline-count-overflow',
-            'A retention baseline resource count cannot be incremented safely'
-        );
-    }
-    return expectedCount;
-}
-
-function getExpectedRetentionAudioCounts(
-    expectedAudioPath,
-    baselineAudioContextCount,
-    baselineAudioWorkletNodeCount,
-    baselineAudioWorkletProcessorCount
-) {
-    let audioContextIncrement = null;
-    let workletIncrement = 0;
-    switch (expectedAudioPath) {
-        case 'ready':
-            audioContextIncrement = 1;
-            workletIncrement = 1;
-            break;
-        case 'native-media':
-            audioContextIncrement = 0;
-            break;
-        case 'disabled':
-            break;
-    }
-    return {
-        expectedAudioContextCount: audioContextIncrement === null ?
-            null :
-            addExpectedRetentionCount(baselineAudioContextCount, audioContextIncrement),
-        expectedAudioWorkletNodeCount: addExpectedRetentionCount(
-            baselineAudioWorkletNodeCount,
-            workletIncrement
-        ),
-        expectedAudioWorkletProcessorCount: addExpectedRetentionCount(
-            baselineAudioWorkletProcessorCount,
-            workletIncrement
-        )
-    };
-}
-
 function validateRetentionSoakObservations(
     sessionObservations,
     requiredSessionCount,
@@ -3069,30 +3046,12 @@ async function runRetentionSoak(options) {
     } else if (baselineCustomWorkerCount !== 0) {
         failures.push('retention-baseline:custom-decode-worker-active');
     }
-    const baselineAudioContextCount = requireRetentionBaselineCount(
-        prePlaybackRetentionSnapshot.liveObjects.AudioContext?.count,
-        'retention-baseline:audio-context-count-unavailable',
-        failures
-    );
-    const baselineAudioWorkletNodeCount = requireRetentionBaselineCount(
-        prePlaybackRetentionSnapshot.liveObjects.AudioWorkletNode?.count,
-        'retention-baseline:audio-worklet-node-count-unavailable',
-        failures
-    );
-    const baselineAudioWorkletProcessorCount = requireRetentionBaselineCount(
-        prePlaybackRetentionSnapshot.performanceMetrics.counts.AudioWorkletProcessors,
-        'retention-baseline:audio-worklet-processor-count-unavailable',
-        failures
-    );
     const {
         expectedAudioContextCount,
         expectedAudioWorkletNodeCount,
         expectedAudioWorkletProcessorCount
-    } = getExpectedRetentionAudioCounts(
-        options.configuration.expectedAudioPath,
-        baselineAudioContextCount,
-        baselineAudioWorkletNodeCount,
-        baselineAudioWorkletProcessorCount
+    } = getExpectedRetentionAudioObjectCounts(
+        options.configuration.expectedAudioPath
     );
     for (
         let sessionNumber = 1;

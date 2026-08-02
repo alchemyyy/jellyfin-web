@@ -6,8 +6,10 @@ import {
 } from '../RenderSettings';
 import {
     assertValidInputColorMetadata,
+    createPQColorMetadata,
     type InputColorMetadata
 } from './ColorMetadata';
+import { createDolbyVisionColorTransformWGSL } from './DolbyVisionColorTransform';
 
 function toWGSLFloat(value: number): string {
     if (!Number.isFinite(value)) {
@@ -224,6 +226,12 @@ fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
 }
 
 export type RawYUVVideoFrameFormat = 'I420' | 'I420P10' | 'I420P12' | 'NV12';
+export type RawDolbyVisionVideoFrameFormat = Extract<
+    RawYUVVideoFrameFormat,
+    'I420P10' | 'I420P12'
+>;
+
+const DOLBY_VISION_OUTPUT_METADATA = createPQColorMetadata({ range: 'full' });
 
 function createRenderSettingsUniformWGSL(
     settings: RenderSettings,
@@ -536,6 +544,69 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     let normalizedYUV = normalizeRawYUV(sampleRawYUV(textureCoordinate));
     let encodedRGB = convertRawYUVToEncodedRGB(normalizedYUV);
     return vec4f(processColor(encodedRGB, input.position.xy), 1.0);
+}
+`;
+}
+
+/** Generates the per-frame RPU reconstruction and HDR-to-SDR presentation shader. */
+export function createRawDolbyVisionColorPipelineWGSL(
+    settings: HDRToSDRRenderSettings,
+    format: RawDolbyVisionVideoFrameFormat
+): string {
+    assertValidRenderSettings(settings);
+
+    return /* wgsl */ `
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) textureCoordinate: vec2f,
+}
+
+struct PresentationUniforms {
+    textureScale: vec2f,
+    textureOffset: vec2f,
+}
+
+@group(0) @binding(0) var<uniform> presentation: PresentationUniforms;
+${createRawYUVTextureBindingsWGSL(format)}
+${createRenderSettingsUniformWGSL(settings, 4)}
+${createDolbyVisionColorTransformWGSL(5)}
+${createTransferDecodeWGSL(DOLBY_VISION_OUTPUT_METADATA)}
+${createGamutConversionWGSL(DOLBY_VISION_OUTPUT_METADATA)}
+${createToneMapWGSL(settings)}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    let positions = array<vec2f, 6>(
+        vec2f(-1.0, 1.0),
+        vec2f(1.0, 1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(1.0, 1.0),
+        vec2f(1.0, -1.0),
+    );
+    let textureCoordinates = array<vec2f, 6>(
+        vec2f(0.0, 0.0),
+        vec2f(1.0, 0.0),
+        vec2f(0.0, 1.0),
+        vec2f(0.0, 1.0),
+        vec2f(1.0, 0.0),
+        vec2f(1.0, 1.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+    output.textureCoordinate = textureCoordinates[vertexIndex];
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+    let textureCoordinate = input.textureCoordinate * presentation.textureScale
+        + presentation.textureOffset;
+    let encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
+        sampleRawYUV(textureCoordinate)
+    );
+    return vec4f(processColor(encodedBT2020PQ, input.position.xy), 1.0);
 }
 `;
 }
