@@ -178,7 +178,9 @@ function createCapabilities(): CustomDecodeCapabilities {
             maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 24,
             maximumLevel: 153,
+            measuredFramesPerSecond: 30,
             profile: 5,
             reason: 'decode-output-verified',
             status: 'supported'
@@ -728,6 +730,91 @@ describe('CustomPlaybackEligibility', () => {
             }
         )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
     });
+
+    it.each([
+        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
+        { expectedEligible: false, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
+        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
+        { expectedEligible: false, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
+        { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
+    ])(
+        'enforces the native Profile 5 $maximumFramesPerSecond fps tier at $streamFrameRate fps',
+        ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
+            const capabilities = createCapabilities();
+            const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
+            if (!nativeDolbyVisionHEVC) {
+                throw new Error('The native Dolby Vision capability fixture is missing');
+            }
+            capabilities.nativeDolbyVisionHEVC = {
+                ...nativeDolbyVisionHEVC,
+                maximumFramesPerSecond,
+                measuredFramesPerSecond: maximumFramesPerSecond > 0 ?
+                    maximumFramesPerSecond * 1.25 :
+                    null
+            };
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    DefaultAudioStreamIndex: 1,
+                    MediaStreams: [
+                        {
+                            BitDepth: 10,
+                            BitRate: 24_000_000,
+                            BlPresentFlag: true,
+                            Codec: 'hevc',
+                            DvBlSignalCompatibilityId: 0,
+                            DvProfile: 5,
+                            ElPresentFlag: false,
+                            Height: 2_076,
+                            Index: 0,
+                            IsInterlaced: false,
+                            Level: 150,
+                            Profile: 'Main 10',
+                            RealFrameRate: streamFrameRate,
+                            RpuPresentFlag: true,
+                            Type: 'Video',
+                            VideoRange: 'HDR',
+                            VideoRangeType: 'DOVI',
+                            Width: 3_840
+                        },
+                        {
+                            Channels: 2,
+                            Codec: 'flac',
+                            Index: 1,
+                            SampleRate: 48_000,
+                            Type: 'Audio'
+                        }
+                    ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+
+            const result = getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                {
+                    allowDolbyVision: false,
+                    allowNativeDolbyVision: true,
+                    allowRawHDR: false,
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            );
+
+            expect(result.eligible).toBe(expectedEligible);
+            if (expectedEligible) {
+                expect(result).toMatchObject({
+                    videoDecoderBackend: 'native',
+                    videoOutputMode: 'video-frame'
+                });
+            } else {
+                expect(result).toEqual({
+                    eligible: false,
+                    reason: 'hdr-presentation-unavailable'
+                });
+            }
+        }
+    );
 
     it('requires the separately authorized Profile 7 presentation route', () => {
         const profile7Options = createOptions({

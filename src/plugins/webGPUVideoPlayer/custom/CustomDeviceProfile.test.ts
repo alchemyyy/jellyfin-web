@@ -280,7 +280,9 @@ function createCapabilities(
             maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 24,
             maximumLevel: 153,
+            measuredFramesPerSecond: 30,
             profile: 5,
             reason: nativeDolbyVisionSupported ?
                 'decode-output-verified' :
@@ -1100,59 +1102,103 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(rangeValues.some(value => value?.includes('HLG'))).toBe(false);
     });
 
-    it('advertises only the exact native Profile 5 route when externally authorized', () => {
-        const original = createBaseProfile();
-        original.CodecProfiles = [ {
-            Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
-            Type: 'Video'
-        } ];
+    it.each([ 24 as const, 30 as const, 60 as const ])(
+        'advertises only the exact native Profile 5 route at %i fps',
+        maximumFramesPerSecond => {
+            const original = createBaseProfile();
+            original.CodecProfiles = [ {
+                Codec: 'hevc',
+                Conditions: [ {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                } ],
+                Type: 'Video'
+            } ];
+            const capabilities = createCapabilities([], [ 'aac' ], [], true);
+            const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
+            if (!nativeDolbyVisionHEVC) {
+                throw new Error('The native Dolby Vision capability fixture is missing');
+            }
+            capabilities.nativeDolbyVisionHEVC = {
+                ...nativeDolbyVisionHEVC,
+                maximumFramesPerSecond,
+                measuredFramesPerSecond: maximumFramesPerSecond * 1.25
+            };
+            const result = augmentDeviceProfileForCustomDecode(
+                original,
+                capabilities,
+                { allowNativeDolbyVision: true, allowRawHDR: false }
+            );
+            const nativeProfile = result.profile.CodecProfiles?.find(profile => (
+                profile.Codec === 'hevc'
+                && profile.Conditions?.some(condition => (
+                    condition.Property === 'VideoRangeType'
+                    && condition.Value === 'DOVI'
+                ))
+                && profile.Conditions.some(condition => (
+                    condition.Property === 'IsInterlaced'
+                    && condition.Value === 'false'
+                ))
+            ));
+
+            expect(nativeProfile).toBeDefined();
+            expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    Condition: 'EqualsAny',
+                    Property: 'VideoRangeType',
+                    Value: 'DOVI'
+                }),
+                expect.objectContaining({
+                    Condition: 'LessThanEqual',
+                    Property: 'VideoFramerate',
+                    Value: String(maximumFramesPerSecond)
+                }),
+                expect.objectContaining({
+                    Condition: 'LessThanEqual',
+                    Property: 'VideoBitrate',
+                    Value: '40000000'
+                }),
+                expect.objectContaining({
+                    Condition: 'LessThanEqual',
+                    Property: 'VideoLevel',
+                    Value: '153'
+                }),
+                expect.objectContaining({ Property: 'Width', Value: '3840' }),
+                expect.objectContaining({ Property: 'Height', Value: '2160' })
+            ]));
+            expect(result.profile.CodecProfiles?.some(profile => (
+                profile.Conditions?.some(condition => (
+                    condition.Value?.includes('DOVIWithHDR10')
+                    || condition.Value?.includes('DOVIWithHLG')
+                ))
+            ))).toBe(false);
+        }
+    );
+
+    it('does not advertise native Profile 5 with an invalid frame-rate tier', () => {
+        const capabilities = createCapabilities([], [ 'aac' ], [], true);
+        const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
+        if (!nativeDolbyVisionHEVC) {
+            throw new Error('The native Dolby Vision capability fixture is missing');
+        }
+        capabilities.nativeDolbyVisionHEVC = {
+            ...nativeDolbyVisionHEVC,
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: null
+        };
+
         const result = augmentDeviceProfileForCustomDecode(
-            original,
-            createCapabilities([], [ 'aac' ], [], true),
+            createBaseProfile(),
+            capabilities,
             { allowNativeDolbyVision: true, allowRawHDR: false }
         );
-        const nativeProfile = result.profile.CodecProfiles?.find(profile => (
-            profile.Codec === 'hevc'
-            && profile.Conditions?.some(condition => (
-                condition.Property === 'VideoRangeType'
-                && condition.Value === 'DOVI'
-            ))
-            && profile.Conditions.some(condition => (
-                condition.Property === 'IsInterlaced'
-                && condition.Value === 'false'
-            ))
-        ));
 
-        expect(nativeProfile).toBeDefined();
-        expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                Condition: 'EqualsAny',
-                Property: 'VideoRangeType',
-                Value: 'DOVI'
-            }),
-            expect.objectContaining({
-                Condition: 'LessThanEqual',
-                Property: 'VideoBitrate',
-                Value: '40000000'
-            }),
-            expect.objectContaining({
-                Condition: 'LessThanEqual',
-                Property: 'VideoLevel',
-                Value: '153'
-            }),
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' })
-        ]));
         expect(result.profile.CodecProfiles?.some(profile => (
             profile.Conditions?.some(condition => (
-                condition.Value?.includes('DOVIWithHDR10')
-                || condition.Value?.includes('DOVIWithHLG')
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('DOVI')
             ))
         ))).toBe(false);
     });

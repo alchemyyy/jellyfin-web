@@ -11,7 +11,8 @@ import CustomDecodeCapabilityProbe, {
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
-    getQualifiedRawHDRMaximumFramesPerSecond,
+    getQualifiedHDRMaximumFramesPerSecond,
+    type NativeDolbyVisionVideoOutputProbeResult,
     type RawHDRVideoOutputProbeResult,
     type WebCodecsCapabilityEnvironment
 } from './CustomDecodeCapabilities';
@@ -52,7 +53,7 @@ describe('raw HDR frame-rate qualification', () => {
     ])(
         'maps $measuredFramesPerSecond measured fps to $expected',
         ({ expected, measuredFramesPerSecond }) => {
-            expect(getQualifiedRawHDRMaximumFramesPerSecond(
+            expect(getQualifiedHDRMaximumFramesPerSecond(
                 measuredFramesPerSecond
             )).toBe(expected);
         }
@@ -159,7 +160,11 @@ function createEnvironment(
         };
     });
     const nativeDolbyVisionVideoOutputProbe = vi.fn(
-        async (): Promise<boolean> => nativeDolbyVisionVideoOutputSupported
+        async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
+            maximumFramesPerSecond: nativeDolbyVisionVideoOutputSupported ? 60 : null,
+            measuredFramesPerSecond: nativeDolbyVisionVideoOutputSupported ? 80 : null,
+            outputSupported: nativeDolbyVisionVideoOutputSupported
+        })
     );
     const nativeVideoOutputProbe = vi.fn(async (probeRequest: {
         configuration: VideoDecoderConfig
@@ -272,7 +277,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 0,
             maximumLevel: 153,
+            measuredFramesPerSecond: null,
             profile: 5,
             reason: 'config-unsupported',
             status: 'unsupported'
@@ -1031,11 +1038,29 @@ describe('CustomDecodeCapabilityProbe', () => {
     });
 
     it.each([
-        { outputSupported: true, reason: 'decode-output-verified', status: 'supported' },
-        { outputSupported: false, reason: 'decode-output-missing', status: 'unsupported' }
+        {
+            maximumFramesPerSecond: 60,
+            measuredFramesPerSecond: 80,
+            outputSupported: true,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        },
+        {
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: null,
+            outputSupported: false,
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        }
     ] as const)(
         'requires decoded native Profile 5 output: $status',
-        async ({ outputSupported, reason, status }) => {
+        async ({
+            maximumFramesPerSecond,
+            measuredFramesPerSecond,
+            outputSupported,
+            reason,
+            status
+        }) => {
             const harness = createEnvironment(
                 new Set([ 'hev1.2.4.H150.B0' ]),
                 new Set(),
@@ -1048,6 +1073,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             ).probe();
 
             expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
+                maximumFramesPerSecond,
+                measuredFramesPerSecond,
                 reason,
                 status
             });
@@ -1068,6 +1095,27 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
         }
     );
+
+    it('rejects native Profile 5 output without qualified throughput', async () => {
+        const harness = createEnvironment(
+            new Set([ 'hev1.2.4.H150.B0' ]),
+            new Set()
+        );
+        harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(async () => ({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: 29,
+            outputSupported: true
+        }));
+
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
+            maximumFramesPerSecond: 0,
+            measuredFramesPerSecond: 29,
+            reason: 'throughput-insufficient',
+            status: 'unsupported'
+        });
+    });
 
     it.each([
         {
@@ -1334,17 +1382,74 @@ describe('CustomDecodeCapabilityProbe', () => {
     });
 
     it.each([
-        { codedHeight: 2_160, codedWidth: 3_840, supported: true },
-        { codedHeight: 1_080, codedWidth: 1_920, supported: false }
+        {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            elapsedMilliseconds: 90,
+            expectedFrameCount: 8,
+            expectedMaximumFramesPerSecond: 60,
+            outputSupported: true
+        },
+        {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            elapsedMilliseconds: 140,
+            expectedFrameCount: 8,
+            expectedMaximumFramesPerSecond: 30,
+            outputSupported: true
+        },
+        {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            elapsedMilliseconds: 210,
+            expectedFrameCount: 8,
+            expectedMaximumFramesPerSecond: 24,
+            outputSupported: true
+        },
+        {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            elapsedMilliseconds: 240,
+            expectedFrameCount: 8,
+            expectedMaximumFramesPerSecond: null,
+            outputSupported: true
+        },
+        {
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            elapsedMilliseconds: 90,
+            expectedFrameCount: 1,
+            expectedMaximumFramesPerSecond: null,
+            outputSupported: false
+        },
+        {
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            elapsedMilliseconds: 90,
+            expectedFrameCount: 1,
+            expectedMaximumFramesPerSecond: null,
+            outputSupported: false,
+            timestampOffset: 1
+        }
     ])(
-        'verifies and closes native output at $codedWidth x $codedHeight',
-        async ({ codedHeight, codedWidth, supported }) => {
+        'qualifies native Profile 5 output at $elapsedMilliseconds ms',
+        async ({
+            codedHeight,
+            codedWidth,
+            elapsedMilliseconds,
+            expectedFrameCount,
+            expectedMaximumFramesPerSecond,
+            outputSupported,
+            timestampOffset = 0
+        }) => {
             const closeFrame = vi.fn();
             class FakeVideoFrame {
                 public readonly codedHeight = codedHeight;
                 public readonly codedWidth = codedWidth;
                 public readonly displayHeight = codedHeight;
                 public readonly displayWidth = codedWidth;
+
+                public constructor(public readonly timestamp: number) {}
 
                 public close(): void {
                     closeFrame();
@@ -1361,20 +1466,34 @@ describe('CustomDecodeCapabilityProbe', () => {
                     return;
                 }
 
-                public decode(): void {
-                    this.callbacks.output(new FakeVideoFrame() as unknown as VideoFrame);
+                public decode(chunk: { timestamp: number }): void {
+                    this.callbacks.output(
+                        new FakeVideoFrame(
+                            chunk.timestamp + timestampOffset
+                        ) as unknown as VideoFrame
+                    );
                 }
 
                 public flush(): Promise<void> {
                     return Promise.resolve();
                 }
             }
-            class FakeEncodedVideoChunk {}
+            class FakeEncodedVideoChunk {
+                public readonly timestamp: number;
+
+                public constructor(init: { timestamp: number }) {
+                    this.timestamp = init.timestamp;
+                }
+            }
+            const now = vi.fn()
+                .mockReturnValueOnce(0)
+                .mockReturnValueOnce(elapsedMilliseconds);
             vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
             vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+            vi.stubGlobal('performance', { now });
             const outputProbe = createNativeDolbyVisionVideoOutputProbe();
 
-            await expect(outputProbe?.({
+            const result = await outputProbe?.({
                 configuration: {
                     codec: 'hev1.2.4.H150.B0',
                     codedHeight: 2_160,
@@ -1383,10 +1502,132 @@ describe('CustomDecodeCapabilityProbe', () => {
                 encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
                 expectedCodedHeight: 2_160,
                 expectedCodedWidth: 3_840
-            })).resolves.toBe(supported);
-            expect(closeFrame).toHaveBeenCalledOnce();
+            });
+            expect(result).toMatchObject({
+                maximumFramesPerSecond: expectedMaximumFramesPerSecond,
+                outputSupported
+            });
+            if (outputSupported) {
+                expect(result?.measuredFramesPerSecond).toBeCloseTo(
+                    7_000 / elapsedMilliseconds
+                );
+            } else {
+                expect(result?.measuredFramesPerSecond).toBeNull();
+            }
+            expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCount);
         }
     );
+
+    it('rejects and closes duplicate native Profile 5 output', async () => {
+        const closeFrame = vi.fn();
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly displayHeight = 2_160;
+            public readonly displayWidth = 3_840;
+
+            public constructor(public readonly timestamp: number) {}
+
+            public close(): void {
+                closeFrame();
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                return;
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                this.callbacks.output(
+                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                );
+                this.callbacks.output(
+                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                );
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+
+        await expect(outputProbe?.({
+            configuration: {
+                codec: 'hev1.2.4.H150.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        })).resolves.toEqual({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputSupported: false
+        });
+        expect(closeFrame).toHaveBeenCalledTimes(2);
+    });
+
+    it('times out and closes a stalled native Profile 5 decoder', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        class FakeVideoDecoder {
+            public close(): void {
+                closeDecoder();
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(): void {
+                return;
+            }
+
+            public flush(): Promise<void> {
+                return new Promise<void>(() => undefined);
+            }
+        }
+        class FakeEncodedVideoChunk {}
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+        const probePromise = outputProbe?.({
+            configuration: {
+                codec: 'hev1.2.4.H150.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        });
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toEqual({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputSupported: false
+        });
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
 
     it.each([
         {

@@ -10,11 +10,10 @@ import {
 import {
     CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
-    CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
-    isCustomRawHDRVideoMaximumFramesPerSecond,
+    isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeSurroundAudioCodecCapability,
@@ -715,7 +714,7 @@ function supportsRawHDRVideo(
         || capability.format !== format
         || capability.bitDepth !== stream.BitDepth
         || !hasSupportedRawVideoProfile(codec, stream)
-        || !isCustomRawHDRVideoMaximumFramesPerSecond(
+        || !isCustomHDRVideoMaximumFramesPerSecond(
             capability.maximumFramesPerSecond
         )
         || frameRate === null
@@ -751,8 +750,11 @@ function supportsNativeDolbyVisionProfile5(
         && capability?.status === 'supported'
         && stream.BitDepth === capability.bitDepth
         && hasSupportedRawVideoProfile(videoCodec, stream)
+        && isCustomHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )
         && frameRate !== null
-        && frameRate <= CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND
+        && frameRate <= capability.maximumFramesPerSecond
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= capability.maximumLevel
         && isPositiveSafeInteger(stream.BitRate)

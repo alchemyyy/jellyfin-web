@@ -590,6 +590,8 @@ harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely
 from the output mode. Reports retain both that active authorization and the
 prewarmed Profile 7 authorization so one smoke session verifies route isolation.
+The capability snapshot also reports the measured native Profile 5 throughput
+and its qualified 24, 30, or 60 fps device-profile tier.
 
 To exercise an in-session audio track change, set both
 `WEBGPU_SMOKE_AUDIO_STREAM_INDEX` and `WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC`. The

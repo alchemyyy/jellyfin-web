@@ -6,13 +6,12 @@ import type { ProfileCondition } from '@jellyfin/sdk/lib/generated-client/models
 import {
     CUSTOM_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
-    CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
-    isCustomRawHDRVideoMaximumFramesPerSecond,
+    isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeSurroundAudioCodecCapability,
@@ -154,6 +153,9 @@ function getDolbyVisionVideoRangeTypes(
     if (
         allowNativeDolbyVision
         && capabilities.nativeDolbyVisionHEVC?.status === 'supported'
+        && isCustomHDRVideoMaximumFramesPerSecond(
+            capabilities.nativeDolbyVisionHEVC.maximumFramesPerSecond
+        )
     ) {
         rangeTypes.push('DOVI');
     }
@@ -323,12 +325,15 @@ function getSupportedVideoCodecs(
         if (supportsNativeVideoCodec(codec, capabilities)
             || (rawPresentationAllowed
                 && rawCapability?.status === 'supported'
-                && isCustomRawHDRVideoMaximumFramesPerSecond(
+                && isCustomHDRVideoMaximumFramesPerSecond(
                     rawCapability.maximumFramesPerSecond
                 ))
             || (allowNativeDolbyVision
                 && codec === 'hevc'
-                && capabilities.nativeDolbyVisionHEVC?.status === 'supported')) {
+                && capabilities.nativeDolbyVisionHEVC?.status === 'supported'
+                && isCustomHDRVideoMaximumFramesPerSecond(
+                    capabilities.nativeDolbyVisionHEVC.maximumFramesPerSecond
+                ))) {
             supportedCodecs.push(codec);
         }
     }
@@ -358,7 +363,7 @@ function getSupportedRawHDRVideoCodecs(
 
     for (const codec of CUSTOM_RAW_HDR_VIDEO_CODECS) {
         if (rawHDRVideoCapabilities[codec].status === 'supported'
-            && isCustomRawHDRVideoMaximumFramesPerSecond(
+            && isCustomHDRVideoMaximumFramesPerSecond(
                 rawHDRVideoCapabilities[codec].maximumFramesPerSecond
             )) {
             supportedCodecs.push(codec);
@@ -696,7 +701,7 @@ function getRawHDRCapabilityLimits(
         const capability = capabilities.rawHDRVideo[
             rawHDRCodec as 'av1' | 'hevc' | 'vp9'
         ];
-        if (!isCustomRawHDRVideoMaximumFramesPerSecond(
+        if (!isCustomHDRVideoMaximumFramesPerSecond(
             capability.maximumFramesPerSecond
         )) {
             return null;
@@ -746,15 +751,17 @@ function getNativeDolbyVisionCapabilityLimits(
         return null;
     }
     const capability = capabilities.nativeDolbyVisionHEVC;
-    if (capability?.status !== 'supported') {
+    if (capability?.status !== 'supported'
+        || !isCustomHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )) {
         return null;
     }
     return {
         maximumBitrate: capability.maximumBitrate,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
-        maximumFramesPerSecond:
-            CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
+        maximumFramesPerSecond: capability.maximumFramesPerSecond,
         maximumLevel: capability.maximumLevel
     };
 }
@@ -1094,7 +1101,7 @@ function createRawHDRMeasuredVideoRoute(
 
     const rawCapability = capabilities.rawHDRVideo[codec];
     if (rawCapability.status !== 'supported'
-        || !isCustomRawHDRVideoMaximumFramesPerSecond(
+        || !isCustomHDRVideoMaximumFramesPerSecond(
             rawCapability.maximumFramesPerSecond
         )) {
         return null;
@@ -1130,6 +1137,9 @@ function createDolbyVisionMeasuredVideoRoute(
         || !enabled
         || dolbyVisionVideoRangeTypes.length === 0
         || capability?.status !== 'supported'
+        || !isCustomHDRVideoMaximumFramesPerSecond(
+            capability.maximumFramesPerSecond
+        )
     ) {
         return null;
     }
@@ -1137,8 +1147,7 @@ function createDolbyVisionMeasuredVideoRoute(
         bitDepth: capability.bitDepth,
         codec,
         maximumBitrate: capability.maximumBitrate,
-        maximumFrameRate:
-            CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_FRAMES_PER_SECOND,
+        maximumFrameRate: capability.maximumFramesPerSecond,
         maximumHeight: capability.maximumCodedHeight,
         maximumLevel: capability.maximumLevel,
         maximumWidth: capability.maximumCodedWidth,

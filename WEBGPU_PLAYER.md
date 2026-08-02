@@ -123,11 +123,15 @@ Eligibility remains narrower than the decoder's theoretical support:
   applies its bounded Lo/Ro matrix before submitting stereo PCM. MP3 remains
   stereo-only, and a failed 5.1 result does not reduce that codec's qualified
   stereo route.
-- Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
-  access-unit fixture under its production `hev1.2.4.H150.B0` configuration
-  and requires a correctly sized owned `VideoFrame`. Configuration support
-  alone does not authorize that route. This single-frame probe does not prove
-  throughput, so native Profile 5 remains capped at 24 fps.
+- Native Dolby Vision Profile 5 additionally decodes one warm-up frame and
+  measures seven exact 4K Main10 frames under its production
+  `hev1.2.4.H150.B0` configuration. Every owned `VideoFrame` must have the
+  expected coded geometry and a non-empty display area before it is closed.
+  The measured decode-and-output throughput is quantized to the same 24, 30,
+  or 60 fps tiers with 1.25x headroom, and that exact tier bounds both the
+  device profile and local eligibility. Missing, duplicate, malformed, or
+  inconsistent output fails closed; configuration support alone does not
+  authorize the route.
 - Config-only results never authorize native audio, H.264, ordinary native
   HEVC/VP8/VP9/AV1, native 5.1 audio, native Ultra HD expansion, raw HDR,
   Dolby Vision Profile 5, or bundled HEVC.
