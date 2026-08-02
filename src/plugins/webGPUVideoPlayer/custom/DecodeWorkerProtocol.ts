@@ -23,12 +23,18 @@ export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
 export const MAX_DECODED_AUDIO_SAMPLE_RATE = 192_000;
+export const MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT = 512;
 const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
 export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
 export type CustomDecodeVideoDecoderBackend = 'bundled-hevc' | 'native';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
+export type CustomDecodeWorkerProgressPhase =
+    | 'video-decoder-ready'
+    | 'video-key-packet-ready'
+    | 'video-packet-decoded'
+    | 'video-packet-started';
 
 /** Matches a qualified decoder backend to its measured acceleration preference. */
 export function getCustomDecodeHardwareAcceleration(
@@ -194,6 +200,14 @@ export type DecodeWorkerStoppedResponse = {
     type: 'stopped'
 };
 
+export type DecodeWorkerProgressResponse = {
+    generation: number
+    mediaTimeMicroseconds: Microseconds | null
+    packetCount: number
+    phase: CustomDecodeWorkerProgressPhase
+    type: 'progress'
+};
+
 export type DecodeWorkerResponse =
     | DecodeWorkerAudioResponse
     | DecodeWorkerEndedResponse
@@ -201,6 +215,7 @@ export type DecodeWorkerResponse =
     | DecodeWorkerFrameResponse
     | DecodeWorkerNativeAudioInitializationResponse
     | DecodeWorkerNativeAudioMediaResponse
+    | DecodeWorkerProgressResponse
     | DecodeWorkerReadyResponse
     | DecodeWorkerStoppedResponse;
 
@@ -230,6 +245,26 @@ function isAudioSampleCredit(value: unknown, allowZero: boolean): value is numbe
 
 function isPositiveInteger(value: unknown): value is number {
     return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isVideoStartupProgressPacketCount(value: unknown): value is number {
+    return Number.isSafeInteger(value)
+        && Number(value) >= 0
+        && Number(value) <= MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT;
+}
+
+function isCustomDecodeWorkerProgressPhase(
+    value: unknown
+): value is CustomDecodeWorkerProgressPhase {
+    switch (value) {
+        case 'video-decoder-ready':
+        case 'video-key-packet-ready':
+        case 'video-packet-decoded':
+        case 'video-packet-started':
+            return true;
+        default:
+            return false;
+    }
 }
 
 function isTrackIndex(value: unknown): value is number {
@@ -537,6 +572,28 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
     }
 }
 
+function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
+    if (!isMicroseconds(value.mediaTimeMicroseconds)
+        || !isMicroseconds(value.durationMicroseconds)
+        || Number(value.durationMicroseconds) < 0
+        || !hasValidOptionalDolbyVisionMetadata(value)
+    ) {
+        return false;
+    }
+    switch (value.outputMode) {
+        case 'video-frame':
+            return isRecord(value.frame)
+                && typeof value.frame.close === 'function';
+        case 'raw-planes':
+            return isTransferableRawVideoFrame(value.frame)
+                && value.frame.timestampMicroseconds === value.mediaTimeMicroseconds
+                && (value.frame.durationMicroseconds === null
+                    || value.frame.durationMicroseconds === value.durationMicroseconds);
+        default:
+            return false;
+    }
+}
+
 /** Validates a worker response before it mutates the active session. */
 export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerResponse {
     if (!isRecord(value) || !isGeneration(value.generation)) {
@@ -556,27 +613,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && Number(value.displayHeight) <= MAXIMUM_RAW_VIDEO_CODED_HEIGHT
                 && Number(value.displayWidth) <= MAXIMUM_RAW_VIDEO_CODED_WIDTH
                 && (value.audio === null || isAudioConfiguration(value.audio));
-        case 'frame': {
-            if (!isMicroseconds(value.mediaTimeMicroseconds)
-                || !isMicroseconds(value.durationMicroseconds)
-                || Number(value.durationMicroseconds) < 0
-                || !hasValidOptionalDolbyVisionMetadata(value)
-            ) {
-                return false;
-            }
-            switch (value.outputMode) {
-                case 'video-frame':
-                    return isRecord(value.frame)
-                        && typeof value.frame.close === 'function';
-                case 'raw-planes':
-                    return isTransferableRawVideoFrame(value.frame)
-                        && value.frame.timestampMicroseconds === value.mediaTimeMicroseconds
-                        && (value.frame.durationMicroseconds === null
-                            || value.frame.durationMicroseconds === value.durationMicroseconds);
-                default:
-                    return false;
-            }
-        }
+        case 'frame':
+            return isDecodeWorkerFrameResponse(value);
         case 'audio': {
             const channelCount = Number(value.channelCount);
             const frameCount = Number(value.frameCount);
@@ -608,6 +646,11 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             return durationMicroseconds > 0
                 && durationMicroseconds <= MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS;
         }
+        case 'progress':
+            return isCustomDecodeWorkerProgressPhase(value.phase)
+                && isVideoStartupProgressPacketCount(value.packetCount)
+                && (value.mediaTimeMicroseconds === null
+                    || isMicroseconds(value.mediaTimeMicroseconds));
         case 'ended':
         case 'stopped':
             return true;

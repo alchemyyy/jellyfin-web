@@ -11,7 +11,8 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_AUDIO_SAMPLE_RATE,
     MAX_DECODED_FRAME_CREDITS,
-    MAX_DECODED_RAW_FRAME_CREDITS
+    MAX_DECODED_RAW_FRAME_CREDITS,
+    MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT
 } from './DecodeWorkerProtocol';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
@@ -138,6 +139,44 @@ describe('DecodeWorkerProtocol', () => {
             buffer: new ArrayBuffer(0),
             generation: 2,
             type: 'recycle-frame'
+        })).toBe(false);
+    });
+
+    it('accepts bounded owned-video startup progress', () => {
+        expect(isDecodeWorkerResponse({
+            generation: 2,
+            mediaTimeMicroseconds: 2_733_022_000,
+            packetCount: 0,
+            phase: 'video-key-packet-ready',
+            type: 'progress'
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            generation: 2,
+            mediaTimeMicroseconds: 2_733_063_708,
+            packetCount: 1,
+            phase: 'video-packet-started',
+            type: 'progress'
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            generation: 2,
+            mediaTimeMicroseconds: 0.5,
+            packetCount: 1,
+            phase: 'video-packet-decoded',
+            type: 'progress'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            generation: 2,
+            mediaTimeMicroseconds: null,
+            packetCount: MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT + 1,
+            phase: 'video-packet-decoded',
+            type: 'progress'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            generation: 2,
+            mediaTimeMicroseconds: null,
+            packetCount: 1,
+            phase: 'video-demuxing',
+            type: 'progress'
         })).toBe(false);
     });
 

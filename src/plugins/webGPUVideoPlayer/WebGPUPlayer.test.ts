@@ -22,6 +22,7 @@ type MockAudioEligibilityOverride = {
 
 type MockEligibilityOptions = {
     allowDolbyVision?: boolean
+    allowNativeDolbyVision?: boolean
     allowRawHDR: boolean
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
 };
@@ -468,6 +469,12 @@ vi.mock('./WebGPUPresenter', () => {
         isDolbyVisionPresentationAuthorized = vi.fn(() => (
             presenterMockState.dolbyVisionAuthorized
         ));
+        isRawDolbyVisionPresentationAuthorized = vi.fn(() => (
+            presenterMockState.dolbyVisionAuthorized
+        ));
+        isExternalDolbyVisionPresentationAuthorized = vi.fn(() => (
+            presenterMockState.dolbyVisionAuthorized
+        ));
         getAuthorizedRawHDRRouteKeys = vi.fn(() => (
             [ ...presenterMockState.authorizedRawHDRRouteKeys ]
         ));
@@ -490,6 +497,16 @@ vi.mock('./WebGPUPresenter', () => {
             renderSettingsVersion: 4,
             routeKey: 'I420P10:dovi-rpu-v1',
             sampleCount: 4,
+            status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
+            targetFormat: 'bgra8unorm'
+        }));
+        getExternalDolbyVisionAuthorizationTelemetry = vi.fn(() => ({
+            failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
+            fixtureVersion: 1,
+            maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
+            renderSettingsVersion: 4,
+            routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
+            sampleCount: 9,
             status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
             targetFormat: 'bgra8unorm'
         }));
@@ -1077,6 +1094,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: false,
+                allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: [],
                 isRetry: false,
@@ -1088,6 +1106,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         await player.getDeviceProfile(item, { isRetry: true });
         expect(customProfileMockState.augmentationCalls[1]?.options).toEqual({
             allowDolbyVision: false,
+            allowNativeDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
             isRetry: true,
@@ -1143,6 +1162,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: false,
+                allowNativeDolbyVision: false,
                 allowRawHDR: true,
                 authorizedRawHDRRouteKeys: [
                     'I420P10:bt2020-ncl:bt2020:limited:pq'
@@ -1169,6 +1189,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]).toEqual({
             options: {
                 allowDolbyVision: true,
+                allowNativeDolbyVision: true,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: [],
                 isRetry: false,
@@ -1242,6 +1263,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(customProfileMockState.augmentationCalls[0]?.options).toEqual({
             allowDolbyVision: false,
+            allowNativeDolbyVision: false,
             allowRawHDR: false,
             authorizedRawHDRRouteKeys: [],
             isRetry: false,

@@ -128,6 +128,14 @@ const config = {
                 {
                     from: path.resolve(
                         __dirname,
+                        'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
+                    ),
+                    // Jellyfin's static-file provider serves .bin as octet-stream
+                    to: 'libraries/hevcjs/main10-4k-qualification.bin'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
                         'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm'
                     ),
                     to: 'libraries/libdovi/dovi-rpu-parser.wasm'

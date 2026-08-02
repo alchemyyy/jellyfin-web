@@ -1,5 +1,5 @@
 export const HEVC_EXACT_CAPABILITY_REQUEST_ID = 1;
-export const HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH = 64 * 1024;
+export const HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH = 128 * 1024;
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH = 32 * 1024 * 1024;
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_INPUT_BYTE_LENGTH = 1024 * 1024;
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH = 285 * 1024 * 1024;
@@ -116,14 +116,14 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         codedHeight: 2_160,
         codedWidth: 3_840,
         decodedFrameFingerprints: Object.freeze([
-            1_242_641_987,
-            2_691_698_715,
-            1_275_657_587,
-            3_965_939_195,
-            3_311_648_933,
-            3_402_867_695,
-            338_830_956,
-            2_891_640_151
+            2_669_261_473,
+            2_891_374_311,
+            3_294_996_003,
+            3_899_934_279,
+            3_645_638_150,
+            3_163_731_443,
+            1_028_093_413,
+            2_922_080_851
         ]),
         format: 'I420P10',
         levelIDC: 153,
@@ -133,11 +133,11 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         profile: 'main10',
         profileIDC: 2,
         qualificationAccessUnitByteLengths: Object.freeze([
-            3_274, 621, 3_126, 3_108, 3_179, 507, 3_117, 441
+            124_406, 90_639, 86_210, 85_647, 83_781, 76_782, 71_884, 57_625
         ]),
         qualificationFrameCount: HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT,
         qualificationVCLNALUnitTypes: Object.freeze([
-            20, 1, 20, 1, 20, 1, 20, 1
+            20, 1, 1, 1, 1, 1, 1, 1
         ] as const),
         tier: 'main10-4k',
         warmupFrameCount: HEVC_EXACT_CAPABILITY_WARMUP_FRAME_COUNT

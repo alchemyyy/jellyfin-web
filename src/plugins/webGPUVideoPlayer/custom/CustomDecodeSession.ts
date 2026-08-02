@@ -18,6 +18,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
     type CustomDecodeAudioOutputMode,
+    type CustomDecodeWorkerProgressPhase,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
@@ -104,7 +105,9 @@ export type CustomDecodeSessionTelemetry = {
     state: 'configured' | 'ended' | 'error' | 'idle' | 'ready' | 'starting'
     submittedAudioFrameCount: number
     submittedAudioSampleCount: number
+    submittedVideoPacketCount: number
     takenFrameCount: number
+    videoProgressPhase: CustomDecodeWorkerProgressPhase | null
 };
 
 export type CustomDecodeSessionEventHandler = (event: CustomDecodeSessionEvent) => void;
@@ -172,7 +175,9 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         state: 'idle',
         submittedAudioFrameCount: 0,
         submittedAudioSampleCount: 0,
-        takenFrameCount: 0
+        submittedVideoPacketCount: 0,
+        takenFrameCount: 0,
+        videoProgressPhase: null
     };
 }
 
@@ -634,6 +639,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         switch (messageValue.type) {
+            case 'progress':
+                this.telemetry.submittedVideoPacketCount = messageValue.packetCount;
+                this.telemetry.videoProgressPhase = messageValue.phase;
+                break;
             case 'ready':
                 this.handleReadyResponse(workerRecord, messageValue);
                 break;

@@ -41,12 +41,29 @@ describe('requireConsistentDecodedVideoGeometry', () => {
         )).toBe(lockedGeometry);
     });
 
-    it('rejects decoded display geometry that differs from the selected track', () => {
+    it('accepts a bounded decoder-applied display crop', () => {
+        const decodedGeometry: RawVideoFrameGeometry = {
+            codedHeight: 180,
+            codedWidth: 320,
+            displayHeight: 176,
+            displayWidth: 320
+        };
+
+        expect(requireConsistentDecodedVideoGeometry(
+            decodedGeometry,
+            SELECTED_TRACK_GEOMETRY,
+            1_920,
+            1_080,
+            null
+        )).toEqual(decodedGeometry);
+    });
+
+    it('rejects decoded display geometry outside the track tolerance', () => {
         expect(() => requireConsistentDecodedVideoGeometry(
             {
-                codedHeight: 194,
+                codedHeight: 260,
                 codedWidth: 320,
-                displayHeight: 194,
+                displayHeight: 245,
                 displayWidth: 320
             },
             SELECTED_TRACK_GEOMETRY,
@@ -54,7 +71,7 @@ describe('requireConsistentDecodedVideoGeometry', () => {
             1_080,
             null
         )).toThrowError(new DecodedVideoGeometryError(
-            'Decoded frame display geometry does not match the selected video track'
+            'Decoded frame display geometry exceeds the selected video track tolerance'
         ));
     });
 

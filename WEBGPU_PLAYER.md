@@ -49,6 +49,12 @@ against the exact pinned JS and WebAssembly assets. Each tier must:
 | Main10 1080p | `hvc1.2.4.L120.B0` | 1920x1080 10-bit `I420P10` | 1750 ms |
 | Main10 4K | `hvc1.2.4.L153.B0` | 3840x2160 10-bit `I420P10` | 2750 ms |
 
+The served qualification sequence uses a `.bin` suffix even though its bytes
+remain an Annex B HEVC stream. Jellyfin's ASP.NET static-file provider serves
+`.bin` as `application/octet-stream` but rejects the unregistered `.hevc`
+suffix before the browser can fetch it. The artifact verifier still compares
+the served bytes with the checked-in `.hevc` source fixture.
+
 Qualification uses eight decoded frames, treats the first as warm-up, and
 measures the remaining seven. Its moving test pattern has a different expected
 fingerprint for every frame, so repeatedly returning one valid keyframe cannot
@@ -73,7 +79,12 @@ Eligibility remains narrower than the decoder's theoretical support:
   stream constraints qualify. H.264 and raw HDR routes include decoded-output
   evidence; representative native SDR probes for other codecs use
   `isConfigSupported()` and remain capped at 1920x1080 8-bit output.
-- Config-only results never authorize H.264, raw HDR, or bundled HEVC.
+- Native Dolby Vision Profile 5 additionally decodes the exact 4K Main10
+  access-unit fixture under its production `hev1.2.4.H150.B0` configuration
+  and requires a correctly sized owned `VideoFrame`. Configuration support
+  alone does not authorize that route.
+- Config-only results never authorize H.264, raw HDR, Dolby Vision Profile 5,
+  or bundled HEVC.
   Unknown, timed-out, failed exact-output, interlaced, oversized, or ambiguous
   streams remain on the HTML player or server-selected fallback.
 
@@ -100,6 +111,13 @@ production pixel-readback authorization executes this exact fused renderer on
 the active device and target format. Add a reusable float working texture only
 if a future spatial, compositing, or multi-pass stage needs linear pixels to
 survive between passes.
+
+Dolby Vision has separate raw-plane and external-texture authorizations. The
+native Profile 5 route imports an owned decoded `VideoFrame`, executes the
+production external-texture RPU shader, and compares GPU readback samples. The
+raw route executes its distinct I420P10 plane shader. A successful result from
+one route cannot authorize the other, and their device-profile limits remain
+alternative route limits rather than being intersected.
 
 ## Bundled codec licensing and distribution
 

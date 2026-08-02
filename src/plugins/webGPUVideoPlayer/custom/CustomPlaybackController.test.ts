@@ -63,7 +63,9 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         state: 'idle',
         submittedAudioFrameCount: 0,
         submittedAudioSampleCount: 0,
-        takenFrameCount: 0
+        submittedVideoPacketCount: 0,
+        takenFrameCount: 0,
+        videoProgressPhase: null
     };
 }
 

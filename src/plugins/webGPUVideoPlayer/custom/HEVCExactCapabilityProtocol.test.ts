@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -19,12 +21,23 @@ import {
     type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 
+const MAIN10_4K_QUALIFICATION_PATH = resolve(
+    process.cwd(),
+    'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
+);
+
+function loadMain10UltraHDQualificationBitstream(): ArrayBuffer {
+    return Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer;
+}
+
 function createRequest(): HEVCExactCapabilityWorkerRequest {
     return {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASMURL: 'https://example.test/hevc-decode.wasm',
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        tiers: createHEVCExactCapabilityWorkerTierRequests(),
+        tiers: createHEVCExactCapabilityWorkerTierRequests(
+            loadMain10UltraHDQualificationBitstream()
+        ),
         type: 'probe'
     };
 }
@@ -43,8 +56,12 @@ describe('exact HEVC capability fixtures and protocol', () => {
     });
 
     it('recreates all pinned Main and Main10 access units with exact hashes', () => {
-        const firstRequests = createHEVCExactCapabilityWorkerTierRequests();
-        const secondRequests = createHEVCExactCapabilityWorkerTierRequests();
+        const firstRequests = createHEVCExactCapabilityWorkerTierRequests(
+            loadMain10UltraHDQualificationBitstream()
+        );
+        const secondRequests = createHEVCExactCapabilityWorkerTierRequests(
+            loadMain10UltraHDQualificationBitstream()
+        );
 
         expect(firstRequests).toHaveLength(3);
         for (let requestIndex = 0; requestIndex < firstRequests.length; requestIndex += 1) {

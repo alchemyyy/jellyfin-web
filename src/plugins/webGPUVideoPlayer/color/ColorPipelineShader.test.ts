@@ -11,6 +11,7 @@ import {
 } from './ColorMetadata';
 import {
     createColorPipelineWGSL,
+    createExternalDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
     createRawYUVColorPipelineWGSL
 } from './ColorPipelineShader';
@@ -98,6 +99,43 @@ describe('createColorPipelineWGSL', () => {
     return encodedRGB;
 }`);
         expect(shader).not.toContain('fn applyOutputDither');
+    });
+});
+
+describe('createExternalDolbyVisionColorPipelineWGSL', () => {
+    it('inverts limited-range BT.709 before Profile 5 reconstruction', () => {
+        const shader = createExternalDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings()
+        );
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).toContain('@binding(1) var videoTexture: texture_external');
+        expect(shader).toContain('@binding(3) var<uniform> renderSettings');
+        expect(shader).toContain('@binding(4) var<storage, read> dolbyVisionRPU');
+        expect(shader).toContain('dot(encodedBT709RGB, vec3f(0.2126, 0.7152, 0.0722))');
+        expect(shader).toContain('(normalizedLuma * 876.0) + 64.0');
+        expect(shader).toContain('(normalizedChromaBlue * 896.0) + 512.0');
+        expect(shader).toContain('(normalizedChromaRed * 896.0) + 512.0');
+        expect(fragmentFunction).toContain(`reconstructDolbyVisionBT2020PQ(
+        recoverDolbyVisionBaseSignal(encodedBT709RGB)
+    )`);
+        expect(fragmentFunction.indexOf('reconstructDolbyVisionBT2020PQ')).toBeLessThan(
+            fragmentFunction.indexOf('processColor')
+        );
+    });
+
+    it('keeps the external Dolby Vision shader stable across live settings', () => {
+        const firstShader = createExternalDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings()
+        );
+        const secondShader = createExternalDolbyVisionColorPipelineWGSL(
+            createHDRToSDRRenderSettings({
+                display: { brightness: 0.2, contrast: 1.1, saturation: 0.9 },
+                toneMapping: { inputPeakNits: 4_000 }
+            })
+        );
+
+        expect(secondShader).toBe(firstShader);
     });
 });
 

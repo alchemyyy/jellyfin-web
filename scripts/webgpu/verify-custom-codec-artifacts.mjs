@@ -35,6 +35,10 @@ const HEVC_ARTIFACTS = Object.freeze([
     {
         packagePath: 'LICENSE',
         servedPath: 'libraries/hevcjs/LICENSE.txt'
+    },
+    {
+        servedPath: 'libraries/hevcjs/main10-4k-qualification.bin',
+        sourcePath: 'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
     }
 ]);
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -82,21 +86,23 @@ async function listFiles(directory) {
 async function verifyHEVCArtifacts(repositoryRoot, distDirectory) {
     const verifiedArtifacts = [];
     for (const artifact of HEVC_ARTIFACTS) {
-        const packageArtifact = join(
-            repositoryRoot,
-            'node_modules',
-            '@hevcjs',
-            'core',
-            artifact.packagePath
-        );
+        const sourceArtifact = artifact.packagePath ?
+            join(
+                repositoryRoot,
+                'node_modules',
+                '@hevcjs',
+                'core',
+                artifact.packagePath
+            ) :
+            join(repositoryRoot, artifact.sourcePath);
         const servedArtifact = join(distDirectory, artifact.servedPath);
-        await requireFile(packageArtifact);
+        await requireFile(sourceArtifact);
         await requireFile(servedArtifact);
-        const [ packageSHA256, servedSHA256 ] = await Promise.all([
-            hashFile(packageArtifact),
+        const [ sourceSHA256, servedSHA256 ] = await Promise.all([
+            hashFile(sourceArtifact),
             hashFile(servedArtifact)
         ]);
-        if (packageSHA256 !== servedSHA256) {
+        if (sourceSHA256 !== servedSHA256) {
             throw new Error(`HEVC artifact hash mismatch: ${artifact.servedPath}`);
         }
         verifiedArtifacts.push({

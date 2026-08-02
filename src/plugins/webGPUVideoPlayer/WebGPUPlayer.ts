@@ -82,6 +82,9 @@ import WebGPUPresenter, {
 } from './WebGPUPresenter';
 import type { ColorValidationCapabilityDecision } from './validation/ColorValidationHarness';
 import type { DolbyVisionAuthorizationTelemetry } from './validation/DolbyVisionPresentationAuthorization';
+import type {
+    ExternalDolbyVisionAuthorizationTelemetry
+} from './validation/ExternalDolbyVisionPresentationAuthorization';
 import type { MediabunnyReferenceFrameProviderOptions } from './validation/MediabunnyReferenceFrameProvider';
 import type {
     ExternalTextureReferenceFrameRequest,
@@ -211,7 +214,7 @@ export type WebGPUPlayerColorValidationMediaRequest = Omit<
 > & MediabunnyReferenceFrameProviderOptions;
 
 const CUSTOM_VOLUME_STEP = 2;
-export const CUSTOM_PLAYBACK_SETUP_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(15_000);
+export const CUSTOM_PLAYBACK_SETUP_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(25_000);
 const MAX_JELLYFIN_VOLUME = 100;
 const MIN_JELLYFIN_VOLUME = 0;
 const CUSTOM_PLAYBACK_SETUP_TIMEOUT = Symbol('custom-playback-setup-timeout');
@@ -481,12 +484,15 @@ export default class WebGPUPlayer {
             [];
         const allowRawHDR = authorizedRawHDRRouteKeys.length > 0;
         const allowDolbyVision = hdrToneMappingEnabled
-            && this.presenter.isDolbyVisionPresentationAuthorized();
+            && this.presenter.isRawDolbyVisionPresentationAuthorized();
+        const allowNativeDolbyVision = hdrToneMappingEnabled
+            && this.presenter.isExternalDolbyVisionPresentationAuthorized();
         const profileResult = augmentDeviceProfileForCustomDecode(
             profile as DeviceProfile,
             capabilities,
             {
                 allowDolbyVision,
+                allowNativeDolbyVision,
                 allowRawHDR,
                 authorizedRawHDRRouteKeys,
                 isRetry,
@@ -1150,6 +1156,11 @@ export default class WebGPUPlayer {
         return this.presenter.getDolbyVisionAuthorizationTelemetry();
     }
 
+    /** Returns bounded exact-device external Profile 5 authorization state. */
+    getExternalDolbyVisionAuthorizationTelemetry(): ExternalDolbyVisionAuthorizationTelemetry {
+        return this.presenter.getExternalDolbyVisionAuthorizationTelemetry();
+    }
+
     /** Applies live HDR display controls without rebuilding the shader pipeline. */
     updateRenderSettings(settings: HDRToSDRRenderSettings): boolean {
         return this.presenter.updateRenderSettings(
@@ -1336,6 +1347,38 @@ export default class WebGPUPlayer {
         });
     }
 
+    private configureDolbyVisionPresentationColorPipeline(
+        dolbyVisionDescriptor: DolbyVisionPresentationDescriptor,
+        generation: number,
+        videoOutputMode: CustomDecodeVideoOutputMode,
+        rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    ): Promise<boolean> {
+        if (
+            dolbyVisionDescriptor.profile === 5
+            && videoOutputMode === 'video-frame'
+            && rawVideoFrameFormat === null
+        ) {
+            return this.presenter.configureColorPipeline({
+                inputMode: 'external-dolby-vision',
+                profile: 5,
+                settings: createHDRToSDRRenderSettings({
+                    toneMapping: { inputPeakNits: 4_000 }
+                })
+            }, generation);
+        }
+        if (videoOutputMode !== 'raw-planes' || rawVideoFrameFormat !== 'I420P10') {
+            return Promise.resolve(false);
+        }
+        return this.presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: dolbyVisionDescriptor.profile,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: { inputPeakNits: 4_000 }
+            })
+        }, generation);
+    }
+
     private configurePresentationColorPipeline(
         generation: number,
         videoOutputMode: CustomDecodeVideoOutputMode,
@@ -1343,17 +1386,12 @@ export default class WebGPUPlayer {
     ): Promise<boolean> {
         const dolbyVisionDescriptor = this.currentDolbyVisionPresentationDescriptor;
         if (dolbyVisionDescriptor) {
-            if (videoOutputMode !== 'raw-planes' || rawVideoFrameFormat !== 'I420P10') {
-                return Promise.resolve(false);
-            }
-            return this.presenter.configureColorPipeline({
-                inputMode: 'raw-dolby-vision',
-                profile: dolbyVisionDescriptor.profile,
-                rawFrameFormat: 'I420P10',
-                settings: createHDRToSDRRenderSettings({
-                    toneMapping: { inputPeakNits: 4_000 }
-                })
-            }, generation);
+            return this.configureDolbyVisionPresentationColorPipeline(
+                dolbyVisionDescriptor,
+                generation,
+                videoOutputMode,
+                rawVideoFrameFormat
+            );
         }
         const metadata = this.currentPresentationColorMetadata;
         if (!metadata) {
@@ -1825,7 +1863,10 @@ export default class WebGPUPlayer {
         backendGeneration: number
     ): Promise<Pick<
         CustomPlaybackEligibilityOptions,
-        'allowDolbyVision' | 'allowRawHDR' | 'authorizedRawHDRRouteKeys'
+        | 'allowDolbyVision'
+        | 'allowNativeDolbyVision'
+        | 'allowRawHDR'
+        | 'authorizedRawHDRRouteKeys'
     > | null> {
         const metadata = this.currentPresentationColorMetadata;
         const rawHDRRequested = metadata !== null
@@ -1836,6 +1877,7 @@ export default class WebGPUPlayer {
         if (!rawHDRRequested && !dolbyVisionRequested) {
             return {
                 allowDolbyVision: false,
+                allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys
             };
@@ -1848,6 +1890,7 @@ export default class WebGPUPlayer {
         if (!hdrToneMappingEnabled) {
             return {
                 allowDolbyVision: false,
+                allowNativeDolbyVision: false,
                 allowRawHDR: false,
                 authorizedRawHDRRouteKeys: []
             };
@@ -1862,7 +1905,9 @@ export default class WebGPUPlayer {
         }
         return {
             allowDolbyVision: dolbyVisionRequested
-                && this.presenter.isDolbyVisionPresentationAuthorized(),
+                && this.presenter.isRawDolbyVisionPresentationAuthorized(),
+            allowNativeDolbyVision: dolbyVisionRequested
+                && this.presenter.isExternalDolbyVisionPresentationAuthorized(),
             allowRawHDR: rawHDRRequested && authorizedRawHDRRouteKeys.length > 0,
             authorizedRawHDRRouteKeys
         };

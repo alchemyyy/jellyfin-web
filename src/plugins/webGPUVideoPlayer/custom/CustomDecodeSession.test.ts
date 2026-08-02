@@ -270,6 +270,31 @@ function emitRawFrame(
 }
 
 describe('CustomDecodeSession', () => {
+    it('records bounded owned-video startup progress without emitting player events', () => {
+        const worker = new MockWorker();
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => worker as unknown as Worker
+        );
+        startSession(session, 30, undefined, 'raw-planes');
+
+        worker.emitMessage({
+            generation: 30,
+            mediaTimeMicroseconds: 1_000_000,
+            packetCount: 17,
+            phase: 'video-packet-started',
+            type: 'progress'
+        });
+
+        expect(session.getTelemetry()).toMatchObject({
+            state: 'starting',
+            submittedVideoPacketCount: 17,
+            videoProgressPhase: 'video-packet-started'
+        });
+        expect(events).toEqual([]);
+    });
+
     it('forwards encoded Dolby Vision ownership and records extraction telemetry', () => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(
@@ -601,7 +626,7 @@ describe('CustomDecodeSession', () => {
         startSession(session, 19, undefined, 'raw-planes');
         emitRawReady(worker, 19);
         const rawFrame = createRawFrame(secondsToMicroseconds(1.1));
-        rawFrame.displayWidth = 8;
+        rawFrame.displayWidth = 80;
 
         worker.emitMessage({
             durationMicroseconds: 100_000,

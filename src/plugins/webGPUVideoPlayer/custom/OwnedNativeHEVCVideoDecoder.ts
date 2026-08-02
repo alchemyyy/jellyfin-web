@@ -1,7 +1,4 @@
-import {
-    type EncodedPacket,
-    VideoSample
-} from 'mediabunny';
+import type { EncodedPacket } from 'mediabunny';
 
 import {
     hasHEVCRASLPicture,
@@ -11,8 +8,8 @@ import {
 
 export type OwnedNativeHEVCVideoDecoderCallbacks = {
     onError: (error: unknown) => void
+    onFrame: (frame: VideoFrame) => unknown
     onProgress: () => void
-    onSample: (sample: VideoSample) => unknown
 };
 
 export type NativeVideoDecoderPort = {
@@ -111,8 +108,7 @@ export default class OwnedNativeHEVCVideoDecoder {
 
     /** Flushes all native output and resets random-access packet state. */
     public async flush(): Promise<void> {
-        const decoder = this.requireDecoder();
-        await decoder.flush();
+        await this.requireDecoder().flush();
         this.currentPacketIndex = 0;
         this.raslSkipped = false;
     }
@@ -142,17 +138,12 @@ export default class OwnedNativeHEVCVideoDecoder {
             return;
         }
 
-        let sample: VideoSample | null = null;
+        let ownedFrame: VideoFrame | null = frame;
         try {
-            sample = new VideoSample(frame);
-            this.callbacks.onSample(sample);
-            sample = null;
+            this.callbacks.onFrame(ownedFrame);
+            ownedFrame = null;
         } catch (error) {
-            if (sample) {
-                sample.close();
-            } else {
-                frame.close();
-            }
+            ownedFrame?.close();
             this.callbacks.onError(error);
         } finally {
             this.callbacks.onProgress();

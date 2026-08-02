@@ -123,7 +123,8 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
 function createCapabilities(
     supportedVideoCodecs: readonly CustomVideoCodec[],
     supportedAudioCodecs: readonly CustomAudioCodec[],
-    supportedRawHDRVideoCodecs: readonly CustomRawHDRVideoCodec[] = []
+    supportedRawHDRVideoCodecs: readonly CustomRawHDRVideoCodec[] = [],
+    nativeDolbyVisionSupported = false
 ): CustomDecodeCapabilities {
     const supportedVideoSet = new Set(supportedVideoCodecs);
     const supportedAudioSet = new Set(supportedAudioCodecs);
@@ -168,6 +169,20 @@ function createCapabilities(
             bundledHEVC: createBundledHEVCCapabilities()
         } : {}),
         h264Profiles: createH264ProfileCapabilities(supportedVideoSet.has('h264')),
+        nativeDolbyVisionHEVC: {
+            bitDepth: 10,
+            codec: 'hevc',
+            codecString: 'hev1.2.4.H150.B0',
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumLevel: 153,
+            profile: 5,
+            reason: nativeDolbyVisionSupported ?
+                'decode-output-verified' :
+                'decode-output-missing',
+            status: nativeDolbyVisionSupported ? 'supported' : 'unsupported'
+        },
         rawHDRVideo,
         telemetry: {
             audioProbeCount: CUSTOM_WEB_CODECS_AUDIO_CODECS.length,
@@ -430,6 +445,106 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
         expect(addedProfiles.some(profile => profile.Container === 'webm')).toBe(false);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'ac3', 'eac3' ]);
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'ac3,eac3',
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2|6'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+    });
+
+    it('replaces browser secondary-audio limits only on measured custom routes', () => {
+        const original = createBaseProfile();
+        original.DirectPlayProfiles = [ {
+            AudioCodec: 'aac,eac3,dts',
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'h264'
+        } ];
+        original.CodecProfiles = [
+            {
+                Codec: 'aac',
+                Conditions: [
+                    {
+                        Condition: 'NotEquals',
+                        Property: 'AudioProfile',
+                        Value: 'HE-AAC'
+                    },
+                    {
+                        Condition: 'Equals',
+                        IsRequired: false,
+                        Property: 'IsSecondaryAudio',
+                        Value: 'false'
+                    }
+                ],
+                Type: 'VideoAudio'
+            },
+            {
+                Conditions: [
+                    {
+                        Condition: 'LessThanEqual',
+                        IsRequired: false,
+                        Property: 'AudioChannels',
+                        Value: '2'
+                    },
+                    {
+                        Condition: 'Equals',
+                        IsRequired: false,
+                        Property: 'IsSecondaryAudio',
+                        Value: 'false'
+                    }
+                ],
+                Type: 'VideoAudio'
+            }
+        ];
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac', 'eac3' ])
+        );
+
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'aac',
+            Conditions: [ {
+                Condition: 'NotEquals',
+                Property: 'AudioProfile',
+                Value: 'HE-AAC'
+            } ],
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'dts',
+            Conditions: original.CodecProfiles[1].Conditions,
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[1],
+            Container: '-mp4,m4v,mov,mkv,webm,ts,m2ts,mts'
+        });
+
+        const measuredEAC3Profile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'eac3'
+            && profile.Container === 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts'
+        ));
+        expect(measuredEAC3Profile?.Conditions).toContainEqual(expect.objectContaining({
+            Property: 'AudioChannels',
+            Value: '2|6'
+        }));
     });
 
     it('advertises native AC-3 routes only at their exact measured layouts', () => {
@@ -662,6 +777,138 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         )))).toBe(false);
     });
 
+    it('advertises only the exact native Profile 5 route when externally authorized', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([], [ 'aac' ], [], true),
+            { allowNativeDolbyVision: true, allowRawHDR: false }
+        );
+        const nativeProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'DOVI'
+            ))
+            && profile.Conditions.some(condition => (
+                condition.Property === 'IsInterlaced'
+                && condition.Value === 'false'
+            ))
+        ));
+
+        expect(nativeProfile).toBeDefined();
+        expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                Condition: 'EqualsAny',
+                Property: 'VideoRangeType',
+                Value: 'DOVI'
+            }),
+            expect.objectContaining({
+                Condition: 'LessThanEqual',
+                Property: 'VideoBitrate',
+                Value: '40000000'
+            }),
+            expect.objectContaining({
+                Condition: 'LessThanEqual',
+                Property: 'VideoLevel',
+                Value: '153'
+            }),
+            expect.objectContaining({ Property: 'Width', Value: '3840' }),
+            expect.objectContaining({ Property: 'Height', Value: '2160' })
+        ]));
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Value?.includes('DOVIWithHDR10')
+                || condition.Value?.includes('DOVIWithHLG')
+            ))
+        ))).toBe(false);
+    });
+
+    it('does not leak native Profile 5 support through raw authorization', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([], [ 'aac' ], [], true),
+            { allowDolbyVision: true, allowRawHDR: false }
+        );
+
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Conditions?.some(condition => condition.Value?.includes('DOVI'))
+        ))).toBe(false);
+    });
+
+    it('keeps stronger native Profile 5 limits separate from raw Dolby Vision limits', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const capabilities = createCapabilities([], [ 'aac' ], [ 'hevc' ], true);
+        capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
+        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
+        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            capabilities,
+            {
+                allowDolbyVision: true,
+                allowNativeDolbyVision: true,
+                allowRawHDR: false
+            }
+        );
+        const nativeProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.ApplyConditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'DOVI'
+            ))
+        ));
+        const rawProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.ApplyConditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'DOVIWithHDR10|DOVIWithHLG'
+            ))
+        ));
+
+        expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'Width', Value: '3840' }),
+            expect.objectContaining({ Property: 'Height', Value: '2160' }),
+            expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
+            expect.objectContaining({ Property: 'VideoLevel', Value: '153' })
+        ]));
+        expect(rawProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'Width', Value: '1920' }),
+            expect.objectContaining({ Property: 'Height', Value: '1080' }),
+            expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
+            expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
+        ]));
+    });
+
     it('keeps non-custom containers on the original native video range constraints', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
@@ -831,7 +1078,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.SubtitleProfiles).not.toBe(original.SubtitleProfiles);
     });
 
-    it('preserves every native codec constraint while adding custom direct-play combinations', () => {
+    it('preserves native constraints outside the measured custom audio route', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [
             {
@@ -902,8 +1149,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             createCapabilities([ 'h264' ], [ 'aac' ])
         );
 
-        expect(result.profile.CodecProfiles?.slice(0, original.CodecProfiles?.length ?? 0))
-            .toEqual(original.CodecProfiles);
+        expect(result.profile.CodecProfiles?.slice(0, 4))
+            .toEqual(original.CodecProfiles.slice(0, 4));
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[4],
+            Container: '-mp4,m4v,mov,mkv,webm,ts,m2ts,mts'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual(original.CodecProfiles[5]);
+        expect(result.profile.CodecProfiles).not.toContainEqual(original.CodecProfiles[4]);
         expect(result.profile.CodecProfiles).not.toBe(original.CodecProfiles);
         expect(result.profile.CodecProfiles?.[0].Conditions).toEqual(
             original.CodecProfiles[0].Conditions

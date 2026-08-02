@@ -13,6 +13,10 @@ const HEVC_FILES = Object.freeze([
     [ 'dist/wasm/hevc-decode.wasm', 'libraries/hevcjs/hevc-decode.wasm' ],
     [ 'LICENSE', 'libraries/hevcjs/LICENSE.txt' ]
 ]);
+const HEVC_QUALIFICATION_SOURCE =
+    'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc';
+const HEVC_QUALIFICATION_SERVED =
+    'libraries/hevcjs/main10-4k-qualification.bin';
 const DOLBY_VISION_FILES = Object.freeze([
     [
         'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm',
@@ -54,6 +58,16 @@ async function createArtifactFixture(ac3Enabled) {
         );
         await writeFixtureFile(repositoryRoot, join('dist', servedPath), contents);
     }
+    await writeFixtureFile(
+        repositoryRoot,
+        HEVC_QUALIFICATION_SOURCE,
+        'complex HEVC qualification fixture'
+    );
+    await writeFixtureFile(
+        repositoryRoot,
+        join('dist', HEVC_QUALIFICATION_SERVED),
+        'complex HEVC qualification fixture'
+    );
     for (const [ sourcePath, servedPath ] of DOLBY_VISION_FILES) {
         const contents = `dovi:${sourcePath}`;
         await writeFixtureFile(repositoryRoot, sourcePath, contents);
@@ -89,7 +103,7 @@ test('accepts an ordinary build without opt-in AC-3 artifacts', async () => {
 
     assert.equal(result.ac3.licensePresent, false);
     assert.equal(result.dolbyVision.length, DOLBY_VISION_FILES.length);
-    assert.equal(result.hevc.length, HEVC_FILES.length);
+    assert.equal(result.hevc.length, HEVC_FILES.length + 1);
 });
 
 test('accepts an enabled build with implementation markers and matching licenses', async () => {

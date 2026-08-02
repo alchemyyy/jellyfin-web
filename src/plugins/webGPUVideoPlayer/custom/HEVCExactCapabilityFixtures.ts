@@ -17,7 +17,7 @@ const MAIN_1080P_QUALIFICATION_BITSTREAM_SHA256 =
 const MAIN10_1080P_QUALIFICATION_BITSTREAM_SHA256 =
     '2e08094f02875d4e2855771120013f9688a3105e719588ce7f51121ef67eca21';
 const MAIN10_4K_QUALIFICATION_BITSTREAM_SHA256 =
-    'cb906f312e3592f760bbe7974618dbafa553b50a4c266e10c50fa3f5ca8bd722';
+    '0b320b24dbecb054276fcf4412c8ad24f9f3478d2f406f86410ad46869acce7b';
 
 // Regeneration recipe using FFmpeg git-862338fe31 and x265 4.1+225-1b48507eb
 // PowerShell: $common = 'high-tier=0:keyint=30:min-keyint=1:scenecut=0:bframes=0:' +
@@ -56,10 +56,10 @@ const ACCESS_UNIT_BASE64: Readonly<Record<HEVCExactCapabilityTier, string>> = Ob
     'main10-4k': MAIN10_4K_ACCESS_UNIT_BASE64
 });
 
-const QUALIFICATION_BITSTREAM_BASE64: Readonly<Record<
+const INLINE_QUALIFICATION_BITSTREAM_BASE64: Readonly<Partial<Record<
     HEVCExactCapabilityTier,
     string
->> = Object.freeze({
+>>> = Object.freeze({
     'main-1080p': MAIN_1080P_QUALIFICATION_BITSTREAM_BASE64,
     'main10-1080p': MAIN10_1080P_QUALIFICATION_BITSTREAM_BASE64,
     'main10-4k': MAIN10_4K_QUALIFICATION_BITSTREAM_BASE64
@@ -102,9 +102,15 @@ function createTransferableBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function createQualificationAccessUnits(
-    tier: HEVCExactCapabilityTier
+    tier: HEVCExactCapabilityTier,
+    main10UltraHDQualificationBitstream: ArrayBuffer
 ): readonly ArrayBuffer[] {
-    const bitstream = decodeBase64(QUALIFICATION_BITSTREAM_BASE64[tier]);
+    const inlineBitstream = tier === 'main10-4k' ?
+        undefined :
+        INLINE_QUALIFICATION_BITSTREAM_BASE64[tier];
+    const bitstream = inlineBitstream === undefined ?
+        new Uint8Array(main10UltraHDQualificationBitstream) :
+        decodeBase64(inlineBitstream);
     const byteLengths = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier]
         .qualificationAccessUnitByteLengths;
     const accessUnits: ArrayBuffer[] = [];
@@ -125,15 +131,26 @@ function createQualificationAccessUnits(
     return accessUnits;
 }
 
+/** Creates a fresh exact single-frame access unit without loading throughput media. */
+export function createHEVCExactCapabilityAccessUnit(
+    tier: HEVCExactCapabilityTier
+): ArrayBuffer {
+    return createTransferableBuffer(decodeBase64(ACCESS_UNIT_BASE64[tier]));
+}
+
 /** Creates fresh transferable access units for one exact capability probe. */
-export function createHEVCExactCapabilityWorkerTierRequests():
-readonly HEVCExactCapabilityWorkerTierRequest[] {
+export function createHEVCExactCapabilityWorkerTierRequests(
+    main10UltraHDQualificationBitstream: ArrayBuffer
+):
+    readonly HEVCExactCapabilityWorkerTierRequest[] {
+    if (!(main10UltraHDQualificationBitstream instanceof ArrayBuffer)) {
+        throw new TypeError('The exact HEVC 4K qualification fixture is unavailable');
+    }
     const requests: HEVCExactCapabilityWorkerTierRequest[] = [];
     for (const tier of HEVC_EXACT_CAPABILITY_TIERS) {
         const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
-        const accessUnit = decodeBase64(ACCESS_UNIT_BASE64[tier]);
         requests.push({
-            accessUnit: createTransferableBuffer(accessUnit),
+            accessUnit: createHEVCExactCapabilityAccessUnit(tier),
             bitDepth: definition.bitDepth,
             codedHeight: definition.codedHeight,
             codedWidth: definition.codedWidth,
@@ -141,7 +158,10 @@ readonly HEVCExactCapabilityWorkerTierRequest[] {
             maximumDecodeMilliseconds: definition.maximumDecodeMilliseconds,
             minimumFramesPerSecond: definition.minimumFramesPerSecond,
             profileIDC: definition.profileIDC,
-            qualificationAccessUnits: createQualificationAccessUnits(tier),
+            qualificationAccessUnits: createQualificationAccessUnits(
+                tier,
+                main10UltraHDQualificationBitstream
+            ),
             qualificationFrameCount: definition.qualificationFrameCount,
             warmupFrameCount: definition.warmupFrameCount,
             tier

@@ -31,6 +31,9 @@ const LEVEL_5_1_OVERSIZED_DPB_SPS = createBytesFromHex(
 const LEVEL_6_OVERSIZED_IMPLEMENTATION_DPB_SPS = createBytesFromHex(
     '4201010200000000800000000000b4a001e020021c4d967ff089a848804800'
 );
+const DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR = createBytesFromHex(
+    '420101222000000300b00000030000030096a001e02002087db6718b92448053888892cf24a69272c9124922dc91aa48fca223ff000100010100000303e900005dc06005ef7e000068e7700000d1cef080'
+);
 
 describe('parseHEVCSPS', () => {
     it('parses a progressive Main Rec.709 SPS', () => {
@@ -81,6 +84,20 @@ describe('parseHEVCSPS', () => {
             matrix: 'bt2020-ncl',
             primaries: 'bt2020',
             transfer: 'hlg'
+        });
+    });
+
+    it('preserves unspecified SPS color for a Dolby Vision Profile 5 stream', () => {
+        expect(parseHEVCSPS(DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR)).toMatchObject({
+            bitDepth: 10,
+            codedHeight: 2_080,
+            codedWidth: 3_840,
+            colorSpace: null,
+            displayHeight: 2_076,
+            displayWidth: 3_840,
+            levelIDC: 150,
+            profileIDC: 2,
+            progressive: true
         });
     });
 

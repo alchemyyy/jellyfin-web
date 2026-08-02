@@ -157,6 +157,18 @@ function createCapabilities(): CustomDecodeCapabilities {
         },
         bundledHEVC: createBundledHEVCCapabilities(),
         h264Profiles: createH264ProfileCapabilities(),
+        nativeDolbyVisionHEVC: {
+            bitDepth: 10,
+            codec: 'hevc',
+            codecString: 'hev1.2.4.H150.B0',
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumLevel: 153,
+            profile: 5,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        },
         rawHDRVideo: {
             av1: createRawHDRCapability('av1'),
             hevc: createRawHDRCapability('hevc'),
@@ -542,7 +554,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('selects raw-plane output only for an authorized single-layer Dolby Vision source', () => {
+    it('keeps native and raw Dolby Vision authorization routes separate', () => {
         const dolbyVisionOptions = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -587,6 +599,24 @@ describe('CustomPlaybackEligibility', () => {
             dolbyVisionOptions,
             createCapabilities(),
             {
+                allowDolbyVision: false,
+                allowNativeDolbyVision: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            hdr: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+        expect(getCustomPlaybackEligibility(
+            dolbyVisionOptions,
+            createCapabilities(),
+            {
                 allowDolbyVision: true,
                 allowRawHDR: false,
                 runtimeAvailability: AVAILABLE_RUNTIME
@@ -597,6 +627,32 @@ describe('CustomPlaybackEligibility', () => {
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
         });
+
+        const dolbyVisionMediaSource = dolbyVisionOptions.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        const profile8Options = {
+            ...dolbyVisionOptions,
+            mediaSource: {
+                ...dolbyVisionMediaSource,
+                MediaStreams: dolbyVisionMediaSource.MediaStreams.map(stream => ({ ...stream }))
+            }
+        };
+        const profile8MediaSource = profile8Options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        profile8MediaSource.MediaStreams[0].DvBlSignalCompatibilityId = 1;
+        profile8MediaSource.MediaStreams[0].DvProfile = 8;
+        expect(getCustomPlaybackEligibility(
+            profile8Options,
+            createCapabilities(),
+            {
+                allowDolbyVision: false,
+                allowNativeDolbyVision: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
     });
 
     it.each([
@@ -1050,6 +1106,42 @@ describe('CustomPlaybackEligibility', () => {
             audioOutputMode: 'native-media',
             eligible: true
         });
+    });
+
+    it('selects decoded PCM for qualified 5.1 AC-3 input', () => {
+        for (const codec of [ 'ac3', 'eac3' ] as const) {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[1].Channels = 6;
+            mediaSource.MediaStreams[1].Codec = codec;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    });
+
+    it('does not apply the AC-3 downmix claim to other codecs', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Channels = 6;
+        mediaSource.MediaStreams[1].Codec = 'aac';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
     });
 
     it.each([

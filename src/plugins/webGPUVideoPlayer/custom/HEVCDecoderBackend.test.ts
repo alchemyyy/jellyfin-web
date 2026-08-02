@@ -202,7 +202,7 @@ describe('createHEVCDecoderBackend', () => {
         expect(() => backend.drain((): void => undefined)).toThrow('destroyed');
     });
 
-    it('rejects invalid chroma geometry before copying decoded planes', async () => {
+    it('rejects invalid chroma geometry before exposing decoded planes', async () => {
         const harness = createFakeModule({ chromaWidth: 3 });
         vi.stubGlobal('HEVCDecoderModule', harness.factory);
         const backend = await createHEVCDecoderBackend({});
@@ -227,7 +227,7 @@ describe('createHEVCDecoderBackend', () => {
         backend.destroy();
     });
 
-    it('rejects an oversized reported drain before copying any frame', async () => {
+    it('rejects an oversized reported drain before exposing any frame', async () => {
         const harness = createFakeModule({}, MAXIMUM_HEVC_DRAINED_FRAME_COUNT + 1);
         vi.stubGlobal('HEVCDecoderModule', harness.factory);
         const backend = await createHEVCDecoderBackend({});
@@ -237,7 +237,7 @@ describe('createHEVCDecoderBackend', () => {
         backend.destroy();
     });
 
-    it('streams each copied frame before extracting the next frame', async () => {
+    it('streams each borrowed frame before extracting the next frame', async () => {
         const harness = createFakeModule({}, 3);
         vi.stubGlobal('HEVCDecoderModule', harness.factory);
         const backend = await createHEVCDecoderBackend({});
@@ -259,7 +259,7 @@ describe('createHEVCDecoderBackend', () => {
         backend.destroy();
     });
 
-    it('streams flushed frames without retaining a copied batch', async () => {
+    it('streams flushed frames without retaining a borrowed batch', async () => {
         const harness = createFakeModule({}, 3);
         vi.stubGlobal('HEVCDecoderModule', harness.factory);
         const backend = await createHEVCDecoderBackend({});

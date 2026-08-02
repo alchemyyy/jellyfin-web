@@ -16,6 +16,8 @@ import {
 
 const HEVC_DECODER_GLUE_ASSET = 'libraries/hevcjs/hevc-decode.js';
 const HEVC_DECODER_WASM_ASSET = 'libraries/hevcjs/hevc-decode.wasm';
+const HEVC_MAIN10_4K_QUALIFICATION_ASSET =
+    'libraries/hevcjs/main10-4k-qualification.bin';
 
 export type BundledHEVCExactCapabilityStatus = 'supported' | 'unsupported';
 export type BundledHEVCExactCapabilityReason =
@@ -73,6 +75,7 @@ export type HEVCExactCapabilityProbeWorker = {
 export type HEVCExactCapabilityProbeEnvironment = Readonly<{
     clearTimeout: (timeout: ReturnType<typeof globalThis.setTimeout>) => void
     createWorker: (() => HEVCExactCapabilityProbeWorker) | null
+    loadQualificationBitstream: (url: string) => Promise<ArrayBuffer>
     resolveAssetURL: (path: string) => string
     runtimeAvailable: boolean
     setTimeout: (
@@ -94,13 +97,27 @@ function createDefaultWorker(): HEVCExactCapabilityProbeWorker {
     return worker as unknown as HEVCExactCapabilityProbeWorker;
 }
 
+async function loadDefaultQualificationBitstream(url: string): Promise<ArrayBuffer> {
+    const response = await fetch(url, {
+        cache: 'force-cache',
+        credentials: 'same-origin',
+        redirect: 'error'
+    });
+    if (!response.ok) {
+        throw new Error('The exact HEVC qualification fixture request failed');
+    }
+    return response.arrayBuffer();
+}
+
 function createDefaultEnvironment(): HEVCExactCapabilityProbeEnvironment {
     const runtimeAvailable = typeof globalThis.Worker === 'function'
         && typeof globalThis.WebAssembly === 'object'
-        && typeof globalThis.atob === 'function';
+        && typeof globalThis.atob === 'function'
+        && typeof globalThis.fetch === 'function';
     return {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: runtimeAvailable ? createDefaultWorker : null,
+        loadQualificationBitstream: loadDefaultQualificationBitstream,
         resolveAssetURL: resolveDefaultAssetURL,
         runtimeAvailable,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
@@ -337,24 +354,42 @@ export class BundledHEVCExactCapabilityProbe {
                 settle(createUniformFailureCapabilities('probe-timeout'));
             }, this.timeoutMilliseconds);
 
-            try {
-                const tiers = createHEVCExactCapabilityWorkerTierRequests();
-                const request: HEVCExactCapabilityWorkerRequest = {
-                    decoderGlueURL: this.environment.resolveAssetURL(HEVC_DECODER_GLUE_ASSET),
-                    decoderWASMURL: this.environment.resolveAssetURL(HEVC_DECODER_WASM_ASSET),
-                    requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-                    tiers,
-                    type: 'probe'
-                };
-                const transfer: Transferable[] = [];
-                for (const tier of tiers) {
-                    transfer.push(tier.accessUnit);
-                    transfer.push(...tier.qualificationAccessUnits);
+            const loadAndPostRequest = async (): Promise<void> => {
+                try {
+                    const qualificationBitstream =
+                        await this.environment.loadQualificationBitstream(
+                            this.environment.resolveAssetURL(
+                                HEVC_MAIN10_4K_QUALIFICATION_ASSET
+                            )
+                        );
+                    if (settled) {
+                        return;
+                    }
+                    const tiers = createHEVCExactCapabilityWorkerTierRequests(
+                        qualificationBitstream
+                    );
+                    const request: HEVCExactCapabilityWorkerRequest = {
+                        decoderGlueURL: this.environment.resolveAssetURL(
+                            HEVC_DECODER_GLUE_ASSET
+                        ),
+                        decoderWASMURL: this.environment.resolveAssetURL(
+                            HEVC_DECODER_WASM_ASSET
+                        ),
+                        requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
+                        tiers,
+                        type: 'probe'
+                    };
+                    const transfer: Transferable[] = [];
+                    for (const tier of tiers) {
+                        transfer.push(tier.accessUnit);
+                        transfer.push(...tier.qualificationAccessUnits);
+                    }
+                    worker.postMessage(request, transfer);
+                } catch {
+                    settle(createUniformFailureCapabilities('worker-error'));
                 }
-                worker.postMessage(request, transfer);
-            } catch {
-                settle(createUniformFailureCapabilities('worker-error'));
-            }
+            };
+            void loadAndPostRequest();
         });
     }
 }

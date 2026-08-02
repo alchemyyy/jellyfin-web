@@ -74,6 +74,7 @@ type HEVCFrameLayout = {
     width: number
 };
 
+/** Consumes a frame synchronously before the decoder may reuse its WASM planes. */
 export type HEVCDecodedFrameHandler = (frame: HEVCFrame) => void;
 
 export type HEVCDecoderBackend = {
@@ -203,9 +204,19 @@ function validateFrameLayout(
     };
 }
 
-function copyPlane(module: EmscriptenHEVCModule, layout: HEVCPlaneLayout): Uint16Array {
-    const output = new Uint16Array(layout.width * layout.height);
+function getPlaneForSynchronousConsumption(
+    module: EmscriptenHEVCModule,
+    layout: HEVCPlaneLayout
+): Uint16Array {
     const baseSampleOffset = layout.pointer / Uint16Array.BYTES_PER_ELEMENT;
+    if (layout.stride === layout.width) {
+        return module.HEAPU16.subarray(
+            baseSampleOffset,
+            baseSampleOffset + (layout.width * layout.height)
+        );
+    }
+
+    const output = new Uint16Array(layout.width * layout.height);
     for (let rowIndex = 0; rowIndex < layout.height; rowIndex += 1) {
         const sourceOffset = baseSampleOffset + (rowIndex * layout.stride);
         output.set(
@@ -409,14 +420,14 @@ class HEVCWASMDecoderBackend implements HEVCDecoderBackend {
             });
             return {
                 bitDepth: frameLayout.bitDepth,
-                cb: copyPlane(this.module, frameLayout.chromaBlue),
+                cb: getPlaneForSynchronousConsumption(this.module, frameLayout.chromaBlue),
                 chromaHeight: frameLayout.chromaHeight,
                 chromaWidth: frameLayout.chromaWidth,
-                cr: copyPlane(this.module, frameLayout.chromaRed),
+                cr: getPlaneForSynchronousConsumption(this.module, frameLayout.chromaRed),
                 height: frameLayout.height,
                 poc: frameLayout.poc,
                 width: frameLayout.width,
-                y: copyPlane(this.module, frameLayout.luma)
+                y: getPlaneForSynchronousConsumption(this.module, frameLayout.luma)
             };
         } finally {
             this.module._free(framePointer);

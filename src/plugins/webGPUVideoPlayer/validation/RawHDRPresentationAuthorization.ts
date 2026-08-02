@@ -38,7 +38,7 @@ import GPUAuthorizationDeadline, {
     GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS
 } from './GPUAuthorizationDeadline';
 
-export const RAW_HDR_AUTHORIZATION_FIXTURE_VERSION = 1;
+export const RAW_HDR_AUTHORIZATION_FIXTURE_VERSION = 2;
 export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS =
     GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
 
@@ -274,7 +274,7 @@ function getFixtureChromaCodes(x: number, y: number): readonly [number, number] 
     if (y < FIXTURE_HEIGHT / 4) {
         return [ NEUTRAL_CHROMA_CODE, NEUTRAL_CHROMA_CODE ];
     }
-    return x < FIXTURE_WIDTH / 4 ? [ 720, 304 ] : [ 304, 720 ];
+    return x < FIXTURE_WIDTH / 4 ? [ 612, 412 ] : [ 412, 612 ];
 }
 
 function populateFixtureChroma(
@@ -462,7 +462,8 @@ export function createExpectedRawHDRFixtureObservations(
 /** Compares bounded readbacks with quantization and shader arithmetic tolerance. */
 export function evaluateRawHDRFixtureObservations(
     expectedObservations: readonly RawHDRFixtureObservation[],
-    actualObservations: readonly RawHDRFixtureObservation[]
+    actualObservations: readonly RawHDRFixtureObservation[],
+    tolerance = AUTHORIZATION_TOLERANCE
 ): { accepted: boolean, maximumChannelError: number } {
     if (actualObservations.length !== expectedObservations.length) {
         return { accepted: false, maximumChannelError: Number.POSITIVE_INFINITY };
@@ -486,7 +487,7 @@ export function evaluateRawHDRFixtureObservations(
         }
     }
     return {
-        accepted: maximumChannelError <= AUTHORIZATION_TOLERANCE,
+        accepted: maximumChannelError <= tolerance,
         maximumChannelError
     };
 }
@@ -669,28 +670,26 @@ export class RawHDRPresentationAuthorizationRunner {
                 format: targetFormat,
                 maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
             });
+            const readback = await deadline.wait(
+                pixelReader.readPixels(RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES, targetTexture),
+                (): void => pixelReader?.destroy()
+            );
             const actualObservations: RawHDRFixtureObservation[] = [];
-            for (const sample of RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES) {
-                const readback = await deadline.wait(
-                    pixelReader.readPixel(
-                        sample.sampleX,
-                        sample.sampleY,
-                        targetTexture
-                    ),
-                    (): void => pixelReader?.destroy()
+            if (readback.failure || !readback.linearRGB) {
+                return createRejectedDecision(
+                    device,
+                    targetFormat,
+                    routeKey,
+                    shaderSignature,
+                    'readback-failed'
                 );
-                if (readback.failure || !readback.linearRGB) {
-                    return createRejectedDecision(
-                        device,
-                        targetFormat,
-                        routeKey,
-                        shaderSignature,
-                        'readback-failed',
-                        actualObservations.length
-                    );
-                }
+            }
+            for (let sampleIndex = 0;
+                sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex += 1) {
+                const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
                 actualObservations.push({
-                    linearRGB: readback.linearRGB,
+                    linearRGB: readback.linearRGB[sampleIndex],
                     sampleX: sample.sampleX,
                     sampleY: sample.sampleY
                 });

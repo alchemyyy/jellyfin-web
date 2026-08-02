@@ -301,6 +301,47 @@ describe('GPUCanvasColorValidationHarness', () => {
         pixelReader.destroy();
     });
 
+    it('batches bounded pixel observations into one mapped buffer', async () => {
+        const batchPixels: readonly ColorTriplet[] = [
+            [ 0.25, 0.5, 0.75 ],
+            [ 0.5, 0.25, 1 ],
+            [ 1, 0.75, 0.5 ]
+        ];
+        const mappedBytes = new Uint8Array(COPY_BYTES_PER_ROW_ALIGNMENT * batchPixels.length);
+        for (let pixelIndex = 0; pixelIndex < batchPixels.length; pixelIndex += 1) {
+            mappedBytes.set(
+                encodeRGBA16Float(batchPixels[pixelIndex]),
+                COPY_BYTES_PER_ROW_ALIGNMENT * pixelIndex
+            );
+        }
+        const gpuHarness = createGPUHarness([ mappedBytes ]);
+        const pixelReader = new GPUCanvasPixelReader({
+            device: gpuHarness.device,
+            format: 'rgba16float',
+            maximumReadbacks: batchPixels.length
+        });
+
+        await expect(pixelReader.readPixels([
+            { sampleX: 0, sampleY: 0 },
+            { sampleX: 1, sampleY: 0 },
+            { sampleX: 2, sampleY: 0 }
+        ], gpuHarness.texture)).resolves.toEqual({
+            failure: null,
+            linearRGB: batchPixels
+        });
+        expect(gpuHarness.bufferDescriptors).toContainEqual(expect.objectContaining({
+            size: COPY_BYTES_PER_ROW_ALIGNMENT * batchPixels.length
+        }));
+        expect(gpuHarness.copyTextureToBuffer).toHaveBeenCalledTimes(batchPixels.length);
+        expect(gpuHarness.copyTextureToBuffer.mock.calls.map(call => call[1].offset)).toEqual([
+            0,
+            COPY_BYTES_PER_ROW_ALIGNMENT,
+            COPY_BYTES_PER_ROW_ALIGNMENT * 2
+        ]);
+        expect(gpuHarness.mapAsync).toHaveBeenCalledOnce();
+        pixelReader.destroy();
+    });
+
     it.each([
         [ 'SDR', createSDRColorMetadata(), 'rgba8unorm', encodeRGBA8 ],
         [ 'PQ', createPQColorMetadata(), 'rgba16float', encodeRGBA16Float ],

@@ -43,7 +43,7 @@ export type HEVCSPSConfiguration = {
     chromaFormat: 1
     codedHeight: number
     codedWidth: number
-    colorSpace: HEVCSPSColorSpace
+    colorSpace: HEVCSPSColorSpace | null
     displayHeight: number
     displayWidth: number
     levelIDC: number
@@ -115,7 +115,7 @@ type ProfileTierLevel = {
 };
 
 type ParsedVUI = {
-    colorSpace: HEVCSPSColorSpace
+    colorSpace: HEVCSPSColorSpace | null
     fieldSequence: boolean
 };
 
@@ -324,17 +324,22 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     if (reader.readFlag('overscan_info_present_flag')) {
         reader.skipBits(1, 'overscan_appropriate_flag');
     }
-    if (!reader.readFlag('video_signal_type_present_flag')) {
-        throw new TypeError('The HEVC SPS VUI has no video signal type');
+    let colorSpace: HEVCSPSColorSpace | null = null;
+    if (reader.readFlag('video_signal_type_present_flag')) {
+        reader.skipBits(3, 'video_format');
+        const fullRange = reader.readFlag('video_full_range_flag');
+        if (reader.readFlag('colour_description_present_flag')) {
+            const primariesValue = reader.readBits(8, 'colour_primaries');
+            const transferValue = reader.readBits(8, 'transfer_characteristics');
+            const matrixValue = reader.readBits(8, 'matrix_coeffs');
+            colorSpace = mapColorSpace(
+                primariesValue,
+                transferValue,
+                matrixValue,
+                fullRange
+            );
+        }
     }
-    reader.skipBits(3, 'video_format');
-    const fullRange = reader.readFlag('video_full_range_flag');
-    if (!reader.readFlag('colour_description_present_flag')) {
-        throw new TypeError('The HEVC SPS VUI has no color description');
-    }
-    const primariesValue = reader.readBits(8, 'colour_primaries');
-    const transferValue = reader.readBits(8, 'transfer_characteristics');
-    const matrixValue = reader.readBits(8, 'matrix_coeffs');
 
     if (reader.readFlag('chroma_loc_info_present_flag')) {
         reader.readUnsignedExpGolomb(
@@ -351,12 +356,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     reader.skipBits(1, 'frame_field_info_present_flag');
 
     return {
-        colorSpace: mapColorSpace(
-            primariesValue,
-            transferValue,
-            matrixValue,
-            fullRange
-        ),
+        colorSpace,
         fieldSequence
     };
 }

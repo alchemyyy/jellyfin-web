@@ -1,4 +1,4 @@
-import { EncodedPacket, type VideoSample } from 'mediabunny';
+import { EncodedPacket } from 'mediabunny';
 import {
     afterEach,
     describe,
@@ -105,7 +105,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const decoder = new OwnedNativeHEVCVideoDecoder(
             config,
             { kind: 'annex-b' },
-            { onError: vi.fn(), onProgress, onSample: vi.fn() },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress },
             harness.dependencies
         );
 
@@ -125,7 +125,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const decoder = new OwnedNativeHEVCVideoDecoder(
             { codec: 'hvc1.2.4.L153.B0' },
             { kind: 'annex-b' },
-            { onError: vi.fn(), onProgress: vi.fn(), onSample: vi.fn() },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
             harness.dependencies
         );
         await decoder.init();
@@ -151,20 +151,20 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         decoder.close();
     });
 
-    it('wraps native output as an owned VideoSample and closes stale callbacks', async () => {
+    it('transfers native frame ownership directly and closes stale callbacks', async () => {
         vi.stubGlobal('VideoFrame', FakeVideoFrame);
         const harness = createHarness();
-        const samples: VideoSample[] = [];
+        const frames: VideoFrame[] = [];
         const onProgress = vi.fn();
         const decoder = new OwnedNativeHEVCVideoDecoder(
             { codec: 'hvc1.2.4.L153.B0' },
             { kind: 'annex-b' },
             {
                 onError: vi.fn(),
-                onProgress,
-                onSample: (sample: VideoSample): void => {
-                    samples.push(sample);
-                }
+                onFrame: (frame: VideoFrame): void => {
+                    frames.push(frame);
+                },
+                onProgress
             },
             harness.dependencies
         );
@@ -172,9 +172,8 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const firstFrame = new FakeVideoFrame();
 
         harness.init?.output(firstFrame as unknown as VideoFrame);
-        expect(samples).toHaveLength(1);
-        expect(samples[0].microsecondTimestamp).toBe(1_000_000);
-        samples[0].close();
+        expect(frames).toEqual([ firstFrame ]);
+        frames[0].close();
         expect(firstFrame.close).toHaveBeenCalledOnce();
         expect(onProgress).toHaveBeenCalledOnce();
 
@@ -182,23 +181,23 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const staleFrame = new FakeVideoFrame();
         harness.init?.output(staleFrame as unknown as VideoFrame);
         expect(staleFrame.close).toHaveBeenCalledOnce();
-        expect(samples).toHaveLength(1);
+        expect(frames).toHaveLength(1);
     });
 
-    it('closes failed output ownership when the sample callback rejects it', async () => {
+    it('closes failed output ownership when the frame callback rejects it', async () => {
         vi.stubGlobal('VideoFrame', FakeVideoFrame);
         const harness = createHarness();
-        const outputError = new Error('sample rejected');
+        const outputError = new Error('frame rejected');
         const onError = vi.fn();
         const decoder = new OwnedNativeHEVCVideoDecoder(
             { codec: 'hvc1.2.4.L153.B0' },
             { kind: 'annex-b' },
             {
                 onError,
-                onProgress: vi.fn(),
-                onSample: (): never => {
+                onFrame: (): never => {
                     throw outputError;
-                }
+                },
+                onProgress: vi.fn()
             },
             harness.dependencies
         );
@@ -222,7 +221,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const decoder = new OwnedNativeHEVCVideoDecoder(
             { codec: 'hvc1.2.4.L153.B0' },
             { kind: 'annex-b' },
-            { onError: vi.fn(), onProgress: vi.fn(), onSample: vi.fn() },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
             harness.dependencies
         );
 
@@ -238,7 +237,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         const decoder = new OwnedNativeHEVCVideoDecoder(
             { codec: 'hvc1.2.4.L153.B0' },
             { kind: 'annex-b' },
-            { onError: vi.fn(), onProgress: vi.fn(), onSample: vi.fn() },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
             harness.dependencies
         );
         await decoder.init();

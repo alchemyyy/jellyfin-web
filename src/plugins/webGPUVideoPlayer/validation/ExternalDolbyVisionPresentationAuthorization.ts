@@ -8,17 +8,16 @@ import {
     processEncodedRGB,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import { createRawDolbyVisionColorPipelineWGSL } from '../color/ColorPipelineShader';
+import { createExternalDolbyVisionColorPipelineWGSL } from '../color/ColorPipelineShader';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
-import type { SupportedRawVideoFrameFormat } from '../custom/RawVideoFrameCopy';
+import type {
+    RawVideoPlaneDescriptor,
+    TransferableRawVideoFrame
+} from '../custom/RawVideoFrameCopy';
 import {
-    createRawYUVRenderPipeline,
-    createRawYUVRenderResources,
-    destroyRawPlaneTextureSet,
-    renderRawYUVFrame,
-    type RawPlaneTextureSet,
-    type RawYUVTexturePresentation
+    createRawYUVRenderSettingsUniformBuffer,
+    writeRawYUVRenderSettingsUniform
 } from '../RawYUVGPURenderer';
 import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthorizationFixture';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
@@ -31,77 +30,77 @@ import {
     createRawHDRAuthorizationFixture,
     evaluateRawHDRFixtureObservations,
     RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
-    sampleRawI420P10Frame,
     type RawHDRFixtureObservation
 } from './RawHDRPresentationAuthorization';
 
-export const DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 2;
-export const DOLBY_VISION_AUTHORIZATION_ROUTE_KEY = 'I420P10:dovi-rpu-v1';
+export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 1;
+export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY =
+    'external-I420P10-bt709-limited:dovi-p5-rpu-v1';
 
+const FLOATS_PER_PRESENTATION_UNIFORM = 4;
 const MAXIMUM_10_BIT_CODE = 1_023;
+const EXTERNAL_AUTHORIZATION_TOLERANCE = 8 / 255;
+const VERTEX_COUNT = 6;
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
     'rgba8unorm'
 ]);
 
-export type DolbyVisionAuthorizationFailureReason =
-    | 'device-lost'
-    | 'gpu-api-unavailable'
-    | 'gpu-validation-failed'
-    | 'pixel-mismatch'
-    | 'readback-failed'
-    | 'route-unsupported'
-    | 'target-format-unsupported'
-    | 'timeout'
-    | 'unexpected-error';
-
-export type DolbyVisionAuthorizationDecision = {
-    device: GPUDevice
-    failureReason: DolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
-    maximumChannelError: number | null
-    renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
-    routeKey: typeof DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
-    sampleCount: number
-    shaderSignature: string
-    status: 'authorized' | 'rejected'
-    targetFormat: GPUTextureFormat
-};
-
-export type DolbyVisionAuthorizationTelemetry = {
-    failureReason: DolbyVisionAuthorizationFailureReason | null
-    fixtureVersion: typeof DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
-    maximumChannelError: number | null
-    renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
-    routeKey: typeof DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
-    sampleCount: number
-    status: 'authorized' | 'pending' | 'rejected' | 'unavailable'
-    targetFormat: GPUTextureFormat | null
+type ExtendedVideoFrameBufferInit = Omit<VideoFrameBufferInit, 'format'> & {
+    format: 'I420P10'
 };
 
 type CachedProbe = {
-    decision: DolbyVisionAuthorizationDecision | null
-    promise: Promise<DolbyVisionAuthorizationDecision>
+    decision: ExternalDolbyVisionAuthorizationDecision | null
+    promise: Promise<ExternalDolbyVisionAuthorizationDecision>
 };
 
 type DeviceProbeCache = {
     probes: Map<string, CachedProbe>
 };
 
-const FULL_FRAME_PRESENTATION: RawYUVTexturePresentation = {
-    textureOffsetX: 0,
-    textureOffsetY: 0,
-    textureScaleX: 1,
-    textureScaleY: 1,
-    viewportHeight: 8,
-    viewportWidth: 16,
-    viewportX: 0,
-    viewportY: 0
+type AuthorizationPhase =
+    | 'frame-create'
+    | 'frame-import'
+    | 'gpu-render';
+
+export type ExternalDolbyVisionAuthorizationFailureReason =
+    | 'device-lost'
+    | 'frame-import-failed'
+    | 'gpu-api-unavailable'
+    | 'gpu-validation-failed'
+    | 'pixel-mismatch'
+    | 'readback-failed'
+    | 'target-format-unsupported'
+    | 'timeout'
+    | 'unexpected-error'
+    | 'video-frame-creation-failed';
+
+export type ExternalDolbyVisionAuthorizationDecision = {
+    device: GPUDevice
+    failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
+    fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    maximumChannelError: number | null
+    renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
+    routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    sampleCount: number
+    shaderSignature: string
+    status: 'authorized' | 'rejected'
+    targetFormat: GPUTextureFormat
 };
 
-function clamp(value: number, minimum: number, maximum: number): number {
-    return Math.min(Math.max(value, minimum), maximum);
-}
+export type ExternalDolbyVisionAuthorizationTelemetry = {
+    failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
+    fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
+    maximumChannelError: number | null
+    renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
+    routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
+    sampleCount: number
+    status: 'authorized' | 'pending' | 'rejected' | 'unavailable'
+    targetFormat: GPUTextureFormat | null
+};
+
+export type ExternalDolbyVisionAuthorizationFrameFactory = () => VideoFrame;
 
 function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -113,28 +112,51 @@ function createSettings(): HDRToSDRRenderSettings {
     });
 }
 
-/** Creates a stable identity for the exact DV fixture, shader, and target. */
-export function createDolbyVisionShaderSignature(
-    targetFormat: GPUTextureFormat,
-    shaderCode: string
-): string {
-    const signatureInput = [
-        `fixture=${DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION}`,
-        `uniform=${RENDER_SETTINGS_VERSION}`,
-        `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
-        `target=${targetFormat}`,
-        shaderCode
-    ].join('\u0000');
-    let hash = 0x811C_9DC5;
-    for (let characterIndex = 0; characterIndex < signatureInput.length; characterIndex += 1) {
-        hash ^= signatureInput.charCodeAt(characterIndex);
-        hash = Math.imul(hash, 0x0100_0193) >>> 0;
-    }
-    return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
+function clamp(value: number, minimum: number, maximum: number): number {
+    return Math.min(Math.max(value, minimum), maximum);
 }
 
-/** Computes CPU-reference samples for the exact synthetic authorization fixture. */
-export function createExpectedDolbyVisionAuthorizationObservations(
+function getPlane(
+    frame: TransferableRawVideoFrame,
+    kind: RawVideoPlaneDescriptor['kind']
+): RawVideoPlaneDescriptor {
+    const plane = frame.planes.find(candidate => candidate.kind === kind);
+    if (!plane) {
+        throw new Error(`External authorization fixture has no ${kind} plane`);
+    }
+    return plane;
+}
+
+function readPlaneCode(
+    frame: TransferableRawVideoFrame,
+    plane: RawVideoPlaneDescriptor,
+    x: number,
+    y: number
+): number {
+    return new DataView(frame.data).getUint16(
+        plane.byteOffset
+            + (y * plane.bytesPerRow)
+            + (x * Uint16Array.BYTES_PER_ELEMENT),
+        true
+    );
+}
+
+function sampleExternalI420P10Fixture(
+    frame: TransferableRawVideoFrame,
+    sampleX: number,
+    sampleY: number
+): ColorTriplet {
+    const chromaX = Math.floor(sampleX / 2);
+    const chromaY = Math.floor(sampleY / 2);
+    return [
+        readPlaneCode(frame, getPlane(frame, 'y'), sampleX, sampleY),
+        readPlaneCode(frame, getPlane(frame, 'u'), chromaX, chromaY),
+        readPlaneCode(frame, getPlane(frame, 'v'), chromaX, chromaY)
+    ];
+}
+
+/** Computes the CPU reference using Chromium's pixel-centered 4:2:0 siting. */
+export function createExpectedExternalDolbyVisionAuthorizationObservations(
     packedRPUData: ArrayBuffer,
     settings: HDRToSDRRenderSettings
 ): readonly RawHDRFixtureObservation[] {
@@ -143,7 +165,11 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     );
     const outputMetadata = createPQColorMetadata({ range: 'full' });
     return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map(sample => {
-        const rawSignal = sampleRawI420P10Frame(frame, sample.sampleX, sample.sampleY);
+        const rawSignal = sampleExternalI420P10Fixture(
+            frame,
+            sample.sampleX,
+            sample.sampleY
+        );
         const normalizedSignal: ColorTriplet = [
             rawSignal[0] / MAXIMUM_10_BIT_CODE,
             rawSignal[1] / MAXIMUM_10_BIT_CODE,
@@ -174,13 +200,82 @@ export function createExpectedDolbyVisionAuthorizationObservations(
     });
 }
 
-function classifyFailure(error: unknown): DolbyVisionAuthorizationFailureReason {
+/** Creates a stable identity for the exact external-texture production route. */
+export function createExternalDolbyVisionShaderSignature(
+    targetFormat: GPUTextureFormat,
+    shaderCode: string
+): string {
+    const signatureInput = [
+        `fixture=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION}`,
+        `uniform=${RENDER_SETTINGS_VERSION}`,
+        `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
+        'frame=I420P10:bt709:bt709:bt709:limited',
+        `tolerance=${EXTERNAL_AUTHORIZATION_TOLERANCE}`,
+        `target=${targetFormat}`,
+        shaderCode
+    ].join('\u0000');
+    let hash = 0x811C_9DC5;
+    for (let characterIndex = 0; characterIndex < signatureInput.length; characterIndex += 1) {
+        hash ^= signatureInput.charCodeAt(characterIndex);
+        hash = Math.imul(hash, 0x0100_0193) >>> 0;
+    }
+    return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
+}
+
+/** Builds the exact software-backed 10-bit BT.709 frame imported by the probe. */
+export function createExternalDolbyVisionAuthorizationFrame(): VideoFrame {
+    if (typeof VideoFrame === 'undefined') {
+        throw new Error('video-frame-api-unavailable');
+    }
+    const sourceFrame = createRawHDRAuthorizationFixture(
+        'I420P10:bt2020-ncl:bt2020:limited:pq'
+    );
+    const frameInit: ExtendedVideoFrameBufferInit = {
+        codedHeight: sourceFrame.codedHeight,
+        codedWidth: sourceFrame.codedWidth,
+        colorSpace: {
+            fullRange: false,
+            matrix: 'bt709',
+            primaries: 'bt709',
+            transfer: 'bt709'
+        },
+        displayHeight: sourceFrame.displayHeight,
+        displayWidth: sourceFrame.displayWidth,
+        format: 'I420P10',
+        layout: sourceFrame.planes.map(plane => ({
+            offset: plane.byteOffset,
+            stride: plane.bytesPerRow
+        })),
+        timestamp: 0,
+        visibleRect: { ...sourceFrame.visibleRectangle }
+    };
+    // eslint-disable-next-line compat/compat -- Authorization is capability-gated
+    return new VideoFrame(
+        sourceFrame.data,
+        frameInit as unknown as VideoFrameBufferInit
+    );
+}
+
+function classifyFailure(
+    error: unknown,
+    phase: AuthorizationPhase
+): ExternalDolbyVisionAuthorizationFailureReason {
     switch (getErrorMessage(error)) {
         case 'device-lost':
             return 'device-lost';
         case 'timeout':
             return 'timeout';
+        case 'video-frame-api-unavailable':
+            return 'gpu-api-unavailable';
         default:
+            break;
+    }
+    switch (phase) {
+        case 'frame-create':
+            return 'video-frame-creation-failed';
+        case 'frame-import':
+            return 'frame-import-failed';
+        case 'gpu-render':
             return 'unexpected-error';
     }
 }
@@ -189,17 +284,17 @@ function createRejectedDecision(
     device: GPUDevice,
     targetFormat: GPUTextureFormat,
     shaderSignature: string,
-    failureReason: DolbyVisionAuthorizationFailureReason,
+    failureReason: ExternalDolbyVisionAuthorizationFailureReason,
     sampleCount = 0,
     maximumChannelError: number | null = null
-): DolbyVisionAuthorizationDecision {
+): ExternalDolbyVisionAuthorizationDecision {
     return {
         device,
         failureReason,
-        fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+        fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
-        routeKey: DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+        routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
         sampleCount,
         shaderSignature,
         status: 'rejected',
@@ -217,18 +312,45 @@ function discardErrorScope(device: GPUDevice): void {
     }
 }
 
-/** Runs the exact production raw upload, RPU binding, shader, and draw path. */
-export class DolbyVisionPresentationAuthorizationRunner {
+function createRenderPipeline(
+    device: GPUDevice,
+    targetFormat: GPUTextureFormat,
+    shaderCode: string
+): Promise<GPURenderPipeline> {
+    const shaderModule = device.createShaderModule({ code: shaderCode });
+    return device.createRenderPipelineAsync({
+        fragment: {
+            entryPoint: 'fragmentMain',
+            module: shaderModule,
+            targets: [{ format: targetFormat }]
+        },
+        layout: 'auto',
+        primitive: { topology: 'triangle-list' },
+        vertex: {
+            entryPoint: 'vertexMain',
+            module: shaderModule
+        }
+    });
+}
+
+/** Runs the exact external texture, Profile 5 shader, binding, and draw path. */
+export class ExternalDolbyVisionPresentationAuthorizationRunner {
+    private readonly createFrame: ExternalDolbyVisionAuthorizationFrameFactory;
+
+    public constructor(
+        createFrame: ExternalDolbyVisionAuthorizationFrameFactory =
+        createExternalDolbyVisionAuthorizationFrame
+    ) {
+        this.createFrame = createFrame;
+    }
+
     public async validate(
         device: GPUDevice,
         targetFormat: GPUTextureFormat
-    ): Promise<DolbyVisionAuthorizationDecision> {
+    ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const settings = createSettings();
-        const shaderCode = createRawDolbyVisionColorPipelineWGSL(
-            settings,
-            'I420P10'
-        );
-        const shaderSignature = createDolbyVisionShaderSignature(
+        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(settings);
+        const shaderSignature = createExternalDolbyVisionShaderSignature(
             targetFormat,
             shaderCode
         );
@@ -255,34 +377,48 @@ export class DolbyVisionPresentationAuthorizationRunner {
         }
 
         let targetTexture: GPUTexture | null = null;
-        let textureSet: RawPlaneTextureSet | null = null;
         let presentationUniformBuffer: GPUBuffer | null = null;
         let renderSettingsUniformBuffer: GPUBuffer | null = null;
         let RPUStorageBuffer: GPUBuffer | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
+        let frame: VideoFrame | null = null;
         let errorScopePushed = false;
+        let phase: AuthorizationPhase = 'gpu-render';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
             const pipeline = await deadline.wait(
-                createRawYUVRenderPipeline(device, targetFormat, shaderCode)
+                createRenderPipeline(device, targetFormat, shaderCode)
             );
-            const resources = createRawYUVRenderResources(device, pipeline, settings);
-            presentationUniformBuffer = resources.presentationUniformBuffer;
-            renderSettingsUniformBuffer = resources.renderSettingsUniformBuffer;
-            const packedRPUData = createDolbyVisionAuthorizationRPUFixture();
+            const sampler = device.createSampler({
+                magFilter: 'linear',
+                minFilter: 'linear'
+            });
+            presentationUniformBuffer = device.createBuffer({
+                label: 'WebGPU external Dolby Vision authorization presentation uniforms',
+                size: FLOATS_PER_PRESENTATION_UNIFORM * Float32Array.BYTES_PER_ELEMENT,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
+            });
+            device.queue.writeBuffer(
+                presentationUniformBuffer,
+                0,
+                new Float32Array([ 1, 1, 0, 0 ])
+            );
+            renderSettingsUniformBuffer = createRawYUVRenderSettingsUniformBuffer(device);
+            writeRawYUVRenderSettingsUniform(device, renderSettingsUniformBuffer, settings);
+            const packedRPUData = createDolbyVisionAuthorizationRPUFixture(5);
             RPUStorageBuffer = device.createBuffer({
-                label: 'WebGPU Dolby Vision authorization RPU',
+                label: 'WebGPU external Dolby Vision authorization RPU',
                 size: packedRPUData.byteLength,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
             });
             device.queue.writeBuffer(RPUStorageBuffer, 0, packedRPUData);
-            const frame = createRawHDRAuthorizationFixture(
-                'I420P10:bt2020-ncl:bt2020:limited:pq'
-            );
+
+            phase = 'frame-create';
+            frame = this.createFrame();
             targetTexture = device.createTexture({
                 dimension: '2d',
                 format: targetFormat,
-                label: 'WebGPU Dolby Vision authorization target',
+                label: 'WebGPU external Dolby Vision authorization target',
                 size: {
                     depthOrArrayLayers: 1,
                     height: frame.displayHeight,
@@ -290,18 +426,59 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 },
                 usage: targetUsage
             });
+
             device.pushErrorScope('validation');
             errorScopePushed = true;
-            const renderResult = renderRawYUVFrame({
-                ...resources,
-                device,
-                dolbyVisionRPUStorageBuffer: RPUStorageBuffer,
-                frame,
-                presentation: FULL_FRAME_PRESENTATION,
-                targetView: targetTexture.createView(),
-                textureSet
+            phase = 'frame-import';
+            const externalTexture = device.importExternalTexture({
+                colorSpace: 'srgb',
+                source: frame
             });
-            textureSet = renderResult.textureSet;
+            phase = 'gpu-render';
+            const bindGroup = device.createBindGroup({
+                entries: [{
+                    binding: 0,
+                    resource: sampler
+                }, {
+                    binding: 1,
+                    resource: externalTexture
+                }, {
+                    binding: 2,
+                    resource: { buffer: presentationUniformBuffer }
+                }, {
+                    binding: 3,
+                    resource: { buffer: renderSettingsUniformBuffer }
+                }, {
+                    binding: 4,
+                    resource: { buffer: RPUStorageBuffer }
+                }],
+                layout: pipeline.getBindGroupLayout(0)
+            });
+            const commandEncoder = device.createCommandEncoder({
+                label: 'WebGPU external Dolby Vision authorization commands'
+            });
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    clearValue: { a: 1, b: 0, g: 0, r: 0 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    view: targetTexture.createView()
+                }],
+                label: 'WebGPU external Dolby Vision authorization pass'
+            });
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setViewport(
+                0,
+                0,
+                frame.displayWidth,
+                frame.displayHeight,
+                0,
+                1
+            );
+            renderPass.draw(VERTEX_COUNT);
+            renderPass.end();
+            device.queue.submit([ commandEncoder.finish() ]);
             await deadline.wait(device.queue.onSubmittedWorkDone());
             const validationPromise = device.popErrorScope();
             errorScopePushed = false;
@@ -324,7 +501,6 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 pixelReader.readPixels(RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES, targetTexture),
                 (): void => pixelReader?.destroy()
             );
-            const actualObservations: RawHDRFixtureObservation[] = [];
             if (readback.failure || !readback.linearRGB) {
                 return createRejectedDecision(
                     device,
@@ -333,6 +509,7 @@ export class DolbyVisionPresentationAuthorizationRunner {
                     'readback-failed'
                 );
             }
+            const actualObservations: RawHDRFixtureObservation[] = [];
             for (let sampleIndex = 0;
                 sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
                 sampleIndex += 1) {
@@ -343,13 +520,15 @@ export class DolbyVisionPresentationAuthorizationRunner {
                     sampleY: sample.sampleY
                 });
             }
-            const expectedObservations = createExpectedDolbyVisionAuthorizationObservations(
-                packedRPUData,
-                settings
-            );
+            const expectedObservations =
+                createExpectedExternalDolbyVisionAuthorizationObservations(
+                    packedRPUData,
+                    settings
+                );
             const comparison = evaluateRawHDRFixtureObservations(
                 expectedObservations,
-                actualObservations
+                actualObservations,
+                EXTERNAL_AUTHORIZATION_TOLERANCE
             );
             if (!comparison.accepted) {
                 return createRejectedDecision(
@@ -364,10 +543,10 @@ export class DolbyVisionPresentationAuthorizationRunner {
             return {
                 device,
                 failureReason: null,
-                fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+                fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
-                routeKey: DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+                routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
                 sampleCount: actualObservations.length,
                 shaderSignature,
                 status: 'authorized',
@@ -378,15 +557,15 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 device,
                 targetFormat,
                 shaderSignature,
-                classifyFailure(error)
+                classifyFailure(error, phase)
             );
         } finally {
             deadline.destroy();
             if (errorScopePushed) {
                 discardErrorScope(device);
             }
+            frame?.close();
             pixelReader?.destroy();
-            destroyRawPlaneTextureSet(textureSet);
             presentationUniformBuffer?.destroy();
             renderSettingsUniformBuffer?.destroy();
             RPUStorageBuffer?.destroy();
@@ -395,13 +574,13 @@ export class DolbyVisionPresentationAuthorizationRunner {
     }
 }
 
-/** Device-scoped cache for the exact Dolby Vision shader authorization. */
-export class DolbyVisionPresentationAuthorizationRegistry {
+/** Device-scoped cache for exact external Profile 5 presentation evidence. */
+export class ExternalDolbyVisionPresentationAuthorizationRegistry {
     private readonly devices = new WeakMap<GPUDevice, DeviceProbeCache>();
-    private readonly runner: DolbyVisionPresentationAuthorizationRunner;
+    private readonly runner: ExternalDolbyVisionPresentationAuthorizationRunner;
 
     public constructor(
-        runner = new DolbyVisionPresentationAuthorizationRunner()
+        runner = new ExternalDolbyVisionPresentationAuthorizationRunner()
     ) {
         this.runner = runner;
     }
@@ -426,7 +605,7 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat
-    ): Promise<DolbyVisionAuthorizationDecision> {
+    ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const cacheKey = this.createCacheKey(targetFormat);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.probes.get(cacheKey);
@@ -438,19 +617,20 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         probe.promise = Promise.resolve().then(() => (
             this.runner.validate(device, targetFormat)
         )).then(
-            (decision: DolbyVisionAuthorizationDecision): DolbyVisionAuthorizationDecision => {
+            (
+                decision: ExternalDolbyVisionAuthorizationDecision
+            ): ExternalDolbyVisionAuthorizationDecision => {
                 probe.decision = decision;
                 return decision;
             },
-            (): DolbyVisionAuthorizationDecision => {
-                const shaderCode = createRawDolbyVisionColorPipelineWGSL(
-                    createSettings(),
-                    'I420P10'
+            (): ExternalDolbyVisionAuthorizationDecision => {
+                const shaderCode = createExternalDolbyVisionColorPipelineWGSL(
+                    createSettings()
                 );
                 const decision = createRejectedDecision(
                     device,
                     targetFormat,
-                    createDolbyVisionShaderSignature(targetFormat, shaderCode),
+                    createExternalDolbyVisionShaderSignature(targetFormat, shaderCode),
                     'unexpected-error'
                 );
                 probe.decision = decision;
@@ -465,14 +645,13 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
-        settings: HDRToSDRRenderSettings,
-        format: SupportedRawVideoFrameFormat
+        settings: HDRToSDRRenderSettings
     ): boolean {
-        if (format !== 'I420P10') {
-            return false;
-        }
-        const shaderCode = createRawDolbyVisionColorPipelineWGSL(settings, format);
-        const shaderSignature = createDolbyVisionShaderSignature(targetFormat, shaderCode);
+        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(settings);
+        const shaderSignature = createExternalDolbyVisionShaderSignature(
+            targetFormat,
+            shaderCode
+        );
         const decision = this.getCachedProbe(device, targetFormat)?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
@@ -484,13 +663,13 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     public getTelemetry(
         device: GPUDevice | null,
         targetFormat: GPUTextureFormat | null
-    ): DolbyVisionAuthorizationTelemetry {
-        const unavailable: DolbyVisionAuthorizationTelemetry = {
+    ): ExternalDolbyVisionAuthorizationTelemetry {
+        const unavailable: ExternalDolbyVisionAuthorizationTelemetry = {
             failureReason: null,
-            fixtureVersion: DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
+            fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
             maximumChannelError: null,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
-            routeKey: DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+            routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: 0,
             status: 'unavailable',
             targetFormat
@@ -518,11 +697,8 @@ export class DolbyVisionPresentationAuthorizationRegistry {
     }
 
     private createCacheKey(targetFormat: GPUTextureFormat): string {
-        const shaderCode = createRawDolbyVisionColorPipelineWGSL(
-            createSettings(),
-            'I420P10'
-        );
-        return `${targetFormat}\u0000${createDolbyVisionShaderSignature(
+        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(createSettings());
+        return `${targetFormat}\u0000${createExternalDolbyVisionShaderSignature(
             targetFormat,
             shaderCode
         )}`;
@@ -540,11 +716,8 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         if (cached) {
             return cached;
         }
-        const created: DeviceProbeCache = { probes: new Map<string, CachedProbe>() };
+        const created: DeviceProbeCache = { probes: new Map() };
         this.devices.set(device, created);
-        void device.lost.then((): void => {
-            created.probes.clear();
-        });
         return created;
     }
 }

@@ -151,7 +151,9 @@ function writeComponent(
 }
 
 /** Builds a deterministic schema-valid fixture that exercises polynomial and MMR paths. */
-export function createDolbyVisionAuthorizationRPUFixture(): ArrayBuffer {
+export function createDolbyVisionAuthorizationRPUFixture(
+    profile: 5 | 8 = 8
+): ArrayBuffer {
     const packedData = new ArrayBuffer(DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH);
     const view = new DataView(packedData);
     view.setUint32(0, DOLBY_VISION_RPU_SCHEMA_MAGIC, true);
@@ -159,7 +161,7 @@ export function createDolbyVisionAuthorizationRPUFixture(): ArrayBuffer {
     view.setUint32(8, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, true);
     view.setUint32(12, DEFAULT_COLOR_METADATA_FLAG, true);
     view.setUint32(16, DOLBY_VISION_RPU_PARSER_REVISION_PREFIX, true);
-    view.setUint32(20, 8, true);
+    view.setUint32(20, profile, true);
     view.setUint32(COEFFICIENT_LOG2_DENOMINATOR_BYTE_OFFSET, 23, true);
     view.setUint32(BASE_LAYER_BIT_DEPTH_BYTE_OFFSET, 10, true);
     view.setUint32(ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET, 10, true);

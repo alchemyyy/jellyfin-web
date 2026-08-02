@@ -123,9 +123,18 @@ function createEnvironment(
     worker: MockCapabilityWorker,
     overrides: Partial<HEVCExactCapabilityProbeEnvironment> = {}
 ): HEVCExactCapabilityProbeEnvironment {
+    const qualificationByteLength = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[
+        'main10-4k'
+    ].qualificationAccessUnitByteLengths.reduce(
+        (totalByteLength, byteLength) => totalByteLength + byteLength,
+        0
+    );
     return {
         clearTimeout: (timeout): void => globalThis.clearTimeout(timeout),
         createWorker: (): MockCapabilityWorker => worker,
+        loadQualificationBitstream: async (): Promise<ArrayBuffer> => (
+            new ArrayBuffer(qualificationByteLength)
+        ),
         resolveAssetURL: (path: string): string => `https://example.test/web/${path}`,
         runtimeAvailable: true,
         setTimeout: (callback, milliseconds): ReturnType<typeof globalThis.setTimeout> => (
@@ -147,6 +156,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const firstPromise = probe.probe();
         const secondPromise = probe.probe();
         expect(secondPromise).toBe(firstPromise);
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
         expect(worker.postedMessages).toHaveLength(1);
         expect(worker.postedTransfers[0]).toHaveLength(27);
         expect(worker.postedMessages[0]).toMatchObject({
@@ -322,6 +332,26 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         expect(postResult.tiers['main10-4k'].reason).toBe('worker-error');
         expect(worker.terminateCount).toBe(1);
         expect(worker.listenerCount()).toBe(0);
+    });
+
+    it('fails closed when the external qualification fixture cannot load', async () => {
+        const worker = new MockCapabilityWorker();
+        const loadQualificationBitstream = vi.fn(async (): Promise<ArrayBuffer> => {
+            throw new Error('fixture unavailable');
+        });
+        const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker, {
+            loadQualificationBitstream
+        }));
+
+        const capabilities = await probe.probe();
+
+        expect(loadQualificationBitstream).toHaveBeenCalledWith(
+            'https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin'
+        );
+        expect(capabilities.reason).toBe('failed');
+        expect(capabilities.tiers['main10-4k'].reason).toBe('worker-error');
+        expect(worker.postedMessages).toHaveLength(0);
+        expect(worker.terminateCount).toBe(1);
     });
 
     it('rejects malformed worker messages and ignores later events', async () => {

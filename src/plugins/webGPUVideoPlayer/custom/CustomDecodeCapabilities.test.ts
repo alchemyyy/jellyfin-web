@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
+    createNativeDolbyVisionVideoOutputProbe,
     createRawHDRVideoOutputProbe,
     CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
@@ -17,6 +18,7 @@ import type { HEVCExactCapabilityTier } from './HEVCExactCapabilityProtocol';
 type CapabilityEnvironmentHarness = {
     audioProbe: ReturnType<typeof vi.fn>
     environment: WebCodecsCapabilityEnvironment
+    nativeDolbyVisionVideoOutputProbe: ReturnType<typeof vi.fn>
     rawHDRVideoOutputProbe: ReturnType<typeof vi.fn>
     videoProbe: ReturnType<typeof vi.fn>
 };
@@ -90,7 +92,8 @@ const BUNDLED_HEVC_EXACT_CAPABILITIES = createBundledHEVCCapabilities();
 function createEnvironment(
     videoSupport: ReadonlySet<string>,
     audioSupport: ReadonlySet<string>,
-    rawHDRVideoOutputSupport: ReadonlySet<string> = new Set<string>()
+    rawHDRVideoOutputSupport: ReadonlySet<string> = new Set<string>(),
+    nativeDolbyVisionVideoOutputSupported = false
 ): CapabilityEnvironmentHarness {
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
@@ -103,6 +106,9 @@ function createEnvironment(
     const rawHDRVideoOutputProbe = vi.fn(async (probeRequest: {
         codec: string
     }): Promise<boolean> => rawHDRVideoOutputSupport.has(probeRequest.codec));
+    const nativeDolbyVisionVideoOutputProbe = vi.fn(
+        async (): Promise<boolean> => nativeDolbyVisionVideoOutputSupported
+    );
     return {
         audioProbe,
         environment: {
@@ -111,9 +117,11 @@ function createEnvironment(
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
+            nativeDolbyVisionVideoOutputProbe,
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         },
+        nativeDolbyVisionVideoOutputProbe,
         rawHDRVideoOutputProbe,
         videoProbe
     };
@@ -141,7 +149,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             'av01.0.08M.08',
             'hvc1.2.4.L153.B0',
             'vp09.02.10.10',
-            'av01.0.08M.10'
+            'av01.0.08M.10',
+            'hev1.2.4.H150.B0'
         ]);
         expect(harness.audioProbe.mock.calls.map(call => call[0].codec)).toEqual([
             'mp4a.40.2',
@@ -167,6 +176,16 @@ describe('CustomDecodeCapabilityProbe', () => {
             status: 'supported'
         });
         expect(capabilities.video.hevc).toMatchObject({
+            reason: 'config-unsupported',
+            status: 'unsupported'
+        });
+        expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
+            bitDepth: 10,
+            maximumBitrate: 40_000_000,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumLevel: 153,
+            profile: 5,
             reason: 'config-unsupported',
             status: 'unsupported'
         });
@@ -217,7 +236,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             supportedVideoCodecCount: 2,
             unknownAudioCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 5
+            videoProbeCount: 6
         });
     });
 
@@ -231,7 +250,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(first).toBe(second);
         expect(second).toBe(third);
         expect(harness.videoProbe).toHaveBeenCalledTimes(
-            CUSTOM_VIDEO_CODECS.length + CUSTOM_RAW_HDR_VIDEO_CODECS.length
+            CUSTOM_VIDEO_CODECS.length + CUSTOM_RAW_HDR_VIDEO_CODECS.length + 1
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
     });
@@ -465,6 +484,100 @@ describe('CustomDecodeCapabilityProbe', () => {
     });
 
     it.each([
+        { outputSupported: true, reason: 'decode-output-verified', status: 'supported' },
+        { outputSupported: false, reason: 'decode-output-missing', status: 'unsupported' }
+    ] as const)(
+        'requires decoded native Profile 5 output: $status',
+        async ({ outputSupported, reason, status }) => {
+            const harness = createEnvironment(
+                new Set([ 'hev1.2.4.H150.B0' ]),
+                new Set(),
+                new Set(),
+                outputSupported
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(
+                harness.environment
+            ).probe();
+
+            expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
+                reason,
+                status
+            });
+            expect(harness.nativeDolbyVisionVideoOutputProbe).toHaveBeenCalledOnce();
+            const request = harness.nativeDolbyVisionVideoOutputProbe.mock.calls[0][0];
+            expect(request).toMatchObject({
+                configuration: {
+                    codec: 'hev1.2.4.H150.B0',
+                    codedHeight: 2_160,
+                    codedWidth: 3_840,
+                    hardwareAcceleration: 'prefer-hardware',
+                    optimizeForLatency: true
+                },
+                expectedCodedHeight: 2_160,
+                expectedCodedWidth: 3_840
+            });
+            expect(request.encodedKeyFrame).toBeInstanceOf(Uint8Array);
+            expect(request.encodedKeyFrame.byteLength).toBeGreaterThan(0);
+        }
+    );
+
+    it.each([
+        { codedHeight: 2_160, codedWidth: 3_840, supported: true },
+        { codedHeight: 1_080, codedWidth: 1_920, supported: false }
+    ])(
+        'verifies and closes native output at $codedWidth x $codedHeight',
+        async ({ codedHeight, codedWidth, supported }) => {
+            const closeFrame = vi.fn();
+            class FakeVideoFrame {
+                public readonly codedHeight = codedHeight;
+                public readonly codedWidth = codedWidth;
+                public readonly displayHeight = codedHeight;
+                public readonly displayWidth = codedWidth;
+
+                public close(): void {
+                    closeFrame();
+                }
+            }
+            class FakeVideoDecoder {
+                public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+                public close(): void {
+                    return;
+                }
+
+                public configure(): void {
+                    return;
+                }
+
+                public decode(): void {
+                    this.callbacks.output(new FakeVideoFrame() as unknown as VideoFrame);
+                }
+
+                public flush(): Promise<void> {
+                    return Promise.resolve();
+                }
+            }
+            class FakeEncodedVideoChunk {}
+            vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+            vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+            const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+
+            await expect(outputProbe?.({
+                configuration: {
+                    codec: 'hev1.2.4.H150.B0',
+                    codedHeight: 2_160,
+                    codedWidth: 3_840
+                },
+                encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+                expectedCodedHeight: 2_160,
+                expectedCodedWidth: 3_840
+            })).resolves.toBe(supported);
+            expect(closeFrame).toHaveBeenCalledOnce();
+        }
+    );
+
+    it.each([
         {
             elapsedMilliseconds: 100,
             expectedDecodedFrameFingerprint: 667_501_752,
@@ -500,7 +613,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             class FakeVideoFrame {
                 public readonly codedHeight = 2_160;
                 public readonly codedWidth = 3_840;
-                public readonly format = 'I420P10';
+                // Hardware-backed frames may expose no native CPU-readable format
+                public readonly format = null;
 
                 public allocationSize(): number {
                     return 24_883_200;

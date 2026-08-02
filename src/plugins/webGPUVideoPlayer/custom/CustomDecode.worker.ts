@@ -17,7 +17,13 @@ import {
 import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
+import { downmixFivePointOneToStereo } from './CustomAudioDownmix';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
+import {
+    CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT,
+    CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+    isSupportedCustomAudioInputLayout
+} from './CustomAudioOutputPolicy';
 import {
     getCustomDecodeHardwareAcceleration,
     isDecodeWorkerRequest,
@@ -26,12 +32,13 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
+    MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeFailureKind,
     type CustomDecodeRawVideoFrameFormat,
     type CustomDecodeVideoDecoderBackend,
     type CustomDecodeVideoOutputMode,
-    type DecodeWorkerAudioConfiguration,
+    type CustomDecodeWorkerProgressPhase,
     type DecodeWorkerNativeMediaAudioConfiguration,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
@@ -84,7 +91,7 @@ const URL_SOURCE_PARALLELISM = 2;
 const MAX_NETWORK_RETRY_ATTEMPTS = 2;
 const NETWORK_RETRY_BASE_SECONDS = 0.25;
 const MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT = 8;
-const MAXIMUM_OWNED_VIDEO_DECODER_QUEUE_SIZE = 8;
+const OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK = 16;
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -124,6 +131,7 @@ type PreparedAudioTrack = {
     audioConfiguration: DecodeWorkerReadyAudioConfiguration
     audioTrack: InputAudioTrack
     decoderConfig: AudioDecoderConfig
+    inputChannelCount: number
     outputMode: CustomDecodeAudioOutputMode
 };
 
@@ -147,6 +155,24 @@ let currentRun: DecodeRun | null = null;
 
 function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[]): void {
     workerScope.postMessage(response, transfer);
+}
+
+function postVideoStartupProgress(
+    run: DecodeRun,
+    phase: CustomDecodeWorkerProgressPhase,
+    packetCount: number,
+    mediaTimeMicroseconds: Microseconds | null
+): void {
+    if (run.cancelled || packetCount > MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT) {
+        return;
+    }
+    postResponse({
+        generation: run.generation,
+        mediaTimeMicroseconds,
+        packetCount,
+        phase,
+        type: 'progress'
+    });
 }
 
 function createRawFrameBufferPool(
@@ -425,9 +451,20 @@ async function prepareAudioTrack(
             outputMode: 'native-media',
             sampleRate
         };
-        return { audioConfiguration, audioTrack, decoderConfig, outputMode };
+        return {
+            audioConfiguration,
+            audioTrack,
+            decoderConfig,
+            inputChannelCount: channelCount,
+            outputMode
+        };
     }
 
+    if (!isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected audio track does not match a qualified decoded PCM route'
+        );
+    }
     await registerRequiredCustomAudioDecoder(codec);
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -441,12 +478,13 @@ async function prepareAudioTrack(
 
     return {
         audioConfiguration: {
-            channelCount,
+            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
             codec: decoderConfig.codec,
             sampleRate
         },
         audioTrack,
         decoderConfig,
+        inputChannelCount: channelCount,
         outputMode
     };
 }
@@ -471,17 +509,12 @@ function postReadyResponse(
 
 function lockDecodedFrameGeometry(
     run: DecodeRun,
-    frame: VideoFrame,
+    candidateGeometry: RawVideoFrameGeometry,
     selectedTrackGeometry: RawVideoFrameGeometry
 ): RawVideoFrameGeometry {
     try {
         const decodedVideoGeometry = requireConsistentDecodedVideoGeometry(
-            {
-                codedHeight: frame.codedHeight,
-                codedWidth: frame.codedWidth,
-                displayHeight: frame.displayHeight,
-                displayWidth: frame.displayWidth
-            },
+            candidateGeometry,
             selectedTrackGeometry,
             run.maximumCodedWidth,
             run.maximumCodedHeight,
@@ -523,6 +556,23 @@ function takeVideoFrame(sample: VideoSample): {
     } finally {
         // VideoFrame ownership is independent, so do not retain the sample across copies
         sample.close();
+    }
+}
+
+function takeOwnedVideoFrame(output: OwnedDecodedVideoOutput): {
+    durationMicroseconds: Microseconds
+    frame: VideoFrame
+    mediaTimeMicroseconds: Microseconds
+} {
+    switch (output.source.kind) {
+        case 'native-frame':
+            return {
+                durationMicroseconds: output.durationMicroseconds,
+                frame: output.source.frame,
+                mediaTimeMicroseconds: output.mediaTimeMicroseconds
+            };
+        case 'video-sample':
+            return takeVideoFrame(output.source.sample);
     }
 }
 
@@ -625,19 +675,27 @@ function postTransferredVideoFrame(
 
 async function postVideoFrame(
     run: DecodeRun,
-    sample: VideoSample,
+    output: OwnedDecodedVideoOutput,
     expectedGeometry: RawVideoFrameGeometry,
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null = null
 ): Promise<void> {
     let frame: VideoFrame | null = null;
     try {
-        const decodedSample = takeVideoFrame(sample);
-        const durationMicroseconds = decodedSample.durationMicroseconds;
-        const mediaTimeMicroseconds = decodedSample.mediaTimeMicroseconds;
-        frame = decodedSample.frame;
+        const decodedFrame = takeOwnedVideoFrame(output);
+        const durationMicroseconds = decodedFrame.durationMicroseconds;
+        const mediaTimeMicroseconds = decodedFrame.mediaTimeMicroseconds;
+        frame = decodedFrame.frame;
+        const candidateGeometry = output.source.kind === 'native-frame' ?
+            output.source.geometry :
+            {
+                codedHeight: frame.codedHeight,
+                codedWidth: frame.codedWidth,
+                displayHeight: frame.displayHeight,
+                displayWidth: frame.displayWidth
+            };
         const decodedVideoGeometry = lockDecodedFrameGeometry(
             run,
-            frame,
+            candidateGeometry,
             expectedGeometry
         );
         if (run.cancelled || currentRun !== run) {
@@ -677,16 +735,17 @@ async function postVideoFrame(
 function postAudioSample(
     run: DecodeRun,
     sample: AudioSample,
-    audioConfiguration: DecodeWorkerAudioConfiguration,
+    preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds
 ): boolean {
     try {
+        const audioConfiguration = preparedAudioTrack.audioConfiguration;
         const sampleTimeMicroseconds = requireMicroseconds(
             sample.microsecondTimestamp,
             'Decoded audio timestamp'
         );
         if (
-            sample.numberOfChannels !== audioConfiguration.channelCount
+            sample.numberOfChannels !== preparedAudioTrack.inputChannelCount
             || sample.sampleRate !== audioConfiguration.sampleRate
         ) {
             throw new UnsupportedCustomDecodeSourceError('Decoded audio format changed during playback');
@@ -708,8 +767,7 @@ function postAudioSample(
             return false;
         }
 
-        const channelData: Float32Array[] = [];
-        const transferables: Transferable[] = [];
+        const inputChannelData: Float32Array[] = [];
         for (let channelIndex = 0; channelIndex < sample.numberOfChannels; channelIndex += 1) {
             const channel = new Float32Array(sampleWindow.frameCount);
             sample.copyTo(channel, {
@@ -718,15 +776,29 @@ function postAudioSample(
                 format: 'f32-planar',
                 planeIndex: channelIndex
             });
-            channelData.push(channel);
-            transferables.push(channel.buffer);
+            inputChannelData.push(channel);
         }
+
+        let channelData: Float32Array[];
+        switch (preparedAudioTrack.inputChannelCount) {
+            case CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT:
+                channelData = inputChannelData;
+                break;
+            case CUSTOM_AC3_SURROUND_INPUT_CHANNEL_COUNT:
+                channelData = downmixFivePointOneToStereo(inputChannelData);
+                break;
+            default:
+                throw new UnsupportedCustomDecodeSourceError(
+                    'Decoded audio requires an unsupported channel transform'
+                );
+        }
+        const transferables = channelData.map(channel => channel.buffer);
 
         if (run.cancelled) {
             return false;
         }
         postResponse({
-            channelCount: sample.numberOfChannels,
+            channelCount: audioConfiguration.channelCount,
             channelData,
             durationMicroseconds: sampleWindow.durationMicroseconds,
             frameCount: sampleWindow.frameCount,
@@ -741,15 +813,28 @@ function postAudioSample(
     }
 }
 
-type OwnedDecodedVideoSample = {
+type OwnedDecodedVideoSource =
+    | {
+        frame: VideoFrame
+        geometry: RawVideoFrameGeometry
+        kind: 'native-frame'
+    }
+    | {
+        kind: 'video-sample'
+        sample: VideoSample
+    };
+
+type OwnedDecodedVideoOutput = {
+    durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
-    sample: VideoSample
+    mediaTimeMicroseconds: Microseconds
+    source: OwnedDecodedVideoSource
 };
 
 type OwnedHEVCVideoDecoderCallbacks = {
     onError: (error: unknown) => void
+    onOutput: (output: OwnedDecodedVideoSource) => void
     onProgress: () => void
-    onSample: (sample: VideoSample) => void
 };
 
 type OwnedHEVCVideoDecoderPort = {
@@ -760,21 +845,70 @@ type OwnedHEVCVideoDecoderPort = {
     init: () => Promise<void>
 };
 
-type OwnedSamplePostResult = 'none' | 'posted' | 'stopped';
+type OwnedOutputPostResult = 'none' | 'posted' | 'stopped';
 
-function closeOwnedDecodedVideoSample(decodedSample: OwnedDecodedVideoSample | null): void {
+function getOwnedDecodedVideoTiming(source: OwnedDecodedVideoSource): {
+    durationMicroseconds: Microseconds
+    mediaTimeMicroseconds: Microseconds
+} {
+    const durationMicrosecondsValue = source.kind === 'native-frame' ?
+        source.frame.duration ?? 0 :
+        source.sample.microsecondDuration;
+    const mediaTimeMicrosecondsValue = source.kind === 'native-frame' ?
+        source.frame.timestamp :
+        source.sample.microsecondTimestamp;
+    const durationMicroseconds = requireMicroseconds(
+        durationMicrosecondsValue,
+        'Owned decoded HEVC frame duration'
+    );
+    if (durationMicroseconds < 0) {
+        throw new RangeError('Owned decoded HEVC frame duration must not be negative');
+    }
+    return {
+        durationMicroseconds,
+        mediaTimeMicroseconds: requireMicroseconds(
+            mediaTimeMicrosecondsValue,
+            'Owned decoded HEVC frame timestamp'
+        )
+    };
+}
+
+function closeOwnedDecodedVideoSource(source: OwnedDecodedVideoSource | null): void {
     try {
-        decodedSample?.sample.close();
+        switch (source?.kind) {
+            case 'native-frame':
+                source.frame.close();
+                break;
+            case 'video-sample':
+                source.sample.close();
+                break;
+        }
     } catch {
         // Ownership ends even when a decoder implementation throws while closing
     }
+}
+
+function closeOwnedDecodedVideoOutput(output: OwnedDecodedVideoOutput | null): void {
+    closeOwnedDecodedVideoSource(output?.source ?? null);
 }
 
 function createOwnedBundledHEVCVideoDecoderPort(
     config: VideoDecoderConfig,
     callbacks: OwnedHEVCVideoDecoderCallbacks
 ): OwnedHEVCVideoDecoderPort {
-    const decoder = createOwnedHEVCSoftwareVideoDecoder(config, callbacks);
+    const decoder = createOwnedHEVCSoftwareVideoDecoder(config, {
+        onError: callbacks.onError,
+        onSample: (sample: VideoSample): void => {
+            try {
+                callbacks.onOutput({
+                    kind: 'video-sample',
+                    sample
+                });
+            } finally {
+                callbacks.onProgress();
+            }
+        }
+    });
     return {
         close: (): void => decoder.close(),
         decode: (packet: EncodedPacket): boolean => {
@@ -810,17 +944,30 @@ function createOwnedHEVCVideoDecoderPort(
                     optimizeForLatency: true
                 },
                 inputFormat,
-                callbacks
+                {
+                    onError: callbacks.onError,
+                    onFrame: (frame: VideoFrame): void => callbacks.onOutput({
+                        frame,
+                        geometry: {
+                            codedHeight: frame.codedHeight,
+                            codedWidth: frame.codedWidth,
+                            displayHeight: frame.displayHeight,
+                            displayWidth: frame.displayWidth
+                        },
+                        kind: 'native-frame'
+                    }),
+                    onProgress: callbacks.onProgress
+                }
             );
     }
 }
 
 class OwnedHEVCStreamState {
-    private readonly decodedSamples: OwnedDecodedVideoSample[] = [];
+    private readonly decodedOutputs: OwnedDecodedVideoOutput[] = [];
     private decoderFailure: unknown = null;
-    private firstPresentationSampleQueued = false;
+    private firstPresentationOutputQueued = false;
     private frameCreditHeld = false;
-    private preStartSample: OwnedDecodedVideoSample | null = null;
+    private preStartOutput: OwnedDecodedVideoOutput | null = null;
     public packetsEnded = false;
 
     public constructor(
@@ -832,34 +979,38 @@ class OwnedHEVCStreamState {
         this.decoderFailure ??= error;
     }
 
-    public enqueueDecodedSample(sample: VideoSample): void {
-        let decodedSample: OwnedDecodedVideoSample | null = null;
+    public enqueueDecodedOutput(source: OwnedDecodedVideoSource): void {
+        let decodedOutput: OwnedDecodedVideoOutput | null = null;
+        let sourceOwned = true;
         try {
-            const mediaTimeMicroseconds = requireMicroseconds(
-                sample.microsecondTimestamp,
-                'Owned decoded HEVC frame timestamp'
-            );
-            decodedSample = {
+            const timing = getOwnedDecodedVideoTiming(source);
+            decodedOutput = {
+                durationMicroseconds: timing.durationMicroseconds,
                 encodedDolbyVisionMetadata: this.metadataQueue.takeFrameMetadata(
-                    mediaTimeMicroseconds
+                    timing.mediaTimeMicroseconds
                 ),
-                sample
+                mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
+                source
             };
+            sourceOwned = false;
             if (
-                mediaTimeMicroseconds < this.startTimeMicroseconds
-                && !this.firstPresentationSampleQueued
+                timing.mediaTimeMicroseconds < this.startTimeMicroseconds
+                && !this.firstPresentationOutputQueued
             ) {
-                closeOwnedDecodedVideoSample(this.preStartSample);
-                this.preStartSample = decodedSample;
-                decodedSample = null;
+                closeOwnedDecodedVideoOutput(this.preStartOutput);
+                this.preStartOutput = decodedOutput;
+                decodedOutput = null;
                 return;
             }
 
-            this.queueFirstPresentationSample();
-            this.queueDecodedSample(decodedSample);
-            decodedSample = null;
+            this.queueFirstPresentationOutput();
+            this.queueDecodedOutput(decodedOutput);
+            decodedOutput = null;
         } finally {
-            closeOwnedDecodedVideoSample(decodedSample);
+            closeOwnedDecodedVideoOutput(decodedOutput);
+            if (sourceOwned) {
+                closeOwnedDecodedVideoSource(source);
+            }
         }
     }
 
@@ -868,8 +1019,9 @@ class OwnedHEVCStreamState {
         decoder: OwnedHEVCVideoDecoderPort
     ): Promise<void> {
         const processedPacket = await this.metadataQueue.processPacket(packet);
-        if (processedPacket.baseLayerPacket) {
-            const packetAccepted = decoder.decode(processedPacket.baseLayerPacket);
+        const decoderPacket = processedPacket.baseLayerPacket;
+        if (decoderPacket) {
+            const packetAccepted = decoder.decode(decoderPacket);
             if (!packetAccepted && processedPacket.hasBaseLayerVCL) {
                 this.metadataQueue.takeFrameMetadata(packet.microsecondTimestamp);
             }
@@ -881,27 +1033,27 @@ class OwnedHEVCStreamState {
         await decoder.flush();
         this.throwDecoderFailure();
         this.metadataQueue.requireDrained();
-        this.queueFirstPresentationSample();
+        this.queueFirstPresentationOutput();
         this.packetsEnded = true;
     }
 
-    public async postNextSample(
+    public async postNextOutput(
         run: DecodeRun,
         expectedGeometry: RawVideoFrameGeometry
-    ): Promise<OwnedSamplePostResult> {
-        if (this.decodedSamples.length === 0) {
+    ): Promise<OwnedOutputPostResult> {
+        if (this.decodedOutputs.length === 0) {
             return 'none';
         }
         if (!await this.acquireFrameCredit(run)) {
             return 'stopped';
         }
 
-        const decodedSample = this.decodedSamples.shift() as OwnedDecodedVideoSample;
+        const decodedOutput = this.decodedOutputs.shift() as OwnedDecodedVideoOutput;
         await postVideoFrame(
             run,
-            decodedSample.sample,
+            decodedOutput,
             expectedGeometry,
-            decodedSample.encodedDolbyVisionMetadata
+            decodedOutput.encodedDolbyVisionMetadata
         );
         this.frameCreditHeld = false;
         return 'posted';
@@ -916,7 +1068,7 @@ class OwnedHEVCStreamState {
 
     public async waitForDecoderProgress(run: DecodeRun): Promise<void> {
         this.throwDecoderFailure();
-        if (this.decodedSamples.length > 0 || run.cancelled) {
+        if (this.decodedOutputs.length > 0 || run.cancelled) {
             return;
         }
         await new Promise<void>(resolve => {
@@ -926,30 +1078,30 @@ class OwnedHEVCStreamState {
     }
 
     public close(): void {
-        closeOwnedDecodedVideoSample(this.preStartSample);
-        this.preStartSample = null;
-        for (const decodedSample of this.decodedSamples) {
-            closeOwnedDecodedVideoSample(decodedSample);
+        closeOwnedDecodedVideoOutput(this.preStartOutput);
+        this.preStartOutput = null;
+        for (const decodedOutput of this.decodedOutputs) {
+            closeOwnedDecodedVideoOutput(decodedOutput);
         }
-        this.decodedSamples.length = 0;
+        this.decodedOutputs.length = 0;
         this.metadataQueue.clear();
     }
 
-    private queueDecodedSample(decodedSample: OwnedDecodedVideoSample): void {
-        if (this.decodedSamples.length >= MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT) {
+    private queueDecodedOutput(decodedOutput: OwnedDecodedVideoOutput): void {
+        if (this.decodedOutputs.length >= MAXIMUM_OWNED_DECODED_VIDEO_SAMPLE_COUNT) {
             throw new Error('The owned decoded video sample queue exceeded its bound');
         }
-        this.decodedSamples.push(decodedSample);
+        this.decodedOutputs.push(decodedOutput);
     }
 
-    private queueFirstPresentationSample(): void {
-        if (this.firstPresentationSampleQueued) {
+    private queueFirstPresentationOutput(): void {
+        if (this.firstPresentationOutputQueued) {
             return;
         }
-        this.firstPresentationSampleQueued = true;
-        if (this.preStartSample) {
-            this.queueDecodedSample(this.preStartSample);
-            this.preStartSample = null;
+        this.firstPresentationOutputQueued = true;
+        if (this.preStartOutput) {
+            this.queueDecodedOutput(this.preStartOutput);
+            this.preStartOutput = null;
         }
     }
 
@@ -967,8 +1119,9 @@ async function pumpOwnedHEVCFrames(
     state: OwnedHEVCStreamState,
     expectedGeometry: RawVideoFrameGeometry
 ): Promise<void> {
+    let packetCount = 0;
     while (!run.cancelled) {
-        const postResult = await state.postNextSample(run, expectedGeometry);
+        const postResult = await state.postNextOutput(run, expectedGeometry);
         switch (postResult) {
             case 'posted':
                 continue;
@@ -981,7 +1134,7 @@ async function pumpOwnedHEVCFrames(
         if (state.packetsEnded) {
             return;
         }
-        if (decoder.getDecodeQueueSize() >= MAXIMUM_OWNED_VIDEO_DECODER_QUEUE_SIZE) {
+        if (decoder.getDecodeQueueSize() > OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK) {
             await state.waitForDecoderProgress(run);
             continue;
         }
@@ -997,7 +1150,24 @@ async function pumpOwnedHEVCFrames(
             await state.finishPackets(decoder);
             continue;
         }
+        packetCount += 1;
+        const packetMediaTimeMicroseconds = requireMicroseconds(
+            packetResult.value.microsecondTimestamp,
+            'Owned HEVC packet timestamp'
+        );
+        postVideoStartupProgress(
+            run,
+            'video-packet-started',
+            packetCount,
+            packetMediaTimeMicroseconds
+        );
         await state.decodePacket(packetResult.value, decoder);
+        postVideoStartupProgress(
+            run,
+            'video-packet-decoded',
+            packetCount,
+            packetMediaTimeMicroseconds
+        );
     }
 }
 
@@ -1023,6 +1193,16 @@ async function streamOwnedHEVCFrames(
     if (!keyPacket || run.cancelled) {
         return;
     }
+    const keyPacketMediaTimeMicroseconds = requireMicroseconds(
+        keyPacket.microsecondTimestamp,
+        'Owned HEVC key packet timestamp'
+    );
+    postVideoStartupProgress(
+        run,
+        'video-key-packet-ready',
+        0,
+        keyPacketMediaTimeMicroseconds
+    );
 
     const packetIterator = packetSink.packets(keyPacket, undefined, packetOptions);
     run.videoIterator = packetIterator;
@@ -1046,14 +1226,20 @@ async function streamOwnedHEVCFrames(
                 state.recordDecoderFailure(error);
                 notifyDecoderProgress();
             },
-            onProgress: notifyDecoderProgress,
-            onSample: (sample: VideoSample): void => {
-                state.enqueueDecodedSample(sample);
-            }
+            onOutput: (output: OwnedDecodedVideoSource): void => {
+                state.enqueueDecodedOutput(output);
+            },
+            onProgress: notifyDecoderProgress
         }
     );
     try {
         await decoder.init();
+        postVideoStartupProgress(
+            run,
+            'video-decoder-ready',
+            0,
+            keyPacketMediaTimeMicroseconds
+        );
         await pumpOwnedHEVCFrames(
             run,
             packetIterator,
@@ -1104,7 +1290,28 @@ async function streamVideoFrames(
             return;
         }
 
-        await postVideoFrame(run, iteratorResult.value, preparedVideoTrack.geometry);
+        const sample = iteratorResult.value;
+        try {
+            const timing = getOwnedDecodedVideoTiming({
+                kind: 'video-sample',
+                sample
+            });
+            await postVideoFrame(
+                run,
+                {
+                    durationMicroseconds: timing.durationMicroseconds,
+                    encodedDolbyVisionMetadata: null,
+                    mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
+                    source: {
+                        kind: 'video-sample',
+                        sample
+                    }
+                },
+                preparedVideoTrack.geometry
+            );
+        } finally {
+            sample.close();
+        }
     }
 }
 
@@ -1132,7 +1339,7 @@ async function streamAudioSamples(
         const posted = postAudioSample(
             run,
             iteratorResult.value,
-            preparedAudioTrack.audioConfiguration,
+            preparedAudioTrack,
             request.startTimeMicroseconds
         );
         if (!posted && !run.cancelled) {

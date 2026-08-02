@@ -98,13 +98,15 @@ RGB-to-LMS, HPE LMS-to-BT.2020, and PQ OETF order. Profile 5 and single-layer
 Profile 8 are represented by a separate presentation descriptor rather than by
 overloading ordinary PQ or HLG metadata.
 
-The route is fail-closed. It requires an exact per-frame RPU, 10-bit I420 raw
-output, no enhancement-layer payload, a supported profile, and a successful
-exact-device GPU authorization fixture. The player advertises Jellyfin's DOVI
-range types only when the parser, raw HEVC route, shader, target format, and
-current GPU have passed that authorization. Device recovery repeats
-authorization and creates a new per-frame storage buffer before presentation
-resumes.
+The routes are fail-closed. Both require an exact per-frame RPU, no
+enhancement-layer payload, a supported profile, and a successful exact-device
+GPU authorization fixture. Raw presentation requires qualified 10-bit I420
+output. Native Profile 5 presentation separately requires decoded-output
+evidence for its exact WebCodecs configuration and authorization of the
+production `GPUExternalTexture` shader path. A successful raw authorization
+cannot authorize external presentation, or vice versa. Device recovery repeats
+the applicable authorization and creates a new per-frame storage buffer before
+presentation resumes.
 
 The next implementation step is Profile 7 MEL/FEL enhancement-layer pairing
 and LINEAR_DZ residual composition. Profile 7 remains unadvertised.
@@ -357,15 +359,46 @@ limited to `sdr`, `pq`, and `hlg`; Dolby Vision is not misrepresented as one of
 those standard transfers.
 
 [`CustomPlaybackEligibility.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.ts)
-selects raw I420P10 HEVC output only when exact-device Dolby Vision
-authorization is active. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
-then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the authorized
-HEVC route. Profile 7 and enhancement-layer streams remain rejected.
+selects native `VideoFrame` output for Profile 5 only when its external-texture
+authorization is active, and selects raw I420P10 output only when raw Dolby
+Vision authorization is active. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
+then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the applicable
+HEVC routes. When both routes qualify, `DOVI` uses the stronger native Profile
+5 limits while the compatible-base range types retain their independently
+measured raw limits. Profile 7 and enhancement-layer streams remain rejected.
 
 [`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
 runs a bounded exact-device shader fixture and records authorization telemetry.
 Authorization is scoped to the GPU device and target format and is repeated
 after device loss.
+
+[`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
+constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
+imports it through `GPUExternalTexture`, executes the production Profile 5 RPU
+shader and bindings, and reads back nine output samples. Its route signature
+includes the fixture, frame tuple, shader, target format, settings schema, and
+tolerance. It closes the frame and destroys all temporary GPU resources on
+every exit path.
+
+### Chromium external-texture precision boundary
+
+The local Chromium 153 source confirms the current implementation boundary.
+WebCodecs maps `I420P10` in
+`third_party/blink/renderer/modules/webcodecs/video_frame.cc`, while
+`third_party/blink/renderer/modules/webgpu/external_texture_helper.cc` limits
+the zero-copy path to NV12 at line 279. Its one-copy path explicitly notes at
+line 397 that high-bit-depth formats should use F16 but do not yet; other
+formats use the canvas N32 target. The same helper applies the source visible
+rectangle and natural display size before WGSL sampling.
+
+Consequently, current Chromium can import a decoded I420P10 frame and preserve
+the encoded signal closely enough for reconstruction, but it quantizes the
+one-copy RGB intermediate to 8 bits. The external authorization tolerance is
+therefore `8 / 255`; the observed Chrome 151 test route produced a maximum
+final-channel error of about `0.02876`. This authorizes the measured browser
+behavior, not a claim of full 10-bit preservation. The raw I420P10 route
+remains the higher-precision path. Revisit this gate when Chromium adds the
+F16 high-bit-depth copy path or broader multiplanar zero-copy support.
 
 ### The HEVC decode path now exposes parsed Dolby Vision data
 
@@ -374,9 +407,10 @@ uses `EncodedPacketSink` for every HEVC route. The worker splits RPU NAL type 62
 and enhancement-layer NAL type 63 before dispatching the cleaned base-layer
 packet to either `OwnedNativeHEVCVideoDecoder` or the bundled software decoder.
 RPU NAL units are parsed before base-layer decode, and the resulting immutable
-snapshot remains associated with the decoded `VideoSample` by exact
-integer-microsecond PTS. Encoded enhancement data remains separately owned for
-the later Profile 7 path.
+snapshot remains associated with the owned decoded output by exact
+integer-microsecond PTS. Native output transfers its `VideoFrame` directly;
+bundled output transfers independently owned raw planes. Encoded enhancement
+data remains separately owned for the later Profile 7 path.
 
 The pinned Mediabunny 1.52.2 package exposes `EncodedPacketSink` at
 `node_modules/mediabunny/src/media-sink.ts:147`. It yields packets in decode

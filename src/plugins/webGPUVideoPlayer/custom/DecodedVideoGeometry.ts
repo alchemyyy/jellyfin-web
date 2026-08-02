@@ -51,11 +51,13 @@ export function requireConsistentDecodedVideoGeometry(
         throw new DecodedVideoGeometryError('Decoded frame geometry is invalid');
     }
     if (
-        candidateGeometry.displayWidth !== selectedTrackGeometry.displayWidth
-        || candidateGeometry.displayHeight !== selectedTrackGeometry.displayHeight
+        Math.abs(candidateGeometry.displayWidth - selectedTrackGeometry.displayWidth)
+            > MAXIMUM_DECODER_CODED_PADDING
+        || Math.abs(candidateGeometry.displayHeight - selectedTrackGeometry.displayHeight)
+            > MAXIMUM_DECODER_CODED_PADDING
     ) {
         throw new DecodedVideoGeometryError(
-            'Decoded frame display geometry does not match the selected video track'
+            'Decoded frame display geometry exceeds the selected video track tolerance'
         );
     }
     if (

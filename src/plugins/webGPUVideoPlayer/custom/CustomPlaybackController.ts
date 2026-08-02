@@ -47,7 +47,7 @@ import type {
 } from './CustomPlaybackControllerTypes';
 
 export const DEFAULT_CUSTOM_PLAYBACK_STARTUP_TIMEOUT_MICROSECONDS =
-    millisecondsToMicroseconds(8_000);
+    millisecondsToMicroseconds(20_000);
 export const DEFAULT_CUSTOM_PLAYBACK_STOP_TIMEOUT_MICROSECONDS =
     millisecondsToMicroseconds(1_500);
 export const DEFAULT_CUSTOM_PLAYBACK_TIME_UPDATE_INTERVAL_MICROSECONDS =

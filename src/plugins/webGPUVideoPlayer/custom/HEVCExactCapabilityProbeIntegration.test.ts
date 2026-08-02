@@ -22,6 +22,10 @@ const HEVC_WASM_PATH = resolve(
     process.cwd(),
     'node_modules/@hevcjs/core/dist/wasm/hevc-decode.wasm'
 );
+const MAIN10_4K_QUALIFICATION_PATH = resolve(
+    process.cwd(),
+    'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
+);
 
 type EmscriptenModuleFactory = (options: {
     locateFile?: (path: string, scriptDirectory: string) => string
@@ -73,7 +77,9 @@ describe('exact HEVC capability probe integration', () => {
             decoderGlueURL: HEVC_GLUE_PATH,
             decoderWASMURL: HEVC_WASM_PATH,
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-            tiers: createHEVCExactCapabilityWorkerTierRequests(),
+            tiers: createHEVCExactCapabilityWorkerTierRequests(
+                Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer
+            ),
             type: 'probe'
         };
 
@@ -137,14 +143,14 @@ describe('exact HEVC capability probe integration', () => {
             codedHeight: 2_160,
             codedWidth: 3_840,
             decodedFrameFingerprints: [
-                1_242_641_987,
-                2_691_698_715,
-                1_275_657_587,
-                3_965_939_195,
-                3_311_648_933,
-                3_402_867_695,
-                338_830_956,
-                2_891_640_151
+                2_669_261_473,
+                2_891_374_311,
+                3_294_996_003,
+                3_899_934_279,
+                3_645_638_150,
+                3_163_731_443,
+                1_028_093_413,
+                2_922_080_851
             ],
             decodedFrameCount: 8,
             decodedByteLength: 24_883_200,

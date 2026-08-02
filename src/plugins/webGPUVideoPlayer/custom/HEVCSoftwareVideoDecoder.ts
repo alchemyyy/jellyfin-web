@@ -386,9 +386,9 @@ function normalizeTransfer(value: unknown): HEVCSPSColorSpace['transfer'] | null
 
 function configuredColorSpaceContradictsSPS(
     configuredColorSpace: VideoColorSpaceInit | undefined,
-    spsColorSpace: HEVCSPSColorSpace
+    spsColorSpace: HEVCSPSColorSpace | null
 ): boolean {
-    if (!configuredColorSpace) {
+    if (!configuredColorSpace || !spsColorSpace) {
         return false;
     }
     return (configuredColorSpace.fullRange != null
@@ -414,10 +414,17 @@ function spsConfigurationsMatch(
         && first.levelIDC === second.levelIDC
         && first.maximumDPBPictureCount === second.maximumDPBPictureCount
         && first.profileIDC === second.profileIDC
-        && first.colorSpace.fullRange === second.colorSpace.fullRange
-        && first.colorSpace.matrix === second.colorSpace.matrix
-        && first.colorSpace.primaries === second.colorSpace.primaries
-        && first.colorSpace.transfer === second.colorSpace.transfer;
+        && (
+            first.colorSpace === second.colorSpace
+            || (
+                first.colorSpace !== null
+                && second.colorSpace !== null
+                && first.colorSpace.fullRange === second.colorSpace.fullRange
+                && first.colorSpace.matrix === second.colorSpace.matrix
+                && first.colorSpace.primaries === second.colorSpace.primaries
+                && first.colorSpace.transfer === second.colorSpace.transfer
+            )
+        );
 }
 
 function parseConsistentSPSConfiguration(
@@ -617,12 +624,22 @@ function validateDecodedFrameAgainstSPS(
     spsConfiguration: HEVCSPSConfiguration
 ): void {
     if (
-        frame.width !== spsConfiguration.codedWidth
-        || frame.height !== spsConfiguration.codedHeight
+        !decodedDimensionsMatchSPS(frame.width, frame.height, spsConfiguration)
         || frame.bitDepth !== spsConfiguration.bitDepth
     ) {
         throw new TypeError('The HEVC software decoder output contradicts the active SPS');
     }
+}
+
+function decodedDimensionsMatchSPS(
+    width: number,
+    height: number,
+    spsConfiguration: HEVCSPSConfiguration
+): boolean {
+    return (width === spsConfiguration.codedWidth
+            && height === spsConfiguration.codedHeight)
+        || (width === spsConfiguration.displayWidth
+            && height === spsConfiguration.displayHeight);
 }
 
 function validateStreamInfoAgainstSPS(
@@ -637,8 +654,7 @@ function validateStreamInfoAgainstSPS(
         throw new TypeError('The HEVC software decoder output is not 4:2:0');
     }
     if (
-        streamInfo.width !== spsConfiguration.codedWidth
-        || streamInfo.height !== spsConfiguration.codedHeight
+        !decodedDimensionsMatchSPS(streamInfo.width, streamInfo.height, spsConfiguration)
         || streamInfo.bitDepth !== spsConfiguration.bitDepth
     ) {
         throw new TypeError('The HEVC software decoder output contradicts the active SPS');
@@ -917,7 +933,8 @@ export default class HEVCSoftwareVideoDecoder {
         return new VideoSample(sampleData, {
             codedHeight: frame.height,
             codedWidth: frame.width,
-            colorSpace: spsConfiguration.colorSpace as unknown as VideoColorSpaceInit,
+            colorSpace: (spsConfiguration.colorSpace
+                ?? this.config.colorSpace) as VideoColorSpaceInit | undefined,
             displayHeight: displayDimensions.displayHeight,
             displayWidth: displayDimensions.displayWidth,
             duration: microsecondsToSeconds(timing.durationMicroseconds),

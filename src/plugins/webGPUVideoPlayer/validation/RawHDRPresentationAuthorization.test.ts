@@ -15,6 +15,7 @@ import {
     createRawHDRShaderSignature,
     evaluateRawHDRFixtureObservations,
     getRawHDRAuthorizationRouteKey,
+    RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
     RawHDRPresentationAuthorizationRegistry,
     RawHDRPresentationAuthorizationRunner,
     type RawHDRAuthorizationRouteKey,
@@ -134,10 +135,11 @@ function createDeviceHarness(
                     throw new Error('Unexpected readback coordinate');
                 }
                 const destinationBuffer = destination.buffer as MockBuffer;
-                destinationBuffer.bytes[0] = Math.round(linearRGB[2] * 255);
-                destinationBuffer.bytes[1] = Math.round(linearRGB[1] * 255);
-                destinationBuffer.bytes[2] = Math.round(linearRGB[0] * 255);
-                destinationBuffer.bytes[3] = 255;
+                const byteOffset = Number(destination.offset ?? 0);
+                destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
+                destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
+                destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
+                destinationBuffer.bytes[byteOffset + 3] = 255;
             }),
             finish: vi.fn(() => ({}))
         })),
@@ -225,7 +227,7 @@ function createAuthorizedDecision(
         authorizedRouteKeys: [ routeKey ],
         device,
         failureReason: null,
-        fixtureVersion: 1,
+        fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
         maximumChannelError: 0,
         renderSettingsVersion: 4,
         routeKey,
@@ -303,7 +305,7 @@ describe('RawHDRPresentationAuthorization', () => {
         expect(harness.writeTexture).toHaveBeenCalledTimes(3);
         expect(harness.draw).toHaveBeenCalledWith(6);
         expect(harness.textureDestroy).toHaveBeenCalledTimes(4);
-        expect(harness.bufferDestroy).toHaveBeenCalledTimes(11);
+        expect(harness.bufferDestroy).toHaveBeenCalledTimes(3);
     });
 
     it.each([
@@ -360,7 +362,7 @@ describe('RawHDRPresentationAuthorization', () => {
             status: 'rejected'
         });
         expect(harness.textureDestroy).toHaveBeenCalledTimes(4);
-        expect(harness.bufferDestroy).toHaveBeenCalledTimes(11);
+        expect(harness.bufferDestroy).toHaveBeenCalledTimes(3);
     });
 
     it('rejects an unreadable production target format before creating resources', async () => {
@@ -423,7 +425,7 @@ describe('RawHDRPresentationAuthorization', () => {
         });
     });
 
-    it('applies one whole-route deadline across sequential readbacks', async () => {
+    it('applies the whole-route deadline to a batched readback', async () => {
         vi.useFakeTimers();
         const observations = createRouteObservations(
             'I420P10:bt2020-ncl:bt2020:limited:pq'
@@ -431,9 +433,7 @@ describe('RawHDRPresentationAuthorization', () => {
         const harness = createDeviceHarness(
             observations,
             undefined,
-            () => new Promise<void>(resolve => {
-                globalThis.setTimeout(resolve, 750);
-            })
+            () => new Promise<void>(() => undefined)
         );
         const runner = new RawHDRPresentationAuthorizationRunner();
         const decisionPromise = runner.validate(

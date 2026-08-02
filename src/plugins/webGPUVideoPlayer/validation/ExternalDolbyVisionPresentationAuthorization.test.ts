@@ -2,16 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createHDRToSDRRenderSettings } from '../RenderSettings';
 import type { ColorTriplet } from '../color/ColorPipeline';
-import { decodeDolbyVisionRPUSnapshot } from '../custom/DolbyVisionRPUParser';
 import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthorizationFixture';
 import {
-    createDolbyVisionShaderSignature,
-    createExpectedDolbyVisionAuthorizationObservations,
-    DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
-    DolbyVisionPresentationAuthorizationRegistry,
-    DolbyVisionPresentationAuthorizationRunner,
-    type DolbyVisionAuthorizationDecision
-} from './DolbyVisionPresentationAuthorization';
+    createExpectedExternalDolbyVisionAuthorizationObservations,
+    createExternalDolbyVisionShaderSignature,
+    EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+    ExternalDolbyVisionPresentationAuthorizationRegistry,
+    ExternalDolbyVisionPresentationAuthorizationRunner,
+    type ExternalDolbyVisionAuthorizationDecision
+} from './ExternalDolbyVisionPresentationAuthorization';
 import type { RawHDRFixtureObservation } from './RawHDRPresentationAuthorization';
 
 type MockFunction = ReturnType<typeof vi.fn>;
@@ -23,9 +22,9 @@ type MockBuffer = GPUBuffer & {
 type DeviceHarness = {
     bindGroupEntries: GPUBindGroupEntry[]
     bufferDescriptors: GPUBufferDescriptor[]
-    bufferDestroy: MockFunction
     device: GPUDevice
     draw: MockFunction
+    importExternalTexture: MockFunction
     textureDestroy: MockFunction
 };
 
@@ -46,12 +45,20 @@ function restoreProperty(
 }
 
 function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
-    return createExpectedDolbyVisionAuthorizationObservations(
-        createDolbyVisionAuthorizationRPUFixture(),
+    return createExpectedExternalDolbyVisionAuthorizationObservations(
+        createDolbyVisionAuthorizationRPUFixture(5),
         createHDRToSDRRenderSettings({
             toneMapping: { inputPeakNits: 4_000 }
         })
     );
+}
+
+function createFrame(close: MockFunction): VideoFrame {
+    return {
+        close,
+        displayHeight: 8,
+        displayWidth: 16
+    } as unknown as VideoFrame;
 }
 
 function createDeviceHarness(
@@ -73,10 +80,10 @@ function createDeviceHarness(
         setPipeline: vi.fn(),
         setViewport: vi.fn()
     };
-    const bufferDestroy = vi.fn();
-    const textureDestroy = vi.fn();
     const bindGroupEntries: GPUBindGroupEntry[] = [];
     const bufferDescriptors: GPUBufferDescriptor[] = [];
+    const textureDestroy = vi.fn();
+    const importExternalTexture = vi.fn(() => ({}));
     const pipeline = {
         getBindGroupLayout: vi.fn(() => ({}))
     } as unknown as GPURenderPipeline;
@@ -90,7 +97,7 @@ function createDeviceHarness(
             const bytes = new Uint8Array(Number(descriptor.size));
             return {
                 bytes,
-                destroy: bufferDestroy,
+                destroy: vi.fn(),
                 getMappedRange: vi.fn((offset = 0, size = bytes.byteLength) => (
                     bytes.buffer.slice(offset, offset + size)
                 )),
@@ -121,6 +128,7 @@ function createDeviceHarness(
             finish: vi.fn(() => ({}))
         })),
         createRenderPipelineAsync: vi.fn(() => Promise.resolve(pipeline)),
+        createSampler: vi.fn(() => ({})),
         createShaderModule: vi.fn(() => ({})),
         createTexture: vi.fn((descriptor: GPUTextureDescriptor) => ({
             createView: vi.fn(() => ({})),
@@ -131,6 +139,7 @@ function createDeviceHarness(
             usage: descriptor.usage,
             width: Number((descriptor.size as GPUExtent3DDict).width ?? 1)
         })),
+        importExternalTexture,
         limits: { maxTextureDimension2D: 8_192 },
         lost,
         popErrorScope: vi.fn(() => Promise.resolve(null)),
@@ -138,16 +147,15 @@ function createDeviceHarness(
         queue: {
             onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
             submit: vi.fn(),
-            writeBuffer: vi.fn(),
-            writeTexture: vi.fn()
+            writeBuffer: vi.fn()
         }
     } as unknown as GPUDevice;
     return {
         bindGroupEntries,
         bufferDescriptors,
-        bufferDestroy,
         device,
         draw,
+        importExternalTexture,
         textureDestroy
     };
 }
@@ -165,7 +173,7 @@ function mutateFirstObservation(
     } : observation);
 }
 
-describe('Dolby Vision presentation authorization', () => {
+describe('External Dolby Vision presentation authorization', () => {
     beforeEach(() => {
         Object.defineProperty(globalThis, 'GPUBufferUsage', {
             configurable: true,
@@ -181,7 +189,7 @@ describe('Dolby Vision presentation authorization', () => {
             configurable: true,
             // WebGPU defines these external names
             // eslint-disable-next-line @typescript-eslint/naming-convention
-            value: { COPY_DST: 1, COPY_SRC: 2, RENDER_ATTACHMENT: 4, TEXTURE_BINDING: 8 }
+            value: { COPY_SRC: 1, RENDER_ATTACHMENT: 2 }
         });
     });
 
@@ -192,114 +200,114 @@ describe('Dolby Vision presentation authorization', () => {
         vi.restoreAllMocks();
     });
 
-    it('builds a schema-valid fixture covering polynomial and MMR mapping', () => {
-        const firstFixture = createDolbyVisionAuthorizationRPUFixture();
-        const secondFixture = createDolbyVisionAuthorizationRPUFixture();
-        const snapshot = decodeDolbyVisionRPUSnapshot(firstFixture);
-
-        expect(snapshot).toMatchObject({
-            baseLayerBitDepth: 10,
-            layerMode: 'single-layer',
-            profile: 8,
-            vdrBitDepth: 12
-        });
-        expect(snapshot.components.map(component => component.mappingMethod)).toEqual([
-            'polynomial',
-            'mmr',
-            'mmr'
-        ]);
-        expect(snapshot.components.map(component => component.mmrVectorCount)).toEqual([
-            0,
-            6,
-            6
-        ]);
-        expect(secondFixture).not.toBe(firstFixture);
-        expect(new Uint8Array(secondFixture)).toEqual(new Uint8Array(firstFixture));
-    });
-
-    it('authorizes exact shader output and binds the RPU storage buffer', async () => {
+    it('authorizes exact external output, binds the RPU, and closes the frame', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
-        const runner = new DolbyVisionPresentationAuthorizationRunner();
+        const close = vi.fn();
+        const frame = createFrame(close);
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => frame
+        );
 
         const decision = await runner.validate(harness.device, 'bgra8unorm');
 
         expect(decision).toMatchObject({
             failureReason: null,
-            routeKey: DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
+            routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: 9,
             status: 'authorized'
         });
-        expect(harness.draw).toHaveBeenCalledTimes(1);
-        expect(harness.bindGroupEntries.some(entry => entry.binding === 5)).toBe(true);
-        expect(harness.bufferDescriptors).toContainEqual(expect.objectContaining({
-            size: 3_232,
-            usage: 5
-        }));
-        expect(harness.bufferDestroy).toHaveBeenCalled();
-        expect(harness.textureDestroy).toHaveBeenCalled();
+        expect(harness.importExternalTexture).toHaveBeenCalledWith({
+            colorSpace: 'srgb',
+            source: frame
+        });
+        expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual([
+            0, 1, 2, 3, 4
+        ]);
+        expect(harness.draw).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(harness.textureDestroy).toHaveBeenCalledOnce();
     });
 
-    it('rejects a bounded pixel mismatch', async () => {
+    it('rejects a bounded pixel mismatch and still closes the frame', async () => {
         const harness = createDeviceHarness(mutateFirstObservation(
             createExpectedObservations()
         ));
-        const runner = new DolbyVisionPresentationAuthorizationRunner();
+        const close = vi.fn();
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => createFrame(close)
+        );
 
         await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
             failureReason: 'pixel-mismatch',
             status: 'rejected'
         });
+        expect(close).toHaveBeenCalledOnce();
     });
 
-    it('rejects unsupported targets before allocating resources', async () => {
+    it('classifies an external-texture import failure and closes the frame', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
-        const runner = new DolbyVisionPresentationAuthorizationRunner();
+        harness.importExternalTexture.mockImplementation(() => {
+            throw new Error('simulated import failure');
+        });
+        const close = vi.fn();
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => createFrame(close)
+        );
 
-        await expect(runner.validate(harness.device, 'rgba16float')).resolves.toMatchObject({
-            failureReason: 'target-format-unsupported',
+        await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            failureReason: 'frame-import-failed',
             status: 'rejected'
         });
-        expect(harness.bufferDescriptors).toHaveLength(0);
+        expect(close).toHaveBeenCalledOnce();
     });
 
-    it('deduplicates exact-device authorization and exposes only settled state', async () => {
+    it('deduplicates exact-device authorization and exposes settled state', async () => {
         const harness = createDeviceHarness(createExpectedObservations());
-        const runner = new DolbyVisionPresentationAuthorizationRunner();
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => createFrame(vi.fn())
+        );
         const validate = vi.spyOn(runner, 'validate');
-        const registry = new DolbyVisionPresentationAuthorizationRegistry(runner);
+        const registry = new ExternalDolbyVisionPresentationAuthorizationRegistry(runner);
 
         const firstDecision = registry.authorize(harness.device, 'bgra8unorm');
         const secondDecision = registry.authorize(harness.device, 'bgra8unorm');
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, 'bgra8unorm').status).toBe('pending');
 
-        const decision: DolbyVisionAuthorizationDecision = await firstDecision;
+        const decision: ExternalDolbyVisionAuthorizationDecision = await firstDecision;
         expect(decision.status).toBe('authorized');
-        expect(validate).toHaveBeenCalledTimes(1);
+        expect(validate).toHaveBeenCalledOnce();
         expect(registry.isAuthorized(
             harness.device,
             'bgra8unorm',
-            createHDRToSDRRenderSettings(),
-            'I420P10'
+            createHDRToSDRRenderSettings()
         )).toBe(true);
-        expect(registry.isAuthorized(
-            harness.device,
-            'bgra8unorm',
-            createHDRToSDRRenderSettings(),
-            'I420P12'
-        )).toBe(false);
         expect(registry.getTelemetry(harness.device, 'bgra8unorm')).toMatchObject({
             status: 'authorized',
             targetFormat: 'bgra8unorm'
         });
     });
 
-    it('includes the fixture and target in the stable signature', () => {
-        expect(createDolbyVisionShaderSignature('bgra8unorm', 'shader')).toBe(
-            createDolbyVisionShaderSignature('bgra8unorm', 'shader')
+    it('rejects unsupported targets before constructing a frame', async () => {
+        const harness = createDeviceHarness(createExpectedObservations());
+        const createFrameFactory = vi.fn(() => createFrame(vi.fn()));
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            createFrameFactory
         );
-        expect(createDolbyVisionShaderSignature('bgra8unorm', 'shader')).not.toBe(
-            createDolbyVisionShaderSignature('rgba8unorm', 'shader')
+
+        await expect(runner.validate(harness.device, 'rgba16float')).resolves.toMatchObject({
+            failureReason: 'target-format-unsupported',
+            status: 'rejected'
+        });
+        expect(createFrameFactory).not.toHaveBeenCalled();
+    });
+
+    it('includes the production shader and target in the stable signature', () => {
+        expect(createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader')).toBe(
+            createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader')
+        );
+        expect(createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader')).not.toBe(
+            createExternalDolbyVisionShaderSignature('rgba8unorm', 'shader')
         );
     });
 });

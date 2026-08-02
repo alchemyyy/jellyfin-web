@@ -18,7 +18,8 @@ import {
 } from './CustomDecodeCapabilities';
 import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
-    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+    getSupportedCustomAudioInputChannelCounts
 } from './CustomAudioOutputPolicy';
 import {
     NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS,
@@ -33,6 +34,7 @@ import type { RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentati
 
 export type CustomDeviceProfileOptions = {
     allowDolbyVision?: boolean
+    allowNativeDolbyVision?: boolean
     allowRawHDR?: boolean
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     isRetry?: boolean
@@ -65,6 +67,13 @@ type VideoContainerRule = {
     audioCodecs: readonly CustomAudioCodec[]
     container: string
     videoCodecs: readonly CustomVideoCodec[]
+};
+
+type AuthorizedHDRRoutes = {
+    allowNativeDolbyVision: boolean
+    allowRawDolbyVision: boolean
+    dolbyVisionVideoRangeTypes: readonly string[]
+    rawHDRVideoRangeTypes: readonly string[]
 };
 
 const ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
@@ -126,6 +135,34 @@ const DOLBY_VISION_VIDEO_RANGE_TYPES = [
     'DOVIWithHDR10',
     'DOVIWithHLG'
 ] as const;
+
+function getDolbyVisionVideoRangeTypes(
+    capabilities: CustomDecodeCapabilities,
+    allowRawDolbyVision: boolean,
+    allowNativeDolbyVision: boolean
+): string[] {
+    if (!allowRawDolbyVision && !allowNativeDolbyVision) {
+        return [];
+    }
+    const rangeTypes: string[] = [];
+    if (
+        allowNativeDolbyVision
+        && capabilities.nativeDolbyVisionHEVC?.status === 'supported'
+    ) {
+        rangeTypes.push('DOVI');
+    }
+    if (
+        allowRawDolbyVision
+        && capabilities.rawHDRVideo.hevc.status === 'supported'
+    ) {
+        for (const rangeType of DOLBY_VISION_VIDEO_RANGE_TYPES) {
+            if (!rangeTypes.includes(rangeType)) {
+                rangeTypes.push(rangeType);
+            }
+        }
+    }
+    return rangeTypes;
+}
 
 function getAuthorizedRawHDRVideoRangeTypes(
     routeKeys: readonly RawHDRAuthorizationRouteKey[]
@@ -261,7 +298,8 @@ function cloneDeviceProfile(profile: DeviceProfile): DeviceProfile {
 function getSupportedVideoCodecs(
     capabilities: CustomDecodeCapabilities,
     allowRawHDR: boolean,
-    allowDolbyVision = false
+    allowDolbyVision = false,
+    allowNativeDolbyVision = false
 ): CustomVideoCodec[] {
     const supportedCodecs: CustomVideoCodec[] = [];
     for (const codec of CUSTOM_VIDEO_CODECS) {
@@ -271,7 +309,10 @@ function getSupportedVideoCodecs(
         const rawPresentationAllowed = allowRawHDR
             || (allowDolbyVision && codec === 'hevc');
         if (supportsNativeVideoCodec(codec, capabilities)
-            || (rawPresentationAllowed && rawCapability?.status === 'supported')) {
+            || (rawPresentationAllowed && rawCapability?.status === 'supported')
+            || (allowNativeDolbyVision
+                && codec === 'hevc'
+                && capabilities.nativeDolbyVisionHEVC?.status === 'supported')) {
             supportedCodecs.push(codec);
         }
     }
@@ -667,12 +708,54 @@ function getRawHDRCapabilityLimits(
     };
 }
 
+function getNativeDolbyVisionCapabilityLimits(
+    capabilities: CustomDecodeCapabilities,
+    enabled: boolean
+): RawHDRCapabilityLimits | null {
+    if (!enabled) {
+        return null;
+    }
+    const capability = capabilities.nativeDolbyVisionHEVC;
+    if (capability?.status !== 'supported') {
+        return null;
+    }
+    return {
+        maximumBitrate: capability.maximumBitrate,
+        maximumCodedHeight: capability.maximumCodedHeight,
+        maximumCodedWidth: capability.maximumCodedWidth,
+        maximumLevel: capability.maximumLevel
+    };
+}
+
+function combineAlternativeCapabilityLimits(
+    first: RawHDRCapabilityLimits,
+    second: RawHDRCapabilityLimits
+): RawHDRCapabilityLimits {
+    return {
+        maximumBitrate: first.maximumBitrate === null || second.maximumBitrate === null ?
+            null :
+            Math.max(first.maximumBitrate, second.maximumBitrate),
+        maximumCodedHeight: Math.max(
+            first.maximumCodedHeight,
+            second.maximumCodedHeight
+        ),
+        maximumCodedWidth: Math.max(
+            first.maximumCodedWidth,
+            second.maximumCodedWidth
+        ),
+        maximumLevel: first.maximumLevel === null || second.maximumLevel === null ?
+            null :
+            Math.max(first.maximumLevel, second.maximumLevel)
+    };
+}
+
 function createRawHDRCodecProfilePlan(
     codecProfile: CodecProfile,
     supportedRawHDRCodecs: ReadonlySet<CustomVideoCodec>,
     supportedNativeVideoCodecs: ReadonlySet<CustomVideoCodec>,
     capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[]
+    rawHDRVideoRangeTypes: readonly string[],
+    capabilityLimits: RawHDRCapabilityLimits | null = null
 ): RawHDRCodecProfilePlan | null {
     if (
         codecProfile.Type !== VIDEO_CODEC_PROFILE_TYPE
@@ -691,7 +774,10 @@ function createRawHDRCodecProfilePlan(
         return null;
     }
 
-    const limits = getRawHDRCapabilityLimits(rawHDRCodecs, capabilities);
+    const limits = capabilityLimits ?? getRawHDRCapabilityLimits(
+        rawHDRCodecs,
+        capabilities
+    );
     if (!limits) {
         return null;
     }
@@ -778,7 +864,8 @@ function widenRawHDRCodecProfiles(
     supportedRawHDRVideoCodecs: readonly CustomVideoCodec[],
     supportedNativeVideoCodecs: readonly CustomVideoCodec[],
     capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[]
+    rawHDRVideoRangeTypes: readonly string[],
+    capabilityLimits: RawHDRCapabilityLimits | null = null
 ): number {
     const supportedRawHDRCodecs = new Set<CustomVideoCodec>(supportedRawHDRVideoCodecs);
     const supportedNativeCodecs = new Set<CustomVideoCodec>(supportedNativeVideoCodecs);
@@ -794,7 +881,8 @@ function widenRawHDRCodecProfiles(
             supportedRawHDRCodecs,
             supportedNativeCodecs,
             capabilities,
-            rawHDRVideoRangeTypes
+            rawHDRVideoRangeTypes,
+            capabilityLimits
         );
         if (!plan) {
             widenedProfiles.push(codecProfile);
@@ -964,10 +1052,41 @@ function createRawHDRMeasuredVideoRoute(
     };
 }
 
+function createDolbyVisionMeasuredVideoRoute(
+    codec: CustomVideoCodec,
+    capabilities: CustomDecodeCapabilities,
+    dolbyVisionVideoRangeTypes: readonly string[],
+    enabled: boolean
+): MeasuredVideoRoute | null {
+    const capability = capabilities.nativeDolbyVisionHEVC;
+    if (
+        codec !== 'hevc'
+        || !enabled
+        || dolbyVisionVideoRangeTypes.length === 0
+        || capability?.status !== 'supported'
+    ) {
+        return null;
+    }
+    return {
+        bitDepth: capability.bitDepth,
+        codec,
+        maximumBitrate: capability.maximumBitrate,
+        maximumFrameRate: CUSTOM_RAW_HDR_VIDEO_MAXIMUM_FRAMES_PER_SECOND,
+        maximumHeight: capability.maximumCodedHeight,
+        maximumLevel: capability.maximumLevel,
+        maximumWidth: capability.maximumCodedWidth,
+        profiles: RAW_VIDEO_PROFILES.hevc,
+        rangeTypes: dolbyVisionVideoRangeTypes
+    };
+}
+
 function getMeasuredVideoRoutes(
     codec: CustomVideoCodec,
     capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[]
+    rawHDRVideoRangeTypes: readonly string[],
+    rawDolbyVisionVideoRangeTypes: readonly string[],
+    nativeDolbyVisionVideoRangeTypes: readonly string[],
+    allowNativeDolbyVision: boolean
 ): MeasuredVideoRoute[] {
     const routes: MeasuredVideoRoute[] = [];
     const nativeRoute = createNativeMeasuredVideoRoute(codec, capabilities);
@@ -977,10 +1096,24 @@ function getMeasuredVideoRoutes(
     const rawRoute = createRawHDRMeasuredVideoRoute(
         codec,
         capabilities,
-        rawHDRVideoRangeTypes
+        codec === 'hevc' ? [
+            ...new Set([
+                ...rawHDRVideoRangeTypes,
+                ...rawDolbyVisionVideoRangeTypes
+            ])
+        ] : rawHDRVideoRangeTypes
     );
     if (rawRoute) {
         routes.push(rawRoute);
+    }
+    const dolbyVisionRoute = createDolbyVisionMeasuredVideoRoute(
+        codec,
+        capabilities,
+        nativeDolbyVisionVideoRangeTypes,
+        allowNativeDolbyVision
+    );
+    if (dolbyVisionRoute) {
+        routes.push(dolbyVisionRoute);
     }
     return routes;
 }
@@ -995,24 +1128,14 @@ function getCodecProfileKey(profile: CodecProfile): string {
     });
 }
 
-function getMeasuredCodecRangeTypes(
-    codec: CustomVideoCodec,
-    rawHDRVideoRangeTypes: readonly string[],
-    dolbyVisionVideoRangeTypes: readonly string[]
-): string[] {
-    const codecRangeTypes: string[] = [ ...rawHDRVideoRangeTypes ];
-    if (codec === 'hevc') {
-        codecRangeTypes.push(...dolbyVisionVideoRangeTypes);
-    }
-    return codecRangeTypes;
-}
-
 function appendMeasuredVideoRouteProfiles(
     profile: DeviceProfile,
     capabilities: CustomDecodeCapabilities,
     supportedVideoCodecs: readonly CustomVideoCodec[],
     rawHDRVideoRangeTypes: readonly string[],
-    dolbyVisionVideoRangeTypes: readonly string[]
+    rawDolbyVisionVideoRangeTypes: readonly string[],
+    nativeDolbyVisionVideoRangeTypes: readonly string[],
+    allowNativeDolbyVision: boolean
 ): void {
     const codecProfiles = profile.CodecProfiles ?? [];
     profile.CodecProfiles = codecProfiles;
@@ -1021,11 +1144,10 @@ function appendMeasuredVideoRouteProfiles(
         const routes = getMeasuredVideoRoutes(
             codec,
             capabilities,
-            getMeasuredCodecRangeTypes(
-                codec,
-                rawHDRVideoRangeTypes,
-                dolbyVisionVideoRangeTypes
-            )
+            rawHDRVideoRangeTypes,
+            rawDolbyVisionVideoRangeTypes,
+            nativeDolbyVisionVideoRangeTypes,
+            allowNativeDolbyVision
         );
         if (routes.length === 0) {
             continue;
@@ -1067,22 +1189,42 @@ function widenAuthorizedHDRCodecProfiles(
     capabilities: CustomDecodeCapabilities,
     supportedRawHDRVideoCodecs: readonly CustomVideoCodec[],
     supportedNativeVideoCodecs: readonly CustomVideoCodec[],
-    rawHDRVideoRangeTypes: readonly string[],
-    dolbyVisionVideoRangeTypes: readonly string[]
+    authorizedRoutes: AuthorizedHDRRoutes
 ): number {
-    const supportsDolbyVisionHEVC = supportedRawHDRVideoCodecs.includes('hevc')
-        && dolbyVisionVideoRangeTypes.length > 0;
+    const nativeDolbyVisionLimits = getNativeDolbyVisionCapabilityLimits(
+        capabilities,
+        authorizedRoutes.allowNativeDolbyVision
+    );
+    const rawHEVCSupported = supportedRawHDRVideoCodecs.includes('hevc');
+    const rawDolbyVisionHEVCSupported = authorizedRoutes.allowRawDolbyVision
+        && rawHEVCSupported;
+    const supportsDolbyVisionHEVC = authorizedRoutes.dolbyVisionVideoRangeTypes.length > 0
+        && (rawDolbyVisionHEVCSupported || nativeDolbyVisionLimits !== null);
     let widenedProfileCount = 0;
     if (supportsDolbyVisionHEVC) {
+        const rawHEVCLimits = rawDolbyVisionHEVCSupported ?
+            getRawHDRCapabilityLimits([ 'hevc' ], capabilities) :
+            null;
+        let dolbyVisionLimits = nativeDolbyVisionLimits ?? rawHEVCLimits;
+        if (dolbyVisionLimits && rawHEVCLimits && nativeDolbyVisionLimits) {
+            dolbyVisionLimits = combineAlternativeCapabilityLimits(
+                rawHEVCLimits,
+                nativeDolbyVisionLimits
+            );
+        }
         widenedProfileCount += widenRawHDRCodecProfiles(
             profile,
             [ 'hevc' ],
             supportedNativeVideoCodecs,
             capabilities,
-            [ ...rawHDRVideoRangeTypes, ...dolbyVisionVideoRangeTypes ]
+            [
+                ...(rawHEVCSupported ? authorizedRoutes.rawHDRVideoRangeTypes : []),
+                ...authorizedRoutes.dolbyVisionVideoRangeTypes
+            ],
+            dolbyVisionLimits
         );
     }
-    if (rawHDRVideoRangeTypes.length === 0) {
+    if (authorizedRoutes.rawHDRVideoRangeTypes.length === 0) {
         return widenedProfileCount;
     }
     return widenedProfileCount + widenRawHDRCodecProfiles(
@@ -1092,7 +1234,7 @@ function widenAuthorizedHDRCodecProfiles(
         )),
         supportedNativeVideoCodecs,
         capabilities,
-        rawHDRVideoRangeTypes
+        authorizedRoutes.rawHDRVideoRangeTypes
     );
 }
 
@@ -1120,6 +1262,152 @@ function createMeasuredAudioRouteProfile(
         Container: CUSTOM_VIDEO_CONTAINER_VALUE,
         Type: 'VideoAudio'
     };
+}
+
+const CUSTOM_AUDIO_ROUTE_PROPERTIES = new Set<string>([
+    AUDIO_CHANNELS_PROPERTY,
+    AUDIO_SAMPLE_RATE_PROPERTY,
+    'IsSecondaryAudio'
+]);
+
+function isMeasuredAudioRouteProfile(codecProfile: CodecProfile): boolean {
+    if (codecProfile.Type !== 'VideoAudio'
+        || normalizeList(codecProfile.Container) !== normalizeList(CUSTOM_VIDEO_CONTAINER_VALUE)) {
+        return false;
+    }
+
+    const conditions = codecProfile.Conditions ?? [];
+    return conditions.length === 2
+        && conditions.every(condition => (
+            condition.IsRequired === true
+            && CUSTOM_AUDIO_ROUTE_PROPERTIES.has(condition.Property ?? '')
+        ))
+        && conditions.some(condition => condition.Property === AUDIO_CHANNELS_PROPERTY)
+        && conditions.some(condition => condition.Property === AUDIO_SAMPLE_RATE_PROPERTY);
+}
+
+function getDeclaredDirectPlayAudioCodecs(profile: DeviceProfile): string[] {
+    const codecs: string[] = [];
+    for (const directPlayProfile of profile.DirectPlayProfiles ?? []) {
+        if (directPlayProfile.Type !== 'Video') {
+            continue;
+        }
+        for (const codec of getCodecTokens(directPlayProfile.AudioCodec)) {
+            if (!codecs.includes(codec)) {
+                codecs.push(codec);
+            }
+        }
+    }
+    return codecs;
+}
+
+function shouldSplitAudioRouteProfile(codecProfile: CodecProfile): boolean {
+    const conditions = codecProfile.Conditions ?? [];
+    return codecProfile.Type === 'VideoAudio'
+        && !codecProfile.SubContainer
+        && !codecProfile.Container?.trim().startsWith('-')
+        && !isMeasuredAudioRouteProfile(codecProfile)
+        && conditions.some(condition => (
+            CUSTOM_AUDIO_ROUTE_PROPERTIES.has(condition.Property ?? '')
+        ));
+}
+
+function createSplitAudioRouteProfiles(
+    codecProfile: CodecProfile,
+    supportedAudioCodecs: readonly CustomAudioCodec[],
+    supportedAudioCodecSet: ReadonlySet<string>,
+    declaredDirectPlayAudioCodecs: readonly string[]
+): CodecProfile[] | null {
+    if (!shouldSplitAudioRouteProfile(codecProfile)) {
+        return null;
+    }
+
+    const configuredContainers = getCodecTokens(codecProfile.Container);
+    const customContainers = configuredContainers.length === 0 ?
+        [ ...CUSTOM_VIDEO_CONTAINERS ] :
+        configuredContainers.filter(container => CUSTOM_VIDEO_CONTAINER_SET.has(container));
+    if (customContainers.length === 0) {
+        return null;
+    }
+
+    const configuredCodecs = getCodecTokens(codecProfile.Codec);
+    const supportedProfileCodecs = configuredCodecs.length === 0 ?
+        [ ...supportedAudioCodecs ] :
+        configuredCodecs.filter(codec => supportedAudioCodecSet.has(codec));
+    if (supportedProfileCodecs.length === 0) {
+        return null;
+    }
+
+    const splitProfiles: CodecProfile[] = [];
+    const nonCustomContainers = configuredContainers.filter(container => (
+        !CUSTOM_VIDEO_CONTAINER_SET.has(container)
+    ));
+    if (configuredContainers.length === 0) {
+        splitProfiles.push({
+            ...codecProfile,
+            Container: NON_CUSTOM_VIDEO_CONTAINER_VALUE
+        });
+    } else if (nonCustomContainers.length > 0) {
+        splitProfiles.push({
+            ...codecProfile,
+            Container: nonCustomContainers.join(',')
+        });
+    }
+
+    const unsupportedProfileCodecs = configuredCodecs.length === 0 ?
+        declaredDirectPlayAudioCodecs.filter(codec => !supportedAudioCodecSet.has(codec)) :
+        configuredCodecs.filter(codec => !supportedAudioCodecSet.has(codec));
+    if (unsupportedProfileCodecs.length > 0) {
+        splitProfiles.push({
+            ...codecProfile,
+            Codec: unsupportedProfileCodecs.join(','),
+            Container: customContainers.join(',')
+        });
+    }
+
+    const remainingConditions = (codecProfile.Conditions ?? []).filter(condition => (
+        !CUSTOM_AUDIO_ROUTE_PROPERTIES.has(condition.Property ?? '')
+    ));
+    if (remainingConditions.length > 0) {
+        splitProfiles.push({
+            ...codecProfile,
+            Codec: supportedProfileCodecs.join(','),
+            Conditions: remainingConditions,
+            Container: customContainers.join(',')
+        });
+    }
+    return splitProfiles;
+}
+
+/**
+ * Keeps HTML-player audio constraints outside custom routes while removing the
+ * channel, sample-rate, and secondary-track limits replaced by measured routes.
+ */
+function splitOriginalAudioRouteProfiles(
+    profile: DeviceProfile,
+    supportedAudioCodecs: readonly CustomAudioCodec[]
+): void {
+    if (!profile.CodecProfiles || supportedAudioCodecs.length === 0) {
+        return;
+    }
+
+    const supportedAudioCodecSet = new Set<string>(supportedAudioCodecs);
+    const declaredDirectPlayAudioCodecs = getDeclaredDirectPlayAudioCodecs(profile);
+    const splitProfiles: CodecProfile[] = [];
+    for (const codecProfile of profile.CodecProfiles) {
+        const profileSplits = createSplitAudioRouteProfiles(
+            codecProfile,
+            supportedAudioCodecs,
+            supportedAudioCodecSet,
+            declaredDirectPlayAudioCodecs
+        );
+        if (profileSplits === null) {
+            splitProfiles.push(codecProfile);
+        } else {
+            splitProfiles.push(...profileSplits);
+        }
+    }
+    profile.CodecProfiles = splitProfiles;
 }
 
 function getSupportedNativeMediaChannelCounts(
@@ -1154,9 +1442,13 @@ function appendMeasuredNativeAudioRouteProfiles(
             continue;
         }
         nativeMediaCodecs.add(codec);
-        if (capabilities.audio[codec].status === 'supported'
-            && !channelCounts.includes(CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT)) {
-            channelCounts.push(CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT);
+        if (capabilities.audio[codec].status === 'supported') {
+            for (const channelCount of getSupportedCustomAudioInputChannelCounts(codec)) {
+                const nativeChannelCount = channelCount as NativeMediaAudioChannelCount;
+                if (!channelCounts.includes(nativeChannelCount)) {
+                    channelCounts.push(nativeChannelCount);
+                }
+            }
             channelCounts.sort((left, right) => left - right);
         }
         measuredProfiles.push(createMeasuredAudioRouteProfile(
@@ -1188,8 +1480,10 @@ function getDecodedAudioCodecsWithoutNativeProfile(
 function appendMeasuredAudioRouteProfiles(
     profile: DeviceProfile,
     capabilities: CustomDecodeCapabilities,
-    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined
+    nativeMediaAudioCapabilities: NativeMediaAudioCapabilities | null | undefined,
+    supportedAudioCodecs: readonly CustomAudioCodec[]
 ): void {
+    splitOriginalAudioRouteProfiles(profile, supportedAudioCodecs);
     const codecProfiles = profile.CodecProfiles ?? [];
     profile.CodecProfiles = codecProfiles;
     const existingProfileKeys = new Set(codecProfiles.map(getCodecProfileKey));
@@ -1203,10 +1497,23 @@ function appendMeasuredAudioRouteProfiles(
         capabilities,
         nativeMediaCodecs
     );
-    if (decodedAudioCodecs.length > 0) {
+    const decodedSurroundAudioCodecs = decodedAudioCodecs.filter(codec => (
+        codec === 'ac3' || codec === 'eac3'
+    ));
+    const decodedStereoAudioCodecs = decodedAudioCodecs.filter(codec => (
+        codec !== 'ac3' && codec !== 'eac3'
+    ));
+    if (decodedStereoAudioCodecs.length > 0) {
         measuredProfiles.push(createMeasuredAudioRouteProfile(
-            decodedAudioCodecs,
+            decodedStereoAudioCodecs,
             [ CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT ],
+            CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+        ));
+    }
+    if (decodedSurroundAudioCodecs.length > 0) {
+        measuredProfiles.push(createMeasuredAudioRouteProfile(
+            decodedSurroundAudioCodecs,
+            getSupportedCustomAudioInputChannelCounts(decodedSurroundAudioCodecs[0]),
             CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
         ));
     }
@@ -1234,16 +1541,35 @@ export function augmentDeviceProfileForCustomDecode(
     const rawHDRVideoRangeTypes = options.allowRawHDR === true ?
         getAuthorizedRawHDRVideoRangeTypes(options.authorizedRawHDRRouteKeys ?? []) :
         [];
-    const dolbyVisionVideoRangeTypes = options.allowDolbyVision === true ?
-        [ ...DOLBY_VISION_VIDEO_RANGE_TYPES ] :
-        [];
+    const availableRawDolbyVisionVideoRangeTypes = getDolbyVisionVideoRangeTypes(
+        capabilities,
+        options.allowDolbyVision === true,
+        false
+    );
+    const nativeDolbyVisionVideoRangeTypes = getDolbyVisionVideoRangeTypes(
+        capabilities,
+        false,
+        options.allowNativeDolbyVision === true
+    );
+    const rawDolbyVisionVideoRangeTypes = nativeDolbyVisionVideoRangeTypes.includes('DOVI') ?
+        availableRawDolbyVisionVideoRangeTypes.filter(rangeType => rangeType !== 'DOVI') :
+        availableRawDolbyVisionVideoRangeTypes;
+    const dolbyVisionVideoRangeTypes = [
+        ...new Set([
+            ...rawDolbyVisionVideoRangeTypes,
+            ...nativeDolbyVisionVideoRangeTypes
+        ])
+    ];
+    const allowRawDolbyVision = rawDolbyVisionVideoRangeTypes.length > 0;
+    const allowNativeDolbyVision = nativeDolbyVisionVideoRangeTypes.length > 0;
     const allowRawHDR = rawHDRVideoRangeTypes.length > 0
         || dolbyVisionVideoRangeTypes.length > 0;
     const supportedNativeVideoCodecs = getSupportedVideoCodecs(capabilities, false);
     const supportedVideoCodecs = getSupportedVideoCodecs(
         capabilities,
         rawHDRVideoRangeTypes.length > 0,
-        dolbyVisionVideoRangeTypes.length > 0
+        allowRawDolbyVision,
+        allowNativeDolbyVision
     );
     const supportedAudioCodecs = getSupportedAudioCodecs(
         capabilities,
@@ -1296,8 +1622,12 @@ export function augmentDeviceProfileForCustomDecode(
             capabilities,
             supportedRawHDRVideoCodecs,
             supportedNativeVideoCodecs,
-            rawHDRVideoRangeTypes,
-            dolbyVisionVideoRangeTypes
+            {
+                allowNativeDolbyVision,
+                allowRawDolbyVision,
+                dolbyVisionVideoRangeTypes,
+                rawHDRVideoRangeTypes
+            }
         ) :
         0;
     appendMeasuredVideoRouteProfiles(
@@ -1305,12 +1635,15 @@ export function augmentDeviceProfileForCustomDecode(
         capabilities,
         supportedVideoCodecs,
         rawHDRVideoRangeTypes,
-        dolbyVisionVideoRangeTypes
+        rawDolbyVisionVideoRangeTypes,
+        nativeDolbyVisionVideoRangeTypes,
+        allowNativeDolbyVision
     );
     appendMeasuredAudioRouteProfiles(
         clonedProfile,
         capabilities,
-        options.nativeMediaAudioCapabilities
+        options.nativeMediaAudioCapabilities,
+        supportedAudioCodecs
     );
 
     const directPlayProfiles = clonedProfile.DirectPlayProfiles ?? [];

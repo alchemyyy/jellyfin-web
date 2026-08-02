@@ -1,6 +1,8 @@
 // @vitest-environment node
 
 import type { HEVCFrame, HEVCStreamInfo } from '@hevcjs/core';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createHEVCExactCapabilityWorkerTierRequests } from './HEVCExactCapabilityFixtures';
@@ -16,12 +18,19 @@ import {
     type HEVCExactCapabilityWorkerRuntimeDependencies
 } from './HEVCExactCapabilityWorkerRuntime';
 
+const MAIN10_4K_QUALIFICATION_BITSTREAM = Uint8Array.from(readFileSync(resolve(
+    process.cwd(),
+    'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
+))).buffer;
+
 function createRequest(): HEVCExactCapabilityWorkerRequest {
     return {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASMURL: 'https://example.test/hevc-decode.wasm',
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        tiers: createHEVCExactCapabilityWorkerTierRequests(),
+        tiers: createHEVCExactCapabilityWorkerTierRequests(
+            MAIN10_4K_QUALIFICATION_BITSTREAM
+        ),
         type: 'probe'
     };
 }
