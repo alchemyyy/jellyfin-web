@@ -235,25 +235,21 @@ review.
 
 ### AC-3 and E-AC-3
 
-Ordinary builds exclude the bundled AC-3 software decoder. AC-3 and E-AC-3 are
-reported as `build-disabled`, the implementation modules are ignored by
-Webpack, and the distribution must contain neither their implementation
-markers nor the opt-in license artifact.
+Ordinary builds include the pinned official `@mediabunny/ac3` package. The
+custom decode worker loads it only when the selected track is AC-3 or E-AC-3,
+registers its decoder once, and sends its decoded PCM through the owned audio
+queue and AudioWorklet clock. Exact-qualified native-media AC-3/E-AC-3 remains
+preferred when a browser exposes it; the Mediabunny decoder is the standard
+fallback on runtimes such as Chrome for Windows that reject those native MIME
+routes.
 
-Enable the pinned `@mediabunny/ac3` package only for local validation:
-
-```powershell
-$env:ENABLE_BUNDLED_AC3_SOFTWARE_DECODER = '1'
-npm run build:development
-node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 enabled
-Remove-Item Env:ENABLE_BUNDLED_AC3_SOFTWARE_DECODER
-```
-
-Do not distribute that enabled build. The package statically embeds FFmpeg
-codec code but does not identify and provide the exact corresponding FFmpeg
-source revision and relinking materials required for a reviewed binary
-distribution. Copying its MPL-2.0 license does not resolve those source and
-relinking obligations or codec patent rights.
+The package and its MPL-2.0 distribution terms are approved for this project.
+Webpack copies the pinned package license to
+`dist/libraries/mediabunny-ac3/LICENSE.txt`. The artifact verifier requires the
+ordinary worker bundle to contain the stable Mediabunny implementation marker
+and requires the served license to hash-match the installed package. Decoded
+base channels are supported; Atmos object rendering and compressed
+passthrough are not claimed.
 
 ## Build artifact verification
 
@@ -261,22 +257,20 @@ Verify an ordinary build after building it:
 
 ```powershell
 npm run build:production
-node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
+node scripts/webgpu/verify-custom-codec-artifacts.mjs
 ```
 
 Use the same verifier after `npm run build:development` during local testing.
-It always checks the artifacts in the current `dist` directory, so the
-`--ac3` mode must match the build that most recently produced that directory.
+It always checks the artifacts in the current `dist` directory.
 
 The verifier:
 
 - hashes the served HEVC glue, WebAssembly binary, and license against the
   pinned installed package;
 - rejects missing or modified HEVC artifacts;
-- rejects AC-3 implementation markers or its copied license in an ordinary
-  build; and
-- requires both implementation markers and the matching package license in an
-  explicitly enabled local AC-3 build.
+- requires the Mediabunny AC-3/E-AC-3 implementation marker in executable
+  JavaScript; and
+- requires the copied Mediabunny license to match the pinned package.
 
 Run the verifier's isolated tests with:
 
@@ -317,7 +311,7 @@ node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.mjs
 node --test scripts/webgpu/create-dual-pid-dolby-vision-ts-fixture.node-test.mjs
 npm run build:development
-node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
+node scripts/webgpu/verify-custom-codec-artifacts.mjs
 ```
 
 The feature-gated custom decode worker, Mediabunny chunk, and pinned HEVC
@@ -439,9 +433,9 @@ node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
 
 The harness must observe the default AAC start, a new decoder generation,
-decoded AC-3 samples, uninterrupted raw HDR presentation, and no fallback or
-terminal error. Playback still requires the non-distributable opt-in build
-described above.
+decoded AC-3 samples, uninterrupted WebGPU HDR presentation, and no fallback or
+terminal error. The official Mediabunny decoder is present in every ordinary
+build and loads only after the AC-3 track is selected.
 
 ## Live browser playback validation
 

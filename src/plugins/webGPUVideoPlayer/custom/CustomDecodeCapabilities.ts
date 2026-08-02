@@ -72,7 +72,6 @@ export type CustomDecodeCodec = CustomAudioCodec | CustomVideoCodec;
 export type CustomDecodeCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
 export type CustomDecodeCapabilityReason =
     | 'api-unavailable'
-    | 'build-disabled'
     | 'bundled-software-decoder'
     | 'config-supported'
     | 'config-unsupported'
@@ -273,7 +272,6 @@ type RawHDRVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
 
 export type WebCodecsCapabilityEnvironment = {
     audioDecoder?: Pick<typeof AudioDecoder, 'isConfigSupported'> | null
-    bundledAC3SoftwareDecoder?: boolean
     bundledHEVCExactProbe?: { probe: () => Promise<BundledHEVCExactCapabilities> } | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
@@ -1263,7 +1261,6 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
     return {
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         audioDecoder: typeof globalThis.AudioDecoder === 'function' ? globalThis.AudioDecoder : null,
-        bundledAC3SoftwareDecoder: __ENABLE_BUNDLED_AC3_SOFTWARE_DECODER__,
         bundledHEVCExactProbe: defaultBundledHEVCExactProbe,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
         nativeAudioOutputProbe: createNativeAudioOutputProbe(),
@@ -1411,17 +1408,8 @@ async function probeBundledHEVC(
 }
 
 function createBundledAudioCapability(
-    definition: BundledAudioCodecDefinition,
-    bundledAC3SoftwareDecoder: boolean
+    definition: BundledAudioCodecDefinition
 ): CustomDecodeCodecCapability<CustomAudioCodec> {
-    if (!bundledAC3SoftwareDecoder) {
-        return Object.freeze({
-            codec: definition.codec,
-            codecString: definition.codecString,
-            reason: 'build-disabled',
-            status: 'unsupported'
-        });
-    }
     return Object.freeze({
         codec: definition.codec,
         codecString: definition.codecString,
@@ -2122,12 +2110,8 @@ export default class CustomDecodeCapabilityProbe {
         ]);
         const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
         audioCapabilities.push(...probedAudioCapabilities);
-        const bundledAC3SoftwareDecoder = environment.bundledAC3SoftwareDecoder === true;
         for (const definition of BUNDLED_AUDIO_CODEC_DEFINITIONS) {
-            audioCapabilities.push(createBundledAudioCapability(
-                definition,
-                bundledAC3SoftwareDecoder
-            ));
+            audioCapabilities.push(createBundledAudioCapability(definition));
         }
         const video = {} as Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>;
         for (const capability of videoCapabilities) {
@@ -2161,9 +2145,7 @@ export default class CustomDecodeCapabilityProbe {
         );
         const telemetry = Object.freeze({
             audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
-            bundledAudioCodecCount: bundledAC3SoftwareDecoder ?
-                BUNDLED_AUDIO_CODEC_DEFINITIONS.length :
-                0,
+            bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length,
             nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
             nativeHDRVideoProbeCount: environment.videoDecoder
                 && environment.nativeHDRVideoOutputProbe ? 1 : 0,

@@ -156,16 +156,17 @@ Optionally add a PQ stream-switch fixture:
     -FfmpegPath ffmpeg `
     -FfprobePath ffprobe `
     -IncludeAC3 `
+    -IncludeEAC3 `
     -Overwrite
 ```
 
 `-IncludeAC3` adds `pq-main10-1080p24-aac-ac3.mkv`. It retains the default
 stereo 48 kHz AAC track from the PQ fixture and appends a non-default stereo
 48 kHz AC-3 track. It is specifically structured to start through the ordinary
-AAC route and then validate a live switch to the opt-in AC-3 decoder without
-changing the video route. It is not an AC-3-only file. The AC-3 track requires
-the explicitly enabled local, non-distributable AC-3 build described below.
-The switch fixture requires `24` to be included in `-FrameRates`.
+AAC route and then validate a live switch to the standard Mediabunny AC-3
+decoder without changing the video route. `-IncludeEAC3` creates the equivalent
+`pq-main10-1080p24-aac-eac3.mkv` E-AC-3 switch fixture. Neither is an
+audio-codec-only file. Both switch fixtures require `24` in `-FrameRates`.
 Generation requires FFmpeg and FFprobe, an FFmpeg build with `libx265`, and
 the requested audio encoders.
 
@@ -219,14 +220,23 @@ node scripts/webgpu/run-browser-playback-smoke.mjs
 
 The smoke run must begin on the default AAC track, create a new decoder
 generation for the selected AC-3 track, observe decoded AC-3 audio, keep the
-same raw HDR presentation active, and finish without fallback or a terminal
+same WebGPU HDR presentation active, and finish without fallback or a terminal
 error.
+
+Run the E-AC-3 fixture identically, using its E-AC-3 `MediaStream.Index` and:
+
+```powershell
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ec-3'
+```
+
+The run must report the Mediabunny software decoder and decoded PCM rather than
+native-media audio on a runtime whose exact native E-AC-3 probe is rejected.
 
 Probe WebCodecs configurations and the WebGPU adapter in a real browser started
 with a remote debugging port:
 
 ```powershell
-node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://localhost:8080
+node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://localhost:8096
 ```
 
 Use a `localhost` target so the page is a secure context.
@@ -253,37 +263,24 @@ native audio segments, and no PCM bridge or AudioWorklet output. For an
 in-session track switch, continue to set the exact worker-reported codec with
 `WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC`.
 
-## Local AC-3 and E-AC-3 decoder build
+## Standard Mediabunny AC-3 and E-AC-3 decoder
 
-Ordinary builds exclude the bundled AC-3 software decoder and report AC-3 and
-E-AC-3 as build-disabled. The `@mediabunny/ac3` package statically embeds
-FFmpeg codec code in a single-file WebAssembly worker. Its package does not
-identify or provide the exact corresponding FFmpeg source revision and
-relinking materials needed for a compliant binary distribution.
+Ordinary builds include the official pinned `@mediabunny/ac3` decoder. It is
+lazy-loaded only for a selected AC-3/E-AC-3 track and registered once per
+worker. The exact native-media route remains preferred where available; the
+Mediabunny route provides decoded PCM everywhere the custom worker can load the
+pinned package.
 
-Enable the decoder only for local validation:
-
-```powershell
-$env:ENABLE_BUNDLED_AC3_SOFTWARE_DECODER = '1'
-npm run build:development
-node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 enabled
-Remove-Item Env:ENABLE_BUNDLED_AC3_SOFTWARE_DECODER
-```
-
-After an ordinary build, run:
+After every ordinary build, run:
 
 ```powershell
-node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled
+node scripts/webgpu/verify-custom-codec-artifacts.mjs
 ```
 
-The verifier checks copied HEVC hashes and requires the stable AC-3
-implementation sentinel only in executable JavaScript from an enabled build.
-
-Do not distribute an enabled build. The enabled build copies the package's
-MPL-2.0 license into `dist/libraries/mediabunny-ac3/`, but that license copy
-does not resolve the missing FFmpeg corresponding-source obligations or codec
-patent rights. A redistributable build requires a separately reviewed source,
-license, build, and relinking package for the exact embedded binary.
+The verifier checks copied HEVC/Dolby Vision artifacts, requires the stable
+Mediabunny AC-3 implementation sentinel in executable JavaScript, and requires
+`dist/libraries/mediabunny-ac3/LICENSE.txt` to match the pinned package. The
+package and its MPL-2.0 distribution terms are approved for this project.
 
 ## End-to-end browser playback smoke test
 
@@ -616,9 +613,8 @@ WebGPU presentation, and no fallback or terminal error. A `ready` route must
 produce decoded PCM samples; a `native-media` route must append native segments
 and qualify the owned element clock. Audio stream selection is intentionally
 limited to one playback session per invocation so a later Jellyfin replay cannot
-silently restore the item's default track. The locally bundled AC-3 validation
-route additionally requires an enabled, non-distributable AC-3 build as
-described above.
+silently restore the item's default track. The standard Mediabunny AC-3/E-AC-3
+decoder loads only after such a track is selected.
 
 The harness connects through the add-server form, signs in when the selected
 server does not already have a valid saved session, opens the details page, and

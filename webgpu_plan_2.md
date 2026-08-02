@@ -3,11 +3,10 @@
 - Status: active implementation plan
 - Recorded: 2026-08-02
 - Branch: `webgpu-player`
-- Committed baseline: `5550eba1b186dc5dd2c2154cf2017d6fe7dae597`
-- Current state: the baseline is pushed; the native HEVC Main10 external-texture
-  HDR route is implemented, built into the Jellyfin-served frontend, and
-  live-qualified for generated PQ and HLG lifecycle fixtures in the worktree.
-  Final local command gates pass and the evidence is recorded below.
+- Committed baseline: `909a4b90bd816d3d035bad92a389028469e9cb5f`
+- Current state: the native HEVC Main10 external-texture HDR checkpoint is
+  pushed. The official Mediabunny AC-3/E-AC-3 decoder is promoted into ordinary
+  builds and live-qualified on port 8096, with evidence recorded below.
 
 ## 1. Product target
 
@@ -165,7 +164,7 @@ they provide the required container, decoder, sample format, and lifecycle:
 2. Use Mediabunny's ordinary sample sinks for native WebCodecs decode when their
    output and ownership contract satisfies the route.
 3. Prefer an official Mediabunny custom decoder extension over a project-local
-   decoder adapter. Promote `@mediabunny/ac3` to ordinary builds and use
+   decoder adapter. Use `@mediabunny/ac3` in ordinary builds and use
    `@mediabunny/prores` for future ProRes support.
 4. Use Mediabunny's built-in PCM decoders for its supported integer, float,
    mu-law, and A-law variants; add only the player-side resample/layout stage.
@@ -290,8 +289,8 @@ delta on this procedure, not a separate architecture.
 | FLAC | Native WebCodecs -> PCM -> AudioWorklet | Stereo and exact-qualified six-channel input at 48 kHz, output as stereo 48 kHz. | Implemented and runtime-gated. This is the intended owned audio route for the pending Main10 DirectPlay test. |
 | MP3 | Native WebCodecs -> PCM -> AudioWorklet | Stereo 48 kHz only. | Implemented and runtime-gated. Mono, 44.1 kHz, and surround are currently rejected by policy. |
 | Vorbis | Native WebCodecs -> PCM -> AudioWorklet | Stereo and exact-qualified six-channel input at 48 kHz, output as stereo 48 kHz. | Implemented and runtime-gated. |
-| AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The current checkpoint still includes the software decoder only when `ENABLE_BUNDLED_AC3_SOFTWARE_DECODER=1`. | Implemented but temporarily build-gated. Licensing is approved; promote the Mediabunny decoder to ordinary builds in the next audio checkpoint. Native availability still varies. |
-| E-AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The current software route shares the AC-3 build gate. | Implemented but temporarily build-gated. Promote it to ordinary builds; Dolby Atmos object rendering/passthrough remains unimplemented. |
+| AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The official software decoder is part of every ordinary build and lazy-loads only for a selected AC-3/E-AC-3 track. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Native availability still varies. |
+| E-AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The ordinary software route shares the same pinned official decoder and owned PCM output. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Dolby Atmos object rendering/passthrough remains unimplemented. |
 
 ### 5.2 Unsupported audio codecs and implementation procedures
 
@@ -669,14 +668,14 @@ Rules that prevent duplicated work:
 - [x] H.264 8-bit Baseline/Main/High exact native routes.
 - [x] HEVC Main/Main10 native and bundled route infrastructure.
 - [x] VP8, VP9 Profile 0/2, and AV1 Main 8/10 route infrastructure.
-- [x] AAC, Opus, FLAC, MP3, Vorbis, and conditional AC-3/E-AC-3 routes.
+- [x] AAC, Opus, FLAC, MP3, Vorbis, and standard AC-3/E-AC-3 routes.
 - [x] Finish and qualify native HEVC external HDR.
 - [ ] Add shared video decoder adapter/raw-format expansion.
 - [ ] Add MPEG-2, MPEG-4 Part 2, and VC-1 priority routes.
 - [ ] Decide and implement the required P1/P2 codec subset from sections 4.2
   and 5.2 using actual library inventory and legal review.
 - [ ] Add streaming audio resampling and explicit channel layouts.
-- [ ] Promote `@mediabunny/ac3` to ordinary builds and delete the obsolete local
+- [x] Promote `@mediabunny/ac3` to ordinary builds and delete the obsolete local
   validation-only build policy while retaining exact runtime qualification.
 - [ ] Integrate Mediabunny's built-in PCM decoders.
 - [ ] Add `@mediabunny/prores` through the shared video route.
@@ -717,7 +716,7 @@ Rules that prevent duplicated work:
   retain an explicit 1.0-only product limitation.
 - [ ] Decide multichannel PCM output and compressed passthrough policy.
 - [x] Approve Mediabunny and official Mediabunny decoder-extension licensing.
-- [ ] Make AC-3/E-AC-3 software decode part of the ordinary verified build.
+- [x] Make AC-3/E-AC-3 software decode part of the ordinary verified build.
 - [ ] Ensure Atmos/DTS:X UI never overstates decoded base-channel output.
 
 ### Jellyfin behavior
@@ -831,9 +830,10 @@ preserves review and live-validation isolation.
 - [x] Run the Node tests under `scripts/webgpu` that cover worker naming,
   artifacts, browser helpers, fixtures, and release metrics.
 - [x] Build with `npm run build:development` using Node 24/npm 11.
-- [x] Run `node scripts/webgpu/verify-custom-codec-artifacts.mjs --ac3 disabled`.
-- [x] Confirm the optional AC-3 build is not touched by this checkpoint, so the
-  separate `--ac3 enabled` gate is not applicable here.
+- [x] Run the then-current ordinary artifact verifier with AC-3 disabled for the
+  native-HDR checkpoint.
+- [x] Confirm the AC-3 build boundary was not changed inside the native-HDR
+  checkpoint.
 - [x] Run `git diff --check`.
 
 ### 11.4 Port-8096 browser qualification
@@ -939,7 +939,102 @@ preserves review and live-validation isolation.
   (`109` tests); changed-file ESLint; `npm run build:development`; ordinary
   artifact verification with AC-3 disabled; and `git diff --check`.
 
-## 12. Definition of final completion
+## 12. Checklist before the Mediabunny AC-3/E-AC-3 commit
+
+### Standard-build integration
+
+- [x] Remove the environment gate, Vite/Webpack aliases, ignored-module branch,
+  and obsolete global build constant.
+- [x] Lazy-load and register the official pinned `@mediabunny/ac3` decoder for
+  selected AC-3/E-AC-3 tracks in every ordinary build.
+- [x] Advertise the standard software routes independently of native WebCodecs
+  or native-media AC-3/E-AC-3 availability.
+- [x] Copy the package license in every build and require its exact hash plus an
+  executable implementation sentinel in the artifact verifier.
+- [x] Add deterministic AAC-to-AC-3 and AAC-to-E-AC-3 switch fixtures without
+  duplicating the video source or validation procedure.
+- [x] Remove obsolete non-distributable/opt-in documentation and record the
+  approved Mediabunny-first policy.
+
+### Automated gates
+
+- [x] Pass TypeScript checking and focused registration/capability/worker tests.
+- [x] Pass the complete WebGPU Vitest suite and all `scripts/webgpu` Node tests.
+- [x] Pass changed-file ESLint with no new warnings.
+- [x] Build ordinary development and production bundles with no AC-3 environment
+  override, then restore the development bundle served by Jellyfin.
+- [x] Run `node scripts/webgpu/verify-custom-codec-artifacts.mjs` against both
+  bundles and require the content-addressed Mediabunny package asset, executable
+  Mediabunny implementation marker and exact copied license.
+- [x] Run `git diff --check` and confirm source feature flags remain false.
+
+### Port-8096 live qualification
+
+- [x] Regenerate and rescan the deterministic AAC/AC-3 and AAC/E-AC-3 switch
+  fixtures in the existing Jellyfin validation library.
+- [x] Start each item on AAC, switch in-session by Jellyfin `MediaStream.Index`,
+  and require a new owned decoder generation without restarting video.
+- [x] Require worker telemetry to report `ac-3` or `ec-3`, decoded PCM and the
+  Mediabunny software route, never a false native-media result on Chrome 151.
+- [x] Exercise pause/resume, primary seek, three-seek storm, fullscreen,
+  resize/DPR, and explicit stop after each switch while keeping the same WebGPU
+  video route. Reverse switching, replay, and natural EOF remain in the broader
+  audio lifecycle matrix.
+- [x] Require the WebGPU custom DirectPlay route, bounded queues/A/V drift,
+  clean worker retirement, zero console/runtime errors, and no deterministic
+  `VideoSample` ownership warning.
+
+### Checkpoint hygiene
+
+- [x] Record fixture hashes, item/stream indices, commands, route telemetry, and
+  lifecycle results in this plan.
+- [x] Confirm generated media, served `dist`, credentials, logs, and screenshots
+  remain ignored and unstaged.
+- [x] Prepare a focused imperative commit and push on `webgpu-player`.
+
+### Checkpoint evidence
+
+- Runtime remained Chrome `151.0.7922.72` on the NVIDIA GeForce RTX 4080 SUPER
+  with Jellyfin `10.11.6` serving the development bundle on port 8096.
+- AC-3 fixture `pq-main10-1080p24-aac-ac3.mkv`: item
+  `0c3fbd4aab919e3804e9f49b9ec1bdb9`, target `MediaStream.Index` `2`, length
+  `23940278`, SHA-256
+  `fe00c1ce4aec61e2a78502fe6b29421d9f5af5e3962cf1b249c1ddb22ad482a1`.
+- E-AC-3 fixture `pq-main10-1080p24-aac-eac3.mkv`: item
+  `08196e5fc879a8c495fc823b046804dd`, target `MediaStream.Index` `2`, length
+  `23940267`, SHA-256
+  `2d099b4dd40024421ae1a29f530e3e32d00be7b04ac1922b201930c3437e7089`.
+- Both began on default AAC index `1`, advanced the owned decoder generation to
+  `2` on the switch, selected `decoded-pcm`, and reported native-media AC-3 and
+  E-AC-3 as exact `mime-unsupported`. The video remained native HEVC
+  `video-frame`, neutralized PQ, and authorized `external-hdr` without fallback.
+- AC-3 presented first at `118.6 ms`; decoded `50403` audio frames by the switch
+  snapshot; pause held at zero clock/frame delta; resume advanced `349503 us`
+  and eight frames; seek reached `9345687 us` for target `9320722 us`; the
+  three-seek storm advanced three generations with zero stale audio/video; and
+  stop emitted exactly once with zero terminal errors.
+- E-AC-3 presented first at `107.7 ms`; decoded `52346` audio frames by the
+  switch snapshot; pause held at zero clock/frame delta; resume advanced
+  `322044 us` and seven frames; seek reached `9351500 us` for target
+  `9333032 us`; the three-seek storm advanced three generations with zero stale
+  audio/video; and stop emitted exactly once with zero terminal errors.
+- Both runs recorded zero decoded-audio drop, underflow, overflow, fallback,
+  console/log/runtime errors, and `VideoSample` ownership warnings. One
+  additional AC-3 repetition hit a CDP `Runtime.evaluate` timeout on a stale
+  debug page with zero browser errors; replacing only that dedicated page
+  produced the clean passing AC-3 evidence above.
+- Development artifact: content-addressed `@mediabunny/ac3` asset SHA-256
+  `e92f01f60972dcb81f3d63e447af8845a7005e11ac9e6c77730c2d177b50b6c9`.
+  Production artifact SHA-256:
+  `3556be3c51664261a20ca81bcce01d7f858f0f7bf701408bb38d398c1509250f`.
+  Both copied license SHA-256
+  `3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04`.
+- Automated gates passed: TypeScript; `214` focused tests; complete WebGPU
+  Vitest (`80` files, `1181` tests); all WebGPU Node tests (`110` tests);
+  changed-file ESLint; development and production Webpack builds; artifact
+  verification for both bundles; and `git diff --check`.
+
+## 13. Definition of final completion
 
 The project is complete only when all claimed codec/profile/container/audio
 routes have passing manifest cases and Jellyfin negotiation evidence; HDR/DV

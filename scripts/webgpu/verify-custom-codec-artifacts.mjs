@@ -5,10 +5,10 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const AC3_DISABLED = 'disabled';
-const AC3_ENABLED = 'enabled';
-const AC3_IMPLEMENTATION_SENTINEL = 'jellyfin-webgpu-bundled-ac3-v1';
+const AC3_IMPLEMENTATION_SENTINEL = 'jellyfin-webgpu-mediabunny-ac3-v2';
 const AC3_LICENSE_PATH = 'libraries/mediabunny-ac3/LICENSE.txt';
+const AC3_PACKAGE_ASSET_PATTERN =
+    /(?:^|\/)node_modules\.@mediabunny\.ac3\.[a-f0-9]{8,}\.chunk\.js$/iu;
 const DOLBY_VISION_ARTIFACTS = Object.freeze([
     {
         servedPath: 'libraries/libdovi/dovi-rpu-parser.wasm',
@@ -44,13 +44,10 @@ const HEVC_ARTIFACTS = Object.freeze([
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, '..', '..');
 
-function requireAC3Mode(argumentsList) {
-    const modeIndex = argumentsList.indexOf('--ac3');
-    const mode = modeIndex >= 0 ? argumentsList[modeIndex + 1] : AC3_DISABLED;
-    if (mode !== AC3_DISABLED && mode !== AC3_ENABLED) {
-        throw new TypeError('Use --ac3 disabled or --ac3 enabled');
+function requireNoArguments(argumentsList) {
+    if (argumentsList.length > 0) {
+        throw new TypeError('The codec artifact verifier no longer accepts build modes');
     }
-    return mode;
 }
 
 async function requireFile(path) {
@@ -153,19 +150,37 @@ async function findAC3ImplementationMarkers(distDirectory) {
     return matches;
 }
 
-async function verifyAC3Artifacts(repositoryRoot, distDirectory, mode) {
+async function findAC3PackageAssets(distDirectory) {
+    const files = await listFiles(distDirectory);
+    const assets = [];
+    for (const filePath of files) {
+        const servedPath = relative(distDirectory, filePath).replaceAll('\\', '/');
+        if (!AC3_PACKAGE_ASSET_PATTERN.test(servedPath)) {
+            continue;
+        }
+        assets.push({
+            path: servedPath,
+            sha256: await hashFile(filePath)
+        });
+    }
+    return assets;
+}
+
+async function verifyAC3Artifacts(repositoryRoot, distDirectory) {
     const licensePath = join(distDirectory, AC3_LICENSE_PATH);
     const licensePresent = (await stat(licensePath).catch(() => null))?.isFile() === true;
-    const implementationMatches = await findAC3ImplementationMarkers(distDirectory);
-    if (mode === AC3_DISABLED) {
-        if (licensePresent || implementationMatches.length > 0) {
-            throw new Error('The ordinary build contains opt-in AC-3 implementation artifacts');
-        }
-        return { implementationMatches: [], licensePresent: false, mode };
-    }
-
-    if (!licensePresent || implementationMatches.length === 0) {
-        throw new Error('The enabled build is missing the AC-3 implementation or license');
+    const [ implementationAssets, implementationMatches ] = await Promise.all([
+        findAC3PackageAssets(distDirectory),
+        findAC3ImplementationMarkers(distDirectory)
+    ]);
+    if (
+        !licensePresent
+        || implementationAssets.length === 0
+        || implementationMatches.length === 0
+    ) {
+        throw new Error(
+            'The ordinary build is missing the Mediabunny AC-3 package, implementation, or license'
+        );
     }
     const packageLicense = join(
         repositoryRoot,
@@ -183,25 +198,22 @@ async function verifyAC3Artifacts(repositoryRoot, distDirectory, mode) {
         throw new Error('The served AC-3 license does not match the pinned package');
     }
     return {
+        distribution: 'standard',
+        implementationAssets,
         implementationMatches,
         licensePresent: true,
-        licenseSHA256: servedLicenseSHA256,
-        mode
+        licenseSHA256: servedLicenseSHA256
     };
 }
 
-/** Verifies copied codec files and the selected AC-3 build boundary. */
+/** Verifies copied codec files and every decoder required by an ordinary build. */
 export async function verifyCustomCodecArtifacts(options = {}) {
     const repositoryRoot = resolve(options.repositoryRoot ?? REPOSITORY_ROOT);
     const distDirectory = resolve(options.distDirectory ?? join(repositoryRoot, 'dist'));
-    const mode = options.ac3Mode ?? AC3_DISABLED;
-    if (mode !== AC3_DISABLED && mode !== AC3_ENABLED) {
-        throw new TypeError('The AC-3 artifact mode is invalid');
-    }
     await requireFile(join(distDirectory, 'config.json'));
     const [ hevc, ac3, dolbyVision ] = await Promise.all([
         verifyHEVCArtifacts(repositoryRoot, distDirectory),
-        verifyAC3Artifacts(repositoryRoot, distDirectory, mode),
+        verifyAC3Artifacts(repositoryRoot, distDirectory),
         verifyDolbyVisionArtifacts(repositoryRoot, distDirectory)
     ]);
     return { ac3, dolbyVision, hevc };
@@ -209,9 +221,8 @@ export async function verifyCustomCodecArtifacts(options = {}) {
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
 if (invokedPath === fileURLToPath(import.meta.url)) {
-    const result = await verifyCustomCodecArtifacts({
-        ac3Mode: requireAC3Mode(process.argv.slice(2))
-    });
+    requireNoArguments(process.argv.slice(2));
+    const result = await verifyCustomCodecArtifacts();
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

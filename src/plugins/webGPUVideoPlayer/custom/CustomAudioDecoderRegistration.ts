@@ -1,17 +1,28 @@
-import { registerBundledAC3SoftwareAudioDecoder } from 'plugins/webGPUVideoPlayer/custom/BundledAC3SoftwareDecoderBuild';
+const MEDIABUNNY_AC3_IMPLEMENTATION_ARTIFACT_SENTINEL =
+    'jellyfin-webgpu-mediabunny-ac3-v2';
 
-export type BundledAudioDecoderRegistrar = () => Promise<void>;
+export type CustomAudioDecoderRegistrar = () => Promise<void>;
 
-/** Loads a bundled decoder only when the selected track actually requires it. */
+async function registerMediabunnyAC3SoftwareAudioDecoder(): Promise<void> {
+    try {
+        const { registerAC3SoftwareAudioDecoder } = await import('./AC3SoftwareAudioDecoder');
+        registerAC3SoftwareAudioDecoder();
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`${MEDIABUNNY_AC3_IMPLEMENTATION_ARTIFACT_SENTINEL}: ${detail}`);
+    }
+}
+
+/** Loads an official Mediabunny decoder only when the selected track requires it. */
 export function registerRequiredCustomAudioDecoder(
     codec: string,
-    registerBundledAudioDecoder: BundledAudioDecoderRegistrar =
-    registerBundledAC3SoftwareAudioDecoder
+    registerCustomAudioDecoder: CustomAudioDecoderRegistrar =
+    registerMediabunnyAC3SoftwareAudioDecoder
 ): Promise<void> {
     switch (codec) {
         case 'ac3':
         case 'eac3':
-            return registerBundledAudioDecoder();
+            return registerCustomAudioDecoder();
         default:
             return Promise.resolve();
     }

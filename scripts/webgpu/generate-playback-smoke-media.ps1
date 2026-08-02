@@ -25,6 +25,9 @@ param(
     [switch] $IncludeAC3,
 
     [Parameter()]
+    [switch] $IncludeEAC3,
+
+    [Parameter()]
     [switch] $Overwrite
 )
 
@@ -205,23 +208,30 @@ function New-PlaybackSmokeFixture {
     return Get-Item -LiteralPath $outputPath
 }
 
-function New-AC3SwitchFixture {
+function New-DolbyAudioSwitchFixture {
     param(
         [Parameter(Mandatory)]
         [string] $VideoAndAACInputPath,
 
         [Parameter(Mandatory)]
         [ValidateSet(24, 30, 60)]
-        [int] $FrameRate
+        [int] $FrameRate,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('ac3', 'eac3')]
+        [string] $AudioCodec,
+
+        [Parameter(Mandatory)]
+        [int] $AudioFrequency
     )
 
     [string] $outputPath = Join-Path $OutputDirectory `
-        "pq-main10-${Resolution}${FrameRate}-aac-ac3.mkv"
+        "pq-main10-${Resolution}${FrameRate}-aac-${AudioCodec}.mkv"
     if ((Test-Path -LiteralPath $outputPath) -and !$Overwrite) {
         throw "$outputPath already exists; pass -Overwrite to replace it"
     }
 
-    [string] $audioInput = "sine=frequency=880:sample_rate=${AudioSampleRate}:duration=${DurationSeconds}"
+    [string] $audioInput = "sine=frequency=${AudioFrequency}:sample_rate=${AudioSampleRate}:duration=${DurationSeconds}"
     & $FfmpegPath @(
         '-hide_banner',
         '-loglevel', 'warning',
@@ -234,12 +244,12 @@ function New-AC3SwitchFixture {
         '-map', '1:a:0',
         '-c:v', 'copy',
         '-c:a:0', 'copy',
-        '-c:a:1', 'ac3',
+        '-c:a:1', $AudioCodec,
         '-b:a:1', '192k',
         '-ar:a:1', [string] $AudioSampleRate,
         '-ac:a:1', [string] $AudioChannelCount,
         '-metadata:s:a:0', 'title=AAC default',
-        '-metadata:s:a:1', 'title=AC-3 switch target',
+        '-metadata:s:a:1', "title=${AudioCodec} switch target",
         '-disposition:a:0', 'default',
         '-disposition:a:1', '0',
         '-shortest',
@@ -257,7 +267,7 @@ function New-AC3SwitchFixture {
     Assert-PlaybackSmokeFixture `
         -Path $outputPath `
         -Transfer 'smpte2084' `
-        -AudioCodec 'ac3' `
+        -AudioCodec $AudioCodec `
         -FrameRate $FrameRate
 
     return Get-Item -LiteralPath $outputPath
@@ -265,7 +275,7 @@ function New-AC3SwitchFixture {
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 [System.Collections.Generic.List[System.IO.FileInfo]] $generatedFiles = @()
-[System.IO.FileInfo] $pqAACFixtureForAC3 = $null
+[System.IO.FileInfo] $pqAACFixtureForDolbyAudio = $null
 foreach ($fixtureFrameRate in ($FrameRates | Sort-Object -Unique)) {
     [System.IO.FileInfo] $pqAACFixture = New-PlaybackSmokeFixture `
         -Name "pq-main10-${Resolution}${fixtureFrameRate}-aac" `
@@ -285,16 +295,27 @@ foreach ($fixtureFrameRate in ($FrameRates | Sort-Object -Unique)) {
         -AudioFrequency 660 `
         -FrameRate $fixtureFrameRate))
     if ($fixtureFrameRate -eq 24) {
-        $pqAACFixtureForAC3 = $pqAACFixture
+        $pqAACFixtureForDolbyAudio = $pqAACFixture
+    }
+}
+if ($IncludeAC3 -or $IncludeEAC3) {
+    if ($null -eq $pqAACFixtureForDolbyAudio) {
+        throw '-IncludeAC3 and -IncludeEAC3 require 24 in -FrameRates'
     }
 }
 if ($IncludeAC3) {
-    if ($null -eq $pqAACFixtureForAC3) {
-        throw '-IncludeAC3 requires 24 in -FrameRates'
-    }
-    $generatedFiles.Add((New-AC3SwitchFixture `
-        -VideoAndAACInputPath $pqAACFixtureForAC3.FullName `
-        -FrameRate 24))
+    $generatedFiles.Add((New-DolbyAudioSwitchFixture `
+        -VideoAndAACInputPath $pqAACFixtureForDolbyAudio.FullName `
+        -FrameRate 24 `
+        -AudioCodec 'ac3' `
+        -AudioFrequency 880))
+}
+if ($IncludeEAC3) {
+    $generatedFiles.Add((New-DolbyAudioSwitchFixture `
+        -VideoAndAACInputPath $pqAACFixtureForDolbyAudio.FullName `
+        -FrameRate 24 `
+        -AudioCodec 'eac3' `
+        -AudioFrequency 990))
 }
 
 $generatedFiles |

@@ -21,9 +21,6 @@ const Assets = [
 ];
 
 const DEV_MODE = process.env.NODE_ENV !== 'production';
-const ENABLE_BUNDLED_AC3_SOFTWARE_DECODER = [ '1', 'true' ].includes(
-    process.env.ENABLE_BUNDLED_AC3_SOFTWARE_DECODER || ''
-);
 let COMMIT_SHA = '';
 try {
     COMMIT_SHA = require('child_process')
@@ -51,14 +48,6 @@ const config = {
         ...THEMES_BY_ID
     },
     resolve: {
-        alias: {
-            'plugins/webGPUVideoPlayer/custom/BundledAC3SoftwareDecoderBuild$': path.resolve(
-                __dirname,
-                ENABLE_BUNDLED_AC3_SOFTWARE_DECODER ?
-                    'src/plugins/webGPUVideoPlayer/custom/BundledAC3SoftwareDecoderBuildEnabled.ts' :
-                    'src/plugins/webGPUVideoPlayer/custom/BundledAC3SoftwareDecoderBuild.ts'
-            )
-        },
         extensions: ['.tsx', '.ts', '.js'],
         modules: [
             path.resolve(__dirname, 'src'),
@@ -74,7 +63,6 @@ const config = {
                     process.env.JELLYFIN_VERSION || 'Release'),
             __PACKAGE_JSON_NAME__: JSON.stringify(packageJson.name),
             __PACKAGE_JSON_VERSION__: JSON.stringify(packageJson.version),
-            __ENABLE_BUNDLED_AC3_SOFTWARE_DECODER__: ENABLE_BUNDLED_AC3_SOFTWARE_DECODER,
             __USE_SYSTEM_FONTS__: !!JSON.parse(process.env.USE_SYSTEM_FONTS || '0'),
             __WEBPACK_SERVE__: !!JSON.parse(process.env.WEBPACK_SERVE || '0')
         }),
@@ -155,13 +143,13 @@ const config = {
                     to: 'libraries/libdovi/REVISION',
                     toType: 'file'
                 },
-                ...(ENABLE_BUNDLED_AC3_SOFTWARE_DECODER ? [{
+                {
                     from: path.resolve(
                         __dirname,
                         'node_modules/@mediabunny/ac3/LICENSE'
                     ),
                     to: 'libraries/mediabunny-ac3/LICENSE.txt'
-                }] : []),
+                },
                 ...Assets.map(asset => {
                     return {
                         from: path.resolve(__dirname, `node_modules/${asset}`),
@@ -170,11 +158,6 @@ const config = {
                 })
             ]
         }),
-        ...(!ENABLE_BUNDLED_AC3_SOFTWARE_DECODER ? [
-            new IgnorePlugin({
-                resourceRegExp: /(?:AC3SoftwareAudioDecoder|BundledAC3SoftwareDecoderBuildEnabled)/
-            })
-        ] : []),
         // The libarchive.js worker-bundle is copied manually.
         // If it is automatically bundled, escheck will fail since it uses import.meta.url.
         new IgnorePlugin({

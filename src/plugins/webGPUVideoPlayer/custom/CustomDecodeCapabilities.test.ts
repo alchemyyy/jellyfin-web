@@ -190,7 +190,6 @@ function createEnvironment(
         audioProbe,
         environment: {
             audioDecoder: { isConfigSupported: audioProbe },
-            bundledAC3SoftwareDecoder: true,
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
@@ -817,24 +816,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
     });
 
-    it('does not advertise bundled AC3 codecs when the build excludes them', async () => {
-        const harness = createEnvironment(new Set(), new Set());
-        harness.environment.bundledAC3SoftwareDecoder = false;
-
-        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
-
-        for (const codec of CUSTOM_BUNDLED_AUDIO_CODECS) {
-            expect(capabilities.audio[codec]).toMatchObject({
-                reason: 'build-disabled',
-                status: 'unsupported'
-            });
-        }
-        expect(capabilities.telemetry).toMatchObject({
-            bundledAudioCodecCount: 0,
-            supportedAudioCodecCount: 0
-        });
-    });
-
     it('records probe exceptions as unknown rather than unsupported', async () => {
         const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => {
             if (config.codec.startsWith('hvc1')) {
@@ -912,7 +893,6 @@ describe('CustomDecodeCapabilityProbe', () => {
     it('uses unknown API-unavailable results without making support claims', async () => {
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: null,
-            bundledAC3SoftwareDecoder: true,
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             },
