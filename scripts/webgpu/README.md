@@ -157,6 +157,7 @@ Optionally add a PQ stream-switch fixture:
     -FfprobePath ffprobe `
     -IncludeAC3 `
     -IncludeEAC3 `
+    -IncludePCM `
     -Overwrite
 ```
 
@@ -165,10 +166,18 @@ stereo 48 kHz AAC track from the PQ fixture and appends a non-default stereo
 48 kHz AC-3 track. It is specifically structured to start through the ordinary
 AAC route and then validate a live switch to the standard Mediabunny AC-3
 decoder without changing the video route. `-IncludeEAC3` creates the equivalent
-`pq-main10-1080p24-aac-eac3.mkv` E-AC-3 switch fixture. Neither is an
-audio-codec-only file. Both switch fixtures require `24` in `-FrameRates`.
-Generation requires FFmpeg and FFprobe, an FFmpeg build with `libx265`, and
-the requested audio encoders.
+`pq-main10-1080p24-aac-eac3.mkv` E-AC-3 switch fixture. `-IncludePCM` appends a
+non-default mono 44.1 kHz signed 24-bit PCM track and creates
+`pq-main10-1080p24-aac-pcm_s24le-44100-mono.mkv`. It exercises Mediabunny's
+built-in PCM decoder, mono mapping, and the shared 44.1-to-48 kHz resampler.
+None is an audio-codec-only file. All switch fixtures require `24` in
+`-FrameRates`. Generation requires FFmpeg and FFprobe, an FFmpeg build with
+`libx265`, and the requested audio encoders.
+
+Use `-ReuseExistingBaseFixtures` to verify and reuse existing PQ/HLG base files
+while creating a missing switch fixture. This avoids an unnecessary HEVC
+re-encode; pass the original `-DurationSeconds` value so the added audio has the
+same duration. Existing switch outputs still require `-Overwrite`.
 
 Add the absolute `scripts/webgpu/playback-smoke-media` directory as a Jellyfin
 library path and scan that library. Use the Jellyfin item IDs returned for the
@@ -231,6 +240,25 @@ $env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ec-3'
 
 The run must report the Mediabunny software decoder and decoded PCM rather than
 native-media audio on a runtime whose exact native E-AC-3 probe is rejected.
+
+Run the PCM switch fixture with its Jellyfin `MediaStream.Index` and require
+both the decoded source shape and normalized player output:
+
+```powershell
+$env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '<PCM MediaStream.Index>'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'pcm-s24'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS = '1'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE = '44100'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_CHANNELS = '2'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_RATE = '48000'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'ready'
+$env:WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE = 'testsrc2-motion'
+node scripts/webgpu/run-browser-playback-smoke.mjs
+```
+
+The four shape expectations are optional as a group and invalid individually.
+When supplied, the run fails unless telemetry proves the selected source and
+the PCM delivered to the AudioWorklet have those exact layouts and rates.
 
 Probe WebCodecs configurations and the WebGPU adapter in a real browser started
 with a remote debugging port:
@@ -337,6 +365,10 @@ $env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'disabled' # ready or native-media
 $env:WEBGPU_SMOKE_COMPLETION_MODE = 'controlled-stop' # or natural-end
 $env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '3' # optional Jellyfin stream index
 $env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ac-3' # required with stream index
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS = '1' # optional shape group
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE = '44100'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_CHANNELS = '2'
+$env:WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_RATE = '48000'
 $env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1' # optional, 1 through 5
 $env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '3' # optional, 0 through 5
 $env:WEBGPU_SMOKE_SOAK_SESSIONS = '0' # optional, 0 or 10 through 100
@@ -348,10 +380,9 @@ node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
 
 Equivalent CLI flags are available through `--help`, but the username and
-password flags expose those values to the local process list. The frontend URL
-may instead point to a separately served development build such as
-`http://localhost:8080`; item ID and credentials remain required. The expected
-video output and audio path are also required so the harness tests the intended
+password flags expose those values to the local process list. Item ID and
+credentials remain required. The expected video output and audio path are also
+required so the harness tests the intended
 pipeline rather than inferring intent from the observed telemetry. Use
 `video-frame` with `disabled` for a video-only SDR item, or `raw-planes` with
 `ready` for an HDR item with custom-decoded PCM, or `native-media` for an exact

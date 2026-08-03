@@ -367,13 +367,13 @@ describe('CustomDecodeCapabilityProbe', () => {
         ).toHaveLength(2_957);
         expect(capabilities.telemetry).toEqual({
             audioProbeCount: 5,
-            bundledAudioCodecCount: 2,
+            bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
             nativeHDRVideoProbeCount: 1,
             nativeSurroundAudioProbeCount: 4,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
-            supportedAudioCodecCount: 4,
+            supportedAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length + 2,
             supportedNativeHDRVideoCodecCount: 0,
             supportedNativeSurroundAudioCodecCount: 0,
             supportedNativeUltraHDVideoCodecCount: 1,
@@ -919,10 +919,10 @@ describe('CustomDecodeCapabilityProbe', () => {
         }
         expect(capabilities.telemetry).toMatchObject({
             audioProbeCount: 0,
-            bundledAudioCodecCount: 2,
+            bundledAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
             rawHDRVideoProbeCount: 0,
             reason: 'api-unavailable',
-            supportedAudioCodecCount: 2,
+            supportedAudioCodecCount: CUSTOM_BUNDLED_AUDIO_CODECS.length,
             supportedRawHDRVideoCodecCount: 1,
             videoProbeCount: 0
         });

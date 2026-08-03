@@ -6,6 +6,7 @@ import type { ProfileCondition } from '@jellyfin/sdk/lib/generated-client/models
 import {
     CUSTOM_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
+    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
@@ -24,7 +25,9 @@ import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
-    getSupportedCustomAudioInputChannelCounts
+    getSupportedCustomAudioInputChannelCounts,
+    getSupportedCustomAudioInputSampleRates,
+    isCustomMediabunnyPCMAudioCodec
 } from './CustomAudioOutputPolicy';
 import {
     NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS,
@@ -104,13 +107,54 @@ type AuthorizedHEVCProfilePlan = {
     rangeTypes: readonly string[]
 };
 
+const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = [
+    'aac',
+    'opus',
+    'flac',
+    'mp3',
+    'vorbis',
+    'ac3',
+    'eac3'
+];
 const ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_AUDIO_CODECS,
+    audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
     container: 'mp4,m4v,mov',
     videoCodecs: CUSTOM_VIDEO_CODECS
 };
+const ISO_BASE_MEDIA_PCM_VIDEO_RULE: VideoContainerRule = {
+    audioCodecs: [
+        'pcm_s16le',
+        'pcm_s16be',
+        'pcm_s24le',
+        'pcm_s24be',
+        'pcm_s32le',
+        'pcm_s32be',
+        'pcm_f32le',
+        'pcm_f32be',
+        'pcm_f64le',
+        'pcm_f64be'
+    ],
+    container: 'mp4,m4v,mov',
+    videoCodecs: CUSTOM_VIDEO_CODECS
+};
+const QUICKTIME_PCM_VIDEO_RULE: VideoContainerRule = {
+    audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
+    container: 'mov',
+    videoCodecs: CUSTOM_VIDEO_CODECS
+};
 const MATROSKA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_AUDIO_CODECS,
+    audioCodecs: [
+        ...CUSTOM_COMPRESSED_AUDIO_CODECS,
+        'pcm_u8',
+        'pcm_s16le',
+        'pcm_s16be',
+        'pcm_s24le',
+        'pcm_s24be',
+        'pcm_s32le',
+        'pcm_s32be',
+        'pcm_f32le',
+        'pcm_f64le'
+    ],
     container: 'mkv',
     videoCodecs: CUSTOM_VIDEO_CODECS
 };
@@ -126,6 +170,8 @@ const MPEG_TS_VIDEO_RULE: VideoContainerRule = {
 };
 const VIDEO_CONTAINER_RULES: readonly VideoContainerRule[] = [
     ISO_BASE_MEDIA_VIDEO_RULE,
+    ISO_BASE_MEDIA_PCM_VIDEO_RULE,
+    QUICKTIME_PCM_VIDEO_RULE,
     MATROSKA_VIDEO_RULE,
     WEBM_VIDEO_RULE,
     MPEG_TS_VIDEO_RULE
@@ -1493,7 +1539,7 @@ function widenAuthorizedHDRCodecProfiles(
 function createMeasuredAudioRouteProfile(
     codecs: readonly CustomAudioCodec[],
     channelCounts: readonly number[],
-    sampleRate: number
+    sampleRates: readonly number[]
 ): CodecProfile {
     return {
         Codec: codecs.join(','),
@@ -1505,10 +1551,10 @@ function createMeasuredAudioRouteProfile(
                 Value: channelCounts.join('|')
             },
             {
-                Condition: 'Equals',
+                Condition: sampleRates.length === 1 ? 'Equals' : EQUALS_ANY_CONDITION,
                 IsRequired: true,
                 Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(sampleRate)
+                Value: sampleRates.join('|')
             }
         ],
         Container: CUSTOM_VIDEO_CONTAINER_VALUE,
@@ -1706,7 +1752,7 @@ function appendMeasuredNativeAudioRouteProfiles(
         measuredProfiles.push(createMeasuredAudioRouteProfile(
             [ codec ],
             channelCounts,
-            NATIVE_MEDIA_AUDIO_SAMPLE_RATE
+            [ NATIVE_MEDIA_AUDIO_SAMPLE_RATE ]
         ));
     }
     return nativeMediaCodecs;
@@ -1733,6 +1779,9 @@ function hasQualifiedDecodedSurroundRoute(
     codec: CustomAudioCodec,
     capabilities: CustomDecodeCapabilities
 ): boolean {
+    if (isCustomMediabunnyPCMAudioCodec(codec)) {
+        return true;
+    }
     switch (codec) {
         case 'ac3':
         case 'eac3':
@@ -1773,24 +1822,33 @@ function appendMeasuredAudioRouteProfiles(
         capabilities,
         nativeMediaCodecs
     );
-    const decodedSurroundAudioCodecs = decodedAudioCodecs.filter(codec => (
-        hasQualifiedDecodedSurroundRoute(codec, capabilities)
-    ));
-    const decodedStereoAudioCodecs = decodedAudioCodecs.filter(codec => (
-        !hasQualifiedDecodedSurroundRoute(codec, capabilities)
-    ));
-    if (decodedStereoAudioCodecs.length > 0) {
-        measuredProfiles.push(createMeasuredAudioRouteProfile(
-            decodedStereoAudioCodecs,
-            [ CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT ],
-            CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-        ));
+    const decodedAudioRouteGroups = new Map<string, {
+        channelCounts: readonly number[]
+        codecs: CustomAudioCodec[]
+        sampleRates: readonly number[]
+    }>();
+    for (const codec of decodedAudioCodecs) {
+        const channelCounts = hasQualifiedDecodedSurroundRoute(codec, capabilities) ?
+            getSupportedCustomAudioInputChannelCounts(codec) :
+            [ CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT ];
+        const sampleRates = getSupportedCustomAudioInputSampleRates(codec);
+        const routeKey = `${channelCounts.join(',')}|${sampleRates.join(',')}`;
+        let routeGroup = decodedAudioRouteGroups.get(routeKey);
+        if (!routeGroup) {
+            routeGroup = {
+                channelCounts,
+                codecs: [],
+                sampleRates
+            };
+            decodedAudioRouteGroups.set(routeKey, routeGroup);
+        }
+        routeGroup.codecs.push(codec);
     }
-    if (decodedSurroundAudioCodecs.length > 0) {
+    for (const routeGroup of decodedAudioRouteGroups.values()) {
         measuredProfiles.push(createMeasuredAudioRouteProfile(
-            decodedSurroundAudioCodecs,
-            getSupportedCustomAudioInputChannelCounts(decodedSurroundAudioCodecs[0]),
-            CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+            routeGroup.codecs,
+            routeGroup.channelCounts,
+            routeGroup.sampleRates
         ));
     }
 

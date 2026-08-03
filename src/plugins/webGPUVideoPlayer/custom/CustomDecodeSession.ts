@@ -87,7 +87,11 @@ export type CustomDecodeSessionEvent =
 export type CustomDecodeSessionTelemetry = {
     activeGeneration: number | null
     abandonedRawFrameCount: number
+    audioChannelCount: number | null
     audioCodec: string | null
+    audioSampleRate: number | null
+    audioSourceChannelCount: number | null
+    audioSourceSampleRate: number | null
     droppedFrameCount: number
     failureKind: CustomDecodeFailureKind | null
     firstFrameMediaTimeMicroseconds: Microseconds | null
@@ -157,7 +161,11 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
     return {
         activeGeneration: null,
         abandonedRawFrameCount: 0,
+        audioChannelCount: null,
         audioCodec: null,
+        audioSampleRate: null,
+        audioSourceChannelCount: null,
+        audioSourceSampleRate: null,
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
@@ -969,7 +977,12 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             return;
         }
 
-        this.telemetry.audioCodec = workerRecord.audioConfiguration?.codec ?? null;
+        const audioConfiguration = workerRecord.audioConfiguration;
+        this.telemetry.audioChannelCount = audioConfiguration?.channelCount ?? null;
+        this.telemetry.audioCodec = audioConfiguration?.codec ?? null;
+        this.telemetry.audioSampleRate = audioConfiguration?.sampleRate ?? null;
+        this.telemetry.audioSourceChannelCount = audioConfiguration?.sourceChannelCount ?? null;
+        this.telemetry.audioSourceSampleRate = audioConfiguration?.sourceSampleRate ?? null;
         this.telemetry.state = 'ready';
         this.emitEvent({
             audio: workerRecord.audioConfiguration,

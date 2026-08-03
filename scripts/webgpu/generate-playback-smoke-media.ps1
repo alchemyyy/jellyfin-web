@@ -28,6 +28,12 @@ param(
     [switch] $IncludeEAC3,
 
     [Parameter()]
+    [switch] $IncludePCM,
+
+    [Parameter()]
+    [switch] $ReuseExistingBaseFixtures,
+
+    [Parameter()]
     [switch] $Overwrite
 )
 
@@ -51,6 +57,14 @@ function Assert-PlaybackSmokeFixture {
 
         [Parameter(Mandatory)]
         [string] $AudioCodec,
+
+        [Parameter()]
+        [ValidateRange(1, 32)]
+        [int] $ExpectedAudioChannelCount = $AudioChannelCount,
+
+        [Parameter()]
+        [ValidateRange(8000, 192000)]
+        [int] $ExpectedAudioSampleRate = $AudioSampleRate,
 
         [Parameter(Mandatory)]
         [ValidateSet(24, 30, 60)]
@@ -107,10 +121,10 @@ function Assert-PlaybackSmokeFixture {
         }
     }
     if (
-        ([int] $audioStream.sample_rate -ne $AudioSampleRate) -or
-        ([int] $audioStream.channels -ne $AudioChannelCount)
+        ([int] $audioStream.sample_rate -ne $ExpectedAudioSampleRate) -or
+        ([int] $audioStream.channels -ne $ExpectedAudioChannelCount)
     ) {
-        throw "The audio stream in $Path must be stereo 48 kHz"
+        throw "The audio stream in $Path must have $ExpectedAudioChannelCount channels at $ExpectedAudioSampleRate Hz"
     }
 }
 
@@ -144,7 +158,15 @@ function New-PlaybackSmokeFixture {
 
     [string] $outputPath = Join-Path $OutputDirectory "$Name.mkv"
     if ((Test-Path -LiteralPath $outputPath) -and !$Overwrite) {
-        throw "$outputPath already exists; pass -Overwrite to replace it"
+        if (!$ReuseExistingBaseFixtures) {
+            throw "$outputPath already exists; pass -Overwrite to replace it"
+        }
+        Assert-PlaybackSmokeFixture `
+            -Path $outputPath `
+            -Transfer $Transfer `
+            -AudioCodec $AudioCodec `
+            -FrameRate $FrameRate
+        return Get-Item -LiteralPath $outputPath
     }
 
     [string] $videoInput = "testsrc2=size=${Width}x${Height}:rate=${FrameRate}:duration=${DurationSeconds},format=yuv420p10le"
@@ -273,6 +295,69 @@ function New-DolbyAudioSwitchFixture {
     return Get-Item -LiteralPath $outputPath
 }
 
+function New-PCMAudioSwitchFixture {
+    param(
+        [Parameter(Mandatory)]
+        [string] $VideoAndAACInputPath,
+
+        [Parameter(Mandatory)]
+        [ValidateSet(24, 30, 60)]
+        [int] $FrameRate
+    )
+
+    [string] $audioCodec = 'pcm_s24le'
+    [int] $audioFrequency = 1100
+    [int] $pcmChannelCount = 1
+    [int] $pcmSampleRate = 44100
+    [string] $outputPath = Join-Path $OutputDirectory `
+        "pq-main10-${Resolution}${FrameRate}-aac-${audioCodec}-${pcmSampleRate}-mono.mkv"
+    if ((Test-Path -LiteralPath $outputPath) -and !$Overwrite) {
+        throw "$outputPath already exists; pass -Overwrite to replace it"
+    }
+
+    [string] $audioInput = "sine=frequency=${audioFrequency}:sample_rate=${pcmSampleRate}:duration=${DurationSeconds}"
+    & $FfmpegPath @(
+        '-hide_banner',
+        '-loglevel', 'warning',
+        '-y',
+        '-i', $VideoAndAACInputPath,
+        '-f', 'lavfi',
+        '-i', $audioInput,
+        '-map', '0:v:0',
+        '-map', '0:a:0',
+        '-map', '1:a:0',
+        '-c:v', 'copy',
+        '-c:a:0', 'copy',
+        '-c:a:1', $audioCodec,
+        '-ar:a:1', [string] $pcmSampleRate,
+        '-ac:a:1', [string] $pcmChannelCount,
+        '-metadata:s:a:0', 'title=AAC default',
+        '-metadata:s:a:1', 'title=Mediabunny PCM 44.1 kHz mono switch target',
+        '-disposition:a:0', 'default',
+        '-disposition:a:1', '0',
+        '-shortest',
+        $outputPath
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFmpeg failed while generating $outputPath"
+    }
+
+    Assert-PlaybackSmokeFixture `
+        -Path $outputPath `
+        -Transfer 'smpte2084' `
+        -AudioCodec 'aac' `
+        -FrameRate $FrameRate
+    Assert-PlaybackSmokeFixture `
+        -Path $outputPath `
+        -Transfer 'smpte2084' `
+        -AudioCodec $audioCodec `
+        -ExpectedAudioChannelCount $pcmChannelCount `
+        -ExpectedAudioSampleRate $pcmSampleRate `
+        -FrameRate $FrameRate
+
+    return Get-Item -LiteralPath $outputPath
+}
+
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 [System.Collections.Generic.List[System.IO.FileInfo]] $generatedFiles = @()
 [System.IO.FileInfo] $pqAACFixtureForDolbyAudio = $null
@@ -298,9 +383,9 @@ foreach ($fixtureFrameRate in ($FrameRates | Sort-Object -Unique)) {
         $pqAACFixtureForDolbyAudio = $pqAACFixture
     }
 }
-if ($IncludeAC3 -or $IncludeEAC3) {
+if ($IncludeAC3 -or $IncludeEAC3 -or $IncludePCM) {
     if ($null -eq $pqAACFixtureForDolbyAudio) {
-        throw '-IncludeAC3 and -IncludeEAC3 require 24 in -FrameRates'
+        throw '-IncludeAC3, -IncludeEAC3, and -IncludePCM require 24 in -FrameRates'
     }
 }
 if ($IncludeAC3) {
@@ -316,6 +401,11 @@ if ($IncludeEAC3) {
         -FrameRate 24 `
         -AudioCodec 'eac3' `
         -AudioFrequency 990))
+}
+if ($IncludePCM) {
+    $generatedFiles.Add((New-PCMAudioSwitchFixture `
+        -VideoAndAACInputPath $pqAACFixtureForDolbyAudio.FullName `
+        -FrameRate 24))
 }
 
 $generatedFiles |

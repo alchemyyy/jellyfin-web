@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const registerAC3SoftwareAudioDecoder = vi.hoisted(() => vi.fn());
+const registerMediabunnyPCMBuiltinDecoderAvailability = vi.hoisted(() => vi.fn());
 
 vi.mock('./AC3SoftwareAudioDecoder', () => ({ registerAC3SoftwareAudioDecoder }));
+vi.mock('./MediabunnyPCMBuiltinDecoderAvailability', () => ({
+    registerMediabunnyPCMBuiltinDecoderAvailability
+}));
 
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 
@@ -34,6 +38,18 @@ describe('registerRequiredCustomAudioDecoder', () => {
 
             await registerRequiredCustomAudioDecoder(codec, registerCustomAudioDecoder);
 
+            expect(registerCustomAudioDecoder).not.toHaveBeenCalled();
+        }
+    );
+
+    it.each([ 'ulaw', 'alaw' ])(
+        'enables Mediabunny built-in %s decoding without loading another decoder',
+        async (codec: string) => {
+            const registerCustomAudioDecoder = vi.fn(() => Promise.resolve());
+
+            await registerRequiredCustomAudioDecoder(codec, registerCustomAudioDecoder);
+
+            expect(registerMediabunnyPCMBuiltinDecoderAvailability).toHaveBeenCalledOnce();
             expect(registerCustomAudioDecoder).not.toHaveBeenCalled();
         }
     );

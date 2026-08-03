@@ -120,6 +120,8 @@ export type DecodeWorkerAudioConfiguration = {
     channelCount: number
     codec: string
     sampleRate: number
+    sourceChannelCount?: number
+    sourceSampleRate?: number
 };
 
 export type DecodeWorkerNativeMediaAudioConfiguration = DecodeWorkerAudioConfiguration & {
@@ -543,6 +545,14 @@ function isAudioConfiguration(value: unknown): value is DecodeWorkerReadyAudioCo
         && isPositiveInteger(value.sampleRate)
         && Number(value.sampleRate) <= MAX_DECODED_AUDIO_SAMPLE_RATE;
     if (!commonFieldsValid) {
+        return false;
+    }
+    if ((value.sourceChannelCount !== undefined
+            && (!isPositiveInteger(value.sourceChannelCount)
+                || Number(value.sourceChannelCount) > MAX_DECODED_AUDIO_CHANNELS))
+        || (value.sourceSampleRate !== undefined
+            && (!isPositiveInteger(value.sourceSampleRate)
+                || Number(value.sourceSampleRate) > MAX_DECODED_AUDIO_SAMPLE_RATE))) {
         return false;
     }
     if (value.outputMode === undefined) {

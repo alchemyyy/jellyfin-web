@@ -34,7 +34,27 @@ import { createNativeVideoCapabilityFixture } from './NativeVideoCapabilityFixtu
 
 export const CUSTOM_VIDEO_CODECS = [ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ] as const;
 export const CUSTOM_WEB_CODECS_AUDIO_CODECS = [ 'aac', 'opus', 'flac', 'mp3', 'vorbis' ] as const;
-export const CUSTOM_BUNDLED_AUDIO_CODECS = [ 'ac3', 'eac3' ] as const;
+export const CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS = [
+    'pcm_s16le',
+    'pcm_s16be',
+    'pcm_s24le',
+    'pcm_s24be',
+    'pcm_s32le',
+    'pcm_s32be',
+    'pcm_f32le',
+    'pcm_f32be',
+    'pcm_f64le',
+    'pcm_f64be',
+    'pcm_u8',
+    'pcm_s8',
+    'pcm_mulaw',
+    'pcm_alaw'
+] as const;
+export const CUSTOM_BUNDLED_AUDIO_CODECS = [
+    'ac3',
+    'eac3',
+    ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
+] as const;
 export const CUSTOM_AUDIO_CODECS = [
     ...CUSTOM_WEB_CODECS_AUDIO_CODECS,
     ...CUSTOM_BUNDLED_AUDIO_CODECS
@@ -61,6 +81,8 @@ export const CUSTOM_HDR_VIDEO_FRAME_RATE_TIERS = [ 60, 30, 24 ] as const;
 export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
 export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
 export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
+export type CustomMediabunnyPCMAudioCodec =
+    typeof CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
 export type CustomHDRVideoMaximumFramesPerSecond =
     typeof CUSTOM_HDR_VIDEO_FRAME_RATE_TIERS[number];
@@ -327,7 +349,7 @@ type NativeSurroundAudioProbeDefinition = AudioProbeDefinition & {
 
 type BundledAudioCodecDefinition = {
     codec: CustomBundledAudioCodec
-    codecString: 'ac-3' | 'ec-3'
+    codecString: string
 };
 
 type RawHDRVideoProbeDefinition = {
@@ -625,7 +647,21 @@ readonly NativeSurroundAudioProbeDefinition[] =
 
 const BUNDLED_AUDIO_CODEC_DEFINITIONS: readonly BundledAudioCodecDefinition[] = [
     { codec: 'ac3', codecString: 'ac-3' },
-    { codec: 'eac3', codecString: 'ec-3' }
+    { codec: 'eac3', codecString: 'ec-3' },
+    { codec: 'pcm_s16le', codecString: 'pcm-s16' },
+    { codec: 'pcm_s16be', codecString: 'pcm-s16be' },
+    { codec: 'pcm_s24le', codecString: 'pcm-s24' },
+    { codec: 'pcm_s24be', codecString: 'pcm-s24be' },
+    { codec: 'pcm_s32le', codecString: 'pcm-s32' },
+    { codec: 'pcm_s32be', codecString: 'pcm-s32be' },
+    { codec: 'pcm_f32le', codecString: 'pcm-f32' },
+    { codec: 'pcm_f32be', codecString: 'pcm-f32be' },
+    { codec: 'pcm_f64le', codecString: 'pcm-f64' },
+    { codec: 'pcm_f64be', codecString: 'pcm-f64be' },
+    { codec: 'pcm_u8', codecString: 'pcm-u8' },
+    { codec: 'pcm_s8', codecString: 'pcm-s8' },
+    { codec: 'pcm_mulaw', codecString: 'ulaw' },
+    { codec: 'pcm_alaw', codecString: 'alaw' }
 ];
 
 const VP9_PROFILE_2_FIXTURE = createRawHDRCapabilityFixture('vp9');

@@ -18,13 +18,20 @@ import { microsecondsToSeconds, type Microseconds } from '../MediaTime';
 import { getDolbyVisionEnhancementDimensions } from '../DolbyVisionGeometry';
 import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
-import { downmixFivePointOneToStereo } from './CustomAudioDownmix';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
-    CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
+    getCustomAudioChannelLayout,
+    mixCustomAudioToStereo,
+    type CustomAudioChannelLayout
+} from './CustomAudioChannelLayout';
+import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
+import StreamingAudioResampler, {
+    type StreamingAudioResamplerOutput
+} from './StreamingAudioResampler';
 import {
     getCustomDecodeHardwareAcceleration,
     isDecodeWorkerRequest,
@@ -191,7 +198,9 @@ type PreparedAudioTrack = {
     audioTrack: InputAudioTrack
     decoderConfig: AudioDecoderConfig
     inputChannelCount: number
+    inputChannelLayout: CustomAudioChannelLayout
     outputMode: CustomDecodeAudioOutputMode
+    sourceSampleRate: number
 };
 
 type WorkerScope = {
@@ -717,6 +726,12 @@ async function prepareAudioTrack(
     if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
     }
+    const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
+    if (!inputChannelLayout) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected audio channel layout is unavailable'
+        );
+    }
 
     if (outputMode === 'native-media') {
         const codecMatchesDecoderConfiguration =
@@ -734,14 +749,18 @@ async function prepareAudioTrack(
             codec: decoderConfig.codec,
             mimeType: `audio/mp4; codecs="${decoderConfig.codec}"`,
             outputMode: 'native-media',
-            sampleRate
+            sampleRate,
+            sourceChannelCount: channelCount,
+            sourceSampleRate: sampleRate
         };
         return {
             audioConfiguration,
             audioTrack,
             decoderConfig,
             inputChannelCount: channelCount,
-            outputMode
+            inputChannelLayout,
+            outputMode,
+            sourceSampleRate: sampleRate
         };
     }
 
@@ -765,12 +784,16 @@ async function prepareAudioTrack(
         audioConfiguration: {
             channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
             codec: decoderConfig.codec,
-            sampleRate
+            sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+            sourceChannelCount: channelCount,
+            sourceSampleRate: sampleRate
         },
         audioTrack,
         decoderConfig,
         inputChannelCount: channelCount,
-        outputMode
+        inputChannelLayout,
+        outputMode,
+        sourceSampleRate: sampleRate
     };
 }
 
@@ -1148,21 +1171,20 @@ async function postVideoFrame(
     }
 }
 
-function postAudioSample(
-    run: DecodeRun,
+function normalizeAudioSample(
     sample: AudioSample,
     preparedAudioTrack: PreparedAudioTrack,
-    startTimeMicroseconds: Microseconds
-): boolean {
+    startTimeMicroseconds: Microseconds,
+    resampler: StreamingAudioResampler
+): StreamingAudioResamplerOutput[] {
     try {
-        const audioConfiguration = preparedAudioTrack.audioConfiguration;
         const sampleTimeMicroseconds = requireMicroseconds(
             sample.microsecondTimestamp,
             'Decoded audio timestamp'
         );
         if (
             sample.numberOfChannels !== preparedAudioTrack.inputChannelCount
-            || sample.sampleRate !== audioConfiguration.sampleRate
+            || sample.sampleRate !== preparedAudioTrack.sourceSampleRate
         ) {
             throw new UnsupportedCustomDecodeSourceError('Decoded audio format changed during playback');
         }
@@ -1180,7 +1202,7 @@ function postAudioSample(
             startTimeMicroseconds
         );
         if (!sampleWindow) {
-            return false;
+            return [];
         }
 
         const inputChannelData: Float32Array[] = [];
@@ -1195,38 +1217,50 @@ function postAudioSample(
             inputChannelData.push(channel);
         }
 
-        let channelData: Float32Array[];
-        switch (preparedAudioTrack.inputChannelCount) {
-            case CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT:
-                channelData = inputChannelData;
-                break;
-            case CUSTOM_SURROUND_INPUT_CHANNEL_COUNT:
-                channelData = downmixFivePointOneToStereo(inputChannelData);
-                break;
-            default:
-                throw new UnsupportedCustomDecodeSourceError(
-                    'Decoded audio requires an unsupported channel transform'
-                );
-        }
-        const transferables = channelData.map(channel => channel.buffer);
-
-        if (run.cancelled) {
-            return false;
-        }
-        postResponse({
-            channelCount: audioConfiguration.channelCount,
+        const channelData = mixCustomAudioToStereo(
+            inputChannelData,
+            preparedAudioTrack.inputChannelLayout
+        );
+        return resampler.push({
             channelData,
-            durationMicroseconds: sampleWindow.durationMicroseconds,
-            frameCount: sampleWindow.frameCount,
-            generation: run.generation,
-            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds,
-            sampleRate: sample.sampleRate,
-            type: 'audio'
-        }, transferables);
-        return true;
+            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+        });
     } finally {
         sample.close();
     }
+}
+
+async function postNormalizedAudioOutput(
+    run: DecodeRun,
+    outputs: readonly StreamingAudioResamplerOutput[],
+    reservedCredit: boolean
+): Promise<boolean> {
+    let creditAvailable = reservedCredit;
+    for (const output of outputs) {
+        if (!creditAvailable && !await waitForAudioSampleCredit(run)) {
+            return false;
+        }
+        creditAvailable = false;
+        if (run.cancelled) {
+            return false;
+        }
+        const channelData = output.channelData;
+        const transferables = channelData.map(channel => channel.buffer);
+        postResponse({
+            channelCount: channelData.length,
+            channelData,
+            durationMicroseconds: output.durationMicroseconds,
+            frameCount: output.frameCount,
+            generation: run.generation,
+            mediaTimeMicroseconds: output.mediaTimeMicroseconds,
+            sampleRate: output.sampleRate,
+            type: 'audio'
+        }, transferables);
+    }
+    if (creditAvailable && !run.cancelled) {
+        addAudioSampleCredits(run, 1);
+    }
+    return !run.cancelled;
 }
 
 type OwnedDecodedVideoSource =
@@ -2181,6 +2215,12 @@ async function streamAudioSamples(
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
+    const resampler = new StreamingAudioResampler({
+        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    });
     const iterator = sampleSink.samples(
         microsecondsToSeconds(request.startTimeMicroseconds)
     ) as unknown as MediaSampleIterator<AudioSample>;
@@ -2193,17 +2233,18 @@ async function streamAudioSamples(
             return;
         }
         if (iteratorResult.done) {
+            await postNormalizedAudioOutput(run, resampler.finalize(), true);
             return;
         }
 
-        const posted = postAudioSample(
-            run,
+        const output = normalizeAudioSample(
             iteratorResult.value,
             preparedAudioTrack,
-            request.startTimeMicroseconds
+            request.startTimeMicroseconds,
+            resampler
         );
-        if (!posted && !run.cancelled) {
-            addAudioSampleCredits(run, 1);
+        if (!await postNormalizedAudioOutput(run, output, true)) {
+            return;
         }
     }
 }

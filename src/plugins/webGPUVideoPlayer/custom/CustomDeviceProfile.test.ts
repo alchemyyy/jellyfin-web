@@ -660,6 +660,63 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
     });
 
+    it('advertises exact Mediabunny PCM container, rate, and layout routes', () => {
+        const supportedPCMCodecs = [
+            'pcm_s24le',
+            'pcm_s8',
+            'pcm_alaw'
+        ] as const;
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities([ 'h264' ], supportedPCMCodecs)
+        );
+        const addedProfiles = result.profile.DirectPlayProfiles?.slice(1) ?? [];
+
+        expect(addedProfiles).toContainEqual({
+            AudioCodec: 'pcm_s24le',
+            Container: 'mp4,m4v,mov',
+            Type: 'Video',
+            VideoCodec: 'h264'
+        });
+        expect(addedProfiles).toContainEqual({
+            AudioCodec: 'pcm_s24le,pcm_s8,pcm_alaw',
+            Container: 'mov',
+            Type: 'Video',
+            VideoCodec: 'h264'
+        });
+        expect(addedProfiles).toContainEqual({
+            AudioCodec: 'pcm_s24le',
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'h264'
+        });
+        expect(addedProfiles).not.toContainEqual({
+            AudioCodec: expect.stringContaining('pcm_s8'),
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'h264'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: supportedPCMCodecs.join(','),
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '1|2|6'
+                },
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '8000|11025|12000|16000|22050|24000|32000|44100|48000|88200|96000|176400|192000'
+                }
+            ],
+            Container: 'mp4,m4v,mov,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+    });
+
     it('replaces browser secondary-audio limits only on measured custom routes', () => {
         const original = createBaseProfile();
         original.DirectPlayProfiles = [ {

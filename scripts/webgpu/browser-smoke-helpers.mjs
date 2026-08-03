@@ -1,10 +1,12 @@
 /* eslint-disable compat/compat -- This local harness targets Node 24 and a current Chromium browser */
 
 const DEFAULT_DEBUG_URL = 'http://localhost:9224';
-const DEFAULT_FRONTEND_URL = 'http://localhost:8080';
+const DEFAULT_FRONTEND_URL = 'http://localhost:8096';
 const DEFAULT_SERVER_URL = 'http://localhost:8096';
 const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
 const MAXIMUM_AUDIO_UNDERFLOW_RATIO = 0.02;
+const MAXIMUM_EXPECTED_AUDIO_CHANNEL_COUNT = 32;
+const MAXIMUM_EXPECTED_AUDIO_SAMPLE_RATE = 192_000;
 const MAXIMUM_RAW_OUTSTANDING_FRAMES = 2;
 const MAXIMUM_VIDEO_FRAME_PENDING_FRAMES = 4;
 const MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO = 4_800;
@@ -42,6 +44,22 @@ const OPTION_DEFINITIONS = Object.freeze({
     '--expected-audio-codec': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC',
         name: 'expectedAudioCodec'
+    },
+    '--expected-audio-output-channels': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_CHANNELS',
+        name: 'expectedAudioOutputChannelCount'
+    },
+    '--expected-audio-output-rate': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_RATE',
+        name: 'expectedAudioOutputSampleRate'
+    },
+    '--expected-audio-source-channels': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS',
+        name: 'expectedAudioSourceChannelCount'
+    },
+    '--expected-audio-source-rate': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE',
+        name: 'expectedAudioSourceSampleRate'
     },
     '--expected-frame-evidence': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE',
@@ -127,6 +145,14 @@ Options:
                          Optional Jellyfin stream index to select during playback
   --expected-audio-codec <codec>
                          Decoder codec expected after selecting the audio stream
+  --expected-audio-source-channels <number>
+                         Optional decoded source channel count
+  --expected-audio-source-rate <number>
+                         Optional decoded source sample rate
+  --expected-audio-output-channels <number>
+                         Optional normalized output channel count
+  --expected-audio-output-rate <number>
+                         Optional normalized output sample rate
   --expected-frame-evidence <none|testsrc2-motion>
                          Optional canvas evidence for generated smoke media
   --completion-mode <controlled-stop|natural-end>
@@ -153,6 +179,10 @@ Environment equivalents:
   WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
   WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
   WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
+  WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS,
+  WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE,
+  WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_CHANNELS,
+  WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_RATE,
   WEBGPU_SMOKE_COMPLETION_MODE,
   WEBGPU_SMOKE_REPEAT_SESSIONS, WEBGPU_SMOKE_INJECT_FAILURE,
   WEBGPU_SMOKE_SEEK_STORM_COUNT, WEBGPU_SMOKE_SOAK_SESSIONS,
@@ -278,6 +308,76 @@ function parseExpectedAudioCodec(value) {
         throw new TypeError('Invalid browser smoke expectation for --expected-audio-codec');
     }
     return expectedCodec;
+}
+
+function parseExpectedAudioChannelCount(value, optionName) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || parsedValue < 1
+        || parsedValue > MAXIMUM_EXPECTED_AUDIO_CHANNEL_COUNT) {
+        throw new RangeError(
+            `${optionName} must be an integer from 1 through ${MAXIMUM_EXPECTED_AUDIO_CHANNEL_COUNT}`
+        );
+    }
+    return parsedValue;
+}
+
+function parseExpectedAudioSampleRate(value, optionName) {
+    const parsedValue = Number(value);
+    if (!Number.isSafeInteger(parsedValue)
+        || parsedValue < 1
+        || parsedValue > MAXIMUM_EXPECTED_AUDIO_SAMPLE_RATE) {
+        throw new RangeError(
+            `${optionName} must be an integer from 1 through ${MAXIMUM_EXPECTED_AUDIO_SAMPLE_RATE}`
+        );
+    }
+    return parsedValue;
+}
+
+function parseExpectedAudioConfiguration(values) {
+    const configuredValueCount = Object.values(values)
+        .filter(value => value !== undefined).length;
+    if (configuredValueCount === 0) {
+        return null;
+    }
+    if (configuredValueCount !== Object.keys(values).length) {
+        throw new TypeError(
+            'Browser smoke decoded audio shape requires all four source/output audio expectations'
+        );
+    }
+    return {
+        outputChannelCount: parseExpectedAudioChannelCount(
+            values.outputChannelCount,
+            '--expected-audio-output-channels'
+        ),
+        outputSampleRate: parseExpectedAudioSampleRate(
+            values.outputSampleRate,
+            '--expected-audio-output-rate'
+        ),
+        sourceChannelCount: parseExpectedAudioChannelCount(
+            values.sourceChannelCount,
+            '--expected-audio-source-channels'
+        ),
+        sourceSampleRate: parseExpectedAudioSampleRate(
+            values.sourceSampleRate,
+            '--expected-audio-source-rate'
+        )
+    };
+}
+
+function validateExpectedAudioConfiguration(
+    expectedAudioConfiguration,
+    audioStreamIndex,
+    expectedAudioPath
+) {
+    if (expectedAudioConfiguration === null) {
+        return;
+    }
+    if (audioStreamIndex === null || expectedAudioPath !== 'ready') {
+        throw new TypeError(
+            'Browser smoke decoded audio shape requires an audio stream selection and --expected-audio ready'
+        );
+    }
 }
 
 function parseExpectedValue(value, optionName, acceptedValues) {
@@ -439,6 +539,12 @@ export function parseSmokeConfiguration(argumentList, environment) {
     const expectedAudioCodec = expectedAudioCodecValue === undefined ?
         null :
         parseExpectedAudioCodec(expectedAudioCodecValue);
+    const expectedAudioConfiguration = parseExpectedAudioConfiguration({
+        outputChannelCount: configuredValue('expectedAudioOutputChannelCount'),
+        outputSampleRate: configuredValue('expectedAudioOutputSampleRate'),
+        sourceChannelCount: configuredValue('expectedAudioSourceChannelCount'),
+        sourceSampleRate: configuredValue('expectedAudioSourceSampleRate')
+    });
     const completionMode = parseExpectedValue(
         configuredValue('completionMode') || 'controlled-stop',
         '--completion-mode',
@@ -459,6 +565,11 @@ export function parseSmokeConfiguration(argumentList, environment) {
             'Browser smoke audio stream selection requires an enabled --expected-audio route'
         );
     }
+    validateExpectedAudioConfiguration(
+        expectedAudioConfiguration,
+        audioStreamIndex,
+        expectedAudioPath
+    );
     if (audioStreamIndex !== null && repeatSessionValue && parseRepeatSessionCount(repeatSessionValue) !== 1) {
         throw new TypeError(
             'Browser smoke audio stream selection requires --repeat-sessions 1'
@@ -541,6 +652,7 @@ export function parseSmokeConfiguration(argumentList, environment) {
         ),
         failureInjection,
         expectedAudioCodec,
+        expectedAudioConfiguration,
         expectedAudioPath,
         expectedFrameEvidence,
         expectedVideoDecoderBackend,
@@ -1393,7 +1505,8 @@ export function validateAudioStreamSwitchSnapshot(
     initialSnapshot,
     laterSnapshot,
     expectedAudioCodec,
-    expectedAudioPath = 'ready'
+    expectedAudioPath = 'ready',
+    expectedAudioConfiguration = null
 ) {
     const failures = [];
     const initialTelemetry = initialSnapshot.customPlayback;
@@ -1443,6 +1556,32 @@ export function validateAudioStreamSwitchSnapshot(
             (laterTelemetry?.videoDecode?.receivedAudioFrameCount ?? 0) > 0,
             'selected-audio-not-decoded'
         );
+        if (expectedAudioConfiguration !== null) {
+            addFailure(
+                failures,
+                laterTelemetry?.videoDecode?.audioSourceChannelCount
+                    === expectedAudioConfiguration.sourceChannelCount,
+                'unexpected-selected-audio-source-channel-count'
+            );
+            addFailure(
+                failures,
+                laterTelemetry?.videoDecode?.audioSourceSampleRate
+                    === expectedAudioConfiguration.sourceSampleRate,
+                'unexpected-selected-audio-source-sample-rate'
+            );
+            addFailure(
+                failures,
+                laterTelemetry?.videoDecode?.audioChannelCount
+                    === expectedAudioConfiguration.outputChannelCount,
+                'unexpected-selected-audio-output-channel-count'
+            );
+            addFailure(
+                failures,
+                laterTelemetry?.videoDecode?.audioSampleRate
+                    === expectedAudioConfiguration.outputSampleRate,
+                'unexpected-selected-audio-output-sample-rate'
+            );
+        }
     }
     addFailure(failures, laterSnapshot.presentation?.state === 'presenting', 'audio-switch-presenter-not-active');
     addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');

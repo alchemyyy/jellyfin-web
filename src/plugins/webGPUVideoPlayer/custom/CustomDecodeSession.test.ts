@@ -1112,8 +1112,10 @@ describe('CustomDecodeSession', () => {
 
         const audioConfiguration = {
             channelCount: 2,
-            codec: 'mp4a.40.2',
-            sampleRate: 48_000
+            codec: 'pcm-s24',
+            sampleRate: 48_000,
+            sourceChannelCount: 1,
+            sourceSampleRate: 44_100
         };
         worker.emitMessage({
             audio: audioConfiguration,
@@ -1160,7 +1162,11 @@ describe('CustomDecodeSession', () => {
             type: 'ready'
         });
         expect(session.getTelemetry()).toMatchObject({
-            audioCodec: 'mp4a.40.2',
+            audioChannelCount: 2,
+            audioCodec: 'pcm-s24',
+            audioSampleRate: 48_000,
+            audioSourceChannelCount: 1,
+            audioSourceSampleRate: 44_100,
             receivedAudioFrameCount: 1_024,
             receivedAudioSampleCount: 1,
             submittedAudioFrameCount: 1_024,

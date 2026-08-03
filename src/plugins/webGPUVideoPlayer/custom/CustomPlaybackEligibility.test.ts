@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CUSTOM_AUDIO_CODECS,
     CUSTOM_NATIVE_SURROUND_AUDIO_CODECS,
     CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS,
     type CustomNativeSurroundAudioCodec,
@@ -159,16 +160,15 @@ function createCapabilities(): CustomDecodeCapabilities {
         reason: codec === 'hevc' ? 'bundled-software-decoder' : 'output-copy-supported',
         status: 'supported'
     });
+    const audio = {} as Record<
+        CustomAudioCodec,
+        CustomDecodeCodecCapability<CustomAudioCodec>
+    >;
+    for (const codec of CUSTOM_AUDIO_CODECS) {
+        audio[codec] = createCapability(codec, true);
+    }
     return {
-        audio: {
-            aac: createCapability('aac', true),
-            ac3: createCapability('ac3', true),
-            eac3: createCapability('eac3', true),
-            flac: createCapability('flac', true),
-            mp3: createCapability('mp3', true),
-            opus: createCapability('opus', true),
-            vorbis: createCapability('vorbis', true)
-        },
+        audio,
         bundledHEVC: createBundledHEVCCapabilities(),
         h264Profiles: createH264ProfileCapabilities(),
         nativeDolbyVisionHEVC: {
@@ -1755,6 +1755,73 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     });
+
+    it.each([
+        [ 'mkv', 'pcm_s24le', 1, 44_100 ],
+        [ 'mkv', 'pcm_f64le', 6, 96_000 ],
+        [ 'mov', 'pcm_s8', 2, 192_000 ],
+        [ 'mov', 'pcm_mulaw', 1, 8_000 ],
+        [ 'mov', 'pcm_alaw', 1, 8_000 ]
+    ] as const)(
+        'selects Mediabunny PCM for %s/%s at %i channels and %i Hz',
+        (container, codec, channelCount, sampleRate) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+            const PCMRuntime: CustomPlaybackRuntimeAvailability = {
+                available: true,
+                environment: {
+                    ...AVAILABLE_RUNTIME.environment,
+                    audioData: false,
+                    audioDecoder: false
+                },
+                reason: null
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: PCMRuntime }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it.each([
+        [ 'mkv', 'pcm_s8', 2, 48_000, 'container-unsupported' ],
+        [ 'mkv', 'pcm_f32be', 2, 48_000, 'container-unsupported' ],
+        [ 'mp4', 'pcm_alaw', 1, 8_000, 'container-unsupported' ],
+        [ 'mov', 'pcm_s24le', 8, 48_000, 'audio-layout-unsupported' ],
+        [ 'mov', 'pcm_s24le', 2, 12_345, 'audio-layout-unsupported' ]
+    ] as const)(
+        'rejects unimplemented PCM route %s/%s/%i/%i',
+        (container, codec, channelCount, sampleRate, reason) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason });
+        }
+    );
 
     it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
         'selects decoded PCM for exact qualified native 5.1 %s input',

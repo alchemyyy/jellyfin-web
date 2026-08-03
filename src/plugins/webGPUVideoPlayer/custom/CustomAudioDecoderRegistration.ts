@@ -1,3 +1,7 @@
+import {
+    registerMediabunnyPCMBuiltinDecoderAvailability
+} from './MediabunnyPCMBuiltinDecoderAvailability';
+
 const MEDIABUNNY_AC3_IMPLEMENTATION_ARTIFACT_SENTINEL =
     'jellyfin-webgpu-mediabunny-ac3-v2';
 
@@ -23,6 +27,10 @@ export function registerRequiredCustomAudioDecoder(
         case 'ac3':
         case 'eac3':
             return registerCustomAudioDecoder();
+        case 'ulaw':
+        case 'alaw':
+            registerMediabunnyPCMBuiltinDecoderAvailability();
+            return Promise.resolve();
         default:
             return Promise.resolve();
     }

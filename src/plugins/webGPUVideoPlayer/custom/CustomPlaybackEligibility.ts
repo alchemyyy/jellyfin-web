@@ -10,6 +10,7 @@ import {
 import {
     CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
+    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
@@ -34,7 +35,10 @@ import {
     type CustomPlaybackRuntimeAvailability,
     type CustomPlaybackRuntimeRequirements
 } from './CustomPlaybackRuntime';
-import { isSupportedCustomAudioInputLayout } from './CustomAudioOutputPolicy';
+import {
+    isCustomMediabunnyPCMAudioCodec,
+    isSupportedCustomAudioInputLayout
+} from './CustomAudioOutputPolicy';
 import { supportsH264JellyfinProfile } from './H264ProfileCapabilities';
 import {
     getExternalHDRAuthorizationRouteKey,
@@ -81,8 +85,40 @@ const ISO_BASE_MEDIA_CONTAINER_RULE: ContainerCodecRule = {
     containers: new Set([ 'MP4', 'M4V', 'MOV', '3GP', '3G2', 'MJ2' ]),
     videoCodecs: new Set([ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ])
 };
+const ISO_BASE_MEDIA_PCM_CONTAINER_RULE: ContainerCodecRule = {
+    audioCodecs: new Set([
+        'pcm_s16le',
+        'pcm_s16be',
+        'pcm_s24le',
+        'pcm_s24be',
+        'pcm_s32le',
+        'pcm_s32be',
+        'pcm_f32le',
+        'pcm_f32be',
+        'pcm_f64le',
+        'pcm_f64be'
+    ]),
+    containers: new Set([ 'MP4', 'M4V', 'MOV' ]),
+    videoCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs
+};
+const QUICKTIME_PCM_CONTAINER_RULE: ContainerCodecRule = {
+    audioCodecs: new Set(CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS),
+    containers: new Set([ 'MOV' ]),
+    videoCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs
+};
 const MATROSKA_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.audioCodecs,
+    audioCodecs: new Set([
+        ...ISO_BASE_MEDIA_CONTAINER_RULE.audioCodecs,
+        'pcm_u8',
+        'pcm_s16le',
+        'pcm_s16be',
+        'pcm_s24le',
+        'pcm_s24be',
+        'pcm_s32le',
+        'pcm_s32be',
+        'pcm_f32le',
+        'pcm_f64le'
+    ]),
     containers: new Set([ 'MKV', 'MATROSKA' ]),
     videoCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs
 };
@@ -98,6 +134,8 @@ const MPEG_TS_CONTAINER_RULE: ContainerCodecRule = {
 };
 const CONTAINER_CODEC_RULES: readonly ContainerCodecRule[] = [
     ISO_BASE_MEDIA_CONTAINER_RULE,
+    ISO_BASE_MEDIA_PCM_CONTAINER_RULE,
+    QUICKTIME_PCM_CONTAINER_RULE,
     MATROSKA_CONTAINER_RULE,
     WEBM_CONTAINER_RULE,
     MPEG_TS_CONTAINER_RULE
@@ -114,19 +152,33 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     VP9: 'vp9'
 };
 
-const AUDIO_CODEC_ALIASES: Readonly<Record<string, CustomAudioCodec>> = {
-    AAC: 'aac',
-    'AC-3': 'ac3',
-    AC3: 'ac3',
-    'E-AC-3': 'eac3',
-    'EC-3': 'eac3',
-    EAC3: 'eac3',
-    EC3: 'eac3',
-    FLAC: 'flac',
-    MP3: 'mp3',
-    OPUS: 'opus',
-    VORBIS: 'vorbis'
-};
+const AUDIO_CODEC_ALIASES = new Map<string, CustomAudioCodec>([
+    [ 'AAC', 'aac' ],
+    [ 'AC-3', 'ac3' ],
+    [ 'AC3', 'ac3' ],
+    [ 'E-AC-3', 'eac3' ],
+    [ 'EC-3', 'eac3' ],
+    [ 'EAC3', 'eac3' ],
+    [ 'EC3', 'eac3' ],
+    [ 'FLAC', 'flac' ],
+    [ 'MP3', 'mp3' ],
+    [ 'OPUS', 'opus' ],
+    [ 'PCM_ALAW', 'pcm_alaw' ],
+    [ 'PCM_F32BE', 'pcm_f32be' ],
+    [ 'PCM_F32LE', 'pcm_f32le' ],
+    [ 'PCM_F64BE', 'pcm_f64be' ],
+    [ 'PCM_F64LE', 'pcm_f64le' ],
+    [ 'PCM_MULAW', 'pcm_mulaw' ],
+    [ 'PCM_S16BE', 'pcm_s16be' ],
+    [ 'PCM_S16LE', 'pcm_s16le' ],
+    [ 'PCM_S24BE', 'pcm_s24be' ],
+    [ 'PCM_S24LE', 'pcm_s24le' ],
+    [ 'PCM_S32BE', 'pcm_s32be' ],
+    [ 'PCM_S32LE', 'pcm_s32le' ],
+    [ 'PCM_S8', 'pcm_s8' ],
+    [ 'PCM_U8', 'pcm_u8' ],
+    [ 'VORBIS', 'vorbis' ]
+]);
 
 type MediaStream = {
     AverageFrameRate?: unknown
@@ -448,6 +500,9 @@ function isPositiveSafeInteger(value: unknown): value is number {
 }
 
 function getNativeMediaAudioCodec(codec: CustomAudioCodec): NativeMediaAudioCodec | null {
+    if (isCustomMediabunnyPCMAudioCodec(codec)) {
+        return null;
+    }
     switch (codec) {
         case 'ac3':
         case 'eac3':
@@ -468,6 +523,9 @@ function hasQualifiedDecodedPCMInputLayout(
 ): boolean {
     if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
         return false;
+    }
+    if (isCustomMediabunnyPCMAudioCodec(codec)) {
+        return true;
     }
     if (stream.Channels !== 6) {
         return true;
@@ -1186,7 +1244,9 @@ export function getCustomPlaybackEligibility(
     let audioOutputMode: CustomDecodeAudioOutputMode | null = null;
     let selectedAudioCodec: CustomAudioCodec | null = null;
     if (selectedAudio.status === 'selected') {
-        const audioCodec = AUDIO_CODEC_ALIASES[normalizeMetadataValue(selectedAudio.stream.Codec) ?? ''];
+        const audioCodec = AUDIO_CODEC_ALIASES.get(
+            normalizeMetadataValue(selectedAudio.stream.Codec) ?? ''
+        );
         if (!audioCodec) {
             return { eligible: false, reason: 'audio-codec-unsupported' };
         }

@@ -173,6 +173,7 @@ test('parses CLI values before environment values', () => {
         completionMode: 'controlled-stop',
         debugURL: 'http://localhost:9333',
         expectedAudioCodec: null,
+        expectedAudioConfiguration: null,
         frontendURL: 'http://localhost:8181',
         expectedAudioPath: 'ready',
         expectedFrameEvidence: 'testsrc2-motion',
@@ -197,6 +198,10 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--expected-audio <disabled\|ready\|native-media>/u);
     assert.match(SMOKE_USAGE, /--audio-stream-index <number>/u);
     assert.match(SMOKE_USAGE, /--expected-audio-codec <codec>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio-source-channels <number>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio-source-rate <number>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio-output-channels <number>/u);
+    assert.match(SMOKE_USAGE, /--expected-audio-output-rate <number>/u);
     assert.match(SMOKE_USAGE, /--expected-frame-evidence <none\|testsrc2-motion>/u);
     assert.match(SMOKE_USAGE, /--completion-mode <controlled-stop\|natural-end>/u);
     assert.match(SMOKE_USAGE, /--repeat-sessions <1-5>/u);
@@ -212,6 +217,10 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_AUDIO_STREAM_INDEX/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_CHANNELS/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_OUTPUT_RATE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_COMPLETION_MODE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SEEK_STORM_COUNT/u);
@@ -229,7 +238,7 @@ test('uses local URL defaults without inventing credentials', () => {
     });
 
     assert.equal(configuration.debugURL, 'http://localhost:9224');
-    assert.equal(configuration.frontendURL, 'http://localhost:8080');
+    assert.equal(configuration.frontendURL, 'http://localhost:8096');
     assert.equal(configuration.serverURL, 'http://localhost:8096');
     assert.equal(configuration.timeoutMilliseconds, 30_000);
     assert.equal(configuration.completionMode, 'controlled-stop');
@@ -240,6 +249,7 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.startupSampleCount, 0);
     assert.equal(configuration.audioStreamIndex, null);
     assert.equal(configuration.expectedAudioCodec, null);
+    assert.equal(configuration.expectedAudioConfiguration, null);
     assert.equal(configuration.expectedAudioPath, 'disabled');
     assert.equal(configuration.expectedFrameEvidence, 'none');
     assert.equal(configuration.expectedVideoDecoderBackend, null);
@@ -691,7 +701,11 @@ test('requires valid independent video and audio expectations', () => {
 test('validates an in-session audio decoder generation and codec change', () => {
     const configuration = parseSmokeConfiguration([
         '--audio-stream-index', '3',
-        '--expected-audio-codec', 'ac-3'
+        '--expected-audio-codec', 'pcm-s24',
+        '--expected-audio-source-channels', '1',
+        '--expected-audio-source-rate', '44100',
+        '--expected-audio-output-channels', '2',
+        '--expected-audio-output-rate', '48000'
     ], {
         WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
         WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
@@ -700,7 +714,13 @@ test('validates an in-session audio decoder generation and codec change', () => 
         WEBGPU_SMOKE_USERNAME: 'test-user'
     });
     assert.equal(configuration.audioStreamIndex, 3);
-    assert.equal(configuration.expectedAudioCodec, 'ac-3');
+    assert.equal(configuration.expectedAudioCodec, 'pcm-s24');
+    assert.deepEqual(configuration.expectedAudioConfiguration, {
+        outputChannelCount: 2,
+        outputSampleRate: 48_000,
+        sourceChannelCount: 1,
+        sourceSampleRate: 44_100
+    });
 
     const initialSnapshot = createActiveSnapshot({
         customPlayback: {
@@ -716,7 +736,11 @@ test('validates an in-session audio decoder generation and codec change', () => 
             audioPath: 'ready',
             videoDecode: {
                 ...initialSnapshot.customPlayback.videoDecode,
-                audioCodec: 'ac-3',
+                audioChannelCount: 2,
+                audioCodec: 'pcm-s24',
+                audioSampleRate: 48_000,
+                audioSourceChannelCount: 1,
+                audioSourceSampleRate: 44_100,
                 receivedAudioFrameCount: 8
             }
         },
@@ -727,7 +751,13 @@ test('validates an in-session audio decoder generation and codec change', () => 
     });
 
     assert.deepEqual(
-        validateAudioStreamSwitchSnapshot(initialSnapshot, switchedSnapshot, 'ac-3'),
+        validateAudioStreamSwitchSnapshot(
+            initialSnapshot,
+            switchedSnapshot,
+            'pcm-s24',
+            'ready',
+            configuration.expectedAudioConfiguration
+        ),
         []
     );
     assert.ok(validateAudioStreamSwitchSnapshot(initialSnapshot, {
@@ -736,9 +766,57 @@ test('validates an in-session audio decoder generation and codec change', () => 
             ...switchedSnapshot.customPlayback,
             activeGeneration: 4
         }
-    }, 'ac-3').includes('audio-generation-not-advanced'));
+    }, 'pcm-s24').includes('audio-generation-not-advanced'));
     assert.ok(validateAudioStreamSwitchSnapshot(initialSnapshot, switchedSnapshot, 'ec-3')
         .includes('unexpected-selected-audio-codec'));
+    assert.ok(validateAudioStreamSwitchSnapshot(
+        initialSnapshot,
+        switchedSnapshot,
+        'pcm-s24',
+        'ready',
+        {
+            ...configuration.expectedAudioConfiguration,
+            sourceSampleRate: 48_000
+        }
+    ).includes('unexpected-selected-audio-source-sample-rate'));
+});
+
+test('requires a complete decoded audio source and output expectation', () => {
+    const environment = {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'ready',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'raw-planes',
+        WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    };
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--audio-stream-index', '3',
+            '--expected-audio-codec', 'pcm-s24',
+            '--expected-audio-source-rate', '44100'
+        ], environment),
+        /requires all four source\/output audio expectations/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--expected-audio-source-channels', '1',
+            '--expected-audio-source-rate', '44100',
+            '--expected-audio-output-channels', '2',
+            '--expected-audio-output-rate', '48000'
+        ], environment),
+        /requires an audio stream selection/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--audio-stream-index', '3',
+            '--expected-audio-codec', 'pcm-s24',
+            '--expected-audio-source-channels', '0',
+            '--expected-audio-source-rate', '44100',
+            '--expected-audio-output-channels', '2',
+            '--expected-audio-output-rate', '48000'
+        ], environment),
+        /source-channels/u
+    );
 });
 
 test('validates an in-session switch to owned native media audio', () => {

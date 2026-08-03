@@ -3,10 +3,11 @@
 - Status: active implementation plan
 - Recorded: 2026-08-02
 - Branch: `webgpu-player`
-- Committed baseline: `909a4b90bd816d3d035bad92a389028469e9cb5f`
-- Current state: the native HEVC Main10 external-texture HDR checkpoint is
-  pushed. The official Mediabunny AC-3/E-AC-3 decoder is promoted into ordinary
-  builds and live-qualified on port 8096, with evidence recorded below.
+- Committed baseline: `5fe22cb1a99d36708c847889d153202c6a9586f8`
+- Current state: the native HEVC Main10 external-texture HDR and ordinary-build
+  Mediabunny AC-3/E-AC-3 checkpoints are pushed. The current worktree adds
+  Mediabunny PCM/G.711 decoding plus shared channel normalization and streaming
+  resampling; its development build is live-qualified on port 8096.
 
 ## 1. Product target
 
@@ -62,7 +63,7 @@ that a source used the owned custom decode route.
 - Fixed-stereo 48 kHz AudioWorklet output, 5.1-to-stereo downmix, bounded audio
   queues, underflow recovery, and A/V clock telemetry.
 - Owned native-media MSE bridge for exactly qualified AC-3/E-AC-3 routes.
-- Build-gated local AC-3/E-AC-3 software decoder integration.
+- Official Mediabunny AC-3/E-AC-3 software decode in ordinary builds.
 - SDR identity, BT.2020 PQ, and BT.2020 HLG color paths.
 - Exact-device raw HDR authorization and separate Dolby Vision route
   authorizations.
@@ -78,38 +79,45 @@ that a source used the owned custom decode route.
 
 ### 2.2 Implemented in the current worktree, not checkpointed
 
-- A distinct native HEVC Main10 HDR throughput capability.
-- HEVC SPS/HVCC color-description neutralization for an owned native decoder.
-- A production `GPUExternalTexture` HDR shader that reconstructs limited-range
-  10-bit YUV after the deliberately neutral BT.709 browser conversion.
-- Exact PQ and HLG external-HDR authorization fixtures.
-- Per-device, target-format, transfer, and route-key authorization caching.
-- Eligibility, device-profile, worker protocol, controller, player, and
-  presenter integration for that route.
-- Focused unit suites and TypeScript checking have passed once for this work.
+- Mediabunny built-in decode for signed/unsigned integer PCM, float PCM, mu-law,
+  and A-law across each exact container mapping exposed by Mediabunny.
+- One explicit mono/stereo/5.1-side channel-layout model and shared stereo
+  mixer, replacing per-codec count-only branching.
+- One bounded 64-tap, 2048-phase Blackman-windowed sinc streaming resampler for
+  exact PCM source rates from 8 through 192 kHz into stereo 48 kHz output.
+- Signed-microsecond source/output timestamp accounting, bounded resampler
+  history, bounded worker chunks, exact audio credits, and final filter flush.
+- Exact eligibility and device-profile claims for supported PCM codec,
+  container, channel-count, and sample-rate combinations.
+- Source/output audio-shape telemetry and browser-harness assertions.
+- Unit round trips through Mediabunny's public MOV writer, demuxer, track probe,
+  and `AudioSampleSink` for all fourteen supported PCM/G.711 codec identifiers.
+- A deterministic AAC-to-PCM switch fixture and clean port-8096 lifecycle run.
 
-The incomplete checkpoint work still needs lint, a development build, artifact
-verification, deployment through Jellyfin on port 8096, exact browser
-authorization evidence, DirectPlay negotiation evidence, visual comparison,
-lifecycle/failure validation, and a final clean test pass.
+The checkpoint still needs the final production build/artifact gate, final diff
+review, documentation reconciliation, commit, and push. DVD/BD LPCM framing,
+7.1/arbitrary layouts, and non-PCM codecs at non-48-kHz source rates remain
+separate follow-up work rather than hidden claims in this checkpoint.
 
 ### 2.3 Last observed local evidence
 
 The latest recorded measurements on the development machine are useful for
 planning but are not portable capability claims:
 
-- Native 4K HEVC Main10 decode measured about 75.9 fps and qualified the 60 fps
-  tier.
-- Bundled 4K HEVC Main10 measured about 28.75 fps and correctly failed the 30
-  fps qualification floor.
-- Bundled 1080p Main10 measured about 120 fps and had sufficient 60 fps
+- The current headless Chrome run measured native 4K HEVC Main10 at about
+  55.9 fps and qualified its conservative 30 fps tier.
+- Bundled 4K HEVC Main10 measured about 29.9 fps and correctly failed the 30
+  fps qualification floor with required headroom.
+- Bundled 1080p Main10 measured about 125.7 fps and had sufficient 60 fps
   headroom.
+- A 44.1 kHz mono signed 24-bit PCM track decoded through Mediabunny, normalized
+  to stereo 48 kHz, survived pause/resume, fullscreen, resize/DPR, a primary
+  seek, a three-seek storm, and exact stop with no fallback or browser errors.
 - Manual playback quality was reported as excellent.
 - Earlier Wolfwalkers PlaybackInfo screenshots still showed HLS transcoding,
   so those screenshots validate presentation quality, not owned DirectPlay.
-- The uncommitted native external-HDR route has not yet been installed into the
-  authoritative port-8096 frontend. Dark Knight Main10/FLAC DirectPlay remains
-  the immediate live negotiation test.
+- The current development bundle is served by Jellyfin itself on port 8096;
+  the separate 8080 development frontend is not used for authoritative tests.
 
 ### 2.4 Global restrictions
 
@@ -128,8 +136,10 @@ These restrictions apply even where a codec row below says "implemented":
   throughput probes succeed. `isConfigSupported()` alone is insufficient.
 - HDR is used only after the exact production presentation route passes GPU
   readback authorization on the active device and canvas format.
-- The fixed PCM output is stereo 48 kHz. Other sample rates and arbitrary
-  layouts are rejected rather than silently misrepresented.
+- The PCM output remains stereo 48 kHz. Mediabunny PCM accepts only the exact
+  listed 8-192 kHz rates and mono/stereo/5.1-side inputs; compressed codecs
+  remain 48 kHz only. Other rates/layouts are rejected rather than silently
+  misrepresented.
 - Playback rate other than 1.0 is rejected while custom decoded audio is active.
 - PiP, AirPlay, Remote Playback, DRM, and SyncPlay rate control are not claimed
   for custom decode.
@@ -291,17 +301,18 @@ delta on this procedure, not a separate architecture.
 | Vorbis | Native WebCodecs -> PCM -> AudioWorklet | Stereo and exact-qualified six-channel input at 48 kHz, output as stereo 48 kHz. | Implemented and runtime-gated. |
 | AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The official software decoder is part of every ordinary build and lazy-loads only for a selected AC-3/E-AC-3 track. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Native availability still varies. |
 | E-AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The ordinary software route shares the same pinned official decoder and owned PCM output. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Dolby Atmos object rendering/passthrough remains unimplemented. |
+| PCM/G.711 | Mediabunny built-in PCM decoder -> explicit channel map -> streaming sinc resampler -> AudioWorklet | `pcm-s16`, `pcm-s16be`, `pcm-s24`, `pcm-s24be`, `pcm-s32`, `pcm-s32be`, `pcm-f32`, `pcm-f32be`, `pcm-f64`, `pcm-f64be`, `pcm-u8`, `pcm-s8`, `ulaw`, and `alaw`; mono/stereo/5.1-side; exact 8-192 kHz rate list; stereo 48 kHz output. | Implemented in the current worktree and port-8096 live-qualified with mono 44.1 kHz signed 24-bit PCM. Container claims are deliberately narrower than the decoder list. DVD/BD LPCM and 7.1 remain unsupported. |
 
 ### 5.2 Unsupported audio codecs and implementation procedures
 
 | Unsupported codec/feature | Priority | Procedure |
 | --- | --- | --- |
-| Arbitrary sample rates, including 44.1/88.2/96/192 kHz | P0 shared prerequisite | Add one high-quality streaming resampler before adding per-codec exceptions. It must preserve signed-microsecond timestamps, expose deterministic latency, reset on seek/generation, bound its history, and have impulse/sine/sweep reference tests. Then expand exact capability fixtures and eligibility by source rate. |
-| Mono, 7.1, and arbitrary channel layouts | P0 shared prerequisite | Introduce an explicit channel-layout model and channel labels, not just a count. Add remap/downmix matrices with normalization and LFE policy, validate against FFmpeg/mpv reference PCM, and decide whether output remains stereo or can use qualified multichannel Web Audio. Reuse this for every codec. |
+| Non-48-kHz compressed audio | P0 shared expansion | Reuse the implemented streaming sinc resampler after adding exact per-codec output probes for each source rate. Confirm codec-specific delay/rate expansion, timestamp continuity, seek reset, PCM references, and CPU headroom before widening each device-profile rate. |
+| 7.1 and arbitrary channel layouts | P0 shared expansion | Extend the explicit channel-label model beyond implemented mono/stereo/5.1-side. Add remap/downmix matrices with normalization and LFE policy, validate against FFmpeg/mpv reference PCM, and decide whether output remains stereo or can use qualified multichannel Web Audio. Reuse this for every codec. |
 | DTS Core, DTS-ES, DTS-HD HR/MA | P0 common disc libraries | Complete legal review, then add a Mediabunny decoder registration or worker adapter backed by a reviewed decoder. Add MKV/M2TS packet mapping, core-vs-extension behavior, 48/96 kHz and 2/6/8-channel fixtures, resampling/layout integration, exact PCM hashes, seek/switch tests, and device-profile constraints. DTS:X object rendering and passthrough must be a separate feature. |
 | TrueHD/MLP | P0 common disc libraries | Add a reviewed software decoder and Matroska/M2TS packet mapping, including major-sync recovery. Feed decoded channel-labeled PCM through the shared resampler/layout stage. Validate 48/96/192 kHz, 6/8 channels, lossless PCM hashes, seek preroll, and sustained CPU use. Dolby Atmos objects/passthrough remain a separate route. |
 | ALAC | P1 Apple/lossless libraries | Probe future native WebCodecs exactly; otherwise add a small reviewed decoder. Implement MP4 magic-cookie/extradata mapping, 44.1-192 kHz and multichannel fixtures, resampling/layout integration, lossless PCM hashes, and seek tests. |
-| PCM families, including signed/unsigned integer, float, little/big endian, mu-law, A-law, DVD/BD LPCM | P0 foundation | Integrate Mediabunny's built-in PCM decoders and sample sinks rather than implementing duplicate converters. Map Mediabunny sample formats to explicit channel layouts, then add resampling and deterministic PCM hash tests. Add only genuinely missing container-specific LPCM unpacking. |
+| DVD/BD LPCM | P0 disc-media completion | Keep the implemented Mediabunny PCM conversion and shared normalization stage. Add only the missing VOB/MPEG-PS and M2TS LPCM packet/framing adapters, explicit channel assignments, 16/20/24-bit references, 48/96/192 kHz cases, seek/discontinuity tests, and exact device-profile constraints. |
 | WMA/WMAPRO/WMALOSSLESS | P1 legacy Windows libraries | Add ASF demux first, then a reviewed decoder adapter. Validate codec private data, block alignment, seek timestamps, common rates/layouts, PCM hashes, resampling, and malformed packet handling. |
 | xHE-AAC, HE-AAC v1/v2 | P1 AAC completion | Add distinct AudioDecoder configurations and exact output fixtures, including SBR/PS sample-rate and channel expansion. Confirm timestamps and output rate rather than treating AAC-LC evidence as sufficient. Then add resampling/layout coverage and exact profile constraints. |
 | Atmos, DTS:X, and bitstream passthrough | P2 output feature | First decide the browser output API and platform policy. Web Audio PCM does not preserve object metadata or compressed passthrough. Implement only behind an exact sink/output capability with user consent, latency/clock integration, exclusive-mode failure handling, and codec/legal review. Never label decoded E-AC-3 or TrueHD PCM as Atmos. |
@@ -310,8 +321,10 @@ delta on this procedure, not a separate architecture.
 
 | Container family | Current accepted video | Current accepted audio | Status/gaps |
 | --- | --- | --- | --- |
-| MP4/M4V/MOV/3GP/3G2/MJ2 | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3 | Implemented eligibility rule, subject to actual demux and codec probes. Add negative brand/extradata/edit-list tests. |
-| MKV/Matroska | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3 | Implemented; includes several Dolby Vision BL/EL topologies. Expand ordered chapters, attachments, codec delay, and unusual timestamp tests. |
+| MP4/M4V | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3; signed 16/24/32-bit and float 32/64-bit PCM in both endiannesses | Implemented eligibility/profile rules, subject to exact codec/runtime probes. Add negative brand/extradata/edit-list tests. |
+| MOV/QuickTime | H.264, HEVC, VP8, VP9, AV1 | MP4/M4V set plus unsigned/signed 8-bit PCM, mu-law, and A-law | Implemented with all fourteen Mediabunny PCM identifiers. Keep QuickTime-only codecs out of MP4 claims. |
+| 3GP/3G2/MJ2 | H.264, HEVC, VP8, VP9, AV1 | Compressed ISO-base audio set only | Parser eligibility exists, but the custom device profile does not yet advertise these containers. Qualify brands, range/seek, and server negotiation before claiming DirectPlay. |
+| MKV/Matroska | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3; U8, signed 16/24/32-bit LE/BE, F32LE, and F64LE PCM | Implemented; includes several Dolby Vision BL/EL topologies. Big-endian float, S8, and G.711 are intentionally not claimed for Matroska because Mediabunny does not map them there. |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis | Implemented and deliberately narrow. |
 | TS/MTS/M2TS | H.264, HEVC | AAC, MP3, AC-3, E-AC-3 | Implemented for bounded VOD/range input; Profile 7 PID dependency discovery exists. Live transport streams remain unsupported. Expand discontinuity, wraparound, PAT/PMT change, and BDMV end-to-end tests. |
 | AVI | None | None | Not implemented. Add demux, index/seek, timestamp, OpenDML, and malformed-chunk handling before enabling MPEG-4 Part 2/MJPEG/legacy audio. |
@@ -376,7 +389,7 @@ a reduced artifact, but they must not redefine the expected color or PCM data.
 | Frame rate | 23.976, 24, 25, 29.97, 30, 50, 59.94, 60, plus just-over-limit negative cases. |
 | Color | BT.709 limited/full SDR; BT.2020 limited PQ; BT.2020 limited HLG; metadata missing/conflicting; 8/10/12-bit negatives; chroma siting and crop. |
 | Dolby Vision | Profile 5; 7 MEL; 7 FEL; 8.1; 8.4; interleaved, Matroska dual-track, ISO BMFF dual-track, TS dual-PID, M2TS dependency; absent/corrupt/stale RPU; missing/mismatched EL. |
-| Audio | Every implemented codec in stereo 48 kHz; qualified 5.1 cases; native-media vs decoded-PCM AC-3/E-AC-3; unsupported 44.1/96 kHz and 7.1 negatives; audio-free video. |
+| Audio | Every implemented codec in stereo 48 kHz; PCM/G.711 at every exact qualified rate from 8-192 kHz and mono/stereo/5.1-side; native-media vs decoded-PCM AC-3/E-AC-3; non-48-kHz compressed and 7.1 negatives; audio-free video. |
 | Network/source | Correct ranges; server ignores range; truncated response; retry; slow/chunked transfer; authentication; expired URL; redirect; 404/416; source replacement. |
 | Lifecycle | Start, pause/resume, single seek, seek storm, next item, repeat sessions, natural EOF/audio-tail drain, audio switch, subtitle switch, stop(false), stop(true), destroy, background/foreground. |
 | Display | Window resize, DPR change, fullscreen enter/exit, crop/aspect, monitor/output change, canvas format change where observable. |
@@ -523,12 +536,15 @@ applied by Group F only after Group B evidence passes.
 multichannel output policy, audio decoder adapters, PCM conversion, AudioWorklet
 clock integration, native-media audio bridge.
 
-**Deliverable:** arbitrary common rates/layouts are normalized once, allowing
-DTS, TrueHD, ALAC, PCM, and WMA adapters without per-codec output hacks.
+**Deliverable:** common rates/layouts are normalized once, allowing DTS,
+TrueHD, ALAC, PCM, and WMA adapters without per-codec output hacks.
 
-**Order:** resampler -> layout model -> Mediabunny PCM -> standard-build
-`@mediabunny/ac3` -> ALAC -> DTS/TrueHD -> WMA. Separate legal review remains
-necessary only for non-Mediabunny decoder dependencies.
+**Completed order:** standard-build `@mediabunny/ac3` -> streaming resampler ->
+mono/stereo/5.1-side layout model -> Mediabunny PCM/G.711.
+
+**Remaining order:** reference PCM/golden matrix -> 7.1/layout expansion ->
+non-48-kHz compressed routes -> ALAC -> DTS/TrueHD -> WMA. Separate legal
+review remains necessary only for non-Mediabunny decoder dependencies.
 
 ### Group E: HDR and Dolby Vision correctness
 
@@ -674,10 +690,12 @@ Rules that prevent duplicated work:
 - [ ] Add MPEG-2, MPEG-4 Part 2, and VC-1 priority routes.
 - [ ] Decide and implement the required P1/P2 codec subset from sections 4.2
   and 5.2 using actual library inventory and legal review.
-- [ ] Add streaming audio resampling and explicit channel layouts.
+- [x] Add shared streaming audio resampling and explicit mono/stereo/5.1-side
+  channel layouts; 7.1/arbitrary layout expansion remains separate.
 - [x] Promote `@mediabunny/ac3` to ordinary builds and delete the obsolete local
   validation-only build policy while retaining exact runtime qualification.
-- [ ] Integrate Mediabunny's built-in PCM decoders.
+- [x] Integrate Mediabunny's built-in PCM/G.711 decoders for exact supported
+  codec/container/rate/layout combinations.
 - [ ] Add `@mediabunny/prores` through the shared video route.
 - [ ] Add DTS family, TrueHD/MLP, and ALAC priority routes.
 - [ ] Enable and qualify Mediabunny Ogg and applicable HLS paths.
@@ -708,8 +726,10 @@ Rules that prevent duplicated work:
 - [x] Owned decoded-PCM AudioWorklet clock/output.
 - [x] Stereo 48 kHz and qualified 5.1-to-stereo paths.
 - [x] Native-media AC-3/E-AC-3 bridge.
-- [ ] Implement resampling with deterministic latency.
-- [ ] Implement channel labels, mono/7.1 policy, and reference downmix tests.
+- [x] Implement bounded streaming sinc resampling with deterministic latency
+  and signed-microsecond timestamp accounting.
+- [x] Implement explicit channel labels and mono/stereo/5.1-side policy.
+- [ ] Add 7.1/arbitrary layout policy and FFmpeg/mpv reference downmix corpus.
 - [ ] Qualify audio switching among native-media, native WebCodecs, and bundled
   decoder routes without restarting video.
 - [ ] Decide supported playback-rate behavior and implement rate-adjusted PCM or
@@ -1034,7 +1054,79 @@ preserves review and live-validation isolation.
   changed-file ESLint; development and production Webpack builds; artifact
   verification for both bundles; and `git diff --check`.
 
-## 13. Definition of final completion
+## 13. Checklist before the Mediabunny PCM normalization commit
+
+### Decoder and normalization implementation
+
+- [x] Inventory the exact PCM identifiers decoded by Mediabunny 1.52.2.
+- [x] Use Mediabunny's public track/sample path instead of duplicating PCM
+  conversion code.
+- [x] Register a narrow G.711 availability marker for Mediabunny 1.52.2's
+  `ulaw`/`alaw` track-probe omission without replacing its built-in decoder.
+- [x] Add one explicit mono/stereo/5.1-side layout model and shared stereo
+  transform.
+- [x] Add one bounded 64-tap, 2048-phase streaming sinc resampler with exact
+  frame/timestamp accounting, seek-generation isolation, terminal flush, and
+  bounded output chunks/history.
+- [x] Keep the existing stereo 48 kHz AudioWorklet and A/V clock as the single
+  output path.
+- [x] Close every Mediabunny `AudioSample` in `finally` after copying it.
+
+### Capability and negotiation safety
+
+- [x] Map Jellyfin PCM names separately from Mediabunny decoder names.
+- [x] Advertise only exact MOV, MP4/M4V, and Matroska PCM/container pairs that
+  Mediabunny actually exposes.
+- [x] Limit input to mono, stereo, or 5.1-side and the exact qualified sample
+  rates `8000|11025|12000|16000|22050|24000|32000|44100|48000|88200|96000|176400|192000`.
+- [x] Keep 7.1, arbitrary layouts/rates, unsupported Matroska PCM mappings, and
+  DVD/BD LPCM outside the profile.
+- [x] Carry both source and normalized channel/rate values through worker,
+  session telemetry, and the browser validation snapshot.
+
+### Automated and live validation
+
+- [x] Round-trip all fourteen PCM/G.711 identifiers through Mediabunny's public
+  MOV writer, demux, track probe, and `AudioSampleSink` with quantization-aware
+  PCM comparisons.
+- [x] Cover exact passthrough, 44.1-to-48 kHz chunk-boundary independence,
+  96-to-48 kHz stopband rejection, discontinuity rejection, and bounded history.
+- [x] Cover mono/stereo/5.1 transforms plus positive and negative eligibility
+  and device-profile claims.
+- [x] Extend the browser harness with an all-or-none source/output audio-shape
+  expectation and keep its authoritative frontend default on port 8096.
+- [x] Generate and rescan a deterministic AAC-to-PCM stream-switch fixture.
+- [x] Live-qualify switch, pause/resume, fullscreen, resize/DPR, primary seek,
+  three-seek storm, canvas evidence, and exact stop on the same video session.
+- [x] Pass TypeScript, complete WebGPU Vitest, all WebGPU Node tests,
+  changed-file ESLint, development build, and `git diff --check`.
+- [x] Pass the final production build and ordinary artifact verifier, then
+  restore the development bundle and local-only feature flags.
+- [x] Perform the final diff review and prepare the focused commit/push.
+
+### Checkpoint evidence
+
+- Runtime: Chrome `151.0.7922.72`, Jellyfin `10.11.6`, authoritative frontend
+  and server `http://localhost:8096`.
+- Fixture `pq-main10-1080p24-aac-pcm_s24le-44100-mono.mkv`: item
+  `a3b8e935d43d9756a6dc28e222a2eb9a`, target `MediaStream.Index` `2`, length
+  `27246184`, SHA-256
+  `0640c55cd00111db4da231c5efe94dafc3c31fe291a57756e9164ec8666ae9cd`.
+- Playback began on AAC generation `1`, switched in-session to Mediabunny
+  `pcm-s24` generation `2`, and reported source mono `44100` Hz plus output
+  stereo `48000` Hz. The final switch snapshot had decoded `46774` output
+  frames.
+- Video remained native HEVC `video-frame` with authorized external PQ HDR.
+  The complete controlled lifecycle reported zero fallback, stale frames,
+  decoded-audio underflow/overflow/drop, terminal errors, browser errors, and
+  observed `VideoSample` ownership warnings.
+- Current automated gates: complete WebGPU Vitest `83` files / `1217` tests;
+  all WebGPU Node tests `111`; TypeScript and changed-file ESLint clean;
+  development and production Webpack builds plus ordinary codec artifact
+  verification passed. PCM uses the already-pinned Mediabunny core asset and
+  adds no duplicate decoder package.
+
+## 14. Definition of final completion
 
 The project is complete only when all claimed codec/profile/container/audio
 routes have passing manifest cases and Jellyfin negotiation evidence; HDR/DV

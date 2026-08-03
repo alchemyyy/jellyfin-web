@@ -1,0 +1,178 @@
+import { describe, expect, it } from 'vitest';
+
+import { requireMicroseconds } from './TimeMath';
+import StreamingAudioResampler, {
+    type StreamingAudioResamplerOutput
+} from './StreamingAudioResampler';
+
+const TARGET_SAMPLE_RATE = 48_000;
+
+function concatenateOutput(
+    output: readonly StreamingAudioResamplerOutput[],
+    channelIndex = 0
+): Float32Array {
+    const frameCount = output.reduce((sum, chunk) => sum + chunk.frameCount, 0);
+    const combined = new Float32Array(frameCount);
+    let frameOffset = 0;
+    for (const chunk of output) {
+        combined.set(chunk.channelData[channelIndex], frameOffset);
+        frameOffset += chunk.frameCount;
+    }
+    return combined;
+}
+
+function createSine(sampleRate: number, frequency: number, frameCount: number): Float32Array {
+    const output = new Float32Array(frameCount);
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        output[frameIndex] = Math.sin(
+            2 * Math.PI * frequency * frameIndex / sampleRate
+        );
+    }
+    return output;
+}
+
+function calculateRootMeanSquare(samples: Float32Array, startFrame: number): number {
+    let squareSum = 0;
+    for (let frameIndex = startFrame; frameIndex < samples.length; frameIndex += 1) {
+        squareSum += samples[frameIndex] * samples[frameIndex];
+    }
+    return Math.sqrt(squareSum / (samples.length - startFrame));
+}
+
+describe('StreamingAudioResampler', () => {
+    it('passes 48 kHz PCM through exactly and splits bounded output chunks', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 3,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const left = new Float32Array([ 1, 2, 3, 4, 5 ]);
+        const right = new Float32Array([ -1, -2, -3, -4, -5 ]);
+        const output = resampler.push({
+            channelData: [ left, right ],
+            mediaTimeMicroseconds: requireMicroseconds(2_000_000)
+        });
+
+        expect(output.map(chunk => chunk.frameCount)).toEqual([ 3, 2 ]);
+        expect(concatenateOutput(output)).toEqual(left);
+        expect(concatenateOutput(output, 1)).toEqual(right);
+        expect(output[0].mediaTimeMicroseconds).toBe(2_000_000);
+        expect(output[1].mediaTimeMicroseconds).toBe(2_000_063);
+        expect(resampler.finalize()).toEqual([]);
+        expect(resampler.getTelemetry()).toEqual({
+            bufferedSourceFrameCount: 0,
+            filterLatencySourceFrames: 0,
+            finalized: true,
+            outputFrameCount: 5,
+            sourceFrameCount: 5
+        });
+    });
+
+    it('produces identical 44.1 kHz output across arbitrary input boundaries', () => {
+        const sourceSampleRate = 44_100;
+        const source = createSine(sourceSampleRate, 1_000, sourceSampleRate / 5);
+        const createResampler = (): StreamingAudioResampler => new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 65_536,
+            sourceSampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+
+        const contiguousResampler = createResampler();
+        const contiguousOutput = contiguousResampler.push({
+            channelData: [ source ],
+            mediaTimeMicroseconds: requireMicroseconds(1_000_000)
+        });
+        contiguousOutput.push(...contiguousResampler.finalize());
+
+        const splitResampler = createResampler();
+        const splitOutput: StreamingAudioResamplerOutput[] = [];
+        const splitFrames = [ 137, 2_048, 17, 4_096, source.length - 6_298 ];
+        let sourceOffset = 0;
+        for (const frameCount of splitFrames) {
+            splitOutput.push(...splitResampler.push({
+                channelData: [ source.slice(sourceOffset, sourceOffset + frameCount) ],
+                mediaTimeMicroseconds: requireMicroseconds(
+                    1_000_000 + Math.round(sourceOffset * 1_000_000 / sourceSampleRate)
+                )
+            }));
+            sourceOffset += frameCount;
+        }
+        splitOutput.push(...splitResampler.finalize());
+
+        const contiguousSamples = concatenateOutput(contiguousOutput);
+        const splitSamples = concatenateOutput(splitOutput);
+        expect(splitSamples.length).toBe(9_600);
+        expect(splitSamples).toEqual(contiguousSamples);
+        expect(splitOutput[0].mediaTimeMicroseconds).toBe(1_000_000);
+        expect(splitOutput.at(-1)?.sampleRate).toBe(TARGET_SAMPLE_RATE);
+        expect(calculateRootMeanSquare(splitSamples, 128)).toBeCloseTo(Math.SQRT1_2, 3);
+        expect(splitResampler.getTelemetry().bufferedSourceFrameCount).toBe(0);
+    });
+
+    it('suppresses frequencies above the target Nyquist limit while downsampling', () => {
+        const sourceSampleRate = 96_000;
+        const frameCount = sourceSampleRate / 4;
+        const passbandResampler = new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 65_536,
+            sourceSampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const stopbandResampler = new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 65_536,
+            sourceSampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+
+        const passbandOutput = passbandResampler.push({
+            channelData: [ createSine(sourceSampleRate, 10_000, frameCount) ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+        passbandOutput.push(...passbandResampler.finalize());
+        const stopbandOutput = stopbandResampler.push({
+            channelData: [ createSine(sourceSampleRate, 30_000, frameCount) ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+        stopbandOutput.push(...stopbandResampler.finalize());
+
+        const passbandRootMeanSquare = calculateRootMeanSquare(
+            concatenateOutput(passbandOutput),
+            128
+        );
+        const stopbandRootMeanSquare = calculateRootMeanSquare(
+            concatenateOutput(stopbandOutput),
+            128
+        );
+        expect(passbandRootMeanSquare).toBeGreaterThan(0.65);
+        expect(stopbandRootMeanSquare).toBeLessThan(0.002);
+    });
+
+    it('bounds retained history and rejects discontinuous input timestamps', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 4_096,
+            sourceSampleRate: 192_000,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const input = new Float32Array(2_048);
+        let sourceFrameOffset = 0;
+        for (let chunkIndex = 0; chunkIndex < 40; chunkIndex += 1) {
+            resampler.push({
+                channelData: [ input ],
+                mediaTimeMicroseconds: requireMicroseconds(
+                    Math.round(sourceFrameOffset * 1_000_000 / 192_000)
+                )
+            });
+            sourceFrameOffset += input.length;
+            expect(resampler.getTelemetry().bufferedSourceFrameCount).toBeLessThanOrEqual(160);
+        }
+
+        expect(() => resampler.push({
+            channelData: [ input ],
+            mediaTimeMicroseconds: requireMicroseconds(999_000)
+        })).toThrow('Resampler input timestamps contain a gap or overlap');
+    });
+});

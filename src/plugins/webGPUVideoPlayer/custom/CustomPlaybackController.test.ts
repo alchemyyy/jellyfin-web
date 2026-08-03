@@ -40,7 +40,11 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
     return {
         activeGeneration: null,
         abandonedRawFrameCount: 0,
+        audioChannelCount: null,
         audioCodec: null,
+        audioSampleRate: null,
+        audioSourceChannelCount: null,
+        audioSourceSampleRate: null,
         droppedFrameCount: 0,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,

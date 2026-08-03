@@ -1097,7 +1097,11 @@ function createPlayerSnapshotExpression(accessKey) {
                 videoDecode: custom.videoDecode ? {
                     abandonedRawFrameCount: custom.videoDecode.abandonedRawFrameCount,
                     activeGeneration: custom.videoDecode.activeGeneration,
+                    audioChannelCount: custom.videoDecode.audioChannelCount,
                     audioCodec: custom.videoDecode.audioCodec,
+                    audioSampleRate: custom.videoDecode.audioSampleRate,
+                    audioSourceChannelCount: custom.videoDecode.audioSourceChannelCount,
+                    audioSourceSampleRate: custom.videoDecode.audioSourceSampleRate,
                     droppedFrameCount: custom.videoDecode.droppedFrameCount,
                     failureKind: custom.videoDecode.failureKind,
                     nativeAudioClockReady: custom.videoDecode.nativeAudioClockReady,
@@ -4041,7 +4045,8 @@ async function runPlaybackExercise(
                     activeLater,
                     audioSwitchSnapshot,
                     configuration.expectedAudioCodec,
-                    configuration.expectedAudioPath
+                    configuration.expectedAudioPath,
+                    configuration.expectedAudioConfiguration
                 )
             );
         }
@@ -4234,6 +4239,7 @@ async function runSmoke(configuration) {
                 audioStreamIndex: configuration.audioStreamIndex,
                 completionMode: configuration.completionMode,
                 expectedAudioCodec: configuration.expectedAudioCodec,
+                expectedAudioConfiguration: configuration.expectedAudioConfiguration,
                 audioPath: configuration.expectedAudioPath,
                 failureInjection: configuration.failureInjection,
                 repeatSessionCount: configuration.repeatSessionCount,
