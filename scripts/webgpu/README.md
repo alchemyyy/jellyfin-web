@@ -383,6 +383,7 @@ variables:
 $env:WEBGPU_SMOKE_DEBUG_URL = 'http://localhost:9224'
 $env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096/web'
 $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
+$env:WEBGPU_SMOKE_SERVER_LOG_DIRECTORY = "$env:LOCALAPPDATA\jellyfin\log" # optional
 $env:WEBGPU_SMOKE_ITEM_ID = '<video-item-id>'
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'video-frame' # or raw-planes
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'native' # or bundled-hevc
@@ -423,6 +424,17 @@ methods to agree. A DirectPlay result additionally requires no active
 media-source, device, or stream URL identifiers. The default frontend is the
 normal Jellyfin-served `http://localhost:8096/web` surface; the API remains
 `http://localhost:8096`.
+
+Set `WEBGPU_SMOKE_SERVER_LOG_DIRECTORY` to require bounded server-side evidence
+for the same invocation. The harness snapshots byte sizes for the retained
+Jellyfin primary and FFmpeg transcode logs, reads at most 8 MiB appended after
+the snapshot, and waits up to five seconds for the exact item/user start and
+stop sequence. It reports only counts, `start`/`stop` tokens, playback-policy
+booleans, warning/error counts, and transcode-log activity. Raw log lines,
+filenames, paths, account/title values, tokens, and identifiers are never
+written. A DirectPlay assertion requires no new or changed FFmpeg transcode log.
+Generated private browser cases require this directory so session API evidence
+and independently captured server-log evidence must agree.
 
 A `raw-planes` result is accepted only when
 `getRawHDRAuthorizationTelemetry()` reports `status: 'authorized'` on the
@@ -703,6 +715,8 @@ The checks require:
 - the explicitly expected Jellyfin play method when configured, with matching
   bounded client/server session evidence and no transcode state or reasons for
   DirectPlay;
+- the exact server-log start/stop sequence and no FFmpeg transcode-log activity
+  for DirectPlay when server-log capture is configured;
 - the selected audio decoder generation and codec when an audio stream index is
   supplied;
 - no more than 2 percent audio underflow over an observation window containing
@@ -1010,4 +1024,5 @@ Run the pure helper tests without opening or navigating a browser:
 node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
 node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
 node --test scripts/webgpu/release-validation-metrics.node-test.mjs
+node --test scripts/webgpu/server-log-evidence.node-test.mjs
 ```

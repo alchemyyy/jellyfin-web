@@ -85,7 +85,7 @@ ALLOWED_ADAPTERS = frozenset(
     }
 )
 ENVIRONMENT_ARGUMENT_OPTIONS: Mapping[str, frozenset[str]] = {
-    "browser-smoke": frozenset({"--item-id"}),
+    "browser-smoke": frozenset({"--item-id", "--server-log-directory"}),
     "mpv-ab": frozenset(
         {"--ffmpeg", "--manifest", "--mpv", "--node", "--output", "--source"}
     ),

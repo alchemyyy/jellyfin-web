@@ -174,6 +174,7 @@ Run one generated source matrix or the aggregate matrix with:
 ```powershell
 $env:WEBGPU_SMOKE_USERNAME = '<validation account>'
 $env:WEBGPU_SMOKE_PASSWORD = '<validation password>'
+$env:WEBGPU_SMOKE_SERVER_LOG_DIRECTORY = '<Jellyfin log directory>'
 $env:WEBGPU_AB_USERNAME = $env:WEBGPU_SMOKE_USERNAME
 $env:WEBGPU_AB_PASSWORD = $env:WEBGPU_SMOKE_PASSWORD
 
@@ -308,9 +309,10 @@ unittest, ESLint, Stylelint, development/production Webpack, generated-data
 checks, Vite Node, production artifact verification, browser lifecycle smoke,
 Dolby Vision worker smoke, runtime readiness, and mpv/browser A/B capture.
 
-`browser-smoke` reads its existing `WEBGPU_SMOKE_*` variables and permits a
-per-check environment-backed `--item-id`. Several private titles can therefore
-run in one matrix without copying or exposing their IDs. `worker-smoke`,
+`browser-smoke` reads its existing `WEBGPU_SMOKE_*` variables and permits
+per-check environment-backed `--item-id` and `--server-log-directory` values.
+Several private titles can therefore run in one matrix without copying or
+exposing their IDs or machine log paths. `worker-smoke`,
 `toolchain-probe`, and `mpv-ab` may map declared environment variables to a
 small adapter-specific option whitelist through `environmentArguments`.
 Arbitrary option names are rejected.
@@ -322,6 +324,16 @@ match booleans, transcode-state booleans, and transcode-reason names. DirectPlay
 fails if either side selects another method, the server exposes active
 transcoding, or any transcode reason remains. Private item/media-source/device
 identifiers and stream URLs are never written.
+
+Generated browser cases also require bounded Jellyfin log evidence. The
+adapter snapshots all retained primary-log and FFmpeg-transcode-log byte sizes,
+then reads only primary bytes appended during the exercise, capped at 8 MiB.
+Private item and account names are resolved in browser memory solely for exact
+matching. Evidence retains the matched start/stop sequence, policy booleans,
+counts, and whether any transcode log was created or changed. It never retains
+raw lines, filenames, paths, names, tokens, or IDs. DirectPlay requires the
+exact expected session count, alternating start/stop order, no server errors,
+and zero transcode-log activity.
 
 A successful browser adapter contributes bounded browser product/protocol,
 WebGPU adapter/limit/canvas data, CDP GPU device and driver records, display HDR
@@ -385,5 +397,6 @@ still require exact private source records and real executions before their
 matrix can pass. Their route/exercise definitions and overlay generation are
 now shared rather than duplicated per title.
 
-Shared case-ID failure injection, server log capture, pairwise matrix
-generation, and manual-observation ingestion remain framework work.
+Shared case-ID failure injection, pairwise matrix generation, and
+manual-observation ingestion remain framework work. Bounded server-log capture
+is integrated into every generated browser case.

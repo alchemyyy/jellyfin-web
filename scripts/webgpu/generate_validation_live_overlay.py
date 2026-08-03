@@ -593,11 +593,16 @@ def create_browser_records(
         "timeoutSeconds": exercise["timeoutSeconds"],
         "requiredEnvironment": [
             item_environment,
+            "WEBGPU_SMOKE_SERVER_LOG_DIRECTORY",
             "WEBGPU_SMOKE_USERNAME",
             "WEBGPU_SMOKE_PASSWORD",
         ],
         "environmentArguments": [
-            {"option": "--item-id", "environment": item_environment}
+            {"option": "--item-id", "environment": item_environment},
+            {
+                "option": "--server-log-directory",
+                "environment": "WEBGPU_SMOKE_SERVER_LOG_DIRECTORY",
+            },
         ],
         "arguments": arguments,
         "resultFormat": "json",

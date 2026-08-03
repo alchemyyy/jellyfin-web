@@ -109,6 +109,10 @@ const OPTION_DEFINITIONS = Object.freeze({
         environmentName: 'WEBGPU_SMOKE_SERVER_URL',
         name: 'serverURL'
     },
+    '--server-log-directory': {
+        environmentName: 'WEBGPU_SMOKE_SERVER_LOG_DIRECTORY',
+        name: 'serverLogDirectory'
+    },
     '--soak-sessions': {
         environmentName: 'WEBGPU_SMOKE_SOAK_SESSIONS',
         name: 'soakSessionCount'
@@ -142,6 +146,8 @@ Options:
   --debug-url <url>      Chromium remote-debugging HTTP endpoint
   --frontend-url <url>   Built Jellyfin Web frontend URL
   --server-url <url>     Jellyfin server URL entered in the UI
+  --server-log-directory <path>
+                         Optional Jellyfin log directory for bounded server evidence
   --item-id <id>         Video item ID to play
   --expected-video-output <video-frame|raw-planes>
                          Required decoded video output mode
@@ -187,7 +193,8 @@ Options:
 
 Environment equivalents:
   WEBGPU_SMOKE_DEBUG_URL, WEBGPU_SMOKE_FRONTEND_URL,
-  WEBGPU_SMOKE_SERVER_URL, WEBGPU_SMOKE_ITEM_ID,
+  WEBGPU_SMOKE_SERVER_URL, WEBGPU_SMOKE_SERVER_LOG_DIRECTORY,
+  WEBGPU_SMOKE_ITEM_ID,
   WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
   WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
   WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE, WEBGPU_SMOKE_EXPECTED_PLAY_METHOD,
@@ -235,6 +242,10 @@ function requireNonEmptyString(value, optionName) {
         throw new TypeError(`Missing required browser smoke option: ${optionName}`);
     }
     return value;
+}
+
+function optionalNonEmptyString(value, optionName) {
+    return value === undefined ? null : requireNonEmptyString(value, optionName);
 }
 
 function parseHTTPURL(value, optionName) {
@@ -708,6 +719,10 @@ export function parseSmokeConfiguration(argumentList, environment) {
             configuredValue('serverURL') || DEFAULT_SERVER_URL,
             '--server-url'
         ),
+        serverLogDirectory: optionalNonEmptyString(
+            configuredValue('serverLogDirectory'),
+            '--server-log-directory'
+        ),
         soakSessionCount,
         startupSampleCount,
         timeoutMilliseconds: timeoutValue ?
@@ -715,6 +730,18 @@ export function parseSmokeConfiguration(argumentList, environment) {
             DEFAULT_TIMEOUT_MILLISECONDS,
         username: requireNonEmptyString(configuredValue('username'), '--username')
     };
+}
+
+/** Returns the exact Jellyfin start/stop pair count for one smoke invocation. */
+export function getExpectedServerLogSessionCount(configuration) {
+    if (configuration.startupSampleCount > 0) {
+        return 3 * (configuration.startupSampleCount + 1);
+    }
+    if (configuration.soakSessionCount > 0) {
+        return configuration.soakSessionCount;
+    }
+    return configuration.repeatSessionCount
+        + (configuration.failureInjection === 'none' ? 0 : 1);
 }
 
 /** Returns a balanced native/custom order for one one-based measured startup round. */

@@ -4,11 +4,11 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `6622bf91448b5aeb3347d39c14f7f9a1669b8184`
+Parent checkpoint: `6e7dd11bd2870b9425868955385b1d81c7e3580b`
 
-Checkpoint state: generated private live-case catalog committed and pushed;
-bounded Jellyfin playback-decision evidence is implemented and under final
-checkpoint validation
+Checkpoint state: generated private live-case catalog and bounded Jellyfin
+playback-decision evidence are committed and pushed; bounded server-log
+evidence is implemented and live-validated in the current worktree
 
 ## Current objective
 
@@ -101,13 +101,27 @@ ID, or stream URL is retained. The harness now defaults to Jellyfin's normal
 its lifecycle case passed one fixture, one case, and both the runtime and
 browser checks; the resulting six evidence files passed a private-value scan.
 
+The browser adapter now optionally snapshots the Jellyfin primary and FFmpeg
+transcode logs before playback, reads at most 8 MiB appended during the bounded
+exercise, and resolves the private account/title values only for in-memory
+matching. It reports no raw lines, filenames, paths, names, tokens, IDs, or
+URLs. Generated private browser cases require this evidence. The Dark Knight
+lifecycle rerun on port 8096 recorded one exact `start,stop` pair, one policy
+record, zero server errors/warnings, zero transcode-log activity, and matching
+client/server DirectPlay without retaining private values.
+
+The server-log checkpoint matrix passes all 15 fixtures/cases and all 10
+required checks: 57 Python tests, 143 standalone Node tests, 383 focused Vitest
+tests, TypeScript, runtime-toolchain readiness, and a development build. Source
+feature flags remain disabled.
+
 Remaining Group B work:
 
 1. Populate the generated private catalog with exact local color/HDR, browser
    lifecycle, worker, startup, retention/soak, and mpv A/B source records, then
    execute and approve those matrices.
-2. Unify failure injection by case ID and add sanitized server-log capture. The
-   bounded active-session API evidence is complete.
+2. Unify failure injection by case ID. Bounded active-session API and sanitized
+   server-log evidence are complete.
 3. Add manual-observation ingestion and pairwise/boundary matrix generation.
 4. Execute the same environment contract on Edge plus AMD and Intel systems;
    retain explicit `not-recorded` values only for matrices with no live adapter.

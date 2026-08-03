@@ -677,7 +677,12 @@ driven by `scripts/webgpu/validation_matrix.py`:
 - exact browser-smoke Jellyfin play-method assertions backed by both the
   player-selected stream record and the matching active server session. The
   bounded evidence includes no private identifiers or URLs, and DirectPlay
-  rejects active transcoding or any transcode reason.
+  rejects active transcoding or any transcode reason;
+- bounded Jellyfin server-log capture for generated browser cases. It snapshots
+  retained primary/FFmpeg file sizes, reads at most 8 MiB appended during the
+  exercise, resolves private match values only in memory, and retains only the
+  exact start/stop sequence, policy booleans, counts, and transcode activity.
+  DirectPlay rejects any new or changed FFmpeg transcode log.
 
 The generated-registry checkpoint matrix passed all 15 fixture hashes and cases,
 50 Python tests, 135 standalone Node tests, 383 focused Vitest tests, and
@@ -690,15 +695,15 @@ external-PQ route, decoded PCM audio, emitted no case failures, populated the
 browser/GPU-driver/display/server/feature environment, and passed the report
 secret scan. This single local record does not close the broader route matrix.
 The corresponding static checkpoint passed 15 canonical cases, 57 Python
-tests, 136 standalone Node tests, 383 focused Vitest tests, TypeScript,
+tests, 143 standalone Node tests, 383 focused Vitest tests, TypeScript,
 runtime-toolchain readiness, and a development build.
 
 Remaining Group B work is populating and executing the generated private
 HDR/color/startup/soak/mpv records, one case-ID failure-injection vocabulary
-across the smoke tools, sanitized server-log evidence, manual-observation
-ingestion, and pairwise/boundary matrix generation. Bounded active-session API
-evidence is complete; full PlaybackInfo/network and server-log capture remains
-separate because it must redact request profiles, signed URLs, and identifiers.
+across the smoke tools, manual-observation ingestion, and pairwise/boundary
+matrix generation. Bounded active-session API and server-log evidence are
+complete. Full PlaybackInfo/network capture remains separate because it must
+redact request profiles, signed URLs, and identifiers.
 
 ### 7.6 Minimum gates
 
@@ -1092,6 +1097,9 @@ Rules that prevent duplicated work:
 - [x] Make every generated live browser case assert the exact player and server
   play method; DirectPlay fails on active transcoding or any transcode reason,
   and the report retains no private item/media-source/device identifier or URL.
+- [x] Require bounded server-log evidence for every generated browser case;
+  retain only exact lifecycle/policy/count evidence and reject DirectPlay when
+  any FFmpeg transcode log is created or changed.
 - [ ] Prove DirectPlay negotiation for every advertised route on port 8096.
 - [ ] Audit all PlaybackInfo player/decoder/stream labels and transcode reasons.
 - [ ] Constrain audio profile claims to the exact probed variants, especially

@@ -91,6 +91,9 @@ class LiveOverlayGeneratorTests(unittest.TestCase):
         """Returns private sentinels backed by checked repository test data."""
 
         return {
+            "WEBGPU_SMOKE_SERVER_LOG_DIRECTORY": str(
+                REPOSITORY_ROOT / "artifacts" / "private-jellyfin-logs"
+            ),
             "WEBGPU_VALIDATION_TEST_ITEM_ID": "private-item-sentinel",
             "WEBGPU_VALIDATION_TEST_LICENSE": str(
                 REPOSITORY_ROOT
@@ -159,6 +162,7 @@ class LiveOverlayGeneratorTests(unittest.TestCase):
             self.assertIn("private-live", manifest.matrices)
             self.assertIn("--item-id", command.arguments)
             self.assertIn("private-item-sentinel", command.arguments)
+            self.assertIn("--server-log-directory", command.arguments)
             self.assertIn("--expected-play-method", command.arguments)
             self.assertIn("DirectPlay", command.arguments)
             fixture = overlay["fixtures"][0]

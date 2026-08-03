@@ -12,6 +12,7 @@ import {
     createFrontendRouteURL,
     deriveRawHDRPlaybackRouteKey,
     getStartupModeFeatureFlags,
+    getExpectedServerLogSessionCount,
     hasAuthorizedHDRPlaybackRoute,
     hasAuthorizedProfile7FELPlaybackRoute,
     hasAuthorizedRawHDRPlaybackRoute,
@@ -160,6 +161,7 @@ test('parses CLI values before environment values', () => {
         '--debug-url', 'http://localhost:9333',
         '--frontend-url', 'http://localhost:8181/',
         '--server-url', 'http://localhost:9096/',
+        '--server-log-directory', 'C:\\validation-logs',
         '--item-id', 'cli-item',
         '--completion-mode', 'controlled-stop',
         '--expected-video-decoder', 'bundled-hevc',
@@ -202,6 +204,7 @@ test('parses CLI values before environment values', () => {
         repeatSessionCount: 3,
         seekStormCount: 4,
         serverURL: 'http://localhost:9096',
+        serverLogDirectory: 'C:\\validation-logs',
         soakSessionCount: 0,
         startupSampleCount: 0,
         timeoutMilliseconds: 45_000,
@@ -211,6 +214,7 @@ test('parses CLI values before environment values', () => {
 
 test('documents the required output expectations in CLI and environment usage', () => {
     assert.match(SMOKE_USAGE, /--expected-video-output <video-frame\|raw-planes>/u);
+    assert.match(SMOKE_USAGE, /--server-log-directory <path>/u);
     assert.match(SMOKE_USAGE, /--expected-video-decoder <native\|bundled-hevc>/u);
     assert.match(SMOKE_USAGE, /--expected-audio <disabled\|ready\|native-media>/u);
     assert.match(SMOKE_USAGE, /--audio-stream-index <number>/u);
@@ -235,6 +239,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--soak-sessions <0\|10-100>/u);
     assert.match(SMOKE_USAGE, /--startup-samples <0\|10-30>/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SERVER_LOG_DIRECTORY/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE/u);
@@ -264,6 +269,7 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.debugURL, 'http://localhost:9224');
     assert.equal(configuration.frontendURL, 'http://localhost:8096/web');
     assert.equal(configuration.serverURL, 'http://localhost:8096');
+    assert.equal(configuration.serverLogDirectory, null);
     assert.equal(configuration.timeoutMilliseconds, 30_000);
     assert.equal(configuration.completionMode, 'controlled-stop');
     assert.equal(configuration.repeatSessionCount, 1);
@@ -482,6 +488,33 @@ test('alternates native and custom startup order around presentation', () => {
         [ 'custom', 'presentation', 'html' ]
     );
     assert.throws(() => createStartupSampleModeOrder(0), /positive safe integer/u);
+});
+
+test('counts exact server playback sessions for every exercise shape', () => {
+    assert.equal(getExpectedServerLogSessionCount({
+        failureInjection: 'none',
+        repeatSessionCount: 3,
+        soakSessionCount: 0,
+        startupSampleCount: 0
+    }), 3);
+    assert.equal(getExpectedServerLogSessionCount({
+        failureInjection: 'device-loss',
+        repeatSessionCount: 3,
+        soakSessionCount: 0,
+        startupSampleCount: 0
+    }), 4);
+    assert.equal(getExpectedServerLogSessionCount({
+        failureInjection: 'none',
+        repeatSessionCount: 1,
+        soakSessionCount: 30,
+        startupSampleCount: 0
+    }), 30);
+    assert.equal(getExpectedServerLogSessionCount({
+        failureInjection: 'none',
+        repeatSessionCount: 1,
+        soakSessionCount: 0,
+        startupSampleCount: 10
+    }), 33);
 });
 
 test('defines isolated feature overlays for every startup mode', () => {

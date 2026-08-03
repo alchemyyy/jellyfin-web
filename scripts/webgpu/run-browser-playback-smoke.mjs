@@ -10,6 +10,7 @@ import {
     createFrontendRouteURL,
     createStartupSampleModeOrder,
     deriveRawHDRPlaybackRouteKey,
+    getExpectedServerLogSessionCount,
     getStartupModeFeatureFlags,
     hasAuthorizedHDRPlaybackRoute,
     hasConsumedCustomAudio,
@@ -46,6 +47,12 @@ import {
     validateHTMLVersusPresentationStartupSamples,
     validateReleaseMemorySoakSeries
 } from './release-validation-metrics.mjs';
+import {
+    beginServerLogCapture,
+    finishServerLogCapture,
+    ServerLogEvidenceError,
+    validateServerLogEvidence
+} from './server-log-evidence.mjs';
 
 const COMMAND_TIMEOUT_MILLISECONDS = 15_000;
 const INPUT_CONTROL_MODIFIER = 2;
@@ -508,6 +515,86 @@ async function collectRuntimeEnvironmentEvidence(
             CDP: CDPGPUEvidence
         },
         server: pageEvidence.server
+    };
+}
+
+async function collectPrivateServerLogMatch(client, configuration) {
+    if (configuration.serverLogDirectory === null) {
+        return null;
+    }
+    const match = await evaluateValue(client, `(async () => {
+        if (typeof ApiClient !== 'object'
+            || typeof ApiClient.getCurrentUser !== 'function'
+            || typeof ApiClient.getCurrentUserId !== 'function'
+            || typeof ApiClient.getItem !== 'function') {
+            return null;
+        }
+        const [ item, user ] = await Promise.all([
+            ApiClient.getItem(
+                ApiClient.getCurrentUserId(),
+                ${JSON.stringify(configuration.itemID)}
+            ),
+            ApiClient.getCurrentUser()
+        ]);
+        return {
+            itemName: typeof item?.Name === 'string' ? item.Name : null,
+            userName: typeof user?.Name === 'string' ? user.Name : null
+        };
+    })()`);
+    if (typeof match?.itemName !== 'string'
+        || match.itemName.length === 0
+        || typeof match.userName !== 'string'
+        || match.userName.length === 0) {
+        throw new SmokeHarnessError(
+            'server-log-match-unavailable',
+            'Unable to resolve the private Jellyfin server-log match values'
+        );
+    }
+    return match;
+}
+
+async function beginConfiguredServerLogCapture(client, configuration) {
+    const match = await collectPrivateServerLogMatch(client, configuration);
+    if (match === null) {
+        return null;
+    }
+    try {
+        return {
+            capture: await beginServerLogCapture(configuration.serverLogDirectory),
+            match
+        };
+    } catch (error) {
+        if (error instanceof ServerLogEvidenceError) {
+            throw new SmokeHarnessError(error.code, error.message);
+        }
+        throw error;
+    }
+}
+
+async function finishConfiguredServerLogCapture(configuredCapture, configuration) {
+    if (configuredCapture === null) {
+        return null;
+    }
+    const expectedSessionCount = getExpectedServerLogSessionCount(configuration);
+    let evidence;
+    try {
+        evidence = await finishServerLogCapture(
+            configuredCapture.capture,
+            configuredCapture.match,
+            expectedSessionCount
+        );
+    } catch (error) {
+        if (error instanceof ServerLogEvidenceError) {
+            throw new SmokeHarnessError(error.code, error.message);
+        }
+        throw error;
+    }
+    return {
+        evidence,
+        failures: validateServerLogEvidence(evidence, {
+            expectedPlayMethod: configuration.expectedPlayMethod,
+            expectedSessionCount
+        })
     };
 }
 
@@ -4650,6 +4737,10 @@ async function runSmoke(configuration) {
         const loginPerformed = alreadyAuthenticated ?
             false :
             await signInIfRequired(client, configuration);
+        const configuredServerLogCapture = await beginConfiguredServerLogCapture(
+            client,
+            configuration
+        );
         const browserVersion = await client.send('Browser.getVersion');
         let playbackResult;
         try {
@@ -4664,6 +4755,18 @@ async function runSmoke(configuration) {
         } catch (error) {
             attachBrowserDiagnostics(error, browserErrorMonitor);
             throw error;
+        }
+        const serverLogResult = await finishConfiguredServerLogCapture(
+            configuredServerLogCapture,
+            configuration
+        );
+        if (serverLogResult !== null) {
+            appendFailures(
+                playbackResult.failures,
+                'server-log',
+                serverLogResult.failures
+            );
+            playbackResult.observations.serverLog = serverLogResult.evidence;
         }
         const runtimeEnvironment = await collectRuntimeEnvironmentEvidence(
             client,
@@ -4684,6 +4787,7 @@ async function runSmoke(configuration) {
                 presentationRoute: configuration.expectedPresentationRoute,
                 repeatSessionCount: configuration.repeatSessionCount,
                 seekStormCount: configuration.seekStormCount,
+                serverLogEvidence: configuration.serverLogDirectory !== null,
                 soakSessionCount: configuration.soakSessionCount,
                 startupSampleCount: configuration.startupSampleCount,
                 videoDecoderBackend: configuration.expectedVideoDecoderBackend,
@@ -4767,6 +4871,7 @@ export async function runSmokeCLI(
             configuration.frontendURL,
             configuration.itemID,
             configuration.password,
+            configuration.serverLogDirectory,
             configuration.serverURL,
             configuration.username
         ]);
@@ -4780,6 +4885,7 @@ export async function runSmokeCLI(
             configuration.frontendURL,
             configuration.itemID,
             configuration.password,
+            configuration.serverLogDirectory,
             configuration.serverURL,
             configuration.username
         ];
