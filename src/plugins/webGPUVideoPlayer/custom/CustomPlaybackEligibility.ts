@@ -1,6 +1,7 @@
 import {
     getDolbyVisionPresentationDescriptor,
     getDolbyVisionPresentationSelection,
+    getDolbyVisionProfile7HDR10BaseColorMetadata,
     getPresentationInputColorMetadata
 } from '../PresentationInput';
 import {
@@ -277,6 +278,7 @@ type VideoStreamSelection =
 
 type VideoOutputSelection =
     | {
+        dolbyVisionProfile?: 5 | 7 | 8
         hdr: boolean
         maximumCodedHeight: number
         maximumCodedWidth: number
@@ -351,6 +353,7 @@ export type CustomPlaybackEligibilityOptions = {
     allowDolbyVision?: boolean
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
+    allowNativeDolbyVisionProfile7HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR: boolean
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
@@ -365,6 +368,7 @@ export type EligibleCustomPlayback = {
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds
+    dolbyVisionProfile: 5 | 7 | 8 | null
     eligible: true
     hdr: boolean
     maximumCodedHeight: number
@@ -1045,9 +1049,7 @@ function hasExplicitNativeHDRChromaticity(stream: MediaStream): boolean {
 function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
-    allowRawDolbyVision: boolean,
-    allowRawDolbyVisionProfile7: boolean,
-    allowNativeDolbyVision: boolean,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream
 ): VideoOutputSelection | null {
@@ -1057,7 +1059,7 @@ function selectDolbyVisionVideoOutput(
     }
     if (
         descriptor.profile === 5
-        && allowNativeDolbyVision
+        && eligibilityOptions.allowNativeDolbyVision === true
         && supportsNativeDolbyVisionProfile5(
             capabilities,
             videoCodec,
@@ -1069,6 +1071,7 @@ function selectDolbyVisionVideoOutput(
             return { reason: 'hdr-codec-unsupported', status: 'invalid' };
         }
         return {
+            dolbyVisionProfile: descriptor.profile,
             hdr: true,
             maximumCodedHeight: nativeCapability.maximumCodedHeight,
             maximumCodedWidth: nativeCapability.maximumCodedWidth,
@@ -1081,37 +1084,71 @@ function selectDolbyVisionVideoOutput(
         };
     }
     const rawPresentationAllowed = descriptor.profile === 7 ?
-        allowRawDolbyVisionProfile7 :
-        allowRawDolbyVision;
-    if (!rawPresentationAllowed) {
-        return { reason: 'hdr-presentation-unavailable', status: 'invalid' };
-    }
-
+        eligibilityOptions.allowDolbyVisionProfile7 === true :
+        eligibilityOptions.allowDolbyVision === true;
     const rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat = 'I420P10';
     if (
-        videoCodec !== 'hevc'
-        || !supportsRawHDRVideo(
+        rawPresentationAllowed
+        && videoCodec === 'hevc'
+        && supportsRawHDRVideo(
             capabilities,
             videoCodec,
             videoStream,
             rawVideoFrameFormat
         )
     ) {
-        return { reason: 'hdr-codec-unsupported', status: 'invalid' };
+        const rawVideoCapability = capabilities.rawHDRVideo.hevc;
+        return {
+            dolbyVisionProfile: descriptor.profile,
+            hdr: true,
+            maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
+            maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
+            nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat,
+            status: 'selected',
+            videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
+                'bundled-hevc' :
+                'native',
+            videoOutputMode: 'raw-planes'
+        };
     }
-    const rawVideoCapability = capabilities.rawHDRVideo.hevc;
+
+    const profile7BaseMetadata = getDolbyVisionProfile7HDR10BaseColorMetadata(options);
+    const profile7BaseRouteKey = profile7BaseMetadata ?
+        getExternalHDRAuthorizationRouteKey(profile7BaseMetadata) :
+        null;
+    const nativeHDRCapability = capabilities.nativeHDRHEVC;
+    if (
+        eligibilityOptions.allowNativeHDR === true
+        && eligibilityOptions.allowNativeDolbyVisionProfile7HDR10Base === true
+        && profile7BaseMetadata !== null
+        && profile7BaseRouteKey !== null
+        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(
+            profile7BaseRouteKey
+        )
+        && hasExplicitNativeHDRChromaticity(videoStream)
+        && supportsNativeHDRHEVC(nativeHDRCapability, videoCodec, videoStream)
+    ) {
+        return {
+            hdr: true,
+            maximumCodedHeight: nativeHDRCapability.maximumCodedHeight,
+            maximumCodedWidth: nativeHDRCapability.maximumCodedWidth,
+            nativeHDRTransfer: 'pq',
+            nativeVideoDecoderRequired: true,
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            status: 'selected',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        };
+    }
+
     return {
-        hdr: true,
-        maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
-        maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
-        nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
-        neutralizeHDRColorMetadata: false,
-        rawVideoFrameFormat,
-        status: 'selected',
-        videoDecoderBackend: rawVideoCapability.reason === 'bundled-software-decoder' ?
-            'bundled-hevc' :
-            'native',
-        videoOutputMode: 'raw-planes'
+        reason: rawPresentationAllowed ?
+            'hdr-codec-unsupported' :
+            'hdr-presentation-unavailable',
+        status: 'invalid'
     };
 }
 
@@ -1125,9 +1162,7 @@ function selectVideoOutput(
     const dolbyVisionSelection = selectDolbyVisionVideoOutput(
         options,
         capabilities,
-        eligibilityOptions.allowDolbyVision === true,
-        eligibilityOptions.allowDolbyVisionProfile7 === true,
-        eligibilityOptions.allowNativeDolbyVision === true,
+        eligibilityOptions,
         videoCodec,
         videoStream
     );
@@ -1470,6 +1505,7 @@ export function getCustomPlaybackEligibility(
         audioSourceChannelCount,
         audioTrackIndex,
         durationMicroseconds: parsedSource.durationMicroseconds,
+        dolbyVisionProfile: videoOutput.dolbyVisionProfile ?? null,
         eligible: true,
         hdr: videoOutput.hdr,
         maximumCodedHeight: videoOutput.maximumCodedHeight,

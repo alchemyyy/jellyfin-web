@@ -29,6 +29,7 @@ type MockEligibilityOptions = {
     allowDolbyVision?: boolean
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
+    allowNativeDolbyVisionProfile7HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR: boolean
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
@@ -61,6 +62,7 @@ const customDecodeMockState = vi.hoisted(() => ({
     audioSourceChannelCount: 2,
     audioTrackIndex: null as number | null,
     dolbyVision: false,
+    dolbyVisionProfile7HDR10Base: false,
     dolbyVisionProfile7: false,
     eligible: false,
     hdr: false,
@@ -126,52 +128,75 @@ vi.mock('scripts/settings/userSettings', () => ({
     selectAudioNormalization: vi.fn(() => userSettingsMockState.audioNormalizationMode)
 }));
 
-vi.mock('./custom/CustomPlaybackEligibility', () => ({
-    getCustomPlaybackEligibility: vi.fn((options: unknown, _capabilities: unknown, eligibilityOptions: MockEligibilityOptions) => {
-        let HDRPresentationAllowed = eligibilityOptions.allowRawHDR
-            || eligibilityOptions.allowNativeHDR === true;
-        if (customDecodeMockState.dolbyVision) {
-            HDRPresentationAllowed = customDecodeMockState.dolbyVisionProfile7 ?
-                eligibilityOptions.allowDolbyVisionProfile7 === true :
-                eligibilityOptions.allowDolbyVision === true;
+vi.mock('./custom/CustomPlaybackEligibility', () => {
+    const isHDRPresentationAllowed = (eligibilityOptions: MockEligibilityOptions): boolean => {
+        if (!customDecodeMockState.dolbyVision) {
+            return eligibilityOptions.allowRawHDR
+                || eligibilityOptions.allowNativeHDR === true;
         }
-        const audioEligibilityOverride = customDecodeMockState.audioEligibilityOverride?.(
-            options,
-            eligibilityOptions
-        ) ?? null;
-        const eligible = customDecodeMockState.eligible
-            && (!customDecodeMockState.hdr || HDRPresentationAllowed)
-            && audioEligibilityOverride?.eligible !== false;
-        return eligible ? {
-            audioOutputMode: audioEligibilityOverride?.audioOutputMode
-                ?? (customDecodeMockState.audioTrackIndex === null ?
-                    null :
-                    customDecodeMockState.audioOutputMode),
-            audioSourceChannelCount: audioEligibilityOverride?.audioSourceChannelCount
-                ?? customDecodeMockState.audioSourceChannelCount,
-            audioTrackIndex: audioEligibilityOverride?.audioTrackIndex
-                ?? customDecodeMockState.audioTrackIndex,
-            durationMicroseconds: 60_000_000,
-            eligible: true,
-            hdr: customDecodeMockState.hdr,
-            maximumCodedHeight: customDecodeMockState.maximumCodedHeight,
-            maximumCodedWidth: customDecodeMockState.maximumCodedWidth,
-            nativeHDRTransfer: customDecodeMockState.nativeHDRTransfer,
-            neutralizeHDRColorMetadata: customDecodeMockState.neutralizeHDRColorMetadata,
-            rawVideoFrameFormat: customDecodeMockState.videoOutputMode === 'raw-planes' ?
-                'I420P10' :
-                null,
-            startTimeMicroseconds: 1_000_000,
-            url: 'http://localhost/video.mp4?api_key=custom-decode-secret',
-            videoDecoderBackend: customDecodeMockState.videoDecoderBackend,
-            videoOutputMode: customDecodeMockState.videoOutputMode,
-            videoTrackIndex: 0
-        } : {
-            eligible: false,
-            reason: audioEligibilityOverride?.reason ?? 'invalid-options'
-        };
-    })
-}));
+        if (!customDecodeMockState.dolbyVisionProfile7) {
+            return eligibilityOptions.allowDolbyVision === true;
+        }
+        if (eligibilityOptions.allowDolbyVisionProfile7 === true) {
+            return true;
+        }
+        return customDecodeMockState.dolbyVisionProfile7HDR10Base
+            && eligibilityOptions.allowNativeDolbyVisionProfile7HDR10Base === true;
+    };
+    const getDolbyVisionOutputProfile = (): 5 | 7 | 8 | null => {
+        if (!customDecodeMockState.dolbyVision
+            || customDecodeMockState.dolbyVisionProfile7HDR10Base) {
+            return null;
+        }
+        return customDecodeMockState.dolbyVisionProfile7 ? 7 : 8;
+    };
+
+    return {
+        getCustomPlaybackEligibility: vi.fn((
+            options: unknown,
+            _capabilities: unknown,
+            eligibilityOptions: MockEligibilityOptions
+        ) => {
+            const HDRPresentationAllowed = isHDRPresentationAllowed(eligibilityOptions);
+            const audioEligibilityOverride = customDecodeMockState.audioEligibilityOverride?.(
+                options,
+                eligibilityOptions
+            ) ?? null;
+            const eligible = customDecodeMockState.eligible
+                && (!customDecodeMockState.hdr || HDRPresentationAllowed)
+                && audioEligibilityOverride?.eligible !== false;
+            return eligible ? {
+                audioOutputMode: audioEligibilityOverride?.audioOutputMode
+                    ?? (customDecodeMockState.audioTrackIndex === null ?
+                        null :
+                        customDecodeMockState.audioOutputMode),
+                audioSourceChannelCount: audioEligibilityOverride?.audioSourceChannelCount
+                    ?? customDecodeMockState.audioSourceChannelCount,
+                audioTrackIndex: audioEligibilityOverride?.audioTrackIndex
+                    ?? customDecodeMockState.audioTrackIndex,
+                dolbyVisionProfile: getDolbyVisionOutputProfile(),
+                durationMicroseconds: 60_000_000,
+                eligible: true,
+                hdr: customDecodeMockState.hdr,
+                maximumCodedHeight: customDecodeMockState.maximumCodedHeight,
+                maximumCodedWidth: customDecodeMockState.maximumCodedWidth,
+                nativeHDRTransfer: customDecodeMockState.nativeHDRTransfer,
+                neutralizeHDRColorMetadata: customDecodeMockState.neutralizeHDRColorMetadata,
+                rawVideoFrameFormat: customDecodeMockState.videoOutputMode === 'raw-planes' ?
+                    'I420P10' :
+                    null,
+                startTimeMicroseconds: 1_000_000,
+                url: 'http://localhost/video.mp4?api_key=custom-decode-secret',
+                videoDecoderBackend: customDecodeMockState.videoDecoderBackend,
+                videoOutputMode: customDecodeMockState.videoOutputMode,
+                videoTrackIndex: 0
+            } : {
+                eligible: false,
+                reason: audioEligibilityOverride?.reason ?? 'invalid-options'
+            };
+        })
+    };
+});
 
 vi.mock('./custom/BrowserAudioContextPrewarm', () => ({
     prewarmBrowserAudioContext: vi.fn((sampleRate: number) => {
@@ -1051,14 +1076,24 @@ function createKnownProfile7DolbyVisionPlayOptions(
                 BitDepth: 10,
                 BlPresentFlag: true,
                 Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorRange: 'tv',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
                 DvBlSignalCompatibilityId: 6,
                 DvProfile: 7,
                 ElPresentFlag: true,
+                Height: 2_160,
                 Index: 0,
+                IsInterlaced: false,
+                Level: 153,
+                Profile: 'Main 10',
+                RealFrameRate: 23.976025,
                 RpuPresentFlag: true,
                 Type: 'Video',
                 VideoRange: 'HDR',
-                VideoRangeType: 'DOVIWithEL'
+                VideoRangeType: 'DOVIWithEL',
+                Width: 3_840
             }]
         }
     };
@@ -1116,6 +1151,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.dolbyVision = false;
+        customDecodeMockState.dolbyVisionProfile7HDR10Base = false;
         customDecodeMockState.dolbyVisionProfile7 = false;
         customDecodeMockState.hdr = false;
         customDecodeMockState.nativeHDRTransfer = null;
@@ -1540,6 +1576,35 @@ describe('WebGPUPlayer HTML delegation', () => {
         );
     });
 
+    it('authorizes the native HDR10 base for one exact interleaved Profile 7 source', async () => {
+        const player = new WebGPUPlayer();
+        const presenter = getPresenter();
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        presenterMockState.authorizedExternalHDRRouteKeys = [
+            'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        const playOptions = createKnownProfile7DolbyVisionPlayOptions();
+
+        await player.getDeviceProfile({
+            Id: 'interleaved-profile-7-item',
+            MediaSources: [ playOptions.mediaSource ]
+        }, { isRetry: false });
+
+        expect(presenter.waitForExternalHDRAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(presenter.waitForDolbyVisionAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(presenter.waitForRawHDRAuthorizationPrewarm).not.toHaveBeenCalled();
+        expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
+            allowDolbyVisionProfile7: true,
+            allowNativeDolbyVisionProfile7HDR10Base: true,
+            allowNativeHDR: true,
+            authorizedExternalHDRRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1'
+            ]
+        });
+    });
+
     it('keeps the native profile when the complete custom runtime is unavailable', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -1747,6 +1812,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.play).toHaveBeenCalledWith({
             audioOutputMode: undefined,
             audioTrackIndex: null,
+            decodedAudioOutputChannelCount: undefined,
             dolbyVisionProfile: null,
             durationMicroseconds: 60_000_000,
             maximumCodedHeight: 1_080,
@@ -2014,6 +2080,62 @@ describe('WebGPUPlayer HTML delegation', () => {
         }, 1);
         expect(customPlaybackController.play).toHaveBeenCalledWith(
             expect.objectContaining({ dolbyVisionProfile: 7 })
+        );
+    });
+
+    it('presents an oversized Profile 7 source through its native HDR10 base', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        presenterMockState.authorizedExternalHDRRouteKeys = [
+            'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        customDecodeMockState.dolbyVision = true;
+        customDecodeMockState.dolbyVisionProfile7 = true;
+        customDecodeMockState.dolbyVisionProfile7HDR10Base = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.hdr = true;
+        customDecodeMockState.nativeHDRTransfer = 'pq';
+        customDecodeMockState.neutralizeHDRColorMetadata = true;
+        customDecodeMockState.videoDecoderBackend = 'native';
+        customDecodeMockState.videoOutputMode = 'video-frame';
+
+        await player.play(createKnownProfile7DolbyVisionPlayOptions({
+            playMethod: 'DirectPlay'
+        }));
+        const customPlaybackController = getCustomPlaybackController();
+
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(presenter.prewarmExternalHDRPresentationAuthorization).toHaveBeenCalled();
+        expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            inputMode: 'external-hdr',
+            metadata: expect.objectContaining({
+                bitDepth: 10,
+                matrix: 'bt2020-ncl',
+                primaries: 'bt2020',
+                transfer: 'pq'
+            }),
+            settings: expect.objectContaining({
+                mode: 'hdr-to-sdr',
+                toneMapping: expect.objectContaining({ inputPeakNits: 1_000 })
+            })
+        }, 1);
+        expect(customPlaybackController.play).toHaveBeenCalledWith(
+            expect.objectContaining({
+                dolbyVisionProfile: null,
+                nativeHDRTransfer: 'pq',
+                neutralizeHDRColorMetadata: true,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            })
         );
     });
 

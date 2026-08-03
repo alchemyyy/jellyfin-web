@@ -21,7 +21,9 @@ import {
 import {
     getDolbyVisionPresentationDescriptor,
     getDolbyVisionPresentationSelection,
+    getDolbyVisionProfile7HDR10BaseColorMetadata,
     getPresentationInputColorMetadata,
+    isDolbyVisionProfile7HDR10BaseLayerDescriptor,
     isKnownSDRPresentationInput,
     type DolbyVisionPresentationDescriptor
 } from './PresentationInput';
@@ -31,7 +33,10 @@ import {
     type HDRToSDRRenderSettings,
     type RenderSettings
 } from './RenderSettings';
-import type { InputColorMetadata } from './color/ColorMetadata';
+import {
+    createPQColorMetadata,
+    type InputColorMetadata
+} from './color/ColorMetadata';
 import {
     prewarmBrowserAudioContext,
     type BrowserAudioContextPrewarmLease
@@ -97,8 +102,10 @@ import type { DolbyVisionAuthorizationTelemetry } from './validation/DolbyVision
 import type {
     ExternalDolbyVisionAuthorizationTelemetry
 } from './validation/ExternalDolbyVisionPresentationAuthorization';
-import type {
-    ExternalHDRAuthorizationTelemetry
+import {
+    getExternalHDRAuthorizationRouteKey,
+    type ExternalHDRAuthorizationTelemetry,
+    type ExternalHDRAuthorizationRouteKey
 } from './validation/ExternalHDRPresentationAuthorization';
 import type { MediabunnyReferenceFrameProviderOptions } from './validation/MediabunnyReferenceFrameProvider';
 import type {
@@ -106,7 +113,10 @@ import type {
     WebGPUExternalTextureValidationRequest,
     WebGPUExternalTextureValidationRunner
 } from './validation/WebGPUExternalTextureValidationRunner';
-import type { RawHDRAuthorizationTelemetry } from './validation/RawHDRPresentationAuthorization';
+import type {
+    RawHDRAuthorizationRouteKey,
+    RawHDRAuthorizationTelemetry
+} from './validation/RawHDRPresentationAuthorization';
 
 type OptionalItemCompatibility = {
     canPlayItem?: (item: unknown, playOptions?: unknown) => boolean
@@ -167,9 +177,15 @@ type DeviceProfileMediaSource = {
 
 type HDRDeviceProfileProbeScope =
     | 'dolby-vision'
+    | 'dolby-vision-profile7'
     | 'none'
     | 'static-hdr'
     | 'unknown';
+
+type CustomPresentationAuthorizations = {
+    authorizedExternalHDRRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
+    authorizedRawHDRRouteKeys: readonly RawHDRAuthorizationRouteKey[]
+};
 
 type NativeDeviceProfileProof = {
     generation: number | null
@@ -267,6 +283,12 @@ function hasExactSeparateProfile7Source(item: unknown): boolean {
         && selection.descriptor.enhancementLayerPresent;
 }
 
+function hasExactProfile7HDR10BaseSource(item: unknown): boolean {
+    const presentationOptions = getDeviceProfilePresentationOptions(item);
+    return presentationOptions !== null
+        && getDolbyVisionProfile7HDR10BaseColorMetadata(presentationOptions) !== null;
+}
+
 function getDeviceProfilePresentationOptions(item: unknown): unknown | null {
     if (!item || typeof item !== 'object') {
         return null;
@@ -294,14 +316,28 @@ function getHDRDeviceProfileProbeScope(item: unknown): HDRDeviceProfileProbeScop
     if (!presentationOptions) {
         return 'unknown';
     }
-    if (getDolbyVisionPresentationDescriptor(presentationOptions)) {
-        return 'dolby-vision';
+    const dolbyVisionDescriptor = getDolbyVisionPresentationDescriptor(presentationOptions);
+    if (dolbyVisionDescriptor) {
+        return getDolbyVisionProfile7HDR10BaseColorMetadata(presentationOptions) !== null ?
+            'dolby-vision-profile7' :
+            'dolby-vision';
     }
     const colorMetadata = getPresentationInputColorMetadata(presentationOptions);
     if (colorMetadata?.transfer === 'pq' || colorMetadata?.transfer === 'hlg') {
         return 'static-hdr';
     }
     return isKnownSDRPresentationInput(presentationOptions) ? 'none' : 'unknown';
+}
+
+const PROFILE7_HDR10_BASE_COLOR_METADATA = Object.freeze(createPQColorMetadata());
+
+function hasAuthorizedProfile7HDR10BaseRoute(
+    routeKeys: readonly ExternalHDRAuthorizationRouteKey[]
+): boolean {
+    const routeKey = getExternalHDRAuthorizationRouteKey(
+        PROFILE7_HDR10_BASE_COLOR_METADATA
+    );
+    return routeKey !== null && routeKeys.includes(routeKey);
 }
 
 type AudioPrewarmMediaStream = {
@@ -1524,6 +1560,7 @@ export default class WebGPUPlayer {
         void this.configurePresentationColorPipeline(
             generation,
             'video-frame',
+            null,
             null
         ).then(configured => {
             if (!configured && this.isRequestedSessionCurrent(this.backendSessionGeneration)) {
@@ -1567,17 +1604,70 @@ export default class WebGPUPlayer {
     private configurePresentationColorPipeline(
         generation: number,
         videoOutputMode: CustomDecodeVideoOutputMode,
-        rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+        rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null,
+        dolbyVisionProfile: 5 | 7 | 8 | null
     ): Promise<boolean> {
         const dolbyVisionDescriptor = this.currentDolbyVisionPresentationDescriptor;
-        if (dolbyVisionDescriptor) {
-            return this.configureDolbyVisionPresentationColorPipeline(
+        if (!dolbyVisionDescriptor) {
+            return this.configureColorMetadataPresentationPipeline(
+                generation,
+                videoOutputMode,
+                rawVideoFrameFormat
+            );
+        }
+        if (dolbyVisionProfile === null) {
+            return this.configureProfile7HDR10BaseColorPipeline(
                 dolbyVisionDescriptor,
                 generation,
                 videoOutputMode,
                 rawVideoFrameFormat
             );
         }
+        if (dolbyVisionDescriptor.profile !== dolbyVisionProfile) {
+            return Promise.resolve(false);
+        }
+
+        return this.configureDolbyVisionPresentationColorPipeline(
+            dolbyVisionDescriptor,
+            generation,
+            videoOutputMode,
+            rawVideoFrameFormat
+        );
+    }
+
+    private configureProfile7HDR10BaseColorPipeline(
+        dolbyVisionDescriptor: DolbyVisionPresentationDescriptor,
+        generation: number,
+        videoOutputMode: CustomDecodeVideoOutputMode,
+        rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    ): Promise<boolean> {
+        const colorMetadata = getDolbyVisionProfile7HDR10BaseColorMetadata(
+            this.currentPlaybackOptions
+        );
+        if (
+            !isDolbyVisionProfile7HDR10BaseLayerDescriptor(dolbyVisionDescriptor)
+            || colorMetadata === null
+            || videoOutputMode !== 'video-frame'
+            || rawVideoFrameFormat !== null
+        ) {
+            return Promise.resolve(false);
+        }
+        return this.presenter.configureColorPipeline({
+            inputMode: 'external-hdr',
+            metadata: colorMetadata,
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: {
+                    inputPeakNits: colorMetadata.nominalPeakNits
+                }
+            })
+        }, generation);
+    }
+
+    private configureColorMetadataPresentationPipeline(
+        generation: number,
+        videoOutputMode: CustomDecodeVideoOutputMode,
+        rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    ): Promise<boolean> {
         const metadata = this.currentPresentationColorMetadata;
         if (!metadata) {
             return Promise.resolve(false);
@@ -1629,8 +1719,16 @@ export default class WebGPUPlayer {
     }
 
     private applyStaticHDRMetadata(metadata: StaticHDRMetadata): void {
-        if (this.currentDolbyVisionPresentationDescriptor
-            || this.currentPresentationColorMetadata?.transfer !== 'pq') {
+        const profile7HDR10BasePresentation =
+            this.isCurrentProfile7HDR10BasePresentation();
+        if (
+            (this.currentDolbyVisionPresentationDescriptor
+                && !profile7HDR10BasePresentation)
+            || (
+                this.currentPresentationColorMetadata?.transfer !== 'pq'
+                && !profile7HDR10BasePresentation
+            )
+        ) {
             return;
         }
 
@@ -1655,6 +1753,20 @@ export default class WebGPUPlayer {
         )) {
             console.warn('WebGPU could not apply static HDR luminance metadata');
         }
+    }
+
+    private isCurrentProfile7HDR10BasePresentation(): boolean {
+        const descriptor = this.currentDolbyVisionPresentationDescriptor;
+        const eligibility = this.lastCustomPlaybackEligibility;
+        return descriptor !== null
+            && isDolbyVisionProfile7HDR10BaseLayerDescriptor(descriptor)
+            && getDolbyVisionProfile7HDR10BaseColorMetadata(
+                this.currentPlaybackOptions
+            ) !== null
+            && eligibility?.eligible === true
+            && eligibility.dolbyVisionProfile === null
+            && eligibility.nativeHDRTransfer === 'pq'
+            && eligibility.neutralizeHDRColorMetadata;
     }
 
     private startCustomPlaybackAudioPrewarm(options: unknown, backendGeneration: number): void {
@@ -1945,7 +2057,8 @@ export default class WebGPUPlayer {
             const colorPipelineConfigured = await this.configurePresentationColorPipeline(
                 presentationGeneration,
                 eligibility.videoOutputMode,
-                eligibility.rawVideoFrameFormat
+                eligibility.rawVideoFrameFormat,
+                eligibility.dolbyVisionProfile
             );
             if (!this.isCustomPlaybackSetupCurrent(backendGeneration, setupRevision)) {
                 return { status: 'superseded' };
@@ -1985,8 +2098,7 @@ export default class WebGPUPlayer {
                 audioTrackIndex: eligibility.audioTrackIndex,
                 decodedAudioOutputChannelCount,
                 durationMicroseconds: eligibility.durationMicroseconds,
-                dolbyVisionProfile:
-                    this.currentDolbyVisionPresentationDescriptor?.profile ?? null,
+                dolbyVisionProfile: eligibility.dolbyVisionProfile,
                 maximumCodedHeight: eligibility.maximumCodedHeight,
                 maximumCodedWidth: eligibility.maximumCodedWidth,
                 nativeHDRTransfer: eligibility.nativeHDRTransfer ?? null,
@@ -2142,6 +2254,7 @@ export default class WebGPUPlayer {
         | 'allowDolbyVision'
         | 'allowDolbyVisionProfile7'
         | 'allowNativeDolbyVision'
+        | 'allowNativeDolbyVisionProfile7HDR10Base'
         | 'allowNativeHDR'
         | 'allowRawHDR'
         | 'authorizedExternalHDRRouteKeys'
@@ -2152,9 +2265,10 @@ export default class WebGPUPlayer {
             && metadata.transfer !== 'sdr'
             && (metadata.bitDepth === 10 || metadata.bitDepth === 12);
         const dolbyVisionRequested = this.currentDolbyVisionPresentationDescriptor !== null;
-        let authorizedExternalHDRRouteKeys =
-            this.presenter.getAuthorizedExternalHDRRouteKeys();
-        let authorizedRawHDRRouteKeys = this.presenter.getAuthorizedRawHDRRouteKeys();
+        const profile7HDR10BaseRequested =
+            getDolbyVisionProfile7HDR10BaseColorMetadata(
+                this.currentPlaybackOptions
+            ) !== null;
         if (!rawHDRRequested && !dolbyVisionRequested) {
             return {
                 allowDolbyVision: false,
@@ -2162,8 +2276,9 @@ export default class WebGPUPlayer {
                 allowNativeDolbyVision: false,
                 allowNativeHDR: false,
                 allowRawHDR: false,
-                authorizedExternalHDRRouteKeys,
-                authorizedRawHDRRouteKeys
+                authorizedExternalHDRRouteKeys:
+                    this.presenter.getAuthorizedExternalHDRRouteKeys(),
+                authorizedRawHDRRouteKeys: this.presenter.getAuthorizedRawHDRRouteKeys()
             };
         }
 
@@ -2182,16 +2297,14 @@ export default class WebGPUPlayer {
                 authorizedRawHDRRouteKeys: []
             };
         }
-        if (rawHDRRequested) {
-            void this.presenter.prewarmExternalHDRPresentationAuthorization();
-            void this.presenter.prewarmRawHDRPresentationAuthorization();
-        } else {
-            authorizedExternalHDRRouteKeys = [];
-            authorizedRawHDRRouteKeys = [];
-        }
-        if (dolbyVisionRequested) {
-            void this.presenter.prewarmDolbyVisionPresentationAuthorization();
-        }
+        const {
+            authorizedExternalHDRRouteKeys,
+            authorizedRawHDRRouteKeys
+        } = this.prepareCustomPresentationAuthorizations(
+            rawHDRRequested,
+            dolbyVisionRequested,
+            profile7HDR10BaseRequested
+        );
         return {
             allowDolbyVision: dolbyVisionRequested
                 && this.currentDolbyVisionPresentationDescriptor?.profile !== 7
@@ -2201,11 +2314,38 @@ export default class WebGPUPlayer {
                 && this.presenter.isRawDolbyVisionProfile7PresentationAuthorized(),
             allowNativeDolbyVision: dolbyVisionRequested
                 && this.presenter.isExternalDolbyVisionPresentationAuthorized(),
-            allowNativeHDR: rawHDRRequested
+            allowNativeDolbyVisionProfile7HDR10Base: profile7HDR10BaseRequested
+                && hasAuthorizedProfile7HDR10BaseRoute(authorizedExternalHDRRouteKeys),
+            allowNativeHDR: (rawHDRRequested || profile7HDR10BaseRequested)
                 && authorizedExternalHDRRouteKeys.length > 0,
             allowRawHDR: rawHDRRequested && authorizedRawHDRRouteKeys.length > 0,
             authorizedExternalHDRRouteKeys,
             authorizedRawHDRRouteKeys
+        };
+    }
+
+    private prepareCustomPresentationAuthorizations(
+        rawHDRRequested: boolean,
+        dolbyVisionRequested: boolean,
+        profile7HDR10BaseRequested: boolean
+    ): CustomPresentationAuthorizations {
+        const externalHDRRequested = rawHDRRequested || profile7HDR10BaseRequested;
+        if (externalHDRRequested) {
+            void this.presenter.prewarmExternalHDRPresentationAuthorization();
+        }
+        if (rawHDRRequested) {
+            void this.presenter.prewarmRawHDRPresentationAuthorization();
+        }
+        if (dolbyVisionRequested) {
+            void this.presenter.prewarmDolbyVisionPresentationAuthorization();
+        }
+        return {
+            authorizedExternalHDRRouteKeys: externalHDRRequested ?
+                this.presenter.getAuthorizedExternalHDRRouteKeys() :
+                [],
+            authorizedRawHDRRouteKeys: rawHDRRequested ?
+                this.presenter.getAuthorizedRawHDRRouteKeys() :
+                []
         };
     }
 
@@ -3122,6 +3262,12 @@ export default class WebGPUPlayer {
             case 'dolby-vision':
                 await this.presenter.waitForDolbyVisionAuthorizationPrewarm();
                 break;
+            case 'dolby-vision-profile7':
+                await Promise.all([
+                    this.presenter.waitForExternalHDRAuthorizationPrewarm(),
+                    this.presenter.waitForDolbyVisionAuthorizationPrewarm()
+                ]);
+                break;
             case 'none':
                 break;
             case 'unknown':
@@ -3144,19 +3290,28 @@ export default class WebGPUPlayer {
         if (HDRToneMappingEnabled) {
             await this.prewarmHDRDeviceProfileRoutes(probeScope);
         }
-        const staticHDRProbed = probeScope === 'static-hdr' || probeScope === 'unknown';
-        const DolbyVisionProbed = probeScope === 'dolby-vision' || probeScope === 'unknown';
-        const authorizedExternalHDRRouteKeys = HDRToneMappingEnabled && staticHDRProbed ?
+        const externalHDRProbed = probeScope === 'static-hdr'
+            || probeScope === 'dolby-vision-profile7'
+            || probeScope === 'unknown';
+        const rawHDRProbed = probeScope === 'static-hdr' || probeScope === 'unknown';
+        const DolbyVisionProbed = probeScope === 'dolby-vision'
+            || probeScope === 'dolby-vision-profile7'
+            || probeScope === 'unknown';
+        const authorizedExternalHDRRouteKeys = HDRToneMappingEnabled && externalHDRProbed ?
             this.presenter.getAuthorizedExternalHDRRouteKeys() :
             [];
         const authorizedRawHDRRouteKeys = HDRToneMappingEnabled
-            && staticHDRProbed
+            && rawHDRProbed
             && authorizedExternalHDRRouteKeys.length === 0 ?
             this.presenter.getAuthorizedRawHDRRouteKeys() :
             [];
         const allowDolbyVisionProfile7 = HDRToneMappingEnabled
             && DolbyVisionProbed
             && this.presenter.isRawDolbyVisionProfile7PresentationAuthorized();
+        const allowNativeDolbyVisionProfile7HDR10Base = HDRToneMappingEnabled
+            && probeScope === 'dolby-vision-profile7'
+            && hasExactProfile7HDR10BaseSource(item)
+            && hasAuthorizedProfile7HDR10BaseRoute(authorizedExternalHDRRouteKeys);
         return {
             allowDolbyVision: HDRToneMappingEnabled
                 && DolbyVisionProbed
@@ -3168,6 +3323,9 @@ export default class WebGPUPlayer {
             allowNativeDolbyVision: HDRToneMappingEnabled
                 && DolbyVisionProbed
                 && this.presenter.isExternalDolbyVisionPresentationAuthorized(),
+            ...(allowNativeDolbyVisionProfile7HDR10Base ? {
+                allowNativeDolbyVisionProfile7HDR10Base: true
+            } : {}),
             allowNativeHDR: authorizedExternalHDRRouteKeys.length > 0,
             allowRawHDR: authorizedRawHDRRouteKeys.length > 0,
             authorizedExternalHDRRouteKeys,

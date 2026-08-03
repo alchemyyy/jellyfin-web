@@ -4,19 +4,43 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `eaa6bb627d63dd1a7cb91e8dc45c5e2bb8d81143`
+Parent checkpoint: `32d08222d78a62b617812df87d5b72711cbff53f`
 
-Checkpoint state: the portable High Tier playback validation is committed and
-pushed. The current worktree integrates runtime-gated native multichannel PCM,
-exact-PTS HEVC HDR10+ handling, and a checked cross-browser/GPU hardware-matrix
-runner. These changes passed the integrated gates described below and form the
-next checkpoint.
+Checkpoint state: persistent player selection, runtime-gated native
+multichannel PCM, exact-PTS HEVC HDR10+, and the checked cross-browser/GPU
+hardware matrix are committed and pushed. The current worktree adds an exact
+Dolby Vision Profile 7 HDR10-compatible base route and hardens custom decoded-
+PCM negotiation against inherited HTML-player bit-depth constraints.
 
 ## Current objective
 
 Finish this integration without widening unmeasured capability claims. Preserve
 deterministic stereo fallback, static HDR fallback, and explicit failed/not-run
 matrix cells while qualifying the new paths on real media and hardware.
+
+## Profile 7 and stereo FLAC negotiation checkpoint
+
+- Exact Profile 7 compatibility-ID-6 sources with explicit limited BT.2020
+  non-constant/PQ metadata may use the independently authorized native HEVC
+  external-PQ route when full raw Dolby Vision is outside its measured geometry,
+  level, or frame-rate envelope.
+- Full raw Profile 7 remains preferred when qualified. The device profile keeps
+  route-specific measured limits and prevents its narrower raw route from
+  cumulatively capping the same source's valid HDR10-compatible base.
+- Base playback strips RPU and enhancement NAL units, skips the enhancement
+  decoder and RPU parser, and continues through the static-HDR pipeline without
+  restarting or renegotiating the playback session.
+- Custom decoded-PCM containers no longer inherit HTML `AudioBitDepth`
+  restrictions. Non-custom containers retain their original constraints. The
+  exact audio decoder probe, codec/container/layout rules, and integer
+  3000-192000 Hz source-rate boundary remain mandatory.
+- Stereo FLAC tests cover 8/16/20/24/32-bit metadata, representative and unusual
+  bounded sample rates, missing/extreme encoded bitrates, and the two adjacent
+  out-of-range sample-rate failures.
+- Five focused Vitest files pass 440 tests. The user-deployed Jellyfin 12
+  nightly bundle is reported to play successfully, but no structured
+  client/server DirectPlay or route evidence has yet been captured for this
+  exact Profile 7 checkpoint.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -345,6 +369,12 @@ output remains the lossless channel bed.
 
 ## Completed checkpoint gates
 
+- The Profile 7 HDR10-base and custom-audio negotiation checkpoint passed five
+  focused Vitest files and 440 tests. The suites cover exact color/descriptor
+  parsing, independent device-profile envelopes, full-Dolby-Vision preference,
+  native base fallback, RPU/EL stripping without parser invocation, and the
+  generalized stereo FLAC metadata matrix. The manual deployed playback report
+  is retained as smoke evidence only.
 - The bounded audio source-rate integration passed TypeScript, 1,529 WebGPU
   Vitest tests across 108 files, 147 standalone Node harness tests, 96 Python
   harness tests, full WebGPU plugin plus changed-script ESLint, development and
@@ -429,40 +459,48 @@ output remains the lossless channel bed.
 
 ## Remaining product validation
 
-1. Run Jellyfin 12 nightly DirectPlay negotiation for every supported
+1. Capture one exact 4K Profile 7 compatibility-ID-6 session through the shared
+   browser/server harness. Require client and server DirectPlay, the native HEVC
+   external-PQ route, no enhancement decoder or RPU parse, valid static-HDR
+   state, no transcode reasons, and bounded lifecycle/resource telemetry.
+2. Capture stereo FLAC sources spanning ordinary 24-bit metadata plus unusual
+   supported bit depth/rate metadata. Confirm audio never creates a bit-depth,
+   bitrate, or common-rate transcode reason while an actual decoder rejection
+   still fails closed.
+3. Run Jellyfin 12 nightly DirectPlay negotiation for every supported
    profile/layout pair at lower, representative, 96 kHz transition, and upper
    source-rate boundaries plus nearby negatives. Confirm Playback Info never
    widens DTS or TrueHD beyond the listed envelope.
-2. Exercise start, pause/resume, representative seeks, seek storms, audio
+4. Exercise start, pause/resume, representative seeks, seek storms, audio
    switching, natural EOF, explicit stop, replay, source replacement, and
    repeated sessions for every new route.
-3. Measure combined software-video plus software-audio throughput. JPEG 2000 or
+5. Measure combined software-video plus software-audio throughput. JPEG 2000 or
    MPEG-2 paired with DTS or TrueHD shares one decode worker, so independent
    per-codec throughput probes do not by themselves prove a combined route can
    sustain real time.
-4. Compare decoded PCM and representative video frames against FFmpeg/mpv
+6. Compare decoded PCM and representative video frames against FFmpeg/mpv
    references, including long-run A/V drift and queue telemetry.
-5. Run non-unity TrackGain and AlbumGain against HtmlAudioPlayer on a generated
+7. Run non-unity TrackGain and AlbumGain against HtmlAudioPlayer on a generated
    audio-library fixture. Before claiming the same for WebGPU movie playback,
    define a legitimate server or client source of video loudness metadata; the
    stock Jellyfin task does not populate it for ordinary videos.
-6. Keep the intermittent Mediabunny `VideoSample` ownership warning as a
+8. Keep the intermittent Mediabunny `VideoSample` ownership warning as a
    documented deferred defect. The final checkpoint runs observed zero
    warnings, but that does not prove leak-free soak behavior; do not suppress
    its console assertion or make a leak-free claim until the ownership boundary
    is fixed and retention evidence passes.
-7. Keep all WebGPU feature flags disabled in source until the supported browser,
+9. Keep all WebGPU feature flags disabled in source until the supported browser,
    GPU, output, and server matrix is complete.
-8. Physically verify 5.1 and 7.1 channel isolation, ordering, output-device
+10. Physically verify 5.1 and 7.1 channel isolation, ordering, output-device
    changes, mute, volume, normalization, seeking, and fallback in Chrome and
    Edge. Automated channel-array tests do not prove speaker wiring.
-9. Run decodable real HDR10+ material through a temporal browser capture and
+11. Run decodable real HDR10+ material through a temporal browser capture and
    compare exact frames against pinned mpv/libplacebo output. Include scenes
    with changing peaks and static-fallback frames.
-10. Reproduce Edge custom-playback entry while capturing active pre-stop state;
+12. Reproduce Edge custom-playback entry while capturing active pre-stop state;
     the current post-stop snapshot does not prove its persisted
     `play-method-unsupported` value caused the failure.
-11. Execute the checked hardware plan on physical AMD and Intel systems and run
+13. Execute the checked hardware plan on physical AMD and Intel systems and run
     visual HDR output checks on an HDR-capable display.
 
 ## Navigation
@@ -480,5 +518,5 @@ output remains the lossless channel bed.
 - `scripts/webgpu/validation/README.md`: shared matrices, schemas, selectors,
   reports, and private live-case overlays
 
-No validation command is running. The current local production bundle remains
-available through the Jellyfin 12 nightly server on port 8096.
+No validation command is running. Deployment state is user-managed and is not
+treated as repository validation evidence without a captured harness result.

@@ -56,6 +56,16 @@ export type DolbyVisionPresentationSelection = {
     descriptor: DolbyVisionPresentationDescriptor
 };
 
+/** Returns whether Profile 7 carries the exact HDR10-compatible base layer. */
+export function isDolbyVisionProfile7HDR10BaseLayerDescriptor(
+    descriptor: DolbyVisionPresentationDescriptor
+): boolean {
+    return descriptor.profile === 7
+        && descriptor.baseLayerBitDepth === 10
+        && descriptor.baseLayerSignalCompatibilityID === 6
+        && descriptor.enhancementLayerPresent;
+}
+
 const SDR_VIDEO_RANGE = 'SDR';
 const HDR_VIDEO_RANGE = 'HDR';
 const HDR_COLOR_TRANSFERS = new Set([
@@ -489,10 +499,7 @@ function parseDolbyVisionDescriptor(
     };
 }
 
-/** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
-export function getDolbyVisionPresentationSelection(
-    options: unknown
-): DolbyVisionPresentationSelection | null {
+function getPlaybackVideoStreams(options: unknown): MediaStreamMetadata[] | null {
     if (!options || typeof options !== 'object') {
         return null;
     }
@@ -510,6 +517,17 @@ export function getDolbyVisionPresentationSelection(
             videoStreams.push(stream as MediaStreamMetadata);
         }
     }
+    return videoStreams;
+}
+
+/** Returns one exact supported single-stream or separate-track Dolby Vision selection. */
+export function getDolbyVisionPresentationSelection(
+    options: unknown
+): DolbyVisionPresentationSelection | null {
+    const videoStreams = getPlaybackVideoStreams(options);
+    if (!videoStreams) {
+        return null;
+    }
     if (videoStreams.length === 1) {
         const descriptor = parseDolbyVisionDescriptor(videoStreams[0]);
         return descriptor ? { baseLayerVideoTrackOrdinal: 0, descriptor } : null;
@@ -522,6 +540,35 @@ export function getDolbyVisionPresentationDescriptor(
     options: unknown
 ): DolbyVisionPresentationDescriptor | null {
     return getDolbyVisionPresentationSelection(options)?.descriptor ?? null;
+}
+
+/** Returns exact BT.2020 PQ metadata for a Profile 7 HDR10-compatible base. */
+export function getDolbyVisionProfile7HDR10BaseColorMetadata(
+    options: unknown
+): InputColorMetadata | null {
+    const selection = getDolbyVisionPresentationSelection(options);
+    if (!selection
+        || !isDolbyVisionProfile7HDR10BaseLayerDescriptor(selection.descriptor)) {
+        return null;
+    }
+    const videoStream = getPlaybackVideoStreams(options)?.[
+        selection.baseLayerVideoTrackOrdinal
+    ];
+    if (!videoStream
+        || parseColorPrimaries(videoStream.ColorPrimaries) !== 'bt2020'
+        || parseYUVMatrix(videoStream.ColorSpace) !== 'bt2020-ncl'
+        || parseTransfer(videoStream.ColorTransfer) !== 'pq') {
+        return null;
+    }
+    const colorRange = parseColorRange(videoStream.ColorRange);
+    const videoRange = parseVideoRange(videoStream.VideoRange);
+    if (colorRange === 'full'
+        || colorRange === 'unknown'
+        || videoRange === 'sdr'
+        || videoRange === 'unknown') {
+        return null;
+    }
+    return createPQColorMetadata({ range: colorRange ?? 'limited' });
 }
 
 /**

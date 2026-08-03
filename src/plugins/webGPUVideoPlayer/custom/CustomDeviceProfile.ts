@@ -57,6 +57,7 @@ export type CustomDeviceProfileOptions = {
     allowDolbyVisionProfile7?: boolean
     allowDolbyVisionProfile7HDR10Base?: boolean
     allowNativeDolbyVision?: boolean
+    allowNativeDolbyVisionProfile7HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR?: boolean
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
@@ -221,6 +222,7 @@ const CUSTOM_VIDEO_CONTAINER_SET = new Set<string>(CUSTOM_VIDEO_CONTAINERS);
 const CUSTOM_VIDEO_CONTAINER_VALUE = CUSTOM_VIDEO_CONTAINERS.join(',');
 const NON_CUSTOM_VIDEO_CONTAINER_VALUE = `-${CUSTOM_VIDEO_CONTAINER_VALUE}`;
 const VIDEO_CODEC_PROFILE_TYPE = 'Video';
+const AUDIO_BIT_DEPTH_PROPERTY = 'AudioBitDepth';
 const AUDIO_BITRATE_PROPERTY = 'AudioBitrate';
 const VIDEO_RANGE_TYPE_PROPERTY = 'VideoRangeType';
 const VIDEO_BIT_DEPTH_PROPERTY = 'VideoBitDepth';
@@ -1897,6 +1899,7 @@ function createMeasuredTrueHDRouteProfiles(
 }
 
 const CUSTOM_AUDIO_ROUTE_PROPERTIES = new Set<string>([
+    AUDIO_BIT_DEPTH_PROPERTY,
     AUDIO_CHANNELS_PROPERTY,
     AUDIO_SAMPLE_RATE_PROPERTY,
     'IsSecondaryAudio'
@@ -2001,7 +2004,8 @@ function createSplitAudioRouteProfiles(
 
 /**
  * Keeps HTML-player audio constraints outside custom routes while removing the
- * channel, sample-rate, and secondary-track limits replaced by measured routes.
+ * bit-depth, channel, sample-rate, and secondary-track limits replaced by
+ * measured decoded-PCM routes.
  */
 function splitOriginalAudioRouteProfiles(
     profile: DeviceProfile,
@@ -2208,6 +2212,13 @@ export function augmentDeviceProfileForCustomDecode(
             options.authorizedExternalHDRRouteKeys ?? []
         ) :
         [];
+    const nativeProfile7HDR10BaseAuthorized =
+        options.allowNativeDolbyVisionProfile7HDR10Base === true
+        && nativeHDRVideoRangeTypes.includes('HDR10')
+        && capabilities.nativeHDRHEVC?.status === 'supported';
+    if (nativeProfile7HDR10BaseAuthorized) {
+        nativeHDRVideoRangeTypes.push('DOVIWithEL');
+    }
     const rawHDRVideoRangeTypes = options.allowRawHDR === true ?
         getAuthorizedRawHDRVideoRangeTypes(options.authorizedRawHDRRouteKeys ?? []) :
         [];
@@ -2228,16 +2239,24 @@ export function augmentDeviceProfileForCustomDecode(
         false,
         options.allowNativeDolbyVision === true
     );
-    const rawDolbyVisionVideoRangeTypes = nativeDolbyVisionVideoRangeTypes.includes('DOVI') ?
+    let rawDolbyVisionVideoRangeTypes = nativeDolbyVisionVideoRangeTypes.includes('DOVI') ?
         availableRawDolbyVisionVideoRangeTypes.filter(rangeType => rangeType !== 'DOVI') :
         availableRawDolbyVisionVideoRangeTypes;
+    const allowRawDolbyVision = rawDolbyVisionVideoRangeTypes.length > 0;
+    if (nativeProfile7HDR10BaseAuthorized) {
+        // The source cannot distinguish the full-DV and HDR10-base routes. The
+        // shared native envelope authorizes both, while runtime selects the
+        // full route only inside its measured raw-output limits.
+        rawDolbyVisionVideoRangeTypes = rawDolbyVisionVideoRangeTypes.filter(rangeType => (
+            rangeType !== 'DOVIWithEL' && rangeType !== 'HDR10'
+        ));
+    }
     const dolbyVisionVideoRangeTypes = [
         ...new Set([
             ...rawDolbyVisionVideoRangeTypes,
             ...nativeDolbyVisionVideoRangeTypes
         ])
     ];
-    const allowRawDolbyVision = rawDolbyVisionVideoRangeTypes.length > 0;
     const allowNativeDolbyVision = nativeDolbyVisionVideoRangeTypes.length > 0;
     const allowNativeHDR = nativeHDRVideoRangeTypes.length > 0;
     const allowRawHDR = rawHDRVideoRangeTypes.length > 0

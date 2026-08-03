@@ -833,6 +833,104 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
+    it.each([ 8, 16, 20, 24, 32 ])(
+        'accepts qualified stereo FLAC independently of its %i-bit source depth',
+        bitDepth => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1] = {
+                BitDepth: bitDepth,
+                Channels: 2,
+                Codec: 'flac',
+                Index: 1,
+                SampleRate: 48_000,
+                Type: 'Audio'
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 2,
+                eligible: true
+            });
+        }
+    );
+
+    it.each([
+        [ 3_000, undefined ],
+        [ 8_000, 1 ],
+        [ 12_345, 1_500_000_000 ],
+        [ 44_100, 1_000_000 ],
+        [ 48_000, 1_300_000 ],
+        [ 88_200, 5_000_000 ],
+        [ 96_000, 50_000_000 ],
+        [ 176_400, 500_000_000 ],
+        [ 192_000, 2_000_000_000 ]
+    ] as const)(
+        'accepts 24-bit stereo FLAC at %i Hz independently of encoded bitrate %s',
+        (sampleRate, bitrate) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1] = {
+                BitDepth: 24,
+                BitRate: bitrate,
+                Channels: 2,
+                Codec: 'flac',
+                Index: 1,
+                SampleRate: sampleRate,
+                Type: 'Audio'
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 2,
+                eligible: true
+            });
+        }
+    );
+
+    it.each([ 2_999, 192_001 ])(
+        'rejects stereo FLAC only outside the decoded-PCM source-rate contract at %i Hz',
+        sampleRate => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1] = {
+                BitDepth: 24,
+                BitRate: 1_300_000,
+                Channels: 2,
+                Codec: 'flac',
+                Index: 1,
+                SampleRate: sampleRate,
+                Type: 'Audio'
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+        }
+    );
+
     it.each([
         [ 'webm', 'h264', 'High', 'opus' ],
         [ 'ts', 'vp9', 'Profile 0', 'aac' ],
@@ -1336,8 +1434,102 @@ describe('CustomPlaybackEligibility', () => {
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toMatchObject({
+            dolbyVisionProfile: 7,
             eligible: true,
             hdr: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
+    it('falls back from bounded raw Profile 7 to its authorized 4K HDR10 base', () => {
+        const profile7Options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 23.976025,
+                        BitDepth: 10,
+                        BitRate: 96_900_000,
+                        BlPresentFlag: true,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        DvBlSignalCompatibilityId: 6,
+                        DvProfile: 7,
+                        ElPresentFlag: true,
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 23.976025,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithEL',
+                        Width: 3_840
+                    },
+                    {
+                        BitDepth: 24,
+                        Channels: 2,
+                        Codec: 'flac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+        const capabilities = createCapabilities();
+        capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
+        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
+        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
+        const eligibilityOptions = {
+            allowDolbyVisionProfile7: true,
+            allowNativeDolbyVisionProfile7HDR10Base: true,
+            allowNativeHDR: true,
+            allowRawHDR: false,
+            authorizedExternalHDRRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1'
+            ] as const,
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+
+        expect(getCustomPlaybackEligibility(
+            profile7Options,
+            capabilities,
+            eligibilityOptions
+        )).toMatchObject({
+            dolbyVisionProfile: null,
+            eligible: true,
+            hdr: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+
+        const mediaSource = profile7Options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[0].Height = 1_080;
+        mediaSource.MediaStreams[0].Level = 120;
+        mediaSource.MediaStreams[0].Width = 1_920;
+        expect(getCustomPlaybackEligibility(
+            profile7Options,
+            capabilities,
+            eligibilityOptions
+        )).toMatchObject({
+            dolbyVisionProfile: 7,
+            eligible: true,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
         });

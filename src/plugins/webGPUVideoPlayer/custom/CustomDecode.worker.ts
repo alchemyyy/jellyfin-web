@@ -2436,11 +2436,11 @@ async function resolveDolbyVisionEnhancementDecoderConfiguration(
     preparedVideoTrack: PreparedVideoTrack,
     keyPacketSplit: ReturnType<typeof splitDolbyVisionHEVCAccessUnit>
 ): Promise<DolbyVisionEnhancementDecoderConfiguration | null> {
+    if (request.dolbyVisionProfile !== 7) {
+        return null;
+    }
     if (keyPacketSplit.hasRequiredEnhancementLayerParameterSets) {
         return createDolbyVisionEnhancementDecoderConfiguration(preparedVideoTrack);
-    }
-    if (!keyPacketSplit.hasEnhancementLayerVCL && request.dolbyVisionProfile !== 7) {
-        return null;
     }
     const containerConfiguration = await readContainerDolbyVisionTrackConfiguration(
         run,
@@ -2543,7 +2543,8 @@ async function streamOwnedHEVCFrames(
         new DolbyVisionEncodedMetadataQueue(
             inputFormat,
             rpuParser,
-            enhancementConfiguration?.packetFormat ?? inputFormat
+            enhancementConfiguration?.packetFormat ?? inputFormat,
+            request.dolbyVisionProfile !== null
         ),
         new HEVCDynamicHDRMetadataQueue(inputFormat),
         request.startTimeMicroseconds,

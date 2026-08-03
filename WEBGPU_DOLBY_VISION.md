@@ -3,10 +3,12 @@
 Status: Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction, and the
 interleaved, separate-track Matroska, legacy dual-track ISO BMFF, and
 separate-PID MPEG-TS Profile 7 FEL decode/residual paths are implemented with
-separate exact-device authorization. M2TS dependency discovery is implemented
-and unit-tested; end-to-end BDMV demux remains runtime-dependent. Interleaved
-Profile 7 also supports container `hvcE` initialization when a selected key
-access unit omits EL parameter sets.
+separate exact-device authorization. Exact Profile 7 compatibility-ID-6 sources
+also have an independently authorized native external-PQ HDR10-base route when
+full reconstruction is outside its measured envelope. M2TS dependency discovery
+is implemented and unit-tested; end-to-end BDMV demux remains runtime-dependent.
+Interleaved Profile 7 also supports container `hvcE` initialization when a
+selected key access unit omits EL parameter sets.
 
 Research date: 2026-08-01
 Target: mpv-quality Dolby Vision reconstruction in the custom WebGPU decode path
@@ -127,6 +129,21 @@ composition after reshape and before the nonlinear matrix, and then enter the
 ordinary BT.2020/PQ tone-mapping path. Missing, late, or failed EL degrades that
 frame/session to the HDR10 base without restarting playback. Presentation
 telemetry counts MEL, full FEL, and FEL base-fallback frames separately.
+
+An item-scoped native base route covers exact Profile 7 compatibility ID 6 when
+the full raw Dolby Vision route cannot accept the source geometry, level, or
+frame rate. It additionally requires explicit limited-range BT.2020
+non-constant/PQ stream metadata, native HDR HEVC capability, and exact external-
+PQ authorization. Full reconstruction remains preferred inside its measured
+envelope. The base route strips RPU and enhancement NAL units, skips the RPU
+parser and enhancement decoder, and uses the ordinary static-HDR pipeline;
+Profile 5 and incompatible Profile 8 descriptors cannot enter it.
+
+Five focused suites currently pass 440 tests across presentation metadata,
+device-profile separation, runtime eligibility, player integration, and
+metadata ownership. Manual deployed playback is reported working, while
+structured real-title DirectPlay, server-log, lifecycle, and mpv comparison
+evidence for this exact base route remain pending.
 
 ## Profile support matrix
 

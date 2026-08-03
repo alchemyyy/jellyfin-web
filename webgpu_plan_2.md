@@ -3,13 +3,14 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `eaa6bb627d63dd1a7cb91e8dc45c5e2bb8d81143`
+- Parent checkpoint: `32d08222d78a62b617812df87d5b72711cbff53f`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
-  downmix, artifact-provenance, HDR, normalization, no-bitrate High Tier, and
-  unified-validation checkpoints are committed and pushed. The current
-  integration adds runtime-gated native multichannel decoded PCM, exact-PTS HEVC
-  HDR10+, a generalized bounded decoded-audio source-rate contract, and a
-  checked Chrome/Edge x NVIDIA/AMD/Intel hardware-matrix runner.
+  downmix, artifact-provenance, HDR, normalization, no-bitrate High Tier,
+  unified-validation, dynamic-HDR, generalized-audio, hardware-matrix, and
+  persistent-player-preference checkpoints are committed and pushed. The
+  current integration adds an exact Dolby Vision Profile 7 HDR10-base route
+  through independently authorized native external-PQ presentation and removes
+  inherited HTML-player bit-depth ceilings from custom decoded-PCM routes.
   Current-host evidence remains fail-closed for Chrome retention and unresolved
   for Edge live custom-playback entry; AMD and Intel were not available.
   Per-route real-media qualification and long-run resource validation remain
@@ -406,6 +407,39 @@ Acceptance requires all of the following on `http://localhost:8096`:
    explicit format, geometry, level, frame-rate, throughput, and presentation
    constraints and pass regression tests.
 
+### 2.11 Current Profile 7 and FLAC negotiation checkpoint
+
+Dolby Vision Profile 7 with base-layer signal compatibility ID 6 has an HDR10-
+compatible base. Item-scoped negotiation now exposes that base through the
+independently qualified native HEVC/external-PQ route when the full raw Dolby
+Vision route cannot accept the source geometry, level, or frame rate. The
+fallback additionally requires exact limited-range BT.2020 non-constant/PQ
+metadata and the exact external-PQ device authorization. Full Profile 7
+reconstruction remains preferred whenever its raw-output route accepts the
+source; this fallback does not widen the measured raw route.
+
+The base route strips RPU and enhancement NAL units before native decode, does
+not start the enhancement decoder or invoke the RPU parser, and presents the
+same playback session through the ordinary static-HDR pipeline. Static
+mastering-display/content-light metadata may still update the tone-mapping
+peak. Profile 5 and non-HDR10-compatible Profile 8 signals cannot enter this
+route.
+
+Custom decoded-PCM profile splitting now removes inherited HTML-player
+`AudioBitDepth` constraints alongside inherited channel, sample-rate, and
+secondary-track constraints. The original restrictions remain attached to
+non-custom containers. Stereo FLAC regression coverage includes source bit
+depth metadata of 8, 16, 20, 24, and 32 bits; representative and unusual rates
+from 3000 through 192000 Hz; and missing through extreme encoded bitrates.
+Only rates outside the bounded source-rate contract are rejected by these
+generic rules, while the exact track decoder check remains authoritative.
+
+Five focused suites pass 440 tests for the Profile 7 and audio negotiation
+changes. A user-deployed Jellyfin 12 nightly bundle has been reported as
+playing successfully. That is a manual smoke result; exact client/server
+DirectPlay, selected presentation route, server-log, lifecycle, and mpv frame
+evidence remain required before this checkpoint becomes release qualification.
+
 ## 3. Capability terminology
 
 | Term | Meaning |
@@ -431,7 +465,8 @@ decode that codec. The server profile is widened only from measured evidence.
 | HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and a local High Tier HDR10 regression source. |
 | Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. One private 4K real title passes DirectPlay lifecycle plus active/paused device-loss recovery with decoded 5.1 E-AC-3. Broader title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
 | Dolby Vision Profile 7 MEL | HEVC base-layer decode + RPU reconstruction on the HDR10-compatible BL | Raw I420P10 route with exact device authorization. | Implemented. Must expand end-to-end disc/container and fallback coverage. |
-| Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
+| Dolby Vision Profile 7 HDR10-compatible base | Strip RPU/EL NAL units -> owned native HEVC decode -> external PQ recovery -> static HDR WebGPU pipeline | Exact Profile 7 compatibility-ID-6 descriptor with limited BT.2020 non-constant/PQ metadata, native HDR HEVC capability, and exact external-PQ authorization. Full raw Profile 7 remains preferred inside its independently measured envelope. | Implemented and fail-closed. It prevents weaker raw-Dolby-Vision caps from forcing server transcode for a valid higher-tier HDR10 base. Structured real-title DirectPlay and mpv comparison evidence remain. |
+| Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. The exact native HDR10-base route is the bounded degradation path when full reconstruction is outside its measured envelope. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
 | Dolby Vision Profile 8.x | HEVC BL decode + RPU reconstruction; verified HDR10 or HLG-compatible base fallback where applicable | Raw I420P10 route under the applicable exact authorization. | Implemented for supported single-layer descriptors. Expand the Profile 8.1/8.4 and malformed-metadata matrix before release. |
 | VP8, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact output at up to the ordinary 1920x1080 envelope. | Implemented and runtime-gated. No Ultra HD or higher-bit-depth route. |
 | VP9 Profile 0, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact 1080p output plus independent 3840x2160 output qualification. | Implemented and runtime-gated. |
@@ -550,7 +585,7 @@ delta on this procedure, not a separate architecture.
 | --- | --- | --- | --- |
 | AAC-LC | Native WebCodecs -> planar float PCM -> AudioWorklet | Stereo or six-channel input at any integer 3000-192000 Hz rate accepted by the exact track decoder check. Complete 5.1 may retain six output channels when the playback destination exposes at least six; otherwise it uses the qualified stereo downmix. | Implemented and runtime-gated; physical speaker qualification remains. HE-AAC/xHE-AAC are not independently qualified. |
 | Opus | Native WebCodecs -> PCM -> AudioWorklet | Stereo or six-channel input at any integer 3000-192000 Hz rate accepted by the exact track decoder check; complete 5.1 may retain six output channels, otherwise stereo. | Implemented and runtime-gated; physical speaker qualification remains. |
-| FLAC | Native WebCodecs -> PCM -> AudioWorklet | Stereo or six-channel input at any integer 3000-192000 Hz rate accepted by the exact track decoder check; complete 5.1 may retain six output channels, otherwise stereo. | Implemented and runtime-gated; physical speaker qualification remains. This is the intended owned audio route for Main10 DirectPlay. |
+| FLAC | Native WebCodecs -> PCM -> AudioWorklet | Stereo or six-channel input at any integer 3000-192000 Hz rate accepted by the exact track decoder check; complete 5.1 may retain six output channels, otherwise stereo. Inherited HTML `AudioBitDepth` and encoded-bitrate ceilings do not constrain this custom PCM route; regression metadata covers 8/16/20/24/32-bit stereo FLAC. | Implemented and runtime-gated; physical speaker qualification remains. The actual decoder probe remains authoritative. This is the intended owned audio route for Main10 DirectPlay. |
 | MP3 | Native WebCodecs -> PCM -> AudioWorklet | Stereo input at any integer 3000-192000 Hz rate accepted by the exact track decoder check. | Implemented and runtime-gated. Mono and surround remain rejected by layout policy. |
 | Vorbis | Native WebCodecs -> PCM -> AudioWorklet | Stereo or six-channel input at any integer 3000-192000 Hz rate accepted by the exact track decoder check; complete 5.1 may retain six output channels, otherwise stereo. | Implemented and runtime-gated; physical speaker qualification remains. |
 | AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at exactly 48 kHz. Software stereo/5.1 accepts bounded 3000-192000 Hz source metadata only when the actual decoder configuration succeeds; complete 5.1 may retain six output channels, otherwise stereo. | Standard stereo route is automated, artifact, production-build, and port-8096 live qualified. Native availability varies; native decoded-PCM 5.1 needs physical qualification. |
@@ -1180,6 +1215,10 @@ Rules that prevent duplicated work:
 - [x] Compile all seven generated HDR/Dolby Vision shaders in real Chrome WebGPU
   and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.
+- [x] Add an exact item-scoped Profile 7 compatibility-ID-6 HDR10-base route
+  through native HEVC/external PQ when full raw Dolby Vision is outside its
+  measured envelope. Preserve full reconstruction when it is qualified, strip
+  unused RPU/EL data for base playback, and retain static HDR peak handling.
 - [x] Complete native external PQ/HLG checkpoint.
 - [x] Pass one real-title Profile 5 DirectPlay lifecycle plus active and paused
   device-loss recovery with decoded 5.1 E-AC-3 and no transcode reasons.
@@ -1228,6 +1267,9 @@ Rules that prevent duplicated work:
   contract across negotiation, eligibility, worker protocol, decoder output,
   telemetry, and resampling. Keep encoded bitrate irrelevant, preserve exact
   codec/profile/layout rules, and retain runtime decoder checks.
+- [x] Remove inherited HTML `AudioBitDepth` ceilings only from custom decoded-
+  PCM containers and regression-test stereo FLAC at 8/16/20/24/32-bit source
+  metadata, unusual bounded rates, and missing/extreme encoded bitrates.
 - [x] Validate the selected source rate during user-activation-time audio
   prewarm but always create the fixed 48 kHz decoded-PCM output context. A
   96 kHz or nonstandard source rate must not create and discard a mismatched

@@ -106,6 +106,34 @@ describe('DolbyVisionEncodedMetadataQueue', () => {
         queue.requireDrained();
     });
 
+    it('strips Profile 7 metadata without parsing it for HDR10-base playback', async () => {
+        const basePicture = createNALUnit(19, [ 1, 2, 3 ]);
+        const rpu = createNALUnit(62, [ 4, 5, 6 ]);
+        const enhancementPicture = createNALUnit(1, [ 7, 8, 9 ]);
+        const enhancementWrapper = createNALUnit(63, Array.from(enhancementPicture));
+        const rpuParser = createRPUParser();
+        rpuParser.parse.mockRejectedValue(new Error('must not parse discarded RPU data'));
+        const queue = new DolbyVisionEncodedMetadataQueue(
+            { kind: 'annex-b' },
+            rpuParser,
+            { kind: 'annex-b' },
+            false
+        );
+
+        const processedPacket = await queue.processPacket(createPacket(
+            encodeAnnexBNALUnits([ rpu, basePicture, enhancementWrapper ]),
+            1.375
+        ));
+
+        expect(getAnnexBNALUnitTypes(
+            processedPacket.baseLayerPacket?.data ?? new Uint8Array()
+        )).toEqual([ 19 ]);
+        expect(processedPacket.hasEnhancementLayerVCL).toBe(true);
+        expect(rpuParser.parse).not.toHaveBeenCalled();
+        expect(queue.takeFrameMetadata(1_375_000)).toBeNull();
+        queue.requireDrained();
+    });
+
     it('classifies FEL from parsed RPU state without transferring compressed EL bytes', async () => {
         const basePicture = createNALUnit(19, [ 1 ]);
         const rpu = createNALUnit(62, [ 2 ]);

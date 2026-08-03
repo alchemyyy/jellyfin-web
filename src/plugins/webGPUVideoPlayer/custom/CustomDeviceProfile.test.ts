@@ -1459,6 +1459,59 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
     });
 
+    it('does not apply an HTML bit-depth ceiling to decoded FLAC routes', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'flac',
+            Conditions: [
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'AudioBitDepth',
+                    Value: '16'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Type: 'VideoAudio'
+        } ];
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'flac' ])
+        );
+        const customFLACProfiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Codec === 'flac'
+            && profile.Container === 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        )) ?? [];
+
+        expect(customFLACProfiles).toContainEqual({
+            Codec: 'flac',
+            Conditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2'
+                },
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+            ],
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(customFLACProfiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'AudioBitDepth'
+        )))).toBe(false);
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[0],
+            Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        });
+    });
+
     it('advertises native AC-3 routes only at their exact measured layouts', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
@@ -2121,6 +2174,69 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(rangeValues).toContain('SDR|DOVIWithEL|HDR10');
         expect(rangeValues).toContain('DOVIWithEL|HDR10');
         expect(rangeValues.some(value => value?.includes('HLG'))).toBe(false);
+    });
+
+    it('uses the 4K native HDR envelope for an exact Profile 7 HDR10 base route', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const capabilities = createCapabilities([ 'hevc' ], [ 'flac' ], [ 'hevc' ]);
+        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
+        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
+        capabilities.nativeHDRHEVC = {
+            bitDepth: 10,
+            codec: 'hevc',
+            codecString: 'hvc1.2.4.L153.B0',
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 60,
+            maximumLevel: 153,
+            measuredFramesPerSecond: 80,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        };
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            capabilities,
+            {
+                allowDolbyVisionProfile7: true,
+                allowNativeDolbyVisionProfile7HDR10Base: true,
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ]
+            }
+        );
+        const profile7Profiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('DOVIWithEL')
+            ))
+        )) ?? [];
+
+        expect(profile7Profiles.length).toBeGreaterThan(0);
+        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'Width' && condition.Value === '3840'
+        )))).toBe(true);
+        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'VideoLevel' && condition.Value === '153'
+        )))).toBe(true);
+        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'Width' && condition.Value === '1920'
+        )))).toBe(false);
+        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
+            condition.Property === 'VideoLevel' && condition.Value === '120'
+        )))).toBe(false);
     });
 
     it.each([ 24 as const, 30 as const, 60 as const ])(

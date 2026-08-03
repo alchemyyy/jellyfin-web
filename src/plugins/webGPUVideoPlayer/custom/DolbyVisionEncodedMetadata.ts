@@ -133,7 +133,8 @@ export default class DolbyVisionEncodedMetadataQueue {
     public constructor(
         private readonly inputFormat: HEVCNALFormat,
         private readonly rpuParser: DolbyVisionRPUDataParser,
-        private readonly enhancementOutputFormat: HEVCNALFormat = inputFormat
+        private readonly enhancementOutputFormat: HEVCNALFormat = inputFormat,
+        private readonly retainDolbyVisionMetadata = true
     ) {}
 
     /** Removes DV NAL units from one packet and records bounded frame metadata. */
@@ -153,32 +154,17 @@ export default class DolbyVisionEncodedMetadataQueue {
             throw new TypeError('Dolby Vision metadata is not paired with a base-layer picture');
         }
 
-        const parsedRPUData: ArrayBuffer[] = [];
-        for (const rpuNALUnit of splitResult.rpuNALUnits) {
-            parsedRPUData.push(await this.rpuParser.parse(rpuNALUnit));
-        }
+        const parsedRPUData = await this.parseRPUData(splitResult.rpuNALUnits);
 
         if (splitResult.hasBaseLayerVCL) {
-            const metadataByteLength = getMetadataByteLength(
-                splitResult.rpuNALUnits,
-                parsedRPUData
-            );
-            const enhancementLayerDisposition = splitResult.hasEnhancementLayerVCL ?
-                getEnhancementLayerDisposition(
-                    splitResult.enhancementLayerData,
-                    parsedRPUData
-                ) :
-                'absent';
-            this.enqueueFrame(timestampMicroseconds, {
-                byteLength: metadataByteLength,
-                metadata: hasDolbyVisionFrameData ? {
-                    enhancementLayerDisposition,
-                    hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL,
+            this.enqueueFrame(
+                timestampMicroseconds,
+                this.createPendingFrameMetadata(
+                    splitResult,
                     parsedRPUData,
-                    rpuNALUnits: splitResult.rpuNALUnits,
-                    schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
-                } : null
-            });
+                    hasDolbyVisionFrameData
+                )
+            );
         }
 
         return {
@@ -235,16 +221,14 @@ export default class DolbyVisionEncodedMetadataQueue {
             ...baseSplit.rpuNALUnits,
             ...enhancementSplit.rpuNALUnits
         ];
-        const parsedRPUData: ArrayBuffer[] = [];
-        for (const rpuNALUnit of rpuNALUnits) {
-            parsedRPUData.push(await this.rpuParser.parse(rpuNALUnit));
-        }
+        const parsedRPUData = await this.parseRPUData(rpuNALUnits);
         const enhancementLayerData = enhancementSplit.baseLayerData;
-        const metadataByteLength = getMetadataByteLength(rpuNALUnits, parsedRPUData);
-        const enhancementLayerDisposition = getEnhancementLayerDisposition(
-            enhancementLayerData,
-            parsedRPUData
-        );
+        const metadataByteLength = this.retainDolbyVisionMetadata ?
+            getMetadataByteLength(rpuNALUnits, parsedRPUData) :
+            0;
+        const enhancementLayerDisposition = this.retainDolbyVisionMetadata ?
+            getEnhancementLayerDisposition(enhancementLayerData, parsedRPUData) :
+            'absent';
         const processedPacket: ProcessedDolbyVisionHEVCPacket = {
             baseLayerPacket: baseSplit.baseLayerData ?
                 baseLayerPacket.clone({ data: baseSplit.baseLayerData }) :
@@ -257,13 +241,13 @@ export default class DolbyVisionEncodedMetadataQueue {
         };
         this.enqueueFrame(baseTimestampMicroseconds, {
             byteLength: metadataByteLength,
-            metadata: {
+            metadata: this.retainDolbyVisionMetadata ? {
                 enhancementLayerDisposition,
                 hasEnhancementLayerVCL: true,
                 parsedRPUData,
                 rpuNALUnits,
                 schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
-            }
+            } : null
         });
         return processedPacket;
     }
@@ -302,6 +286,43 @@ export default class DolbyVisionEncodedMetadataQueue {
         this.pendingFrames.clear();
         this.pendingFrameCount = 0;
         this.pendingByteLength = 0;
+    }
+
+    private async parseRPUData(rpuNALUnits: readonly Uint8Array[]): Promise<ArrayBuffer[]> {
+        const parsedRPUData: ArrayBuffer[] = [];
+        if (!this.retainDolbyVisionMetadata) {
+            return parsedRPUData;
+        }
+        for (const rpuNALUnit of rpuNALUnits) {
+            parsedRPUData.push(await this.rpuParser.parse(rpuNALUnit));
+        }
+        return parsedRPUData;
+    }
+
+    private createPendingFrameMetadata(
+        splitResult: ReturnType<typeof splitDolbyVisionHEVCAccessUnit>,
+        parsedRPUData: readonly ArrayBuffer[],
+        hasDolbyVisionFrameData: boolean
+    ): PendingFrameMetadata {
+        if (!this.retainDolbyVisionMetadata) {
+            return { byteLength: 0, metadata: null };
+        }
+        const enhancementLayerDisposition = splitResult.hasEnhancementLayerVCL ?
+            getEnhancementLayerDisposition(
+                splitResult.enhancementLayerData,
+                parsedRPUData
+            ) :
+            'absent';
+        return {
+            byteLength: getMetadataByteLength(splitResult.rpuNALUnits, parsedRPUData),
+            metadata: hasDolbyVisionFrameData ? {
+                enhancementLayerDisposition,
+                hasEnhancementLayerVCL: splitResult.hasEnhancementLayerVCL,
+                parsedRPUData,
+                rpuNALUnits: splitResult.rpuNALUnits,
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            } : null
+        };
     }
 
     private enqueueFrame(
