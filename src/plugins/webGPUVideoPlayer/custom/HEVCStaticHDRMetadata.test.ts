@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseHEVCStaticHDRMetadata } from './HEVCStaticHDRMetadata';
+import {
+    parseHEVCStaticHDRMetadata,
+    scanHEVCStaticHDRMetadata
+} from './HEVCStaticHDRMetadata';
 import type { HEVCNALFormat } from './DolbyVisionHEVCSplitter';
+import {
+    MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT
+} from './StaticHDRMetadata';
 
 const PREFIX_SEI_NAL_UNIT_TYPE = 39;
 const MASTERING_DISPLAY_PAYLOAD_TYPE = 137;
@@ -65,6 +71,25 @@ function createSEINALUnit(
         RBSP.push(...contentLightPayload);
     }
     RBSP.push(0x80);
+    return Uint8Array.from([
+        PREFIX_SEI_NAL_UNIT_TYPE << 1,
+        1,
+        ...addEmulationPreventionBytes(RBSP)
+    ]);
+}
+
+function createContentLightSEINALUnit(
+    maximumContentLightLevelNits: number,
+    maximumFrameAverageLightLevelNits: number
+): Uint8Array {
+    const RBSP: number[] = [];
+    const payload = createContentLightPayload(
+        maximumContentLightLevelNits,
+        maximumFrameAverageLightLevelNits
+    );
+    appendExtendedValue(RBSP, CONTENT_LIGHT_PAYLOAD_TYPE);
+    appendExtendedValue(RBSP, payload.byteLength);
+    RBSP.push(...payload, 0x80);
     return Uint8Array.from([
         PREFIX_SEI_NAL_UNIT_TYPE << 1,
         1,
@@ -138,5 +163,97 @@ describe('parseHEVCStaticHDRMetadata', () => {
             createSEINALUnit(1_000, false),
             createSEINALUnit(4_000, false)
         ], format), format)).toThrow('conflicting static HDR metadata');
+    });
+});
+
+describe('scanHEVCStaticHDRMetadata', () => {
+    const format: HEVCNALFormat = { kind: 'annex-b' };
+    const videoAccessUnit = encodeAccessUnit([
+        Uint8Array.from([ 19 << 1, 1, 0x80 ])
+    ], format);
+
+    it('accepts consistent metadata that appears after the first access unit', () => {
+        expect(scanHEVCStaticHDRMetadata([
+            videoAccessUnit,
+            encodeAccessUnit([ createSEINALUnit(4_000) ], format),
+            encodeAccessUnit([ createSEINALUnit(4_000) ], format)
+        ], format)).toEqual({
+            accessUnitCount: 3,
+            firstMetadataAccessUnitIndex: 1,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
+            status: 'valid'
+        });
+    });
+
+    it('merges non-conflicting mastering and content-light payloads', () => {
+        expect(scanHEVCStaticHDRMetadata([
+            encodeAccessUnit([ createSEINALUnit(1_000, false) ], format),
+            encodeAccessUnit([ createContentLightSEINALUnit(800, 300) ], format)
+        ], format)).toMatchObject({
+            firstMetadataAccessUnitIndex: 0,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: 1_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 800,
+                maximumFrameAverageLightLevelNits: 300
+            },
+            status: 'valid'
+        });
+    });
+
+    it('discards every value when bounded access units conflict', () => {
+        expect(scanHEVCStaticHDRMetadata([
+            encodeAccessUnit([ createSEINALUnit(1_000, false) ], format),
+            encodeAccessUnit([ createSEINALUnit(4_000, false) ], format)
+        ], format)).toEqual({
+            accessUnitCount: 2,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'conflicting'
+        });
+    });
+
+    it('discards earlier values when a later payload is malformed', () => {
+        const truncatedSEI = Uint8Array.from([
+            PREFIX_SEI_NAL_UNIT_TYPE << 1,
+            1,
+            MASTERING_DISPLAY_PAYLOAD_TYPE,
+            24,
+            1,
+            0x80
+        ]);
+        expect(scanHEVCStaticHDRMetadata([
+            encodeAccessUnit([ createSEINALUnit(1_000) ], format),
+            encodeAccessUnit([ truncatedSEI ], format)
+        ], format)).toEqual({
+            accessUnitCount: 2,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'malformed'
+        });
+    });
+
+    it('reports a bounded absent result without inventing metadata', () => {
+        expect(scanHEVCStaticHDRMetadata([ videoAccessUnit ], format)).toEqual({
+            accessUnitCount: 1,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'absent'
+        });
+    });
+
+    it('rejects startup prefixes above the shared access-unit bound', () => {
+        const accessUnits = Array.from(
+            { length: MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT + 1 },
+            () => videoAccessUnit
+        );
+        expect(() => scanHEVCStaticHDRMetadata(accessUnits, format)).toThrow(
+            'exceeds its access-unit bound'
+        );
     });
 });

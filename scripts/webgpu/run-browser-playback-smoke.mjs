@@ -1397,6 +1397,11 @@ function createPlayerSnapshotExpression(accessKey) {
                     staleAudioSampleCount: custom.videoDecode.staleAudioSampleCount,
                     staleFrameCount: custom.videoDecode.staleFrameCount,
                     state: custom.videoDecode.state,
+                    staticHDRMetadataFirstAccessUnitIndex:
+                        custom.videoDecode.staticHDRMetadataFirstAccessUnitIndex,
+                    staticHDRMetadataScanAccessUnitCount:
+                        custom.videoDecode.staticHDRMetadataScanAccessUnitCount,
+                    staticHDRMetadataStatus: custom.videoDecode.staticHDRMetadataStatus,
                     takenFrameCount: custom.videoDecode.takenFrameCount
                 } : null
             } : null,

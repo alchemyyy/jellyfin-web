@@ -4,19 +4,17 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `cd82203771b4ceb44861266240fe5a86a9fee14a`
+Parent checkpoint: `2631f7c6db131c52843eb0d06100009dfd3dbc47`
 
-Checkpoint state: the generated private live-case catalog, bounded Jellyfin
-playback-decision evidence, server-log evidence, route-aware startup, complete
-primary HDR10 browser matrix, HEVC static HDR metadata propagation, and
-libplacebo-compatible spline black-point handling are committed and pushed.
-Real-title Profile 5 DirectPlay negotiation and lifecycle hardening are
-implemented and validated in the current worktree.
+Checkpoint state: real-title Profile 5 DirectPlay negotiation and lifecycle
+hardening are committed and pushed. A bounded multi-access-unit HEVC static HDR
+metadata scan, explicit absent/malformed/conflicting telemetry, and retained
+browser evidence are implemented and live-validated in the current worktree.
 
 ## Current objective
 
-Close the real-title Dolby Vision Profile 5 slice, then harden missing, late,
-and conflicting HDR metadata without weakening the existing exact-route,
+Finish the bounded static-HDR-metadata checkpoint, then expand the HDR/Dolby
+Vision golden and live-title matrix without weakening the existing exact-route,
 resource-ownership, or DirectPlay gates.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
@@ -223,11 +221,14 @@ channel bed.
   compensation. The gamut stage remains analytic; it is not claimed to
   reproduce libplacebo's generated 3D perceptual LUT exactly.
 - The custom HEVC worker parses mastering-display and content-light SEI payloads
-  from the first encoded packet, forwards validated static metadata through the
-  session/controller protocol, and applies the mastering-display maximum, or
-  MaxCLL when no mastering maximum exists, before the first non-Dolby-Vision PQ
-  frame. Missing or malformed optional metadata retains the bounded 1000-nit
-  default without interrupting decode.
+  from up to 16 startup access units and an 8 MiB accumulated packet budget,
+  forwards validated static metadata through the session/controller protocol,
+  and applies the mastering-display maximum, or MaxCLL when no mastering maximum
+  exists, before the first non-Dolby-Vision PQ frame. Consistent partial fields
+  merge across access units. Missing, malformed, or conflicting optional
+  metadata is reported explicitly and retains the bounded 1000-nit default
+  without interrupting decode. Metadata beyond the startup prefix and dynamic
+  HDR metadata remain unsupported.
 - All seven HDR/Dolby Vision shader variants compile and create pipelines in
   Chrome 151 WebGPU. A five-frame private HDR10 comparison against mpv spline
   now records static-reference mean/minimum SSIM of 0.9938272/0.990991 and
@@ -258,9 +259,24 @@ channel bed.
   container and video/audio codecs plus bounded playback-decision fields. The
   Profile 5 negotiation fix keeps a non-blocking shared compatibility envelope
   while route-scoped measured profiles retain exact independent caps.
+- Browser evidence now retains the static HDR scan status, scanned access-unit
+  count, and first metadata index. The live High Tier HDR10 lifecycle passed
+  with 16 scanned access units, metadata first observed at index 0, `valid`
+  status, a 4000-nit input peak, native HEVC DirectPlay on client and server,
+  decoded FLAC, zero transcode reasons, and zero fallback. A ten-round paired
+  startup gate also passed: custom first-visible median/p95 regression versus
+  HTML was -81.9/7.1 ms and first-audio regression was 9.9/97.2 ms, within the
+  fixed 250/500 ms gates.
 
 ## Completed checkpoint gates
 
+- The bounded static-HDR-prefix checkpoint passed all 15 canonical fixture
+  hashes and cases plus all 10 required checks: 384 codec-contract Vitest tests
+  across 19 files, 143 standalone Node tests, 57 Python tests, TypeScript,
+  runtime-toolchain readiness, downmix/artifact freshness, and a development
+  build. The affected HDR/session/player suites passed 225 focused tests. The
+  independent live lifecycle and paired ten-round startup gates also passed on
+  Jellyfin 12 nightly and Chrome 151.
 - The Profile 5 negotiation worktree checkpoint passed all 15 canonical
   fixture hashes and cases plus all 10 checks: 384 focused Vitest tests across
   19 files, 143 standalone Node tests, 57 Python tests, TypeScript,

@@ -219,16 +219,23 @@ render-settings versions, and active target format. A decoded frame whose
 color descriptor is not the exact neutral BT.709 contract latches
 presentation fallback instead of being sampled through the HDR shader.
 
-For non-Dolby-Vision PQ HEVC, the worker scans the first encoded packet for
-prefix or suffix SEI mastering-display and content-light payloads. Validated
-metadata crosses the worker/session/controller boundary before frame delivery.
-The renderer selects the mastering-display maximum luminance first and MaxCLL
-only when no mastering maximum exists; absent or malformed optional SEI keeps
-the bounded 1000-nit default. Renderer schema version 6 applies libplacebo's
-0.000001-nit PQ black point and 1000:1 SDR output contrast, then compensates the
-encoded SDR output back to zero. The one-packet scan is intentionally bounded;
-late or conflicting HDR metadata remains a fail-closed validation item rather
-than an inferred dynamic-metadata implementation.
+For non-Dolby-Vision PQ HEVC, the worker scans a startup prefix of at most 16
+encoded access units and an 8 MiB accumulated packet budget for prefix or suffix
+SEI mastering-display and content-light payloads. The worker retains at least
+one access unit even when that packet alone exceeds the byte budget. Consistent
+late fields merge before frame delivery; malformed or conflicting fields
+discard every scanned value. Validated metadata crosses the
+worker/session/controller boundary before frame delivery. The renderer selects
+the mastering-display maximum luminance first and MaxCLL only when no mastering
+maximum exists. Absent, malformed, or conflicting optional SEI keeps the bounded
+1000-nit default.
+
+Decode telemetry reports `staticHDRMetadataStatus` as `absent`, `conflicting`,
+`malformed`, or `valid`, plus the scanned access-unit count and first metadata
+index. Renderer schema version 6 applies libplacebo's 0.000001-nit PQ black
+point and 1000:1 SDR output contrast, then compensates the encoded SDR output
+back to zero. Metadata after the bounded startup prefix is not parsed and no
+dynamic HDR metadata behavior is claimed.
 
 Dolby Vision has separate raw-plane and external-texture authorizations. The
 native Profile 5 route imports an owned decoded `VideoFrame`, executes the
@@ -501,7 +508,7 @@ the process command line:
 
 ```powershell
 $env:WEBGPU_SMOKE_DEBUG_URL = 'http://localhost:9224'
-$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096'
+$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096/web'
 $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_ITEM_ID = '<item-id>'
 $env:WEBGPU_SMOKE_USERNAME = '<username>'

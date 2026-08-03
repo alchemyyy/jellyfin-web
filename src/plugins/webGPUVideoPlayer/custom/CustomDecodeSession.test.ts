@@ -444,11 +444,16 @@ describe('CustomDecodeSession', () => {
             displayHeight: 1080,
             displayWidth: 1920,
             generation: 7,
-            staticHDRMetadata: {
-                masteringDisplayMaximumLuminanceNits: 4_000,
-                masteringDisplayMinimumLuminanceNits: 0.005,
-                maximumContentLightLevelNits: 500,
-                maximumFrameAverageLightLevelNits: 200
+            staticHDRMetadataScan: {
+                accessUnitCount: 16,
+                firstMetadataAccessUnitIndex: 1,
+                metadata: {
+                    masteringDisplayMaximumLuminanceNits: 4_000,
+                    masteringDisplayMinimumLuminanceNits: 0.005,
+                    maximumContentLightLevelNits: 500,
+                    maximumFrameAverageLightLevelNits: 200
+                },
+                status: 'valid'
             },
             type: 'ready'
         });
@@ -497,6 +502,9 @@ describe('CustomDecodeSession', () => {
             queuedFrameCount: 2,
             pendingFrameCount: 1,
             receivedFrameCount: 4,
+            staticHDRMetadataFirstAccessUnitIndex: 1,
+            staticHDRMetadataScanAccessUnitCount: 16,
+            staticHDRMetadataStatus: 'valid',
             state: 'ready',
             takenFrameCount: 1
         });
@@ -525,6 +533,49 @@ describe('CustomDecodeSession', () => {
         expect(session.acknowledgeFrame(presentationFrame)).toBe(false);
         presentationFrame.frame.close();
     });
+
+    it.each([ 'conflicting', 'malformed' ] as const)(
+        'records %s static HDR metadata without propagating untrusted values',
+        (status) => {
+            const worker = new MockWorker();
+            const events: CustomDecodeSessionEvent[] = [];
+            const session = new CustomDecodeSession(
+                event => events.push(event),
+                () => worker as unknown as Worker
+            );
+
+            startSession(session, 8);
+            worker.emitMessage({
+                audio: null,
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 1_080,
+                codedWidth: 1_920,
+                displayHeight: 1_080,
+                displayWidth: 1_920,
+                generation: 8,
+                staticHDRMetadataScan: {
+                    accessUnitCount: 16,
+                    firstMetadataAccessUnitIndex: null,
+                    metadata: null,
+                    status
+                },
+                type: 'ready'
+            });
+
+            expect(session.getTelemetry()).toMatchObject({
+                staticHDRMetadataFirstAccessUnitIndex: null,
+                staticHDRMetadataScanAccessUnitCount: 16,
+                staticHDRMetadataStatus: status,
+                state: 'configured'
+            });
+            expect(events).toEqual([ {
+                audio: null,
+                codec: 'hvc1.2.4.L153.B0',
+                generation: 8,
+                type: 'configured'
+            } ]);
+        }
+    );
 
     it('forwards native HDR metadata neutralization to the worker start request', () => {
         const worker = new MockWorker();

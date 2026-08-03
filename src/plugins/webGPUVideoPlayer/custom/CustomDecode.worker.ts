@@ -86,7 +86,7 @@ import {
     waitForHEVCSoftwareVideoDecoderShutdown
 } from './HEVCSoftwareVideoDecoder';
 import { parseHEVCSPS } from './HEVCSPSParser';
-import { parseHEVCStaticHDRMetadata } from './HEVCStaticHDRMetadata';
+import { scanHEVCStaticHDRMetadata } from './HEVCStaticHDRMetadata';
 import {
     requireValidByteRangeResponse,
     UnsupportedRangeResponseError
@@ -126,7 +126,10 @@ import TrueHDSoftwareAudioDecoder, {
     type TrueHDDecoderCodec
 } from './TrueHDSoftwareAudioDecoder';
 import LegacySoftwareVideoDecoder from './LegacySoftwareVideoDecoder';
-import type { StaticHDRMetadata } from './StaticHDRMetadata';
+import {
+    MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
+    type StaticHDRMetadataScanResult
+} from './StaticHDRMetadata';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -139,11 +142,13 @@ const OWNED_HEVC_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
+const STATIC_HDR_METADATA_PACKET_OPTIONS = { metadataOnly: false } as const;
 const OPENJPEG_PACKET_OPTIONS = { metadataOnly: false } as const;
 const LEGACY_VIDEO_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
+const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
 const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
 
 type MediaSampleIterator<Sample> = {
@@ -183,7 +188,7 @@ type PreparedVideoTrack = {
     containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
-    staticHDRMetadata?: StaticHDRMetadata
+    staticHDRMetadataScan?: StaticHDRMetadataScanResult
     videoTrack: InputVideoTrack
 };
 
@@ -544,28 +549,33 @@ async function prepareFocusedSoftwareVideoTrack(
 async function readHEVCStaticHDRMetadata(
     videoTrack: InputVideoTrack,
     decoderConfig: VideoDecoderConfig,
-    request: Extract<DecodeWorkerRequest, { type: 'start' }>
-): Promise<StaticHDRMetadata | null> {
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    run: DecodeRun
+): Promise<StaticHDRMetadataScanResult | null> {
     if (request.nativeHDRTransfer !== 'pq') {
         return null;
     }
 
     const packetSink = new EncodedPacketSink(videoTrack);
-    const firstPacket = await packetSink.getFirstPacket(OWNED_HEVC_PACKET_OPTIONS);
-    if (!firstPacket) {
-        return null;
-    }
-    try {
-        return parseHEVCStaticHDRMetadata(
-            firstPacket.data,
-            getHEVCNALFormat(decoderConfig)
-        );
-    } catch (error) {
-        if (error instanceof TypeError) {
-            return null;
+    const accessUnits: Uint8Array[] = [];
+    let scannedByteLength = 0;
+    let packet = await packetSink.getFirstPacket(STATIC_HDR_METADATA_PACKET_OPTIONS);
+    while (packet
+        && !run.cancelled
+        && accessUnits.length < MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
+        const nextByteLength = scannedByteLength + packet.data.byteLength;
+        if (accessUnits.length > 0
+            && nextByteLength > STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
+            break;
         }
-        throw error;
+        accessUnits.push(packet.data);
+        scannedByteLength = nextByteLength;
+        if (scannedByteLength >= STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH) {
+            break;
+        }
+        packet = await packetSink.getNextPacket(packet, STATIC_HDR_METADATA_PACKET_OPTIONS);
     }
+    return scanHEVCStaticHDRMetadata(accessUnits, getHEVCNALFormat(decoderConfig));
 }
 
 async function prepareVideoTrack(
@@ -658,8 +668,8 @@ async function prepareVideoTrack(
         );
     }
 
-    const staticHDRMetadata = codec === 'hevc' ?
-        await readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request) :
+    const staticHDRMetadataScan = codec === 'hevc' ?
+        await readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request, run) :
         null;
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -671,7 +681,7 @@ async function prepareVideoTrack(
         containerTrackNumber: videoTrack.id,
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
-        ...(staticHDRMetadata ? { staticHDRMetadata } : {}),
+        ...(staticHDRMetadataScan ? { staticHDRMetadataScan } : {}),
         videoTrack
     };
 }
@@ -1127,8 +1137,8 @@ function postReadyResponse(
         displayHeight: geometry.displayHeight,
         displayWidth: geometry.displayWidth,
         generation: run.generation,
-        ...(preparedVideoTrack.staticHDRMetadata ? {
-            staticHDRMetadata: preparedVideoTrack.staticHDRMetadata
+        ...(preparedVideoTrack.staticHDRMetadataScan ? {
+            staticHDRMetadataScan: preparedVideoTrack.staticHDRMetadataScan
         } : {}),
         type: 'ready'
     });

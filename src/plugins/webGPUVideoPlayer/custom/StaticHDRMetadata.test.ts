@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     getStaticHDRToneMappingPeakNits,
     isStaticHDRMetadata,
+    isStaticHDRMetadataScanResult,
     type StaticHDRMetadata
 } from './StaticHDRMetadata';
 
@@ -46,5 +47,49 @@ describe('StaticHDRMetadata', () => {
             ...createMetadata(),
             maximumContentLightLevelNits: Number.NaN
         })).toThrow('Static HDR metadata is invalid');
+    });
+
+    it('validates exact bounded startup scan states', () => {
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 3,
+            firstMetadataAccessUnitIndex: 1,
+            metadata: createMetadata(),
+            status: 'valid'
+        })).toBe(true);
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 16,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'conflicting'
+        })).toBe(true);
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 1,
+            firstMetadataAccessUnitIndex: 1,
+            metadata: createMetadata(),
+            status: 'valid'
+        })).toBe(false);
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 1,
+            firstMetadataAccessUnitIndex: null,
+            metadata: createMetadata(),
+            status: 'malformed'
+        })).toBe(false);
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 17,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'absent'
+        })).toBe(false);
+        expect(isStaticHDRMetadataScanResult({
+            accessUnitCount: 1,
+            firstMetadataAccessUnitIndex: 0,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: null,
+                masteringDisplayMinimumLuminanceNits: null,
+                maximumContentLightLevelNits: null,
+                maximumFrameAverageLightLevelNits: null
+            },
+            status: 'valid'
+        })).toBe(false);
     });
 });

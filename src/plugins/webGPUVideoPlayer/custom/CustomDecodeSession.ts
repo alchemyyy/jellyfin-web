@@ -39,7 +39,10 @@ import {
     MAXIMUM_RAW_VIDEO_CODED_WIDTH,
     type RawVideoFrameGeometry
 } from './RawVideoFrameCopy';
-import type { StaticHDRMetadata } from './StaticHDRMetadata';
+import type {
+    StaticHDRMetadata,
+    StaticHDRMetadataScanStatus
+} from './StaticHDRMetadata';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 
@@ -115,6 +118,9 @@ export type CustomDecodeSessionTelemetry = {
     staleAudioSampleCount: number
     staleFrameCount: number
     state: 'configured' | 'ended' | 'error' | 'idle' | 'ready' | 'starting'
+    staticHDRMetadataFirstAccessUnitIndex: number | null
+    staticHDRMetadataScanAccessUnitCount: number
+    staticHDRMetadataStatus: StaticHDRMetadataScanStatus | null
     submittedAudioFrameCount: number
     submittedAudioSampleCount: number
     submittedVideoPacketCount: number
@@ -190,6 +196,9 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         staleAudioSampleCount: 0,
         staleFrameCount: 0,
         state: 'idle',
+        staticHDRMetadataFirstAccessUnitIndex: null,
+        staticHDRMetadataScanAccessUnitCount: 0,
+        staticHDRMetadataStatus: null,
         submittedAudioFrameCount: 0,
         submittedAudioSampleCount: 0,
         submittedVideoPacketCount: 0,
@@ -790,7 +799,13 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         workerRecord.videoCodec = videoCodec;
-        workerRecord.staticHDRMetadata = message.staticHDRMetadata ?? null;
+        const staticHDRMetadataScan = message.staticHDRMetadataScan ?? null;
+        workerRecord.staticHDRMetadata = staticHDRMetadataScan?.metadata ?? null;
+        this.telemetry.staticHDRMetadataFirstAccessUnitIndex =
+            staticHDRMetadataScan?.firstMetadataAccessUnitIndex ?? null;
+        this.telemetry.staticHDRMetadataScanAccessUnitCount =
+            staticHDRMetadataScan?.accessUnitCount ?? 0;
+        this.telemetry.staticHDRMetadataStatus = staticHDRMetadataScan?.status ?? null;
         workerRecord.audioMediaReady = audioConfiguration === null;
         this.telemetry.state = 'configured';
         this.emitEvent({

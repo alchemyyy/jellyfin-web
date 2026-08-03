@@ -707,6 +707,12 @@ describe('DecodeWorkerProtocol', () => {
     });
 
     it('validates bounded optional static HDR metadata', () => {
+        const staticHDRMetadata = {
+            masteringDisplayMaximumLuminanceNits: 4_000,
+            masteringDisplayMinimumLuminanceNits: 0.005,
+            maximumContentLightLevelNits: 500,
+            maximumFrameAverageLightLevelNits: 200
+        };
         const readyResponse = {
             audio: null,
             codec: 'hvc1.2.4.L153.B0',
@@ -715,28 +721,43 @@ describe('DecodeWorkerProtocol', () => {
             displayHeight: 2_160,
             displayWidth: 3_840,
             generation: 1,
-            staticHDRMetadata: {
-                masteringDisplayMaximumLuminanceNits: 4_000,
-                masteringDisplayMinimumLuminanceNits: 0.005,
-                maximumContentLightLevelNits: 500,
-                maximumFrameAverageLightLevelNits: 200
+            staticHDRMetadataScan: {
+                accessUnitCount: 16,
+                firstMetadataAccessUnitIndex: 1,
+                metadata: staticHDRMetadata,
+                status: 'valid'
             },
             type: 'ready'
         };
         expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
         expect(isDecodeWorkerResponse({
             ...readyResponse,
-            staticHDRMetadata: {
-                ...readyResponse.staticHDRMetadata,
-                masteringDisplayMaximumLuminanceNits: 10_001
+            staticHDRMetadataScan: {
+                ...readyResponse.staticHDRMetadataScan,
+                metadata: {
+                    ...staticHDRMetadata,
+                    masteringDisplayMaximumLuminanceNits: 10_001
+                }
             }
         })).toBe(false);
         expect(isDecodeWorkerResponse({
             ...readyResponse,
-            staticHDRMetadata: {
-                masteringDisplayMaximumLuminanceNits: 4_000
+            staticHDRMetadataScan: {
+                accessUnitCount: 16,
+                firstMetadataAccessUnitIndex: null,
+                metadata: staticHDRMetadata,
+                status: 'malformed'
             }
         })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...readyResponse,
+            staticHDRMetadataScan: {
+                accessUnitCount: 16,
+                firstMetadataAccessUnitIndex: null,
+                metadata: null,
+                status: 'conflicting'
+            }
+        })).toBe(true);
     });
 
     it('validates bounded planar PCM and independent audio credits', () => {

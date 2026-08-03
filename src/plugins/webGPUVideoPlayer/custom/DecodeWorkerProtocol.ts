@@ -18,8 +18,8 @@ import {
     type TransferableRawVideoFrame
 } from './RawVideoFrameCopy';
 import {
-    isStaticHDRMetadata,
-    type StaticHDRMetadata
+    isStaticHDRMetadataScanResult,
+    type StaticHDRMetadataScanResult
 } from './StaticHDRMetadata';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
@@ -149,7 +149,7 @@ export type DecodeWorkerReadyResponse = {
     displayHeight: number
     displayWidth: number
     generation: number
-    staticHDRMetadata?: StaticHDRMetadata
+    staticHDRMetadataScan?: StaticHDRMetadataScanResult
     type: 'ready'
 };
 
@@ -737,8 +737,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && Number(value.displayHeight) <= MAXIMUM_RAW_VIDEO_CODED_HEIGHT
                 && Number(value.displayWidth) <= MAXIMUM_RAW_VIDEO_CODED_WIDTH
                 && (value.audio === null || isAudioConfiguration(value.audio))
-                && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadata')
-                    || isStaticHDRMetadata(value.staticHDRMetadata));
+                && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
+                    || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan));
         case 'frame':
             return isDecodeWorkerFrameResponse(value);
         case 'audio': {

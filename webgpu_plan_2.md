@@ -3,10 +3,12 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `8e2784c90a95ea37871fa2669005d6fe8240ca6e`
+- Parent checkpoint: `2631f7c6db131c52843eb0d06100009dfd3dbc47`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
-  downmix, artifact-provenance, HDR, and unified validation-foundation
-  checkpoints and reviewed-baseline support are committed and pushed.
+  downmix, artifact-provenance, HDR, Profile 5 negotiation, and unified
+  validation-foundation checkpoints and reviewed-baseline support are committed
+  and pushed. The bounded static-HDR-prefix checkpoint passes its focused,
+  canonical, live lifecycle, and startup gates in the current worktree.
   Generator-owned fixture-registry integration is active. Per-tuple real-media
   qualification and long-run resource validation remain before a general
   rollout.
@@ -83,9 +85,10 @@ that a source used the owned custom decode route.
   and SDR black points plus bounded analytic perceptual BT.709 chroma
   compression. This does not claim exact equivalence to libplacebo's generated
   3D gamut LUT.
-- HEVC mastering-display and content-light SEI extraction from the first packet,
-  validated propagation through the custom worker/session/controller boundary,
-  and source-peak application before the first ordinary PQ frame.
+- Bounded HEVC mastering-display and content-light SEI extraction from up to 16
+  startup access units, validated propagation through the custom
+  worker/session/controller boundary, and source-peak application before the
+  first ordinary PQ frame.
 - Exact-device raw HDR authorization and separate Dolby Vision route
   authorizations.
 - Dolby Vision Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction,
@@ -847,9 +850,10 @@ renderer controls.
 **Deliverable:** mpv/libplacebo-level reconstruction for the claimed profiles,
 with exact-device authorization and documented graceful degradation.
 
-**Remaining concentration:** real-title Profile 5/7/8 matrix, BDMV behavior,
-FEL dual-decoder performance, HLG and HDR metadata conflicts, display controls,
-golden thresholds, and device/display changes.
+**Remaining concentration:** broader real-title Profile 5/7/8 and HLG matrices,
+BDMV behavior, FEL dual-decoder performance, live malformed/conflicting static
+metadata cases, dynamic HDR metadata policy, display controls, golden
+thresholds, and device/display changes.
 
 **Current evidence:** all seven generated HDR/Dolby Vision WGSL variants compile
 and create render pipelines in Chrome 151. The exact five-frame private HDR10
@@ -873,6 +877,16 @@ uses a non-blocking shared authorized envelope because Jellyfin cumulatively
 evaluates matching profiles, while range-scoped measured profiles retain every
 exact per-route cap. This is initial real-title evidence, not the complete
 Profile 5 title/browser/GPU matrix.
+
+The ordinary PQ worker now scans a bounded startup prefix rather than only the
+first access unit. It merges consistent partial static fields, reports exact
+`absent`, `malformed`, `conflicting`, or `valid` states, and discards all values
+on malformed or conflicting input. Focused parser/protocol/session tests cover
+late metadata and every rejection state. A private 4K HDR10 lifecycle retained
+`valid`, 16 scanned access units, first metadata index 0, and the 4000-nit
+mastering peak with zero fallback. Its paired ten-round startup gate passed with
+first-visible median/p95 regression of -81.9/7.1 ms and first-audio regression
+of 9.9/97.2 ms versus direct HTML.
 
 ### Group F: Negotiation and capability safety
 
@@ -1066,6 +1080,9 @@ Rules that prevent duplicated work:
 - [x] Parse HEVC mastering-display/content-light SEI, propagate validated static
   metadata through the custom pipeline, and select the mastering maximum or
   MaxCLL before presenting the first ordinary PQ frame.
+- [x] Scan a bounded startup prefix, merge consistent late fields, reject
+  malformed/conflicting values, retain explicit scan telemetry, and preserve the
+  1000-nit default for every non-valid state.
 - [x] Compile all seven generated HDR/Dolby Vision shaders in real Chrome WebGPU
   and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.
@@ -1076,8 +1093,11 @@ Rules that prevent duplicated work:
 - [ ] Validate Profile 7 FEL for all claimed container topologies and sustained
   dual-decoder playback.
 - [ ] Complete BDMV/M2TS end-to-end qualification.
-- [ ] Validate metadata conflicts, missing metadata, corrupt/stale RPU, EL loss,
-  and exact fallback/degradation behavior.
+- [ ] Run live-title/fixture cases for missing, malformed, and conflicting static
+  HDR metadata; focused parser/protocol/session coverage is complete.
+- [ ] Validate corrupt/stale RPU, EL loss, metadata beyond the bounded startup
+  prefix, and exact fallback/degradation behavior. Dynamic HDR metadata is not
+  currently implemented.
 - [ ] Validate device loss, adapter changes, canvas format changes, fullscreen,
   DPR, and display changes for every HDR/DV route.
 - [ ] Define final renderer controls, defaults, persistence, and live uniform

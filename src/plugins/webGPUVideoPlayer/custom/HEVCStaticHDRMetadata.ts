@@ -4,8 +4,10 @@ import {
     type HEVCNALUnit
 } from './DolbyVisionHEVCSplitter';
 import {
+    MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     isStaticHDRMetadata,
-    type StaticHDRMetadata
+    type StaticHDRMetadata,
+    type StaticHDRMetadataScanResult
 } from './StaticHDRMetadata';
 
 const HEVC_PREFIX_SEI_NAL_UNIT_TYPE = 39;
@@ -19,6 +21,29 @@ const MASTERING_LUMINANCE_SCALE = 10_000;
 type MutableStaticHDRMetadata = {
     -readonly [Property in keyof StaticHDRMetadata]: StaticHDRMetadata[Property]
 };
+
+const STATIC_HDR_METADATA_PROPERTIES: readonly (keyof StaticHDRMetadata)[] = [
+    'masteringDisplayMaximumLuminanceNits',
+    'masteringDisplayMinimumLuminanceNits',
+    'maximumContentLightLevelNits',
+    'maximumFrameAverageLightLevelNits'
+];
+
+class HEVCStaticHDRMetadataConflictError extends TypeError {
+    public constructor() {
+        super('The HEVC access units contain conflicting static HDR metadata');
+        this.name = 'HEVCStaticHDRMetadataConflictError';
+    }
+}
+
+function createEmptyStaticHDRMetadata(): MutableStaticHDRMetadata {
+    return {
+        masteringDisplayMaximumLuminanceNits: null,
+        masteringDisplayMinimumLuminanceNits: null,
+        maximumContentLightLevelNits: null,
+        maximumFrameAverageLightLevelNits: null
+    };
+}
 
 function readUnsigned16(data: Uint8Array, offset: number): number {
     return (data[offset] * 256) + data[offset + 1];
@@ -90,9 +115,18 @@ function mergeMetadataValue(
     }
     const previousValue = metadata[property];
     if (previousValue !== null && previousValue !== value) {
-        throw new TypeError('The HEVC access unit contains conflicting static HDR metadata');
+        throw new HEVCStaticHDRMetadataConflictError();
     }
     metadata[property] = value;
+}
+
+function mergeStaticHDRMetadata(
+    destination: MutableStaticHDRMetadata,
+    source: StaticHDRMetadata
+): void {
+    for (const property of STATIC_HDR_METADATA_PROPERTIES) {
+        mergeMetadataValue(destination, property, source[property]);
+    }
 }
 
 function parseMasteringDisplayPayload(
@@ -174,12 +208,7 @@ export function parseHEVCStaticHDRMetadata(
     accessUnit: Uint8Array,
     format: HEVCNALFormat
 ): StaticHDRMetadata | null {
-    const metadata: MutableStaticHDRMetadata = {
-        masteringDisplayMaximumLuminanceNits: null,
-        masteringDisplayMinimumLuminanceNits: null,
-        maximumContentLightLevelNits: null,
-        maximumFrameAverageLightLevelNits: null
-    };
+    const metadata = createEmptyStaticHDRMetadata();
     const nalUnits = parseHEVCNALUnits(accessUnit, format);
     for (const nalUnit of nalUnits) {
         if (nalUnit.type === HEVC_PREFIX_SEI_NAL_UNIT_TYPE
@@ -197,4 +226,69 @@ export function parseHEVCStaticHDRMetadata(
         throw new TypeError('The HEVC access unit contains invalid static HDR metadata');
     }
     return metadata;
+}
+
+/** Scans a bounded startup prefix and rejects malformed or conflicting metadata. */
+export function scanHEVCStaticHDRMetadata(
+    accessUnits: readonly Uint8Array[],
+    format: HEVCNALFormat
+): StaticHDRMetadataScanResult {
+    if (accessUnits.length > MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT) {
+        throw new RangeError('The HEVC static HDR metadata scan exceeds its access-unit bound');
+    }
+
+    const metadata = createEmptyStaticHDRMetadata();
+    let firstMetadataAccessUnitIndex: number | null = null;
+    for (let accessUnitIndex = 0; accessUnitIndex < accessUnits.length; accessUnitIndex += 1) {
+        let parsedMetadata: StaticHDRMetadata | null;
+        try {
+            parsedMetadata = parseHEVCStaticHDRMetadata(accessUnits[accessUnitIndex], format);
+            if (!parsedMetadata) {
+                continue;
+            }
+            mergeStaticHDRMetadata(metadata, parsedMetadata);
+        } catch (error) {
+            if (error instanceof HEVCStaticHDRMetadataConflictError) {
+                return {
+                    accessUnitCount: accessUnits.length,
+                    firstMetadataAccessUnitIndex: null,
+                    metadata: null,
+                    status: 'conflicting'
+                };
+            }
+            if (error instanceof TypeError) {
+                return {
+                    accessUnitCount: accessUnits.length,
+                    firstMetadataAccessUnitIndex: null,
+                    metadata: null,
+                    status: 'malformed'
+                };
+            }
+            throw error;
+        }
+        firstMetadataAccessUnitIndex ??= accessUnitIndex;
+    }
+
+    if (firstMetadataAccessUnitIndex === null) {
+        return {
+            accessUnitCount: accessUnits.length,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'absent'
+        };
+    }
+    if (!isStaticHDRMetadata(metadata)) {
+        return {
+            accessUnitCount: accessUnits.length,
+            firstMetadataAccessUnitIndex: null,
+            metadata: null,
+            status: 'malformed'
+        };
+    }
+    return {
+        accessUnitCount: accessUnits.length,
+        firstMetadataAccessUnitIndex,
+        metadata,
+        status: 'valid'
+    };
 }
