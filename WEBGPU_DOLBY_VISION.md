@@ -409,9 +409,9 @@ smoke: 3840x2160 BL, 1920x1080 EL, exact PTS pairing, one parsed RPU, one shared
 31,242,240-byte ownership buffer, `decoded-fel`, natural EOF, and acknowledged
 shutdown. Generic bundled 4K Main10 playback remained gated because that run's
 qualification measured 28.49 fps, below the production 30 fps threshold. This
-does not gate separately qualified native Profile 5 decode: a live Jellyfin
-Wolfwalkers session direct-played 3840x2076 Profile 5 HEVC with bundled E-AC-3
-PCM audio, per-frame RPU reconstruction, WebGPU HDR-to-SDR presentation, zero
+does not gate separately qualified native Profile 5 decode: a local live
+Jellyfin source direct-played 3840x2076 Profile 5 HEVC with bundled E-AC-3 PCM
+audio, per-frame RPU reconstruction, WebGPU HDR-to-SDR presentation, zero
 dropped frames, and clean pause, seek, fullscreen, stop, repeated-session, and
 device-loss-recovery smoke coverage.
 

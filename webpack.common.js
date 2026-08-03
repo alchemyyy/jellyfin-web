@@ -150,6 +150,217 @@ const config = {
                     ),
                     to: 'libraries/mediabunny-ac3/LICENSE.txt'
                 },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dts/artifacts/COPYING.LGPLv2.1'
+                    ),
+                    to: 'libraries/libdcadec/COPYING.LGPLv2.1'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dts/artifacts/REVISION'
+                    ),
+                    to: 'libraries/libdcadec/REVISION',
+                    toType: 'file'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dts/artifacts/libdcadec-source.tar.gz'
+                    ),
+                    to: 'libraries/libdcadec/libdcadec-source.tar.gz'
+                },
+                {
+                    from: path.resolve(__dirname, 'LICENSE'),
+                    to: 'libraries/libdcadec/LICENSE.bridge.GPL-2.0.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/dts/libdcadec_bridge.c'
+                    ),
+                    to: 'libraries/libdcadec/libdcadec_bridge.c'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/build_dts_decoder.py'
+                    ),
+                    to: 'libraries/libdcadec/build_dts_decoder.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/truehd/artifacts/COPYING.LGPLv2.1'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/COPYING.LGPLv2.1'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/truehd/artifacts/REVISION'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/REVISION',
+                    toType: 'file'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/truehd/artifacts/ffmpeg-source.tar.gz'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/ffmpeg-source.tar.gz'
+                },
+                {
+                    from: path.resolve(__dirname, 'LICENSE'),
+                    to: 'libraries/ffmpeg-truehd/LICENSE.bridge.GPL-2.0.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/truehd/ffmpeg_truehd_bridge.c'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/ffmpeg_truehd_bridge.c'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/build_truehd_decoder.py'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/build_truehd_decoder.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/pinned_ffmpeg_build.py'
+                    ),
+                    to: 'libraries/ffmpeg-truehd/pinned_ffmpeg_build.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/artifacts/legacy-video-decode.js'
+                    ),
+                    // Preserve the exact qualified Emscripten glue artifact
+                    info: { minimized: true },
+                    to: 'libraries/legacy-video/legacy-video-decode.js'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/artifacts/legacy-video-decode.wasm'
+                    ),
+                    to: 'libraries/legacy-video/legacy-video-decode.wasm'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/artifacts/manifest.json'
+                    ),
+                    to: 'libraries/legacy-video/manifest.json'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/LICENSE.ffmpeg.txt'
+                    ),
+                    to: 'libraries/legacy-video/LICENSE.ffmpeg.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/REVISION'
+                    ),
+                    to: 'libraries/legacy-video/REVISION',
+                    toType: 'file'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/artifacts/ffmpeg-source.tar.gz'
+                    ),
+                    to: 'libraries/legacy-video/ffmpeg-source.tar.gz'
+                },
+                {
+                    from: path.resolve(__dirname, 'LICENSE'),
+                    to: 'libraries/legacy-video/LICENSE.bridge.GPL-2.0.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/bridge.c'
+                    ),
+                    to: 'libraries/legacy-video/bridge.c'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-decoder/build_legacy_video_decoder.py'
+                    ),
+                    to: 'libraries/legacy-video/build_legacy_video_decoder.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/pinned_ffmpeg_build.py'
+                    ),
+                    to: 'libraries/legacy-video/pinned_ffmpeg_build.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv'
+                    ),
+                    // Jellyfin serves the capability artifact under a generic media type
+                    to: 'libraries/legacy-video/mpeg2-progressive-1920x1080-qualification.bin'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'node_modules/@cornerstonejs/codec-openjpeg/dist/openjpegwasm_decode.js'
+                    ),
+                    // Preserve the exact reviewed Emscripten glue artifact
+                    info: { minimized: true },
+                    to: 'libraries/openjpeg/openjpeg-decode.js'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'node_modules/@cornerstonejs/codec-openjpeg/dist/openjpegwasm_decode.wasm'
+                    ),
+                    to: 'libraries/openjpeg/openjpeg-decode.wasm'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'node_modules/@cornerstonejs/codec-openjpeg/LICENSE'
+                    ),
+                    to: 'libraries/openjpeg/LICENSE.wrapper.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/openjpeg/LICENSE.openjpeg.txt'
+                    ),
+                    to: 'libraries/openjpeg/LICENSE.openjpeg.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/openjpeg/REVISION'
+                    ),
+                    to: 'libraries/openjpeg/REVISION',
+                    toType: 'file'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/jpeg2000-capability-fixtures/srgb-960x540.jp2'
+                    ),
+                    // Jellyfin serves the capability artifact under a generic media type
+                    to: 'libraries/openjpeg/jpeg2000-960x540-qualification.bin'
+                },
                 ...Assets.map(asset => {
                     return {
                         from: path.resolve(__dirname, `node_modules/${asset}`),

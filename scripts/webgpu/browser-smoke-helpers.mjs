@@ -778,6 +778,20 @@ export function createFrontendRouteURL(frontendURL, route) {
     return routeURL.toString();
 }
 
+/** Resolves an asset below the configured frontend directory. */
+export function createFrontendAssetURL(frontendURL, assetPath) {
+    const baseURL = new URL(frontendURL);
+    baseURL.hash = '';
+    baseURL.search = '';
+    while (baseURL.pathname.length > 1 && baseURL.pathname.endsWith('/')) {
+        baseURL.pathname = baseURL.pathname.slice(0, -1);
+    }
+    if (!baseURL.pathname.endsWith('/')) {
+        baseURL.pathname = `${baseURL.pathname}/`;
+    }
+    return new URL(assetPath, baseURL).toString();
+}
+
 /** Treats equivalent loopback spellings as the same local test server. */
 export function areEquivalentServerURLs(firstURL, secondURL) {
     let firstServerURL;
@@ -896,9 +910,13 @@ function hasAuthorizedExternalDolbyVisionPlaybackRoute(snapshot) {
         && (authorization.targetFormat === 'bgra8unorm'
             || authorization.targetFormat === 'rgba8unorm')
         && Number.isSafeInteger(authorization.fixtureVersion)
-        && authorization.fixtureVersion > 0
+        && authorization.fixtureVersion >= 2
+        && Number.isFinite(authorization.maximumChannelError)
+        && authorization.maximumChannelError >= 0
+        && Number.isFinite(authorization.maximumInputChannelError)
+        && authorization.maximumInputChannelError >= 0
         && Number.isSafeInteger(authorization.renderSettingsVersion)
-        && authorization.renderSettingsVersion > 0
+        && authorization.renderSettingsVersion >= 5
         && authorization.routeKey === 'external-I420P10-bt709-limited:dovi-p5-rpu-v1'
         && Number.isSafeInteger(authorization.sampleCount)
         && authorization.sampleCount > 0;

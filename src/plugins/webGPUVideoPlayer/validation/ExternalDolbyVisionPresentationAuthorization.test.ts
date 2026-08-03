@@ -5,6 +5,8 @@ import type { ColorTriplet } from '../color/ColorPipeline';
 import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthorizationFixture';
 import {
     createExpectedExternalDolbyVisionAuthorizationObservations,
+    createExpectedExternalDolbyVisionAuthorizationObservationsFromInput,
+    createExpectedExternalDolbyVisionInputObservations,
     createExternalDolbyVisionShaderSignature,
     EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
     ExternalDolbyVisionPresentationAuthorizationRegistry,
@@ -17,6 +19,14 @@ type MockFunction = ReturnType<typeof vi.fn>;
 
 type MockBuffer = GPUBuffer & {
     bytes: Uint8Array
+};
+
+type Float16DataView = DataView & {
+    setFloat16: (byteOffset: number, value: number, littleEndian?: boolean) => void
+};
+
+type MockTexture = GPUTexture & {
+    label: string
 };
 
 type DeviceHarness = {
@@ -53,6 +63,24 @@ function createExpectedObservations(): readonly RawHDRFixtureObservation[] {
     );
 }
 
+function createExpectedInputObservations(): readonly RawHDRFixtureObservation[] {
+    return createExpectedExternalDolbyVisionInputObservations();
+}
+
+function createExpectedObservationsFromInput(
+    inputObservations: readonly RawHDRFixtureObservation[]
+): readonly RawHDRFixtureObservation[] {
+    return createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
+        inputObservations.map(
+            (observation: RawHDRFixtureObservation): ColorTriplet => observation.linearRGB
+        ),
+        createDolbyVisionAuthorizationRPUFixture(5),
+        createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        })
+    );
+}
+
 function createFrame(close: MockFunction): VideoFrame {
     return {
         close,
@@ -62,11 +90,19 @@ function createFrame(close: MockFunction): VideoFrame {
 }
 
 function createDeviceHarness(
-    observations: readonly RawHDRFixtureObservation[]
+    observations: readonly RawHDRFixtureObservation[],
+    inputObservations: readonly RawHDRFixtureObservation[] = createExpectedInputObservations()
 ): DeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
         observationMap.set(
+            `${observation.sampleX}:${observation.sampleY}`,
+            observation.linearRGB
+        );
+    }
+    const inputObservationMap = new Map<string, ColorTriplet>();
+    for (const observation of inputObservations) {
+        inputObservationMap.set(
             `${observation.sampleX}:${observation.sampleY}`,
             observation.linearRGB
         );
@@ -114,16 +150,31 @@ function createDeviceHarness(
                 const origin = source.origin as GPUOrigin3DDict;
                 const sampleX = Number(origin.x ?? 0);
                 const sampleY = Number(origin.y ?? 0);
-                const linearRGB = observationMap.get(`${sampleX}:${sampleY}`);
+                const sourceTexture = source.texture as MockTexture;
+                const sourceMap = sourceTexture.format === 'rgba16float' ?
+                    inputObservationMap : observationMap;
+                const linearRGB = sourceMap.get(`${sampleX}:${sampleY}`);
                 if (!linearRGB) {
                     throw new Error('Unexpected readback coordinate');
                 }
                 const destinationBuffer = destination.buffer as MockBuffer;
                 const byteOffset = Number(destination.offset ?? 0);
-                destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
-                destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
-                destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
-                destinationBuffer.bytes[byteOffset + 3] = 255;
+                if (sourceTexture.format === 'rgba16float') {
+                    const view = new DataView(
+                        destinationBuffer.bytes.buffer,
+                        destinationBuffer.bytes.byteOffset,
+                        destinationBuffer.bytes.byteLength
+                    ) as Float16DataView;
+                    view.setFloat16(byteOffset, linearRGB[0], true);
+                    view.setFloat16(byteOffset + 2, linearRGB[1], true);
+                    view.setFloat16(byteOffset + 4, linearRGB[2], true);
+                    view.setFloat16(byteOffset + 6, 1, true);
+                } else {
+                    destinationBuffer.bytes[byteOffset] = Math.round(linearRGB[2] * 255);
+                    destinationBuffer.bytes[byteOffset + 1] = Math.round(linearRGB[1] * 255);
+                    destinationBuffer.bytes[byteOffset + 2] = Math.round(linearRGB[0] * 255);
+                    destinationBuffer.bytes[byteOffset + 3] = 255;
+                }
             }),
             finish: vi.fn(() => ({}))
         })),
@@ -136,6 +187,7 @@ function createDeviceHarness(
             destroy: textureDestroy,
             format: descriptor.format,
             height: Number((descriptor.size as GPUExtent3DDict).height ?? 1),
+            label: descriptor.label ?? '',
             usage: descriptor.usage,
             width: Number((descriptor.size as GPUExtent3DDict).width ?? 1)
         })),
@@ -167,6 +219,20 @@ function mutateFirstObservation(
         ...observation,
         linearRGB: [
             Math.min(observation.linearRGB[0] + 0.1, 1),
+            observation.linearRGB[1],
+            observation.linearRGB[2]
+        ]
+    } : observation);
+}
+
+function offsetFirstObservation(
+    observations: readonly RawHDRFixtureObservation[],
+    offset: number
+): readonly RawHDRFixtureObservation[] {
+    return observations.map((observation, observationIndex) => observationIndex === 0 ? {
+        ...observation,
+        linearRGB: [
+            Math.min(observation.linearRGB[0] + offset, 1),
             observation.linearRGB[1],
             observation.linearRGB[2]
         ]
@@ -212,6 +278,7 @@ describe('External Dolby Vision presentation authorization', () => {
 
         expect(decision).toMatchObject({
             failureReason: null,
+            maximumInputChannelError: expect.any(Number),
             routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: 9,
             status: 'authorized'
@@ -221,11 +288,50 @@ describe('External Dolby Vision presentation authorization', () => {
             source: frame
         });
         expect(harness.bindGroupEntries.map(entry => entry.binding)).toEqual([
-            0, 1, 2, 3, 4
+            0, 1, 2, 3, 4,
+            0, 1, 2
         ]);
-        expect(harness.draw).toHaveBeenCalledOnce();
+        expect(harness.draw).toHaveBeenCalledTimes(2);
         expect(close).toHaveBeenCalledOnce();
-        expect(harness.textureDestroy).toHaveBeenCalledOnce();
+        expect(harness.textureDestroy).toHaveBeenCalledTimes(2);
+    });
+
+    it('drives the output reference from bounded browser-recovered input', async () => {
+        const recoveredInput = offsetFirstObservation(
+            createExpectedInputObservations(),
+            4 / 1_023
+        );
+        const harness = createDeviceHarness(
+            createExpectedObservationsFromInput(recoveredInput),
+            recoveredInput
+        );
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => createFrame(vi.fn())
+        );
+
+        await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            failureReason: null,
+            maximumInputChannelError: expect.any(Number),
+            status: 'authorized'
+        });
+    });
+
+    it('rejects browser-recovered input outside the 10-bit preservation bound', async () => {
+        const inputObservations = mutateFirstObservation(createExpectedInputObservations());
+        const harness = createDeviceHarness(
+            createExpectedObservations(),
+            inputObservations
+        );
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(
+            (): VideoFrame => createFrame(vi.fn())
+        );
+
+        await expect(runner.validate(harness.device, 'bgra8unorm')).resolves.toMatchObject({
+            failureReason: 'input-mismatch',
+            maximumChannelError: null,
+            maximumInputChannelError: expect.any(Number),
+            status: 'rejected'
+        });
     });
 
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
@@ -309,5 +415,14 @@ describe('External Dolby Vision presentation authorization', () => {
         expect(createExternalDolbyVisionShaderSignature('bgra8unorm', 'shader')).not.toBe(
             createExternalDolbyVisionShaderSignature('rgba8unorm', 'shader')
         );
+        expect(createExternalDolbyVisionShaderSignature(
+            'bgra8unorm',
+            'shader',
+            'input-a'
+        )).not.toBe(createExternalDolbyVisionShaderSignature(
+            'bgra8unorm',
+            'shader',
+            'input-b'
+        ));
     });
 });

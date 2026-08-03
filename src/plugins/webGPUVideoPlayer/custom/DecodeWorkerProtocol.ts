@@ -29,7 +29,11 @@ const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
 export type CustomDecodeVideoOutputMode = 'raw-planes' | 'video-frame';
 export type CustomDecodeRawVideoFrameFormat = 'I420P10' | 'I420P12';
-export type CustomDecodeVideoDecoderBackend = 'bundled-hevc' | 'native';
+export type CustomDecodeVideoDecoderBackend =
+    | 'bundled-hevc'
+    | 'legacy-software'
+    | 'native'
+    | 'openjpeg';
 export type CustomDecodeAudioOutputMode = 'decoded-pcm' | 'native-media';
 export type CustomDecodeDolbyVisionProfile = 5 | 7 | 8 | null;
 export type CustomDecodeNativeHDRTransfer = 'hlg' | 'pq' | null;
@@ -44,7 +48,7 @@ export function getCustomDecodeHardwareAcceleration(
     videoOutputMode: CustomDecodeVideoOutputMode,
     videoDecoderBackend: CustomDecodeVideoDecoderBackend = 'native'
 ): HardwareAcceleration {
-    if (videoDecoderBackend === 'bundled-hevc') {
+    if (videoDecoderBackend !== 'native') {
         return 'prefer-software';
     }
     switch (videoOutputMode) {
@@ -292,7 +296,10 @@ function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode
 }
 
 function isVideoDecoderBackend(value: unknown): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc' || value === 'native';
+    return value === 'bundled-hevc'
+        || value === 'legacy-software'
+        || value === 'native'
+        || value === 'openjpeg';
 }
 
 function isNativeHDRTransfer(value: unknown): value is CustomDecodeNativeHDRTransfer {
@@ -610,6 +617,19 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 isRawVideoFrameFormat(value.rawVideoFrameFormat) :
                 value.videoOutputMode === 'video-frame'
                     && value.rawVideoFrameFormat === null;
+            const hasValidOpenJPEGRoute = value.videoDecoderBackend !== 'openjpeg'
+                || (value.videoOutputMode === 'video-frame'
+                    && value.rawVideoFrameFormat === null
+                    && value.dolbyVisionProfile === null
+                    && value.neutralizeHDRColorMetadata === false
+                    && value.nativeHDRTransfer === null);
+            const hasValidLegacySoftwareRoute =
+                value.videoDecoderBackend !== 'legacy-software'
+                || (value.videoOutputMode === 'video-frame'
+                    && value.rawVideoFrameFormat === null
+                    && value.dolbyVisionProfile === null
+                    && value.neutralizeHDRColorMetadata === false
+                    && value.nativeHDRTransfer === null);
             return typeof value.url === 'string'
                 && value.url.length > 0
                 && isDolbyVisionProfile(value.dolbyVisionProfile)
@@ -635,6 +655,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                         && value.dolbyVisionProfile === null) :
                     value.nativeHDRTransfer === null)
                 && hasValidVideoOutput
+                && hasValidOpenJPEGRoute
+                && hasValidLegacySoftwareRoute
                 && isFrameCredit(value.frameCredits)
                 && (value.videoOutputMode !== 'raw-planes'
                     || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)

@@ -1,4 +1,4 @@
-export const RENDER_SETTINGS_VERSION = 4;
+export const RENDER_SETTINGS_VERSION = 5;
 export const RENDER_SETTINGS_UNIFORM_BYTE_LENGTH = 48;
 
 const MAXIMUM_LUMINANCE_NITS = 10_000;
@@ -9,7 +9,7 @@ const MINIMUM_EXPOSURE_STOPS = -16;
 export type RenderMode = 'hdr-to-sdr' | 'identity-sdr';
 // The configured WebGPU canvas uses the sRGB output color space
 export type OutputTransfer = 'srgb';
-export type ToneMapOperator = 'aces' | 'reinhard';
+export type ToneMapOperator = 'aces' | 'reinhard' | 'spline';
 
 export type ToneMappingSettings = {
     desaturationStrength: number
@@ -51,7 +51,7 @@ const DEFAULT_TONE_MAPPING_SETTINGS: ToneMappingSettings = {
     desaturationStrength: 0.25,
     exposure: 0,
     inputPeakNits: 1_000,
-    operator: 'aces',
+    operator: 'spline',
     outputPeakNits: 100,
     paperWhiteNits: 203
 };
@@ -64,6 +64,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
 
 const ACES_OPERATOR_CODE = 0;
 const REINHARD_OPERATOR_CODE = 1;
+const SPLINE_OPERATOR_CODE = 2;
 const SRGB_OUTPUT_TRANSFER_CODE = 1;
 
 const UNIFORM_VERSION_INDEX = 0;
@@ -99,6 +100,7 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
     switch (settings.toneMapping.operator) {
         case 'aces':
         case 'reinhard':
+        case 'spline':
             break;
         default:
             throw new RangeError('Unsupported tone map operator');
@@ -191,6 +193,8 @@ function getToneMapOperatorCode(operator: ToneMapOperator): number {
             return ACES_OPERATOR_CODE;
         case 'reinhard':
             return REINHARD_OPERATOR_CODE;
+        case 'spline':
+            return SPLINE_OPERATOR_CODE;
     }
 }
 

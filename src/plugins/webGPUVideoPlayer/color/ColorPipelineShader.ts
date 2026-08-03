@@ -115,7 +115,43 @@ fn convertToBT709(linearRGB: vec3f) -> vec3f {
 }`;
 }
 
-function createToneMapWGSL(settings: RenderSettings): string {
+function createIPTSourceConversionWGSL(metadata: InputColorMetadata): string {
+    const sourceRows = metadata.primaries === 'bt2020' ? [
+        [ 0.412036386719, 0.523911912035, 0.064054981611 ],
+        [ 0.166660218723, 0.720395213485, 0.112946122929 ],
+        [ 0.024112358560, 0.075474962757, 0.900407937406 ]
+    ] : [
+        [ 0.295764080594, 0.623072450736, 0.081166749035 ],
+        [ 0.156191976513, 0.727251644307, 0.116557934317 ],
+        [ 0.035102284710, 0.156589948771, 0.808303025242 ]
+    ];
+
+    return `
+fn convertSourceRGBToIPTLMS(linearRGBNits: vec3f) -> vec3f {
+    return vec3f(
+        dot(linearRGBNits, vec3f(
+            ${toWGSLFloat(sourceRows[0][0])},
+            ${toWGSLFloat(sourceRows[0][1])},
+            ${toWGSLFloat(sourceRows[0][2])}
+        )),
+        dot(linearRGBNits, vec3f(
+            ${toWGSLFloat(sourceRows[1][0])},
+            ${toWGSLFloat(sourceRows[1][1])},
+            ${toWGSLFloat(sourceRows[1][2])}
+        )),
+        dot(linearRGBNits, vec3f(
+            ${toWGSLFloat(sourceRows[2][0])},
+            ${toWGSLFloat(sourceRows[2][1])},
+            ${toWGSLFloat(sourceRows[2][2])}
+        ))
+    );
+}`;
+}
+
+function createToneMapWGSL(
+    settings: RenderSettings,
+    metadata: InputColorMetadata
+): string {
     if (settings.mode === 'identity-sdr') {
         return `
 fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
@@ -124,6 +160,8 @@ fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
     }
 
     return `
+${createIPTSourceConversionWGSL(metadata)}
+
 fn evaluateToneMapCurve(normalizedLuminance: f32) -> f32 {
     let value = max(normalizedLuminance, 0.0);
     if (renderSettings.toneMapOperator == 0u) {
@@ -134,6 +172,177 @@ fn evaluateToneMapCurve(normalizedLuminance: f32) -> f32 {
         );
     }
     return value / (1.0 + value);
+}
+
+fn encodePerceptualPQ(luminanceNits: f32) -> f32 {
+    let normalizedLuminance = clamp(luminanceNits / 10000.0, 0.0, 1.0);
+    let poweredLuminance = pow(normalizedLuminance, 2610.0 / 16384.0);
+    let encodedValue = ((3424.0 / 4096.0) + (2413.0 / 128.0) * poweredLuminance)
+        / (1.0 + (2392.0 / 128.0) * poweredLuminance);
+    return pow(encodedValue, 2523.0 / 32.0);
+}
+
+fn decodePerceptualPQ(encodedValue: f32) -> f32 {
+    let inversePower = pow(clamp(encodedValue, 0.0, 1.0), 1.0 / (2523.0 / 32.0));
+    let numerator = max(inversePower - (3424.0 / 4096.0), 0.0);
+    let denominator = max(
+        (2413.0 / 128.0) - (2392.0 / 128.0) * inversePower,
+        0.0000001
+    );
+    return 10000.0 * pow(numerator / denominator, 1.0 / (2610.0 / 16384.0));
+}
+
+fn convertLinearRGBNitsToIPTPQ(linearRGBNits: vec3f) -> vec3f {
+    let linearLMS = convertSourceRGBToIPTLMS(max(linearRGBNits, vec3f(0.0)));
+    let encodedLMS = vec3f(
+        encodePerceptualPQ(linearLMS.r),
+        encodePerceptualPQ(linearLMS.g),
+        encodePerceptualPQ(linearLMS.b)
+    );
+    return vec3f(
+        dot(encodedLMS, vec3f(0.4, 0.4, 0.2)),
+        dot(encodedLMS, vec3f(4.455, -4.851, 0.396)),
+        dot(encodedLMS, vec3f(0.8056, 0.3572, -1.1628))
+    );
+}
+
+fn convertIPTPQToBT709Nits(perceptualColor: vec3f) -> vec3f {
+    let encodedLMS = vec3f(
+        dot(perceptualColor, vec3f(1.0, 0.0975689, 0.205226)),
+        dot(perceptualColor, vec3f(1.0, -0.113876, 0.133217)),
+        dot(perceptualColor, vec3f(1.0, 0.0326151, -0.676887))
+    );
+    let linearLMS = vec3f(
+        decodePerceptualPQ(encodedLMS.r),
+        decodePerceptualPQ(encodedLMS.g),
+        decodePerceptualPQ(encodedLMS.b)
+    );
+    return vec3f(
+        dot(linearLMS, vec3f(6.173532657683, -5.320898820809, 0.147354885063)),
+        dot(linearLMS, vec3f(-1.324031910094, 2.560269770177, -0.236238618417)),
+        dot(linearLMS, vec3f(-0.011598387923, -0.264921446713, 1.276526337036))
+    );
+}
+
+fn evaluateSmoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    if (edge0 == edge1) {
+        return select(0.0, 1.0, value >= edge0);
+    }
+    let normalizedValue = clamp((value - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return normalizedValue * normalizedValue * (3.0 - 2.0 * normalizedValue);
+}
+
+fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
+    let inputMaximum = encodePerceptualPQ(renderSettings.inputPeakNits);
+    let outputMaximum = encodePerceptualPQ(renderSettings.outputPeakNits);
+    let sourcePivot = inputMaximum * 0.4;
+    let sourceTarget = sourcePivot / inputMaximum;
+    let adaptedPivot = outputMaximum * sourceTarget;
+    let tuning = 1.0
+        - evaluateSmoothstep(0.8, 0.4, sourceTarget)
+        * evaluateSmoothstep(0.1, 0.4, sourceTarget);
+    let adaptation = mix(0.4, 1.0, tuning);
+    let destinationPivot = clamp(
+        mix(sourcePivot, adaptedPivot, adaptation),
+        outputMaximum * 0.1,
+        outputMaximum * 0.8
+    );
+    let linearSlope = destinationPivot / sourcePivot;
+    let peakRatio = inputMaximum / outputMaximum - 1.0;
+    let slopeRatio = clamp(1.5 * peakRatio, 0.2, 1.2);
+    let pivotSlope = pow(linearSlope, 0.5 * slopeRatio);
+
+    let inputMinimumOffset = -sourcePivot;
+    let inputMaximumOffset = inputMaximum - sourcePivot;
+    let outputMinimumOffset = -destinationPivot;
+    let outputMaximumOffset = outputMaximum - destinationPivot;
+    let lowerQuadratic = (outputMinimumOffset - pivotSlope * inputMinimumOffset)
+        / (inputMinimumOffset * inputMinimumOffset);
+    let upperDenominator = 2.0 * inputMaximumOffset * inputMaximumOffset;
+    let upperCubic = (pivotSlope * inputMaximumOffset - outputMaximumOffset)
+        / (inputMaximumOffset * upperDenominator);
+    let upperQuadratic = -3.0 * (pivotSlope * inputMaximumOffset - outputMaximumOffset)
+        / upperDenominator;
+
+    let inputOffset = clamp(inputIntensityPQ, 0.0, inputMaximum) - sourcePivot;
+    var mappedOffset: f32;
+    if (inputOffset > 0.0) {
+        mappedOffset = ((upperCubic * inputOffset + upperQuadratic)
+            * inputOffset + pivotSlope) * inputOffset;
+    } else {
+        mappedOffset = (lowerQuadratic * inputOffset + pivotSlope) * inputOffset;
+    }
+    return clamp(mappedOffset + destinationPivot, 0.0, outputMaximum);
+}
+
+fn calculateIPTChromaHull(intensity: f32) -> f32 {
+    return ((intensity - 6.0) * intensity + 9.0) * intensity;
+}
+
+fn calculateComponentGamutScale(
+    component: f32,
+    neutralComponent: f32
+) -> f32 {
+    let chromaDelta = component - neutralComponent;
+    if (component > renderSettings.outputPeakNits && chromaDelta > 0.0) {
+        return (renderSettings.outputPeakNits - neutralComponent) / chromaDelta;
+    }
+    if (component < 0.0 && chromaDelta < 0.0) {
+        return -neutralComponent / chromaDelta;
+    }
+    return 1.0;
+}
+
+fn perceptuallyMapIPTPQToBT709(perceptualColor: vec3f) -> vec3f {
+    let targetRGB = convertIPTPQToBT709Nits(perceptualColor);
+    let neutralRGB = convertIPTPQToBT709Nits(vec3f(perceptualColor.x, 0.0, 0.0));
+    var hardChromaScale = 1.0;
+    hardChromaScale = min(
+        hardChromaScale,
+        calculateComponentGamutScale(targetRGB.r, neutralRGB.r)
+    );
+    hardChromaScale = min(
+        hardChromaScale,
+        calculateComponentGamutScale(targetRGB.g, neutralRGB.g)
+    );
+    hardChromaScale = min(
+        hardChromaScale,
+        calculateComponentGamutScale(targetRGB.b, neutralRGB.b)
+    );
+    hardChromaScale = clamp(hardChromaScale, 0.0, 1.0);
+    let outOfGamutAmount = 1.0 - hardChromaScale;
+    let perceptualChromaScale = hardChromaScale * (
+        1.0 - renderSettings.desaturationStrength
+            * outOfGamutAmount * outOfGamutAmount
+    );
+    return clamp(
+        neutralRGB + (targetRGB - neutralRGB) * perceptualChromaScale,
+        vec3f(0.0),
+        vec3f(renderSettings.outputPeakNits)
+    );
+}
+
+fn toneMapSplinePerceptualToSDR(linearInputNits: vec3f) -> vec3f {
+    let exposedRGB = max(
+        linearInputNits * pow(2.0, renderSettings.exposure),
+        vec3f(0.0)
+    );
+    let sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB);
+    let originalIntensity = sourceIPT.x;
+    let mappedIntensity = evaluateSplineToneMapPQ(originalIntensity);
+    if (originalIntensity <= 0.0000001 || mappedIntensity <= 0.0000001) {
+        return vec3f(0.0);
+    }
+    let originalHull = max(calculateIPTChromaHull(originalIntensity), 0.0000001);
+    let mappedHull = calculateIPTChromaHull(mappedIntensity);
+    let chromaScale = clamp(min(
+        originalIntensity / mappedIntensity,
+        mappedHull / originalHull
+    ), 0.0, 1.0);
+    return perceptuallyMapIPTPQToBT709(vec3f(
+        mappedIntensity,
+        sourceIPT.yz * chromaScale
+    ));
 }
 
 fn encodeSRGB(linearValue: f32) -> f32 {
@@ -211,8 +420,13 @@ fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
         return vec3f(0.0);
     }
     let linearInputNits = decodeInputTransfer(encodedRGB);
-    let linearBT709Nits = convertToBT709(linearInputNits);
-    let toneMappedNits = toneMapToSDR(linearBT709Nits);
+    var toneMappedNits: vec3f;
+    if (renderSettings.toneMapOperator == 2u) {
+        toneMappedNits = toneMapSplinePerceptualToSDR(linearInputNits);
+    } else {
+        let linearBT709Nits = convertToBT709(linearInputNits);
+        toneMappedNits = toneMapToSDR(linearBT709Nits);
+    }
     let encodedOutputRGB = vec3f(
         encodeOutputComponent(toneMappedNits.r),
         encodeOutputComponent(toneMappedNits.g),
@@ -520,7 +734,7 @@ ${createRenderSettingsUniformWGSL(settings)}
 // texture_external sampling has already converted any underlying YUV planes to RGB
 ${createTransferDecodeWGSL(metadata)}
 ${createGamutConversionWGSL(metadata)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, metadata)}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -592,7 +806,7 @@ ${createRawYUVRangeWGSL(metadata)}
 ${createRawYUVMatrixWGSL(metadata)}
 ${createTransferDecodeWGSL(metadata)}
 ${createGamutConversionWGSL(metadata)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, metadata)}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -669,7 +883,7 @@ ${createRawYUVRangeWGSL(metadata)}
 ${createRawYUVMatrixWGSL(metadata)}
 ${createTransferDecodeWGSL(metadata)}
 ${createGamutConversionWGSL(metadata)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, metadata)}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -737,7 +951,7 @@ ${createRenderSettingsUniformWGSL(settings, 3)}
 ${createDolbyVisionColorTransformWGSL(4)}
 ${createTransferDecodeWGSL(DOLBY_VISION_OUTPUT_METADATA)}
 ${createGamutConversionWGSL(DOLBY_VISION_OUTPUT_METADATA)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, DOLBY_VISION_OUTPUT_METADATA)}
 ${createExternalBT709LimitedYUVRecoveryWGSL()}
 
 fn recoverDolbyVisionBaseSignal(encodedBT709RGB: vec3f) -> vec3f {
@@ -786,6 +1000,64 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 `;
 }
 
+/** Generates the exact external-texture base-signal recovery used by authorization. */
+export function createExternalDolbyVisionInputProbeWGSL(): string {
+    return /* wgsl */ `
+struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) textureCoordinate: vec2f,
+}
+
+struct PresentationUniforms {
+    textureScale: vec2f,
+    textureOffset: vec2f,
+}
+
+@group(0) @binding(0) var videoSampler: sampler;
+@group(0) @binding(1) var videoTexture: texture_external;
+@group(0) @binding(2) var<uniform> presentation: PresentationUniforms;
+${createExternalBT709LimitedYUVRecoveryWGSL()}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    let positions = array<vec2f, 6>(
+        vec2f(-1.0, 1.0),
+        vec2f(1.0, 1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(-1.0, -1.0),
+        vec2f(1.0, 1.0),
+        vec2f(1.0, -1.0),
+    );
+    let textureCoordinates = array<vec2f, 6>(
+        vec2f(0.0, 0.0),
+        vec2f(1.0, 0.0),
+        vec2f(0.0, 1.0),
+        vec2f(0.0, 1.0),
+        vec2f(1.0, 0.0),
+        vec2f(1.0, 1.0),
+    );
+
+    var output: VertexOutput;
+    output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+    output.textureCoordinate = textureCoordinates[vertexIndex];
+    return output;
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+    let textureCoordinate = input.textureCoordinate * presentation.textureScale
+        + presentation.textureOffset;
+    let encodedBT709RGB = textureSampleBaseClampToEdge(
+        videoTexture,
+        videoSampler,
+        textureCoordinate
+    ).rgb;
+    let recoveredBaseSignal = recoverLimitedRangeBT709YUV(encodedBT709RGB);
+    return vec4f(recoveredBaseSignal / 1023.0, 1.0);
+}
+`;
+}
+
 /** Generates the per-frame RPU reconstruction and HDR-to-SDR presentation shader. */
 export function createRawDolbyVisionColorPipelineWGSL(
     settings: HDRToSDRRenderSettings,
@@ -810,7 +1082,7 @@ ${createRenderSettingsUniformWGSL(settings, 4)}
 ${createDolbyVisionColorTransformWGSL(5)}
 ${createTransferDecodeWGSL(DOLBY_VISION_OUTPUT_METADATA)}
 ${createGamutConversionWGSL(DOLBY_VISION_OUTPUT_METADATA)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, DOLBY_VISION_OUTPUT_METADATA)}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -891,7 +1163,7 @@ ${createRawYUVRangeWGSL(DOLBY_VISION_PROFILE7_BASE_METADATA)}
 ${createRawYUVMatrixWGSL(DOLBY_VISION_PROFILE7_BASE_METADATA)}
 ${createTransferDecodeWGSL(DOLBY_VISION_OUTPUT_METADATA)}
 ${createGamutConversionWGSL(DOLBY_VISION_OUTPUT_METADATA)}
-${createToneMapWGSL(settings)}
+${createToneMapWGSL(settings, DOLBY_VISION_OUTPUT_METADATA)}
 
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {

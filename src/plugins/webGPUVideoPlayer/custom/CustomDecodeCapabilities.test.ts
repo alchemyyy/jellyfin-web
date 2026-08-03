@@ -127,6 +127,81 @@ function createBundledHEVCCapabilities(
 }
 
 const BUNDLED_HEVC_EXACT_CAPABILITIES = createBundledHEVCCapabilities();
+const SUPPORTED_DTS_EXACT_CAPABILITY = Object.freeze({
+    channelBedOnly: true as const,
+    codec: 'dts' as const,
+    codecString: 'dts' as const,
+    decodeMilliseconds: 8,
+    libraryVersion: 131_073,
+    maximumChannelCount: 8 as const,
+    measuredRealTimeFactor: 32,
+    objectAudioRendered: false as const,
+    profiles: Object.freeze([
+        'core',
+        'core-96-24',
+        'es',
+        'hd-hra',
+        'hd-ma'
+    ] as const),
+    reason: 'decode-output-verified' as const,
+    sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
+    status: 'supported' as const,
+    verifiedFixtureCount: 7,
+    verifiedProfileMask: 0x1f
+});
+const SUPPORTED_TRUEHD_EXACT_CAPABILITY = Object.freeze({
+    channelBedOnly: true as const,
+    channelCounts: Object.freeze([ 2, 6 ] as const),
+    codecs: Object.freeze([ 'truehd', 'mlp' ] as const),
+    decodeMilliseconds: 12,
+    library: 'ffmpeg-libavcodec' as const,
+    libraryVersion: 4_079_728,
+    majorSyncRecoveryVerified: true,
+    measuredRealTimeFactor: 12,
+    objectAudioRendered: false as const,
+    passthrough: false as const,
+    reason: 'decode-output-verified' as const,
+    sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
+    status: 'supported' as const,
+    verifiedChannelCountMask: (1 << 2) | (1 << 6),
+    verifiedCodecMask: 0x03,
+    verifiedFixtureCount: 4,
+    verifiedSampleRateMask: 0x07
+});
+const UNSUPPORTED_JPEG2000_EXACT_CAPABILITY = Object.freeze({
+    bitDepth: 8 as const,
+    codec: 'jpeg2000' as const,
+    codecString: 'mjp2' as const,
+    decodeMilliseconds: 400,
+    decodedRGBAByteLength: 2_073_600,
+    decodedRGBAFingerprint: 1_076_220_778,
+    maximumCodedHeight: 540,
+    maximumCodedWidth: 960,
+    maximumFramesPerSecond: 0 as const,
+    measuredFramesPerSecond: 20,
+    reason: 'throughput-insufficient' as const,
+    status: 'unsupported' as const
+});
+const SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY = Object.freeze({
+    codec: 'mpeg2video' as const,
+    decodeMilliseconds: 400,
+    decodedFrameByteLength: 3_110_400,
+    decodedFrameCount: 12,
+    decodedI420Fingerprint: 544_635_241,
+    decodedTotalByteLength: 37_324_800,
+    maximumCodedHeight: 1_080,
+    maximumCodedWidth: 1_920,
+    maximumFramesPerSecond: 24 as const,
+    measuredFramesPerSecond: 35,
+    reason: 'decode-output-verified' as const,
+    status: 'supported' as const
+});
+const UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY = Object.freeze({
+    ...SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY,
+    maximumFramesPerSecond: 0 as const,
+    reason: 'output-mismatch' as const,
+    status: 'unsupported' as const
+});
 
 function createEnvironment(
     videoSupport: ReadonlySet<string>,
@@ -189,8 +264,20 @@ function createEnvironment(
         audioProbe,
         environment: {
             audioDecoder: { isConfigSupported: audioProbe },
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
+            },
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+            },
+            bundledJPEG2000ExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
+            },
+            bundledLegacyVideoExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY)
+            },
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
             nativeAudioOutputProbe,
             nativeDolbyVisionVideoOutputProbe,
@@ -381,7 +468,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 10
+            videoProbeCount: 12
         });
         expect(capabilities.nativeUltraHDVideo).toMatchObject({
             av1: {
@@ -413,7 +500,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(first).toBe(second);
         expect(second).toBe(third);
         expect(harness.videoProbe).toHaveBeenCalledTimes(
-            CUSTOM_VIDEO_CODECS.length
+            CUSTOM_VIDEO_CODECS.length - 2
                 + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
                 + 2
@@ -828,8 +915,17 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: { isConfigSupported: audioProbe },
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
+            },
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+            },
+            bundledJPEG2000ExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
+            },
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
             videoDecoder: { isConfigSupported: videoProbe }
         }).probe();
@@ -845,7 +941,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.video.h264.status).toBe('unsupported');
         expect(capabilities.telemetry.reason).toBe('probe-exceptions');
         expect(capabilities.telemetry.unknownAudioCodecCount).toBe(1);
-        expect(capabilities.telemetry.unknownVideoCodecCount).toBe(1);
+        expect(capabilities.telemetry.unknownVideoCodecCount).toBe(2);
     });
 
     it('bounds decoder capability APIs that never settle', async () => {
@@ -859,6 +955,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             audioDecoder: { isConfigSupported: audioProbe },
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+            },
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
@@ -890,8 +989,14 @@ describe('CustomDecodeCapabilityProbe', () => {
     it('uses unknown API-unavailable results without making support claims', async () => {
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: null,
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
+            },
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+            },
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
             videoDecoder: null
         }).probe();
@@ -929,8 +1034,14 @@ describe('CustomDecodeCapabilityProbe', () => {
         const harness = createEnvironment(new Set([ 'vp8' ]), new Set());
         const capabilities = await new CustomDecodeCapabilityProbe({
             audioDecoder: null,
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
+            },
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
+            },
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
             nativeVideoOutputProbe: harness.nativeVideoOutputProbe,
             videoDecoder: harness.environment.videoDecoder
@@ -939,6 +1050,118 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.telemetry.reason).toBe('partial-api');
         expect(capabilities.telemetry.unknownAudioCodecCount).toBe(CUSTOM_WEB_CODECS_AUDIO_CODECS.length);
         expect(capabilities.video.vp8.status).toBe('supported');
+    });
+
+    it('gates bundled DTS on exact decoded-output qualification', async () => {
+        const unavailable = await new CustomDecodeCapabilityProbe({
+            bundledDTSExactProbe: null
+        }).probe();
+        const outputMismatch = await new CustomDecodeCapabilityProbe({
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => Object.freeze({
+                    ...SUPPORTED_DTS_EXACT_CAPABILITY,
+                    decodeMilliseconds: null,
+                    measuredRealTimeFactor: null,
+                    reason: 'output-mismatch' as const,
+                    status: 'unsupported' as const,
+                    verifiedFixtureCount: 5,
+                    verifiedProfileMask: 0x0f
+                }))
+            }
+        }).probe();
+        const supported = await new CustomDecodeCapabilityProbe({
+            bundledDTSExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_DTS_EXACT_CAPABILITY)
+            }
+        }).probe();
+
+        expect(unavailable.audio.dts).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+        expect(unavailable.bundledDTS).toBeUndefined();
+        expect(outputMismatch.audio.dts).toMatchObject({
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
+        expect(supported.audio.dts).toMatchObject({
+            codecString: 'dts',
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+        expect(supported.bundledDTS).toBe(SUPPORTED_DTS_EXACT_CAPABILITY);
+    });
+
+    it('gates bundled TrueHD on exact decoded-output qualification', async () => {
+        const unavailable = await new CustomDecodeCapabilityProbe({
+            bundledTrueHDExactProbe: null
+        }).probe();
+        const outputMismatch = await new CustomDecodeCapabilityProbe({
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => Object.freeze({
+                    ...SUPPORTED_TRUEHD_EXACT_CAPABILITY,
+                    decodeMilliseconds: null,
+                    majorSyncRecoveryVerified: false,
+                    measuredRealTimeFactor: null,
+                    reason: 'major-sync-recovery-failed' as const,
+                    status: 'unsupported' as const
+                }))
+            }
+        }).probe();
+        const supported = await new CustomDecodeCapabilityProbe({
+            bundledTrueHDExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
+            }
+        }).probe();
+
+        expect(unavailable.audio.truehd).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+        expect(unavailable.bundledTrueHD).toBeUndefined();
+        expect(outputMismatch.audio.truehd).toMatchObject({
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
+        expect(supported.audio.truehd).toMatchObject({
+            codecString: 'truehd',
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+        expect(supported.bundledTrueHD).toBe(SUPPORTED_TRUEHD_EXACT_CAPABILITY);
+    });
+
+    it('gates bundled MPEG-2 on exact decoded-output qualification', async () => {
+        const unavailable = await new CustomDecodeCapabilityProbe({
+            bundledLegacyVideoExactProbe: null
+        }).probe();
+        const outputMismatch = await new CustomDecodeCapabilityProbe({
+            bundledLegacyVideoExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY)
+            }
+        }).probe();
+        const supported = await new CustomDecodeCapabilityProbe({
+            bundledLegacyVideoExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY)
+            }
+        }).probe();
+
+        expect(unavailable.video.mpeg2video).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+        expect(unavailable.bundledLegacyVideo).toBeUndefined();
+        expect(outputMismatch.video.mpeg2video).toMatchObject({
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
+        expect(supported.video.mpeg2video).toMatchObject({
+            codecString: 'mpeg2video',
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+        expect(supported.bundledLegacyVideo)
+            .toBe(SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY);
     });
 
     it('gates bundled HEVC on exact decoded-output qualification', async () => {

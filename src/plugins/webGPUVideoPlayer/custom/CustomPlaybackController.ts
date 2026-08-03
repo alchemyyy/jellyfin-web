@@ -177,6 +177,28 @@ function validateHDRColorNeutralization(options: CustomPlaybackPlayOptions): voi
     }
 }
 
+function validateVideoDecoderRoute(options: CustomPlaybackPlayOptions): void {
+    switch (options.videoDecoderBackend) {
+        case 'bundled-hevc':
+        case 'native':
+            return;
+        case 'legacy-software':
+        case 'openjpeg':
+            if (
+                options.videoOutputMode !== 'video-frame'
+                || options.rawVideoFrameFormat !== null
+                || options.dolbyVisionProfile !== null
+                || options.neutralizeHDRColorMetadata
+                || options.nativeHDRTransfer !== null
+            ) {
+                throw new TypeError('Software video playback requires an SDR VideoFrame route');
+            }
+            return;
+        default:
+            throw new TypeError('Custom playback video decoder backend is invalid');
+    }
+}
+
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
     if (
@@ -196,12 +218,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     if (typeof options.url !== 'string' || options.url.length === 0) {
         throw new TypeError('Custom playback URL must be a non-empty string');
     }
-    if (
-        options.videoDecoderBackend !== 'bundled-hevc'
-        && options.videoDecoderBackend !== 'native'
-    ) {
-        throw new TypeError('Custom playback video decoder backend is invalid');
-    }
+    validateVideoDecoderRoute(options);
     validateHDRColorNeutralization(options);
     validateCodedDimension(
         options.maximumCodedWidth,

@@ -1,7 +1,10 @@
 /* eslint-disable compat/compat -- This local harness targets Node 24 and a current Chromium browser */
 
+import { pathToFileURL } from 'node:url';
+
 import {
     areEquivalentServerURLs,
+    createFrontendAssetURL,
     createPrimarySeekTargetMicroseconds,
     createSeekStormTargetsMicroseconds,
     createFrontendRouteURL,
@@ -979,6 +982,9 @@ function createPlayerSnapshotExpression(accessKey) {
         const presentation = typeof player.getPresentationTelemetry === 'function'
             ? player.getPresentationTelemetry()
             : null;
+        const renderSettings = typeof player.getRenderSettings === 'function'
+            ? player.getRenderSettings()
+            : null;
         const presentationInputMode = player.presenter?.activeInputMode ?? null;
         const dolbyVisionProfile = player.presenter?.activeDolbyVisionProfile ?? null;
         const profile7DolbyVisionAuthorization =
@@ -1081,11 +1087,21 @@ function createPlayerSnapshotExpression(accessKey) {
                     outputFrames: custom.audioOutput.outputFrames,
                     playing: custom.audioOutput.playing,
                     queuedFrames: custom.audioOutput.queuedFrames,
+                    signal: custom.audioOutput.signal ? {
+                        analyzedFrameCount: custom.audioOutput.signal.analyzedFrameCount,
+                        analyzedSampleCount: custom.audioOutput.signal.analyzedSampleCount,
+                        clippedSampleCount: custom.audioOutput.signal.clippedSampleCount,
+                        nonFiniteSampleCount: custom.audioOutput.signal.nonFiniteSampleCount,
+                        samplePeak: custom.audioOutput.signal.samplePeak,
+                        sampleSquareSum: custom.audioOutput.signal.sampleSquareSum
+                    } : null,
                     staleChunks: custom.audioOutput.staleChunks,
                     underflowEvents: custom.audioOutput.underflowEvents,
                     underflowFrames: custom.audioOutput.underflowFrames
                 } : null,
                 audioPath: custom.audioPath,
+                jellyfinAudioStreamIndex:
+                    player.getCustomPlaybackSelectedAudioStreamIndex?.() ?? null,
                 currentTimeMicroseconds: custom.currentTimeMicroseconds,
                 durationMicroseconds: custom.durationMicroseconds,
                 fallbackCount: custom.fallbackCount,
@@ -1211,6 +1227,8 @@ function createPlayerSnapshotExpression(accessKey) {
                 fixtureVersion: externalDolbyVisionAuthorization.fixtureVersion,
                 maximumChannelError:
                     externalDolbyVisionAuthorization.maximumChannelError,
+                maximumInputChannelError:
+                    externalDolbyVisionAuthorization.maximumInputChannelError,
                 renderSettingsVersion:
                     externalDolbyVisionAuthorization.renderSettingsVersion,
                 routeKey: externalDolbyVisionAuthorization.routeKey,
@@ -1240,7 +1258,16 @@ function createPlayerSnapshotExpression(accessKey) {
             nativeMediaAudioCapabilities,
             performanceNowMilliseconds: performance.now(),
             playerID: String(player.id || ''),
+            presentationInputColorMetadata: activeRawColorMetadata ? {
+                matrix: activeRawColorMetadata.matrix,
+                nominalPeakNits: activeRawColorMetadata.nominalPeakNits,
+                primaries: activeRawColorMetadata.primaries,
+                range: activeRawColorMetadata.range,
+                transfer: activeRawColorMetadata.transfer,
+                version: activeRawColorMetadata.version
+            } : null,
             presentationInputMode,
+            renderSettings,
             sessionGeneration: Number.isSafeInteger(player.backendSessionGeneration)
                 ? player.backendSessionGeneration
                 : null,
@@ -1255,6 +1282,11 @@ function createPlayerSnapshotExpression(accessKey) {
                     presentation.dolbyVisionProfile7MELPresentedFrameCount,
                 fallbackReason: presentation.fallbackReason,
                 firstFrameLatencyMicroseconds: presentation.firstFrameLatencyMicroseconds,
+                lastCallbackTimeMicroseconds: presentation.lastCallbackTimeMicroseconds,
+                lastExpectedDisplayTimeMicroseconds:
+                    presentation.lastExpectedDisplayTimeMicroseconds,
+                lastPresentedMediaTimeMicroseconds:
+                    presentation.lastPresentedMediaTimeMicroseconds,
                 sessionStartedMicroseconds: presentation.sessionStartedMicroseconds,
                 mode: presentation.mode,
                 nativeFrameCount: presentation.nativeFrameCount,
@@ -1724,7 +1756,10 @@ async function ensureBrowserPageVisible(client, pageTarget, configuration) {
 }
 
 async function readFrontendConfiguration(configuration) {
-    const configurationURL = new URL('config.json', `${configuration.frontendURL}/`);
+    const configurationURL = new URL(createFrontendAssetURL(
+        configuration.frontendURL,
+        'config.json'
+    ));
     let response;
     try {
         response = await fetch(configurationURL, {
@@ -4181,6 +4216,7 @@ async function runSmoke(configuration) {
         pageTarget.webSocketDebuggerUrl,
         configuration.timeoutMilliseconds
     );
+    let configurationInterceptor = null;
     try {
         await Promise.all([
             client.send('Log.enable'),
@@ -4201,7 +4237,15 @@ async function runSmoke(configuration) {
         );
         await ensureBrowserPageVisible(client, pageTarget, configuration);
         await clearFrontendRuntimeCaches(client);
+        if (configuration.startupSampleCount === 0) {
+            configurationInterceptor = await createStartupConfigurationInterceptor(
+                client,
+                configuration
+            );
+            configurationInterceptor.setMode('custom');
+        }
         await reloadFreshFrontend(client, configuration);
+        configurationInterceptor?.requireHealthy();
         await ensureBrowserPageVisible(client, pageTarget, configuration);
         const browserErrorMonitor = createBrowserErrorMonitor(client);
         const alreadyAuthenticated = await hasMatchingAuthenticatedServer(
@@ -4256,7 +4300,11 @@ async function runSmoke(configuration) {
             status: playbackResult.failures.length === 0 ? 'passed' : 'failed'
         };
     } finally {
-        client.close();
+        try {
+            await configurationInterceptor?.close();
+        } finally {
+            client.close();
+        }
     }
 }
 
@@ -4275,12 +4323,43 @@ function createFailureReport(error) {
     };
 }
 
-let configuration;
-try {
-    configuration = parseSmokeConfiguration(process.argv.slice(2), process.env);
-    if (configuration.help === true) {
-        process.stdout.write(`${SMOKE_USAGE}\n`);
-    } else {
+export {
+    clearFrontendRuntimeCaches,
+    connectToConfiguredServer,
+    createBrowserErrorMonitor,
+    createPlayerCaptureHookExpression,
+    createPlayerOperationExpression,
+    createPlayerSnapshotExpression,
+    createStartupConfigurationInterceptor,
+    ensureBrowserPageVisible,
+    evaluateValue,
+    getBrowserPageTarget,
+    getPlayerSnapshot,
+    hasMatchingAuthenticatedServer,
+    navigate,
+    PLAY_BUTTON_SELECTORS,
+    RawCDPClient,
+    reloadFreshFrontend,
+    signInIfRequired,
+    sleep,
+    trustedClick,
+    waitForPlayerSnapshot,
+    waitForValue,
+    waitForVisibleElement
+};
+
+export async function runSmokeCLI(
+    commandArguments = process.argv.slice(2),
+    environment = process.env
+) {
+    let configuration;
+    try {
+        configuration = parseSmokeConfiguration(commandArguments, environment);
+        if (configuration.help === true) {
+            process.stdout.write(`${SMOKE_USAGE}\n`);
+            return;
+        }
+
         const report = await runSmoke(configuration);
         const sanitizedReport = sanitizeReport(report, [
             configuration.debugURL,
@@ -4293,18 +4372,23 @@ try {
         if (report.status !== 'passed') {
             process.exitCode = 1;
         }
+    } catch (error) {
+        const secrets = configuration?.help === true || !configuration ? [] : [
+            configuration.debugURL,
+            configuration.frontendURL,
+            configuration.password,
+            configuration.serverURL,
+            configuration.username
+        ];
+        const sanitizedReport = sanitizeReport(createFailureReport(error), secrets);
+        process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
+        process.exitCode = 1;
     }
-} catch (error) {
-    const secrets = configuration?.help === true || !configuration ? [] : [
-        configuration.debugURL,
-        configuration.frontendURL,
-        configuration.password,
-        configuration.serverURL,
-        configuration.username
-    ];
-    const sanitizedReport = sanitizeReport(createFailureReport(error), secrets);
-    process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
-    process.exitCode = 1;
+}
+
+const invokedModuleURL = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+if (invokedModuleURL === import.meta.url) {
+    await runSmokeCLI();
 }
 
 /* eslint-enable compat/compat */

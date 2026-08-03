@@ -40,6 +40,13 @@ export default tseslint.config(
             'node_modules',
             'coverage',
             'dist',
+            '.cache',
+            '.tmp-*',
+            'artifacts',
+            '**/artifacts/**',
+            'scripts/webgpu/validation-media/**',
+            'src/lib/ffmpeg-truehd/*.mjs',
+            'src/lib/libdcadec/*.mjs',
             '.idea',
             '.vscode'
         ]

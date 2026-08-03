@@ -45,6 +45,7 @@ describe('RenderSettings', () => {
             version: RENDER_SETTINGS_VERSION
         });
         expect(secondSettings.outputTransfer).toBe('srgb');
+        expect(secondSettings.toneMapping.operator).toBe('spline');
         expect(secondSettings.toneMapping.desaturationStrength).toBe(0.25);
         expect(secondSettings.display).toEqual({
             brightness: 0,
@@ -125,5 +126,14 @@ describe('RenderSettings', () => {
         expect(floatValues[9]).toBeCloseTo(0.125);
         expect(floatValues[10]).toBeCloseTo(1.5);
         expect(floatValues[11]).toBeCloseTo(0.75);
+    });
+
+    it('serializes the spline operator without changing the uniform footprint', () => {
+        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings());
+        const integerValues = new Uint32Array(data.buffer);
+
+        expect(data.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
+        expect(integerValues[0]).toBe(RENDER_SETTINGS_VERSION);
+        expect(integerValues[1]).toBe(2);
     });
 });

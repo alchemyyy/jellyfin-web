@@ -31,33 +31,45 @@ import {
     type NativeUltraHDVideoCapabilityFixture
 } from './NativeUltraHDVideoCapabilityFixtures';
 import { createNativeVideoCapabilityFixture } from './NativeVideoCapabilityFixtures';
+import {
+    probeJPEG2000ExactCapability,
+    type JPEG2000ExactCapability
+} from './JPEG2000ExactCapabilityProbe';
+import {
+    probeDTSExactCapability,
+    type DTSExactCapability
+} from './DTSExactCapabilityProbe';
+import {
+    probeTrueHDExactCapability,
+    type TrueHDExactCapability
+} from './TrueHDExactCapabilityProbe';
+import {
+    probeLegacyVideoExactCapability,
+    type LegacyVideoExactCapability
+} from './LegacyVideoExactCapabilityProbe';
+import type {
+    CustomAudioCodec,
+    CustomBundledAudioCodec
+} from './CustomAudioCodec';
 
-export const CUSTOM_VIDEO_CODECS = [ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ] as const;
-export const CUSTOM_WEB_CODECS_AUDIO_CODECS = [ 'aac', 'opus', 'flac', 'mp3', 'vorbis' ] as const;
-export const CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS = [
-    'pcm_s16le',
-    'pcm_s16be',
-    'pcm_s24le',
-    'pcm_s24be',
-    'pcm_s32le',
-    'pcm_s32be',
-    'pcm_f32le',
-    'pcm_f32be',
-    'pcm_f64le',
-    'pcm_f64be',
-    'pcm_u8',
-    'pcm_s8',
-    'pcm_mulaw',
-    'pcm_alaw'
-] as const;
-export const CUSTOM_BUNDLED_AUDIO_CODECS = [
-    'ac3',
-    'eac3',
-    ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
-] as const;
-export const CUSTOM_AUDIO_CODECS = [
-    ...CUSTOM_WEB_CODECS_AUDIO_CODECS,
-    ...CUSTOM_BUNDLED_AUDIO_CODECS
+export {
+    CUSTOM_AUDIO_CODECS,
+    CUSTOM_BUNDLED_AUDIO_CODECS,
+    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
+    CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    type CustomAudioCodec,
+    type CustomBundledAudioCodec,
+    type CustomMediabunnyPCMAudioCodec
+} from './CustomAudioCodec';
+
+export const CUSTOM_VIDEO_CODECS = [
+    'h264',
+    'hevc',
+    'vp8',
+    'vp9',
+    'av1',
+    'mpeg2video',
+    'jpeg2000'
 ] as const;
 export const CUSTOM_RAW_HDR_VIDEO_CODECS = [ 'hevc', 'vp9', 'av1' ] as const;
 export const CUSTOM_NATIVE_SURROUND_AUDIO_CODECS =
@@ -77,10 +89,6 @@ export const CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND = 24;
 export const CUSTOM_HDR_VIDEO_FRAME_RATE_TIERS = [ 60, 30, 24 ] as const;
 
 export type CustomVideoCodec = typeof CUSTOM_VIDEO_CODECS[number];
-export type CustomAudioCodec = typeof CUSTOM_AUDIO_CODECS[number];
-export type CustomBundledAudioCodec = typeof CUSTOM_BUNDLED_AUDIO_CODECS[number];
-export type CustomMediabunnyPCMAudioCodec =
-    typeof CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS[number];
 export type CustomRawHDRVideoCodec = typeof CUSTOM_RAW_HDR_VIDEO_CODECS[number];
 export type CustomHDRVideoMaximumFramesPerSecond =
     typeof CUSTOM_HDR_VIDEO_FRAME_RATE_TIERS[number];
@@ -138,7 +146,11 @@ export type CustomDecodeProbeTelemetry = {
 
 export type CustomDecodeCapabilities = {
     audio: Readonly<Record<CustomAudioCodec, CustomDecodeCodecCapability<CustomAudioCodec>>>
+    bundledDTS?: DTSExactCapability
     bundledHEVC?: BundledHEVCExactCapabilities
+    bundledJPEG2000?: JPEG2000ExactCapability
+    bundledLegacyVideo?: LegacyVideoExactCapability
+    bundledTrueHD?: TrueHDExactCapability
     h264Profiles?: H264ProfileCapabilities
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
     nativeHDRHEVC?: CustomNativeHDRHEVCCapability
@@ -290,7 +302,11 @@ type RawHDRVideoFrameCopyToOptions = Omit<VideoFrameCopyToOptions, 'format'> & {
 
 export type WebCodecsCapabilityEnvironment = {
     audioDecoder?: Pick<typeof AudioDecoder, 'isConfigSupported'> | null
+    bundledDTSExactProbe?: { probe: () => Promise<DTSExactCapability> } | null
     bundledHEVCExactProbe?: { probe: () => Promise<BundledHEVCExactCapabilities> } | null
+    bundledJPEG2000ExactProbe?: { probe: () => Promise<JPEG2000ExactCapability> } | null
+    bundledLegacyVideoExactProbe?: { probe: () => Promise<LegacyVideoExactCapability> } | null
+    bundledTrueHDExactProbe?: { probe: () => Promise<TrueHDExactCapability> } | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
     nativeDolbyVisionVideoOutputProbe?: NativeDolbyVisionVideoOutputProbe | null
@@ -407,6 +423,18 @@ const CAPABILITY_PROBE_TIMEOUT = Symbol('custom-decode-capability-probe-timeout'
 const defaultH264ProfileCapabilityProbe = new H264ProfileCapabilityProbe();
 const defaultBundledHEVCExactProbe = {
     probe: probeBundledHEVCExactCapabilities
+};
+const defaultBundledDTSExactProbe = {
+    probe: probeDTSExactCapability
+};
+const defaultBundledTrueHDExactProbe = {
+    probe: probeTrueHDExactCapability
+};
+const defaultBundledJPEG2000ExactProbe = {
+    probe: probeJPEG2000ExactCapability
+};
+const defaultBundledLegacyVideoExactProbe = {
+    probe: probeLegacyVideoExactCapability
 };
 
 /** Returns whether a value is one of the measured HDR playback tiers. */
@@ -1293,7 +1321,11 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
     return {
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         audioDecoder: typeof globalThis.AudioDecoder === 'function' ? globalThis.AudioDecoder : null,
+        bundledDTSExactProbe: defaultBundledDTSExactProbe,
         bundledHEVCExactProbe: defaultBundledHEVCExactProbe,
+        bundledJPEG2000ExactProbe: defaultBundledJPEG2000ExactProbe,
+        bundledLegacyVideoExactProbe: defaultBundledLegacyVideoExactProbe,
+        bundledTrueHDExactProbe: defaultBundledTrueHDExactProbe,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
         nativeAudioOutputProbe: createNativeAudioOutputProbe(),
         nativeDolbyVisionVideoOutputProbe: createNativeDolbyVisionVideoOutputProbe(),
@@ -1426,9 +1458,9 @@ function createRawHDRVideoCapabilities(
     return capabilities;
 }
 
-async function probeBundledHEVC(
-    exactProbe: WebCodecsCapabilityEnvironment['bundledHEVCExactProbe']
-): Promise<BundledHEVCExactCapabilities | null> {
+async function probeOptionalExactCapability<Capability>(
+    exactProbe: { probe: () => Promise<Capability> } | null | undefined
+): Promise<Capability | null> {
     if (!exactProbe) {
         return null;
     }
@@ -1437,6 +1469,196 @@ async function probeBundledHEVC(
     } catch {
         return null;
     }
+}
+
+function createBundledJPEG2000Capability(
+    exactCapability: JPEG2000ExactCapability | null
+): CustomDecodeCodecCapability<'jpeg2000'> {
+    if (!exactCapability) {
+        return createUnavailableCapability('jpeg2000', 'mjp2');
+    }
+    if (exactCapability.status === 'supported') {
+        return Object.freeze({
+            codec: 'jpeg2000',
+            codecString: exactCapability.codecString,
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+    }
+
+    let reason: CustomDecodeCapabilityReason;
+    switch (exactCapability.reason) {
+        case 'api-unavailable':
+            reason = 'api-unavailable';
+            break;
+        case 'probe-timeout':
+            reason = 'probe-timeout';
+            break;
+        case 'throughput-insufficient':
+            reason = 'throughput-insufficient';
+            break;
+        case 'decode-error':
+        case 'output-mismatch':
+            reason = 'decode-output-missing';
+            break;
+        case 'worker-create-failed':
+        case 'worker-error':
+        case 'worker-message-invalid':
+            reason = 'probe-exception';
+            break;
+        case 'decode-output-verified':
+            reason = 'decode-output-missing';
+            break;
+    }
+    return Object.freeze({
+        codec: 'jpeg2000',
+        codecString: exactCapability.codecString,
+        reason,
+        status: exactCapability.status
+    });
+}
+
+function createBundledLegacyVideoCapability(
+    exactCapability: LegacyVideoExactCapability | null
+): CustomDecodeCodecCapability<'mpeg2video'> {
+    if (!exactCapability) {
+        return createUnavailableCapability('mpeg2video', 'mpeg2video');
+    }
+    if (exactCapability.status === 'supported') {
+        return Object.freeze({
+            codec: 'mpeg2video',
+            codecString: 'mpeg2video',
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+    }
+
+    let reason: CustomDecodeCapabilityReason;
+    switch (exactCapability.reason) {
+        case 'api-unavailable':
+            reason = 'api-unavailable';
+            break;
+        case 'probe-timeout':
+            reason = 'probe-timeout';
+            break;
+        case 'throughput-insufficient':
+            reason = 'throughput-insufficient';
+            break;
+        case 'decode-error':
+        case 'output-mismatch':
+            reason = 'decode-output-missing';
+            break;
+        case 'worker-create-failed':
+        case 'worker-error':
+        case 'worker-message-invalid':
+            reason = 'probe-exception';
+            break;
+        case 'decode-output-verified':
+            reason = 'decode-output-missing';
+            break;
+    }
+    return Object.freeze({
+        codec: 'mpeg2video',
+        codecString: 'mpeg2video',
+        reason,
+        status: exactCapability.status
+    });
+}
+
+function createBundledDTSCapability(
+    exactCapability: DTSExactCapability | null
+): CustomDecodeCodecCapability<'dts'> {
+    if (!exactCapability) {
+        return createUnavailableCapability('dts', 'dts');
+    }
+    if (exactCapability.status === 'supported') {
+        return Object.freeze({
+            codec: 'dts',
+            codecString: exactCapability.codecString,
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+    }
+
+    let reason: CustomDecodeCapabilityReason;
+    switch (exactCapability.reason) {
+        case 'api-unavailable':
+            reason = 'api-unavailable';
+            break;
+        case 'probe-timeout':
+            reason = 'probe-timeout';
+            break;
+        case 'throughput-insufficient':
+            reason = 'throughput-insufficient';
+            break;
+        case 'decode-error':
+        case 'output-mismatch':
+            reason = 'decode-output-missing';
+            break;
+        case 'worker-create-failed':
+        case 'worker-error':
+        case 'worker-message-invalid':
+            reason = 'probe-exception';
+            break;
+        case 'decode-output-verified':
+            reason = 'decode-output-missing';
+            break;
+    }
+    return Object.freeze({
+        codec: 'dts',
+        codecString: exactCapability.codecString,
+        reason,
+        status: exactCapability.status
+    });
+}
+
+function createBundledTrueHDCapability<Codec extends 'mlp' | 'truehd'>(
+    exactCapability: TrueHDExactCapability | null,
+    codec: Codec
+): CustomDecodeCodecCapability<Codec> {
+    if (!exactCapability) {
+        return createUnavailableCapability(codec, codec);
+    }
+    if (exactCapability.status === 'supported') {
+        return Object.freeze({
+            codec,
+            codecString: codec,
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+    }
+
+    let reason: CustomDecodeCapabilityReason;
+    switch (exactCapability.reason) {
+        case 'api-unavailable':
+            reason = 'api-unavailable';
+            break;
+        case 'probe-timeout':
+            reason = 'probe-timeout';
+            break;
+        case 'throughput-insufficient':
+            reason = 'throughput-insufficient';
+            break;
+        case 'decode-error':
+        case 'major-sync-recovery-failed':
+        case 'output-mismatch':
+            reason = 'decode-output-missing';
+            break;
+        case 'worker-create-failed':
+        case 'worker-error':
+        case 'worker-message-invalid':
+            reason = 'probe-exception';
+            break;
+        case 'decode-output-verified':
+            reason = 'decode-output-missing';
+            break;
+    }
+    return Object.freeze({
+        codec,
+        codecString: codec,
+        reason,
+        status: exactCapability.status
+    });
 }
 
 function createBundledAudioCapability(
@@ -1862,6 +2084,18 @@ function getNativeUltraHDVideoProbeCount(
         0;
 }
 
+function getVideoProbeCount(environment: WebCodecsCapabilityEnvironment): number {
+    const bundledProbeCount = Number(Boolean(environment.bundledJPEG2000ExactProbe))
+        + Number(Boolean(environment.bundledLegacyVideoExactProbe));
+    if (!environment.videoDecoder) {
+        return bundledProbeCount;
+    }
+    return VIDEO_PROBE_DEFINITIONS.length
+        + NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.length
+        + 2
+        + bundledProbeCount;
+}
+
 type NativeHEVCFrameRouteProbeCapability = {
     maximumFramesPerSecond: CustomHDRVideoMaximumFramesPerSecond | 0
     measuredFramesPerSecond: number | null
@@ -2065,6 +2299,20 @@ function createVideoProbePromise(
         probeConfig(definition, environment.videoDecoder);
 }
 
+function createAudioProbePromises(
+    environment: WebCodecsCapabilityEnvironment
+): Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> {
+    const probePromises: Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> = [];
+    for (const definition of AUDIO_PROBE_DEFINITIONS) {
+        probePromises.push(probeNativeAudioConfig(
+            definition,
+            environment.audioDecoder,
+            environment.nativeAudioOutputProbe
+        ));
+    }
+    return probePromises;
+}
+
 /** Performs one cached, coarse WebCodecs decoder capability probe. */
 export default class CustomDecodeCapabilityProbe {
     private cachedProbe: Promise<CustomDecodeCapabilities> | null = null;
@@ -2091,14 +2339,7 @@ export default class CustomDecodeCapabilityProbe {
             CustomNativeUltraHDVideoCodecCapability
         >> =
             createNativeUltraHDVideoProbePromises(environment);
-        const audioProbePromises: Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> = [];
-        for (const definition of AUDIO_PROBE_DEFINITIONS) {
-            audioProbePromises.push(probeNativeAudioConfig(
-                definition,
-                environment.audioDecoder,
-                environment.nativeAudioOutputProbe
-            ));
-        }
+        const audioProbePromises = createAudioProbePromises(environment);
         const nativeSurroundAudioProbePromises: Array<Promise<
             CustomNativeSurroundAudioCodecCapability
         >> = createNativeSurroundAudioProbePromises(environment);
@@ -2116,7 +2357,11 @@ export default class CustomDecodeCapabilityProbe {
             probedAudioCapabilities,
             rawHDRVideoProbeCapabilities,
             h264Profiles,
+            bundledDTS,
             bundledHEVC,
+            bundledJPEG2000,
+            bundledLegacyVideo,
+            bundledTrueHD,
             nativeDolbyVisionHEVC,
             nativeHDRHEVC,
             nativeSurroundAudioCapabilities,
@@ -2126,7 +2371,11 @@ export default class CustomDecodeCapabilityProbe {
             Promise.all(audioProbePromises),
             Promise.all(rawHDRVideoProbePromises),
             probeH264Profiles(environment.h264ProfileProbe),
-            probeBundledHEVC(environment.bundledHEVCExactProbe),
+            probeOptionalExactCapability(environment.bundledDTSExactProbe),
+            probeOptionalExactCapability(environment.bundledHEVCExactProbe),
+            probeOptionalExactCapability(environment.bundledJPEG2000ExactProbe),
+            probeOptionalExactCapability(environment.bundledLegacyVideoExactProbe),
+            probeOptionalExactCapability(environment.bundledTrueHDExactProbe),
             probeNativeDolbyVisionHEVC(
                 environment.videoDecoder,
                 environment.nativeDolbyVisionVideoOutputProbe
@@ -2138,8 +2387,13 @@ export default class CustomDecodeCapabilityProbe {
             Promise.all(nativeSurroundAudioProbePromises),
             Promise.all(nativeUltraHDVideoProbePromises)
         ]);
+        videoCapabilities.push(createBundledJPEG2000Capability(bundledJPEG2000));
+        videoCapabilities.push(createBundledLegacyVideoCapability(bundledLegacyVideo));
         const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
         audioCapabilities.push(...probedAudioCapabilities);
+        audioCapabilities.push(createBundledDTSCapability(bundledDTS));
+        audioCapabilities.push(createBundledTrueHDCapability(bundledTrueHD, 'mlp'));
+        audioCapabilities.push(createBundledTrueHDCapability(bundledTrueHD, 'truehd'));
         for (const definition of BUNDLED_AUDIO_CODEC_DEFINITIONS) {
             audioCapabilities.push(createBundledAudioCapability(definition));
         }
@@ -2175,7 +2429,7 @@ export default class CustomDecodeCapabilityProbe {
         );
         const telemetry = Object.freeze({
             audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
-            bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length,
+            bundledAudioCodecCount: BUNDLED_AUDIO_CODEC_DEFINITIONS.length + 3,
             nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
             nativeHDRVideoProbeCount: environment.videoDecoder
                 && environment.nativeHDRVideoOutputProbe ? 1 : 0,
@@ -2211,16 +2465,16 @@ export default class CustomDecodeCapabilityProbe {
                 capability => capability.status === 'unknown'
             ).length,
             unknownVideoCodecCount: videoCapabilities.filter(capability => capability.status === 'unknown').length,
-            videoProbeCount: environment.videoDecoder ?
-                VIDEO_PROBE_DEFINITIONS.length
-                    + NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS.length
-                    + 2 :
-                0
+            videoProbeCount: getVideoProbeCount(environment)
         });
 
         return Object.freeze({
             audio: Object.freeze(audio),
+            ...(bundledDTS ? { bundledDTS } : {}),
             ...(bundledHEVC ? { bundledHEVC } : {}),
+            ...(bundledJPEG2000 ? { bundledJPEG2000 } : {}),
+            ...(bundledLegacyVideo ? { bundledLegacyVideo } : {}),
+            ...(bundledTrueHD ? { bundledTrueHD } : {}),
             h264Profiles,
             nativeDolbyVisionHEVC,
             nativeHDRHEVC,

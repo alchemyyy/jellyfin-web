@@ -66,6 +66,15 @@ export type AudioWorkletTelemetryReason =
     | 'underflow'
     | 'underflow-recovered';
 
+export type AudioSignalTelemetry = {
+    analyzedFrameCount: number
+    analyzedSampleCount: number
+    clippedSampleCount: number
+    nonFiniteSampleCount: number
+    samplePeak: number
+    sampleSquareSum: number
+};
+
 export type AudioWorkletTelemetry = {
     consumedFrames: number
     droppedFrames: number
@@ -81,6 +90,7 @@ export type AudioWorkletTelemetry = {
     queuedFrames: number
     reason: AudioWorkletTelemetryReason
     sequence: number | null
+    signal?: AudioSignalTelemetry
     staleChunks: number
     type: 'telemetry'
     underflowEvents: number

@@ -12,10 +12,14 @@ import {
 import {
     applyHLGEOTF,
     applyPQEOTF,
+    applyPQOETF,
     applySDREOTF,
+    convertIPTPQToLinearRGBNits,
     convertLinearRGBGamut,
+    convertLinearRGBNitsToIPTPQ,
     convertYUVToEncodedRGB,
     encodeSDROutput,
+    evaluateSplineToneMapPQ,
     expandYUVRange,
     processEncodedRGB,
     toneMapToSDR,
@@ -57,6 +61,40 @@ describe('ColorPipeline', () => {
         expect(applyPQEOTF(0.5080784215)).toBeCloseTo(100, 3);
         expect(applyHLGEOTF(0.75, 1_000)).toBeCloseTo(203.15, 1);
         expect(applySDREOTF(0.04, 100)).toBeCloseTo(0.888888889, 8);
+    });
+
+    it('round trips absolute luminance and neutral BT.2020 through IPTPQc4', () => {
+        expect(applyPQOETF(100)).toBeCloseTo(0.5080784215, 9);
+        expect(applyPQEOTF(applyPQOETF(1_000))).toBeCloseTo(1_000, 7);
+
+        const perceptualColor = convertLinearRGBNitsToIPTPQ(
+            [ 100, 100, 100 ],
+            'bt2020'
+        );
+        const roundTripRGB = convertIPTPQToLinearRGBNits(perceptualColor, 'bt2020');
+        expect(perceptualColor[0]).toBeCloseTo(applyPQOETF(100), 6);
+        expect(perceptualColor[1]).toBeCloseTo(0, 5);
+        expect(perceptualColor[2]).toBeCloseTo(0, 5);
+        for (const component of roundTripRGB) {
+            expect(component).toBeCloseTo(100, 7);
+        }
+    });
+
+    it('matches static libplacebo spline anchors and stays monotonic', () => {
+        const inputLuminances = [ 0, 10, 100, 203, 400, 1_000 ];
+        const mappedIntensities = inputLuminances.map((luminanceNits: number) => (
+            evaluateSplineToneMapPQ(applyPQOETF(luminanceNits), 1_000, 100)
+        ));
+
+        expect(mappedIntensities[0]).toBeLessThan(0.000001);
+        expect(mappedIntensities[2]).toBeCloseTo(0.4099250914, 9);
+        expect(mappedIntensities[3]).toBeCloseTo(0.4442964008, 9);
+        expect(mappedIntensities.at(-1)).toBeCloseTo(applyPQOETF(100), 12);
+        for (let intensityIndex = 1; intensityIndex < mappedIntensities.length; intensityIndex++) {
+            expect(mappedIntensities[intensityIndex]).toBeGreaterThan(
+                mappedIntensities[intensityIndex - 1]
+            );
+        }
     });
 
     it('converts BT.2020 linear primaries into BT.709', () => {
@@ -108,6 +146,44 @@ describe('ColorPipeline', () => {
         for (const component of transformedRGB) {
             expect(component).toBeGreaterThanOrEqual(0);
             expect(component).toBeLessThanOrEqual(1);
+        }
+    });
+
+    it('perceptually compresses BT.2020 primaries without hard channel clipping', () => {
+        const encoded100Nits = applyPQOETF(100);
+        const settings = createHDRToSDRRenderSettings();
+        const metadata = createPQColorMetadata();
+        const mappedRed = processEncodedRGB(
+            [ encoded100Nits, 0, 0 ],
+            metadata,
+            settings
+        );
+        const mappedGreen = processEncodedRGB(
+            [ 0, encoded100Nits, 0 ],
+            metadata,
+            settings
+        );
+        const mappedBlue = processEncodedRGB(
+            [ 0, 0, encoded100Nits ],
+            metadata,
+            settings
+        );
+
+        expect(mappedRed).toEqual(expect.arrayContaining([
+            expect.any(Number),
+            expect.any(Number),
+            expect.any(Number)
+        ]));
+        expect(mappedRed[0]).toBeCloseTo(0.79467454, 7);
+        expect(mappedRed[0]).toBeGreaterThan(mappedRed[1]);
+        expect(mappedRed[0]).toBeGreaterThan(mappedRed[2]);
+        expect(mappedGreen[1]).toBeGreaterThan(mappedGreen[0]);
+        expect(mappedGreen[1]).toBeGreaterThan(mappedGreen[2]);
+        expect(mappedBlue[2]).toBeGreaterThan(mappedBlue[0]);
+        expect(mappedBlue[2]).toBeGreaterThan(mappedBlue[1]);
+        for (const component of [ ...mappedRed, ...mappedGreen, ...mappedBlue ]) {
+            expect(component).toBeGreaterThan(0);
+            expect(component).toBeLessThan(1);
         }
     });
 

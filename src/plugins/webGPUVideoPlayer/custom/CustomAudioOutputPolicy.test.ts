@@ -55,6 +55,64 @@ describe('CustomAudioOutputPolicy', () => {
         expect(isSupportedCustomAudioInputLayout('eac3', '6', 48_000)).toBe(false);
     });
 
+    it('accepts only qualified DTS channel beds and sample rates', () => {
+        expect(getSupportedCustomAudioInputChannelCounts('dts')).toEqual([
+            6,
+            7,
+            8
+        ]);
+        expect(getSupportedCustomAudioInputSampleRates('dts')).toEqual([
+            48_000,
+            96_000,
+            192_000
+        ]);
+
+        for (const [ channelCount, sampleRate ] of [
+            [ 6, 48_000 ],
+            [ 6, 96_000 ],
+            [ 7, 48_000 ],
+            [ 8, 48_000 ],
+            [ 8, 96_000 ],
+            [ 6, 192_000 ]
+        ] as const) {
+            expect(isSupportedCustomAudioInputLayout('dts', channelCount, sampleRate))
+                .toBe(true);
+        }
+        expect(isSupportedCustomAudioInputLayout('dts', 2, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 7, 96_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 7, 192_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 8, 192_000)).toBe(false);
+
+        expect(isSupportedCustomAudioInputLayout('dts', 1, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 3, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('dts', 8, 44_100)).toBe(false);
+    });
+
+    it('accepts only exact-probed TrueHD channel beds and sample rates', () => {
+        expect(getSupportedCustomAudioInputChannelCounts('truehd')).toEqual([ 2, 6 ]);
+        expect(getSupportedCustomAudioInputSampleRates('truehd')).toEqual([
+            48_000,
+            96_000,
+            192_000
+        ]);
+        for (const [ channelCount, sampleRate ] of [
+            [ 2, 48_000 ],
+            [ 6, 96_000 ],
+            [ 6, 192_000 ]
+        ] as const) {
+            expect(isSupportedCustomAudioInputLayout('truehd', channelCount, sampleRate))
+                .toBe(true);
+        }
+        expect(isSupportedCustomAudioInputLayout('truehd', 2, 96_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('truehd', 6, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('truehd', 8, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('truehd', 6, 44_100)).toBe(false);
+        expect(getSupportedCustomAudioInputChannelCounts('mlp')).toEqual([ 2 ]);
+        expect(getSupportedCustomAudioInputSampleRates('mlp')).toEqual([ 48_000 ]);
+        expect(isSupportedCustomAudioInputLayout('mlp', 2, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioInputLayout('mlp', 6, 48_000)).toBe(false);
+    });
+
     it('accepts the complete Mediabunny PCM family through shared normalization', () => {
         for (const codec of [
             'pcm_s16le',

@@ -30,6 +30,48 @@ const PQ_C3 = 2392 / 128;
 const PQ_M1 = 2610 / 16384;
 const PQ_M2 = 2523 / 32;
 const PQ_PEAK_NITS = 10_000;
+const SPLINE_KNEE_ADAPTATION = 0.4;
+const SPLINE_KNEE_DEFAULT = 0.4;
+const SPLINE_KNEE_MAXIMUM = 0.8;
+const SPLINE_KNEE_MINIMUM = 0.1;
+const SPLINE_SLOPE_OFFSET = 0.2;
+const SPLINE_SLOPE_TUNING = 1.5;
+const SPLINE_CONTRAST = 0.5;
+
+type ColorMatrix = readonly [ColorTriplet, ColorTriplet, ColorTriplet];
+type LegacyToneMapOperator = Exclude<ToneMappingSettings['operator'], 'spline'>;
+
+// libplacebo IPTPQc4 HPE matrices with four percent cone crosstalk
+const BT709_RGB_TO_IPT_LMS: ColorMatrix = [
+    [ 0.295764080594, 0.623072450736, 0.081166749035 ],
+    [ 0.156191976513, 0.727251644307, 0.116557934317 ],
+    [ 0.035102284710, 0.156589948771, 0.808303025242 ]
+];
+const BT2020_RGB_TO_IPT_LMS: ColorMatrix = [
+    [ 0.412036386719, 0.523911912035, 0.064054981611 ],
+    [ 0.166660218723, 0.720395213485, 0.112946122929 ],
+    [ 0.024112358560, 0.075474962757, 0.900407937406 ]
+];
+const IPT_LMS_TO_BT709_RGB: ColorMatrix = [
+    [ 6.173532657683, -5.320898820809, 0.147354885063 ],
+    [ -1.324031910094, 2.560269770177, -0.236238618417 ],
+    [ -0.011598387923, -0.264921446713, 1.276526337036 ]
+];
+const IPT_LMS_TO_BT2020_RGB: ColorMatrix = [
+    [ 3.436814829107, -2.506773801082, 0.069951928006 ],
+    [ -0.791058237834, 1.983601669423, -0.192544834310 ],
+    [ -0.025726806109, -0.099141766410, 1.124874144431 ]
+];
+const IPT_LMS_TO_IPT: ColorMatrix = [
+    [ 0.4, 0.4, 0.2 ],
+    [ 4.455, -4.851, 0.396 ],
+    [ 0.8056, 0.3572, -1.1628 ]
+];
+const IPT_TO_IPT_LMS: ColorMatrix = [
+    [ 1, 0.0975689, 0.205226 ],
+    [ 1, -0.113876, 0.133217 ],
+    [ 1, 0.0326151, -0.676887 ]
+];
 
 type LumaCoefficients = {
     blue: number
@@ -46,6 +88,27 @@ function mapTriplet(
     transform: (component: number) => number
 ): ColorTriplet {
     return [ transform(value[0]), transform(value[1]), transform(value[2]) ];
+}
+
+function mix(firstValue: number, secondValue: number, amount: number): number {
+    return firstValue + ((secondValue - firstValue) * amount);
+}
+
+function multiplyColorMatrix(matrix: ColorMatrix, value: ColorTriplet): ColorTriplet {
+    return [
+        (matrix[0][0] * value[0]) + (matrix[0][1] * value[1]) + (matrix[0][2] * value[2]),
+        (matrix[1][0] * value[0]) + (matrix[1][1] * value[1]) + (matrix[1][2] * value[2]),
+        (matrix[2][0] * value[0]) + (matrix[2][1] * value[1]) + (matrix[2][2] * value[2])
+    ];
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+    if (edge0 === edge1) {
+        return value >= edge0 ? 1 : 0;
+    }
+
+    const normalizedValue = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+    return normalizedValue * normalizedValue * (3 - (2 * normalizedValue));
 }
 
 function getLumaCoefficients(primaries: ColorPrimaries): LumaCoefficients {
@@ -73,7 +136,10 @@ function applyHLGInverseOETF(encodedValue: number): number {
     return (Math.exp((clampedValue - HLG_C) / HLG_A) + HLG_B) / 12;
 }
 
-function evaluateToneMapCurve(normalizedLuminance: number, operator: ToneMappingSettings['operator']): number {
+function evaluateToneMapCurve(
+    normalizedLuminance: number,
+    operator: LegacyToneMapOperator
+): number {
     const nonNegativeLuminance = Math.max(normalizedLuminance, 0);
     switch (operator) {
         case 'aces':
@@ -139,6 +205,122 @@ export function applyPQEOTF(encodedValue: number): number {
     const numerator = Math.max(inversePower - PQ_C1, 0);
     const denominator = Math.max(PQ_C2 - (PQ_C3 * inversePower), Number.EPSILON);
     return PQ_PEAK_NITS * ((numerator / denominator) ** (1 / PQ_M1));
+}
+
+/** Applies the SMPTE ST 2084 inverse EOTF to absolute luminance in nits. */
+export function applyPQOETF(luminanceNits: number): number {
+    if (!Number.isFinite(luminanceNits)) {
+        throw new RangeError('PQ luminance must be finite');
+    }
+
+    const normalizedLuminance = clamp(luminanceNits / PQ_PEAK_NITS, 0, 1);
+    const poweredLuminance = normalizedLuminance ** PQ_M1;
+    const encodedValue = (PQ_C1 + (PQ_C2 * poweredLuminance))
+        / (1 + (PQ_C3 * poweredLuminance));
+    return encodedValue ** PQ_M2;
+}
+
+function getRGBToIPTLMSMatrix(primaries: ColorPrimaries): ColorMatrix {
+    switch (primaries) {
+        case 'bt2020':
+            return BT2020_RGB_TO_IPT_LMS;
+        case 'bt709':
+            return BT709_RGB_TO_IPT_LMS;
+    }
+}
+
+function getIPTLMSToRGBMatrix(primaries: ColorPrimaries): ColorMatrix {
+    switch (primaries) {
+        case 'bt2020':
+            return IPT_LMS_TO_BT2020_RGB;
+        case 'bt709':
+            return IPT_LMS_TO_BT709_RGB;
+    }
+}
+
+/** Converts absolute linear RGB into libplacebo-compatible IPTPQc4 coordinates. */
+export function convertLinearRGBNitsToIPTPQ(
+    linearRGBNits: ColorTriplet,
+    primaries: ColorPrimaries
+): ColorTriplet {
+    const nonNegativeRGB = mapTriplet(
+        linearRGBNits,
+        (component: number): number => Math.max(component, 0)
+    );
+    const linearLMS = multiplyColorMatrix(getRGBToIPTLMSMatrix(primaries), nonNegativeRGB);
+    const encodedLMS = mapTriplet(linearLMS, applyPQOETF);
+    return multiplyColorMatrix(IPT_LMS_TO_IPT, encodedLMS);
+}
+
+/** Converts IPTPQc4 coordinates into absolute linear RGB for the selected gamut. */
+export function convertIPTPQToLinearRGBNits(
+    perceptualColor: ColorTriplet,
+    primaries: ColorPrimaries
+): ColorTriplet {
+    const encodedLMS = multiplyColorMatrix(IPT_TO_IPT_LMS, perceptualColor);
+    const linearLMS = mapTriplet(encodedLMS, applyPQEOTF);
+    return multiplyColorMatrix(getIPTLMSToRGBMatrix(primaries), linearLMS);
+}
+
+/** Evaluates libplacebo's static single-pivot spline directly in PQ space. */
+export function evaluateSplineToneMapPQ(
+    inputIntensityPQ: number,
+    inputPeakNits: number,
+    outputPeakNits: number
+): number {
+    if (!Number.isFinite(inputIntensityPQ)
+        || !Number.isFinite(inputPeakNits)
+        || !Number.isFinite(outputPeakNits)
+        || inputPeakNits <= 0
+        || outputPeakNits <= 0) {
+        throw new RangeError('Spline tone-map values must be positive and finite');
+    }
+
+    const inputMaximum = applyPQOETF(inputPeakNits);
+    const outputMaximum = applyPQOETF(outputPeakNits);
+    const sourcePivot = inputMaximum * SPLINE_KNEE_DEFAULT;
+    const sourceTarget = sourcePivot / inputMaximum;
+    const adaptedPivot = outputMaximum * sourceTarget;
+    const tuning = 1 - (
+        smoothstep(SPLINE_KNEE_MAXIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
+        * smoothstep(SPLINE_KNEE_MINIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
+    );
+    const adaptation = mix(SPLINE_KNEE_ADAPTATION, 1, tuning);
+    const destinationPivot = clamp(
+        mix(sourcePivot, adaptedPivot, adaptation),
+        outputMaximum * SPLINE_KNEE_MINIMUM,
+        outputMaximum * SPLINE_KNEE_MAXIMUM
+    );
+    const linearSlope = destinationPivot / sourcePivot;
+    const peakRatio = (inputMaximum / outputMaximum) - 1;
+    const slopeRatio = clamp(
+        SPLINE_SLOPE_TUNING * peakRatio,
+        SPLINE_SLOPE_OFFSET,
+        1 + SPLINE_SLOPE_OFFSET
+    );
+    const pivotSlope = linearSlope ** ((1 - SPLINE_CONTRAST) * slopeRatio);
+
+    const inputMinimumOffset = -sourcePivot;
+    const inputMaximumOffset = inputMaximum - sourcePivot;
+    const outputMinimumOffset = -destinationPivot;
+    const outputMaximumOffset = outputMaximum - destinationPivot;
+    const lowerQuadratic = (
+        outputMinimumOffset - (pivotSlope * inputMinimumOffset)
+    ) / (inputMinimumOffset * inputMinimumOffset);
+    const upperDenominator = 2 * inputMaximumOffset * inputMaximumOffset;
+    const upperCubic = (
+        (pivotSlope * inputMaximumOffset) - outputMaximumOffset
+    ) / (inputMaximumOffset * upperDenominator);
+    const upperQuadratic = -3 * (
+        (pivotSlope * inputMaximumOffset) - outputMaximumOffset
+    ) / upperDenominator;
+
+    const inputOffset = clamp(inputIntensityPQ, 0, inputMaximum) - sourcePivot;
+    const mappedOffset = inputOffset > 0 ?
+        (((upperCubic * inputOffset) + upperQuadratic) * inputOffset + pivotSlope)
+            * inputOffset :
+        ((lowerQuadratic * inputOffset) + pivotSlope) * inputOffset;
+    return clamp(mappedOffset + destinationPivot, 0, outputMaximum);
 }
 
 /** Applies the BT.2100 HLG display transform for an achromatic signal. */
@@ -228,6 +410,109 @@ export function convertLinearRGBGamut(
     ];
 }
 
+function calculateIPTChromaHull(intensity: number): number {
+    return ((intensity - 6) * intensity + 9) * intensity;
+}
+
+function calculateComponentGamutScale(
+    component: number,
+    neutralComponent: number,
+    outputPeakNits: number
+): number {
+    const chromaDelta = component - neutralComponent;
+    if (component > outputPeakNits && chromaDelta > 0) {
+        return (outputPeakNits - neutralComponent) / chromaDelta;
+    }
+    if (component < 0 && chromaDelta < 0) {
+        return -neutralComponent / chromaDelta;
+    }
+    return 1;
+}
+
+function perceptuallyMapIPTPQToBT709(
+    perceptualColor: ColorTriplet,
+    settings: ToneMappingSettings
+): ColorTriplet {
+    const targetRGB = convertIPTPQToLinearRGBNits(perceptualColor, 'bt709');
+    const neutralRGB = convertIPTPQToLinearRGBNits(
+        [ perceptualColor[0], 0, 0 ],
+        'bt709'
+    );
+    let hardChromaScale = 1;
+    for (let componentIndex = 0; componentIndex < 3; componentIndex++) {
+        hardChromaScale = Math.min(
+            hardChromaScale,
+            calculateComponentGamutScale(
+                targetRGB[componentIndex],
+                neutralRGB[componentIndex],
+                settings.outputPeakNits
+            )
+        );
+    }
+    hardChromaScale = clamp(hardChromaScale, 0, 1);
+
+    // Preserve in-gamut colors and progressively compress extreme chroma
+    const outOfGamutAmount = 1 - hardChromaScale;
+    const perceptualChromaScale = hardChromaScale * (
+        1 - (
+            settings.desaturationStrength
+            * outOfGamutAmount
+            * outOfGamutAmount
+        )
+    );
+    return [
+        clamp(
+            neutralRGB[0] + ((targetRGB[0] - neutralRGB[0]) * perceptualChromaScale),
+            0,
+            settings.outputPeakNits
+        ),
+        clamp(
+            neutralRGB[1] + ((targetRGB[1] - neutralRGB[1]) * perceptualChromaScale),
+            0,
+            settings.outputPeakNits
+        ),
+        clamp(
+            neutralRGB[2] + ((targetRGB[2] - neutralRGB[2]) * perceptualChromaScale),
+            0,
+            settings.outputPeakNits
+        )
+    ];
+}
+
+function toneMapSplinePerceptualToSDR(
+    linearInputNits: ColorTriplet,
+    sourcePrimaries: ColorPrimaries,
+    settings: ToneMappingSettings
+): ColorTriplet {
+    const exposureScale = 2 ** settings.exposure;
+    const exposedRGB = mapTriplet(
+        linearInputNits,
+        (component: number): number => Math.max(component * exposureScale, 0)
+    );
+    const sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB, sourcePrimaries);
+    const originalIntensity = sourceIPT[0];
+    const mappedIntensity = evaluateSplineToneMapPQ(
+        originalIntensity,
+        settings.inputPeakNits,
+        settings.outputPeakNits
+    );
+    if (originalIntensity <= Number.EPSILON || mappedIntensity <= Number.EPSILON) {
+        return [ 0, 0, 0 ];
+    }
+
+    const originalHull = Math.max(calculateIPTChromaHull(originalIntensity), Number.EPSILON);
+    const mappedHull = calculateIPTChromaHull(mappedIntensity);
+    const chromaScale = clamp(Math.min(
+        originalIntensity / mappedIntensity,
+        mappedHull / originalHull
+    ), 0, 1);
+    return perceptuallyMapIPTPQToBT709([
+        mappedIntensity,
+        sourceIPT[1] * chromaScale,
+        sourceIPT[2] * chromaScale
+    ], settings);
+}
+
 /** Compresses absolute BT.709 linear light into the configured SDR luminance range. */
 export function toneMapToSDR(
     linearBT709Nits: ColorTriplet,
@@ -245,6 +530,10 @@ export function toneMapToSDR(
         version: RENDER_SETTINGS_VERSION
     };
     assertValidRenderSettings(temporarySettings);
+
+    if (settings.operator === 'spline') {
+        return toneMapSplinePerceptualToSDR(linearBT709Nits, 'bt709', settings);
+    }
 
     const exposureScale = 2 ** settings.exposure;
     const exposedRGB = mapTriplet(
@@ -342,8 +631,16 @@ export function processEncodedRGB(
     }
 
     const decodedRGB = decodeEncodedRGBToNits(encodedRGB, metadata);
-    const linearBT709RGB = convertLinearRGBGamut(decodedRGB, metadata.primaries, 'bt709');
-    const toneMappedRGB = toneMapToSDR(linearBT709RGB, settings.toneMapping);
+    const toneMappedRGB = settings.toneMapping.operator === 'spline' ?
+        toneMapSplinePerceptualToSDR(
+            decodedRGB,
+            metadata.primaries,
+            settings.toneMapping
+        ) :
+        toneMapToSDR(
+            convertLinearRGBGamut(decodedRGB, metadata.primaries, 'bt709'),
+            settings.toneMapping
+        );
     const encodedOutputRGB = encodeSDROutput(
         toneMappedRGB,
         settings.toneMapping.outputPeakNits,

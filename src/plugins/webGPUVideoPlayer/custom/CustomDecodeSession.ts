@@ -219,7 +219,10 @@ function isValidVideoOutputMode(value: string): value is CustomDecodeVideoOutput
 }
 
 function isValidVideoDecoderBackend(value: string): value is CustomDecodeVideoDecoderBackend {
-    return value === 'bundled-hevc' || value === 'native';
+    return value === 'bundled-hevc'
+        || value === 'legacy-software'
+        || value === 'native'
+        || value === 'openjpeg';
 }
 
 function isNativeMediaAudioConfiguration(
@@ -598,6 +601,17 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
         if (!isValidVideoDecoderBackend(options.videoDecoderBackend)) {
             throw new TypeError('Custom decode video decoder backend is invalid');
+        }
+        if (
+            (options.videoDecoderBackend === 'legacy-software'
+                || options.videoDecoderBackend === 'openjpeg')
+            && (options.videoOutputMode !== 'video-frame'
+                || options.rawVideoFrameFormat !== null
+                || options.dolbyVisionProfile !== null
+                || options.neutralizeHDRColorMetadata
+                || options.nativeHDRTransfer !== null)
+        ) {
+            throw new TypeError('Software video decode requires an SDR VideoFrame route');
         }
         validateHDRStartOptions(options);
         if (!hasValidRawVideoFrameFormat(options)) {

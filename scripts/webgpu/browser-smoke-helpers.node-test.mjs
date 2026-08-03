@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
     areEquivalentServerURLs,
+    createFrontendAssetURL,
     createPrimarySeekTargetMicroseconds,
     createSeekStormTargetsMicroseconds,
     createStartupSampleModeOrder,
@@ -881,6 +882,21 @@ test('builds a hash route on the configured frontend', () => {
     );
 });
 
+test('resolves frontend assets with or without a trailing directory separator', () => {
+    assert.equal(
+        createFrontendAssetURL('http://localhost:8096/web', 'config.json'),
+        'http://localhost:8096/web/config.json'
+    );
+    assert.equal(
+        createFrontendAssetURL('http://localhost:8096/web/', 'config.json'),
+        'http://localhost:8096/web/config.json'
+    );
+    assert.equal(
+        createFrontendAssetURL('http://localhost:8080', 'config.json'),
+        'http://localhost:8080/config.json'
+    );
+});
+
 test('matches only equivalent configured server URLs and loopback spellings', () => {
     assert.equal(
         areEquivalentServerURLs('http://localhost:8096/', 'http://127.0.0.1:8096'),
@@ -1007,8 +1023,10 @@ test('requires exact external Profile 5 authorization', () => {
     const snapshot = {
         dolbyVisionProfile: 5,
         externalDolbyVisionValidation: {
-            fixtureVersion: 1,
-            renderSettingsVersion: 4,
+            fixtureVersion: 2,
+            maximumChannelError: 0.0027,
+            maximumInputChannelError: 0.005,
+            renderSettingsVersion: 5,
             routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
             sampleCount: 9,
             status: 'authorized',
@@ -1026,6 +1044,13 @@ test('requires exact external Profile 5 authorization', () => {
         externalDolbyVisionValidation: {
             ...snapshot.externalDolbyVisionValidation,
             sampleCount: 0
+        }
+    }), false);
+    assert.equal(hasAuthorizedHDRPlaybackRoute({
+        ...snapshot,
+        externalDolbyVisionValidation: {
+            ...snapshot.externalDolbyVisionValidation,
+            maximumInputChannelError: null
         }
     }), false);
 });
@@ -1842,9 +1867,10 @@ test('accepts authorized external Profile 5 HDR presentation', () => {
         dolbyVisionProfile: 5,
         externalDolbyVisionValidation: {
             failureReason: null,
-            fixtureVersion: 1,
+            fixtureVersion: 2,
             maximumChannelError: 0.02,
-            renderSettingsVersion: 4,
+            maximumInputChannelError: 0.005,
+            renderSettingsVersion: 5,
             routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
             sampleCount: 9,
             status: 'authorized',

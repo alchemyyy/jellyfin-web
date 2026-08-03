@@ -12,6 +12,7 @@ import {
 import {
     createColorPipelineWGSL,
     createExternalDolbyVisionColorPipelineWGSL,
+    createExternalDolbyVisionInputProbeWGSL,
     createExternalHDRColorPipelineWGSL,
     createRawDolbyVisionColorPipelineWGSL,
     createRawDolbyVisionProfile7ColorPipelineWGSL,
@@ -39,6 +40,9 @@ describe('createColorPipelineWGSL', () => {
         expect(shader).toContain('noise / 255.0');
         expect(shader).toContain('@binding(3) var<uniform> renderSettings');
         expect(shader).toContain('renderSettings.toneMapOperator == 0u');
+        expect(shader).toContain('renderSettings.toneMapOperator == 2u');
+        expect(shader).toContain('fn evaluateSplineToneMapPQ');
+        expect(shader).toContain('fn perceptuallyMapIPTPQToBT709');
         expect(shader).not.toContain('fn encodeBT709');
         expect(processFunction.indexOf('decodeInputTransfer')).toBeLessThan(
             processFunction.indexOf('convertToBT709')
@@ -103,6 +107,26 @@ describe('createColorPipelineWGSL', () => {
 }`);
         expect(shader).not.toContain('fn applyOutputDither');
     });
+
+    it('shares spline and IPT/PQ gamut mapping across every HDR input route', () => {
+        const settings = createHDRToSDRRenderSettings();
+        const metadata = createPQColorMetadata();
+        const shaders = [
+            createExternalHDRColorPipelineWGSL(metadata, settings),
+            createRawYUVColorPipelineWGSL(metadata, settings, 'I420P10'),
+            createExternalDolbyVisionColorPipelineWGSL(settings),
+            createRawDolbyVisionColorPipelineWGSL(settings, 'I420P10'),
+            createRawDolbyVisionProfile7ColorPipelineWGSL(settings, 'I420P10'),
+            createRawDolbyVisionProfile7FELColorPipelineWGSL(settings, 'I420P10')
+        ];
+
+        for (const shader of shaders) {
+            expect(shader).toContain('fn convertLinearRGBNitsToIPTPQ');
+            expect(shader).toContain('fn evaluateSplineToneMapPQ');
+            expect(shader).toContain('fn perceptuallyMapIPTPQToBT709');
+            expect(shader).toContain('renderSettings.toneMapOperator == 2u');
+        }
+    });
 });
 
 describe('createExternalDolbyVisionColorPipelineWGSL', () => {
@@ -139,6 +163,24 @@ describe('createExternalDolbyVisionColorPipelineWGSL', () => {
         );
 
         expect(secondShader).toBe(firstShader);
+    });
+});
+
+describe('createExternalDolbyVisionInputProbeWGSL', () => {
+    it('reports recovered 10-bit base signals before nonlinear reconstruction', () => {
+        const shader = createExternalDolbyVisionInputProbeWGSL();
+        const fragmentFunction = shader.slice(shader.indexOf('@fragment'));
+
+        expect(shader).toContain('@binding(1) var videoTexture: texture_external');
+        expect(shader).toContain('fn recoverLimitedRangeBT709YUV');
+        expect(fragmentFunction).toContain(
+            'let recoveredBaseSignal = recoverLimitedRangeBT709YUV(encodedBT709RGB);'
+        );
+        expect(fragmentFunction).toContain(
+            'return vec4f(recoveredBaseSignal / 1023.0, 1.0);'
+        );
+        expect(shader).not.toContain('reconstructDolbyVisionBT2020PQ');
+        expect(shader).not.toContain('processColor');
     });
 });
 

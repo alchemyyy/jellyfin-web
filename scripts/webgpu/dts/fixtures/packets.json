@@ -1,0 +1,98 @@
+{
+  "core_51_24_48_768_0.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1551,
+    "expectedProfile": 1,
+    "expectedSampleRate": 48000,
+    "qualificationFingerprint": 3724440539,
+    "qualificationFrameCount": 512,
+    "qualificationPacketIndex": 2,
+    "packets": [
+      [116, 1024], [1140, 1024], [2164, 1024], [3188, 1024],
+      [4212, 1024], [5236, 1108], [6344, 1024]
+    ]
+  },
+  "x96_51_24_96_1509.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1551,
+    "expectedProfile": 2,
+    "expectedSampleRate": 96000,
+    "qualificationFingerprint": 353572767,
+    "qualificationFrameCount": 1024,
+    "qualificationPacketIndex": 2,
+    "packets": [
+      [116, 2012], [2128, 2012], [4140, 2012], [6152, 2012],
+      [8164, 2012], [10176, 2096], [12272, 2012]
+    ]
+  },
+  "xch_61_24_48_768.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1807,
+    "expectedProfile": 4,
+    "expectedSampleRate": 48000,
+    "qualificationFingerprint": 4266675456,
+    "qualificationFrameCount": 512,
+    "qualificationPacketIndex": 2,
+    "packets": [
+      [116, 1024], [1140, 1024], [2164, 1024], [3188, 1024],
+      [4212, 1024], [5236, 1108], [6344, 1024]
+    ]
+  },
+  "xbr_xxch_71_24_48_3840.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1599,
+    "expectedProfile": 8,
+    "expectedSampleRate": 48000,
+    "qualificationFingerprint": 3536941583,
+    "qualificationFrameCount": 512,
+    "qualificationPacketIndex": 2,
+    "qualificationStereoFingerprint": 462495223,
+    "packets": [
+      [140, 5120], [5260, 5120], [10380, 5120], [15500, 5120],
+      [20620, 5120], [25740, 5204], [30944, 5120]
+    ]
+  },
+  "xll_71_24_48_768_0.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1599,
+    "expectedProfile": 16,
+    "expectedSampleRate": 48000,
+    "qualificationFingerprint": 2341239666,
+    "qualificationFrameCount": 512,
+    "qualificationPacketIndex": 2,
+    "qualificationStereoFingerprint": 2480053321,
+    "referenceDelayFrames": 1024,
+    "referenceFrameCount": 2048,
+    "packets": [
+      [140, 1140], [1280, 1140], [2420, 7804], [10224, 7768],
+      [17992, 6800], [24792, 6956], [31748, 1140]
+    ]
+  },
+  "xll_71_24_96_768.dtshd": {
+    "expectedBitsPerSample": 24,
+    "expectedChannelMask": 1599,
+    "expectedProfile": 16,
+    "expectedSampleRate": 96000,
+    "qualificationFingerprint": 1000973190,
+    "qualificationFrameCount": 1024,
+    "qualificationPacketIndex": 2,
+    "qualificationStereoFingerprint": 378858437,
+    "packets": [
+      [140, 1140], [1280, 1140], [2420, 14440], [16860, 12344],
+      [29204, 11216], [40420, 12624], [53044, 1140]
+    ]
+  },
+  "xll_51_16_192_768_0.dtshd": {
+    "expectedBitsPerSample": 16,
+    "expectedChannelMask": 1551,
+    "expectedProfile": 16,
+    "expectedSampleRate": 192000,
+    "qualificationFingerprint": 2021133433,
+    "qualificationFrameCount": 2048,
+    "qualificationPacketIndex": 2,
+    "packets": [
+      [140, 1276], [1416, 2532], [3948, 7992], [11940, 10296],
+      [22236, 10604], [32840, 10372]
+    ]
+  }
+}

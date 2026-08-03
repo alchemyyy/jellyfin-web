@@ -1,0 +1,153 @@
+{
+  "channelOrder": [
+    "front-left",
+    "front-right",
+    "front-center",
+    "low-frequency-effects",
+    "back-left",
+    "back-right",
+    "side-left",
+    "side-right"
+  ],
+  "corpus": {
+    "description": "Eight isolated impulses, deterministic correlated and decorrelated signals, positive/negative full-scale correlation, and an LFE-only sentinel",
+    "frameCount": 8192,
+    "inputFloat32SHA256": "8c375919c09a1430f0a00b56a60509b9af3b88e282319b1865ca6c8566f1cf27",
+    "sampleRates": [
+      48000,
+      96000
+    ]
+  },
+  "loudnessScope": "RMS dBFS and crest factor are recorded. This synthetic, short corpus is not a valid substitute for program-material BS.1770 integrated loudness.",
+  "measurements": {
+    "48000": {
+      "mpvDefault": {
+        "clippedSampleCount": 4,
+        "crestFactor": 11.053663520509446,
+        "crestFactorDB": 20.87012480576522,
+        "nonFiniteSampleCount": 0,
+        "peak": 3.1213202476501465,
+        "rms": 0.2823788006445749,
+        "rmsDBFS": -10.983358213925033
+      },
+      "mpvNormalized": {
+        "clippedSampleCount": 0,
+        "crestFactor": 11.05366384860652,
+        "crestFactorDB": 20.870125063581547,
+        "nonFiniteSampleCount": 0,
+        "peak": 1.0,
+        "rms": 0.09046774116675033,
+        "rmsDBFS": -20.870125063581547
+      }
+    },
+    "96000": {
+      "mpvDefault": {
+        "clippedSampleCount": 4,
+        "crestFactor": 11.053663520509446,
+        "crestFactorDB": 20.87012480576522,
+        "nonFiniteSampleCount": 0,
+        "peak": 3.1213202476501465,
+        "rms": 0.2823788006445749,
+        "rmsDBFS": -10.983358213925033
+      },
+      "mpvNormalized": {
+        "clippedSampleCount": 0,
+        "crestFactor": 11.05366384860652,
+        "crestFactorDB": 20.870125063581547,
+        "nonFiniteSampleCount": 0,
+        "peak": 1.0,
+        "rms": 0.09046774116675033,
+        "rmsDBFS": -20.870125063581547
+      }
+    }
+  },
+  "policies": {
+    "mpvDefault": {
+      "absoluteRowSum": 3.121320343559643,
+      "centerBackSideGain": 0.7071067811865476,
+      "centerBackSideGainDB": -3.0102999566398116,
+      "directGain": 1.0,
+      "directGainDB": 0.0,
+      "externalPCMReferenceSHA256": "9b44d35903a5cbf01af55e20ebe8231cdb935026306d1e8a52a58059233f4981",
+      "lfeGain": 0.0,
+      "matrix": [
+        [
+          1.0,
+          0.0,
+          0.7071067811865476,
+          0.0,
+          0.7071067811865476,
+          0.0,
+          0.7071067811865476,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.7071067811865476,
+          0.0,
+          0.0,
+          0.7071067811865476,
+          0.0,
+          0.7071067811865476
+        ]
+      ],
+      "maximumCorrelatedPeak": 3.121320343559643,
+      "maximumCorrelatedPeakDBFS": 9.886766858733427,
+      "uncorrelatedRMSGain": 1.5811388300841898,
+      "uncorrelatedRMSGainDB": 3.9794000867203767
+    },
+    "mpvNormalized": {
+      "absoluteRowSum": 0.9999999999999999,
+      "centerBackSideGain": 0.2265409196609864,
+      "centerBackSideGainDB": -12.897066815373236,
+      "directGain": 0.3203772410170407,
+      "directGainDB": -9.886766858733427,
+      "externalPCMReferenceSHA256": "db63a6e65629b96e2fc183bbf29bee4ff36ac7a2d5344c6ec58a860631ed0805",
+      "lfeGain": 0.0,
+      "matrix": [
+        [
+          0.3203772410170407,
+          0.0,
+          0.2265409196609864,
+          0.0,
+          0.2265409196609864,
+          0.0,
+          0.2265409196609864,
+          0.0
+        ],
+        [
+          0.0,
+          0.3203772410170407,
+          0.2265409196609864,
+          0.0,
+          0.0,
+          0.2265409196609864,
+          0.0,
+          0.2265409196609864
+        ]
+      ],
+      "maximumCorrelatedPeak": 0.9999999999999999,
+      "maximumCorrelatedPeakDBFS": -9.643274665532871e-16,
+      "uncorrelatedRMSGain": 0.5065608960472843,
+      "uncorrelatedRMSGainDB": -5.90736677201305
+    }
+  },
+  "referenceSources": {
+    "ffmpeg": {
+      "binarySHA256": "cce4074b7af8e71b4c63f17bec8d36ca3da9b7f84f5bcbb010476164a6cafa85",
+      "commit": "862338fe3154e09ff0c410fd410d519588d47cf2",
+      "policy": "libswresample defaults: center/surround sqrt(1/2), LFE 0, floating output unnormalized",
+      "versionMarker": "2026-03-01-git-862338fe31"
+    },
+    "mpv": {
+      "binarySHA256": "002d5d348c7467c765f1b32682c6eb50c30a3eb4468b9d06caaca344e3de1839",
+      "commit": "1d1535ff9124fdeb3c81a2f089551e2cc8404613",
+      "defaultPolicy": "audio-normalize-downmix=no, rematrix_maxval=1000",
+      "normalizedPolicy": "audio-normalize-downmix=yes, rematrix_maxval=1",
+      "versionMarker": "mpv v0.40.0-dev-g1d1535ff9"
+    }
+  },
+  "schemaVersion": 1,
+  "waveChannelMask": 1599
+}

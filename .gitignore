@@ -6,6 +6,19 @@ node_modules
 # test coverage
 coverage
 scripts/webgpu/validation-media/
+/artifacts/
+__pycache__/
+scripts/webgpu/legacy-video-decoder/.build/
+.cache/webgpu-dts/
+.cache/webgpu-ffmpeg/
+.cache/webgpu-truehd/
+
+# local WebGPU validation and build scratch
+.tmp-*/
+.tmp-*.tar.gz
+.cache/
+local-validation-media/
+build-reference*/
 
 # config
 config.json

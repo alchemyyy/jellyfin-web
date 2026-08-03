@@ -33,6 +33,12 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.underflowEvents = 0;
         this.underflowFrames = 0;
         this.framesSinceTelemetry = 0;
+        this.analyzedFrameCount = 0;
+        this.analyzedSampleCount = 0;
+        this.clippedSampleCount = 0;
+        this.nonFiniteSampleCount = 0;
+        this.samplePeak = 0;
+        this.sampleSquareSum = 0;
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
@@ -89,6 +95,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.underflowEvents = 0;
         this.underflowFrames = 0;
         this.framesSinceTelemetry = 0;
+        this.resetSignalTelemetry();
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = 0;
         this.underflowActive = false;
@@ -161,6 +168,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     flush(generation, mediaTimeMicroseconds) {
         this.clearQueue();
         this.generation = generation;
+        this.resetSignalTelemetry();
         this.mediaTimeContextTimeMicroseconds = null;
         this.mediaTimeMicroseconds = mediaTimeMicroseconds;
         this.underflowActive = false;
@@ -244,6 +252,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         const underflowFrameCount = renderFrameCount - outputOffset;
+        this.analyzeOutput(outputChannels, outputOffset);
         if (underflowFrameCount > 0) {
             this.underflowFrames += underflowFrameCount;
             if (!this.underflowActive) {
@@ -263,6 +272,38 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.postTelemetry('periodic', null);
         }
         return true;
+    }
+
+    analyzeOutput(outputChannels, frameCount) {
+        if (frameCount <= 0) {
+            return;
+        }
+        this.analyzedFrameCount += frameCount;
+        for (const outputChannel of outputChannels) {
+            for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+                const sample = outputChannel[frameIndex];
+                if (!Number.isFinite(sample)) {
+                    this.nonFiniteSampleCount += 1;
+                    continue;
+                }
+                const absoluteSample = Math.abs(sample);
+                this.analyzedSampleCount += 1;
+                this.samplePeak = Math.max(this.samplePeak, absoluteSample);
+                this.sampleSquareSum += sample * sample;
+                if (absoluteSample > 1) {
+                    this.clippedSampleCount += 1;
+                }
+            }
+        }
+    }
+
+    resetSignalTelemetry() {
+        this.analyzedFrameCount = 0;
+        this.analyzedSampleCount = 0;
+        this.clippedSampleCount = 0;
+        this.nonFiniteSampleCount = 0;
+        this.samplePeak = 0;
+        this.sampleSquareSum = 0;
     }
 
     framesToMicroseconds(frameCount) {
@@ -312,6 +353,14 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             queuedFrames: this.queuedFrames,
             reason,
             sequence,
+            signal: {
+                analyzedFrameCount: this.analyzedFrameCount,
+                analyzedSampleCount: this.analyzedSampleCount,
+                clippedSampleCount: this.clippedSampleCount,
+                nonFiniteSampleCount: this.nonFiniteSampleCount,
+                samplePeak: this.samplePeak,
+                sampleSquareSum: this.sampleSquareSum
+            },
             staleChunks: this.staleChunks,
             type: 'telemetry',
             underflowEvents: this.underflowEvents,

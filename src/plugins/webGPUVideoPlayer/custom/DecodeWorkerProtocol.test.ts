@@ -110,6 +110,84 @@ describe('DecodeWorkerProtocol', () => {
         expect(getCustomDecodeHardwareAcceleration('video-frame')).toBe('prefer-hardware');
         expect(getCustomDecodeHardwareAcceleration('video-frame', 'bundled-hevc'))
             .toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'openjpeg'))
+            .toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', 'legacy-software'))
+            .toBe('prefer-software');
+    });
+
+    it('accepts only the SDR VideoFrame shape for legacy software video', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            dolbyVisionProfile: 8
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            nativeHDRTransfer: 'pq'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            neutralizeHDRColorMetadata: true
+        })).toBe(false);
+    });
+
+    it('accepts only the SDR VideoFrame shape for OpenJPEG', () => {
+        const request = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 540,
+            maximumCodedWidth: 960,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mj2',
+            videoDecoderBackend: 'openjpeg',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            dolbyVisionProfile: 8
+        })).toBe(false);
     });
 
     it('accepts integer-microsecond start and frame messages', () => {

@@ -1,13 +1,17 @@
 # WebGPU Player Plan 2
 
 - Status: active implementation plan
-- Recorded: 2026-08-02
+- Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Committed baseline: `9d0dfe9dac76d282f6069067b3d81d5c73717736`
-- Current state: the native HEVC Main10 external-texture HDR, ordinary-build
-  Mediabunny AC-3/E-AC-3, and Mediabunny PCM/G.711 normalization checkpoints
-  are pushed. The no-bitrate WebGPU negotiation checkpoint is verified against
-  the authoritative Jellyfin-served build on port 8096 and is ready to commit.
+- Parent checkpoint: `460c9a98a4a109699bad833f6614f3ed4d224c8e`
+- Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, and
+  TrueHD/MLP checkpoint has passed its combined automated, reproducible-build,
+  artifact, production-bundle, core Jellyfin lifecycle, repeated-session, and
+  device-loss gates. Per-tuple real-media qualification and long-run resource
+  validation remain before a general rollout.
+- Authoritative current integration runtime: Jellyfin 12 nightly serving this
+  repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
+  sections explicitly labeled historical does not qualify the current worktree.
 
 ## 1. Product target
 
@@ -73,6 +77,10 @@ that a source used the owned custom decode route.
 - Owned native-media MSE bridge for exactly qualified AC-3/E-AC-3 routes.
 - Official Mediabunny AC-3/E-AC-3 software decode in ordinary builds.
 - SDR identity, BT.2020 PQ, and BT.2020 HLG color paths.
+- Version 5 libplacebo-derived static spline tone mapping in IPTPQc4, shared by
+  external HDR, raw HDR, and Dolby Vision routes, with bounded analytic
+  perceptual BT.709 chroma compression. This does not claim exact equivalence
+  to libplacebo's generated 3D gamut LUT.
 - Exact-device raw HDR authorization and separate Dolby Vision route
   authorizations.
 - Dolby Vision Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction,
@@ -107,10 +115,70 @@ documentation reconciliation, commit, and push. DVD/BD LPCM framing,
 7.1/arbitrary layouts, and non-PCM codecs at non-48-kHz source rates remain
 separate follow-up work rather than hidden claims in that checkpoint.
 
-### 2.3 Last observed local evidence
+### 2.3 Current JPEG 2000 and MPEG-2 slice
 
-The latest recorded measurements on the development machine are useful for
-planning but are not portable capability claims:
+- Pinned OpenJPEG WASM decodes only exact Mediabunny `mjp2` packets from `MJ2`
+  or QuickTime `MOV`. The advertised route is progressive unsigned 8-bit
+  sRGB/gray, at most 960x540 and 24 fps, with an exact RGBA fingerprint and at
+  least 30 decode/output fps.
+- A focused MPEG-2-only FFmpeg WASM decoder consumes Mediabunny Matroska
+  `V_MPEG2` packets. The advertised route is Main Profile, progressive 8-bit
+  SDR, at most 1920x1080 and 24 fps, with exact reordered I420 output and at
+  least 30 fps.
+- VC-1 and WMV3 are not implemented. MPEG-2 interlace, non-Main profiles,
+  TS/MTS/M2TS, PS/VOB, MOV, MP4, and every non-Matroska MPEG-2 route are not
+  advertised.
+- Both routes use the existing generation-safe worker credits, owned
+  `VideoFrame` transfer, WebGPU presentation, and fallback contract.
+
+### 2.4 Current DTS slice
+
+- Pinned LGPL-2.1-or-later libdcadec codec-only WebAssembly, reproducible with
+  Emscripten 4.0.13 and distributed with exact source/license/revision artifacts.
+- Exact output and throughput qualification for Core, 96/24, ES, DTS-HD HRA,
+  DTS-HD MA at 48/96 kHz, and 16-bit 5.1 DTS-HD MA at 192 kHz.
+- Sample-exact public-domain MA reference comparison plus exact WAVE-mask
+  mappings for stereo, 5.1-back/side, 6.1, and 7.1.
+- Deterministic 7.1 WAVE-extensible corpus at 48/96 kHz, byte-identical pinned
+  mpv/FFmpeg external references, and exact DTS HRA/MA downmix fingerprints. The
+  selected bounded matrix is explicitly mpv's opt-in normalized policy; the
+  default matrix remains documented as an overload-prone counterfactual.
+- Mediabunny Matroska `A_DTS` packet integration into one owned worker decoder,
+  shared downmix/resampler, bounded credits, AudioWorklet, and clock path.
+- Fail-closed capability, eligibility, and device-profile claims limited to MKV
+  and seven exact profile/layout/rate tuples: 5.1 Core/48, 5.1 96/24/96, 6.1
+  ES/48, 7.1 HRA/48, 7.1 MA/48, 7.1 MA/96, and 5.1 MA/192. This is not a
+  Cartesian product.
+- DTS-HD MA carrying DTS:X is explicitly channel-bed-only. Object rendering and
+  passthrough are false and must not appear as supported in UI or telemetry.
+- MPEG-TS/M2TS remains unadvertised because Mediabunny 1.52.2 drops Blu-ray DTS
+  PMT stream types before track creation. `WEBGPU_DTS.md` records the exact
+  completion procedure.
+
+### 2.5 Current TrueHD/MLP slice
+
+- Pinned FFmpeg `libavcodec` TrueHD/MLP-only WebAssembly, configured as
+  LGPL-2.1-or-later with GPL, version-3, and nonfree code disabled and shipped
+  with exact source, license, revision, and runtime-hash artifacts.
+- Mediabunny remains the Matroska demux, range, track, packet, timestamp, and
+  seek layer. `A_TRUEHD` and `A_MLP` packets feed one owned focused decoder.
+- Exact deterministic 24-bit PCM fingerprints cover TrueHD stereo 48 kHz,
+  TrueHD 5.1-side 96/192 kHz, and MLP stereo 48 kHz. The runtime probe also
+  requires major-sync recovery and at least 2x real-time decode throughput.
+- The qualified route accepts only Matroska and four exact tuples: TrueHD
+  stereo/48, TrueHD 5.1/96, TrueHD 5.1/192, and MLP stereo/48. It performs one
+  second of seek preroll, then discards PCM before the requested signed-
+  microsecond start boundary.
+- Atmos metadata may be detected, but output is explicitly the lossless
+  channel bed only. Object rendering and compressed passthrough are false.
+- Eight-channel decode plumbing exists, but it is not advertised because
+  FFmpeg's clean synthetic TrueHD encoder cannot generate a 7.1 qualification
+  source. M2TS and 7.1 remain fail-closed pending exact fixtures and demux proof.
+
+### 2.6 Integration evidence
+
+These measurements combine earlier baselines with current checkpoint evidence.
+They qualify only the exact route stated and are not portable capability claims:
 
 - The current headless Chrome run measured native 4K HEVC Main10 at about
   55.9 fps and qualified its conservative 30 fps tier.
@@ -122,18 +190,34 @@ planning but are not portable capability claims:
   to stereo 48 kHz, survived pause/resume, fullscreen, resize/DPR, a primary
   seek, a three-seek storm, and exact stop with no fallback or browser errors.
 - Manual playback quality was reported as excellent.
-- Earlier Wolfwalkers PlaybackInfo screenshots still showed HLS transcoding,
+- Earlier Dolby Vision Playback Info screenshots still showed HLS transcoding,
   so those screenshots validate presentation quality, not owned DirectPlay.
-- The local `The Dark Knight` UHD remux is a progressive HEVC Main10 High Tier
+- The local High Tier HDR10 regression source is a progressive HEVC Main10 High Tier
   Level 153 HDR10 stream at 3840x2160 and 23.976025 fps with selected stereo
   48 kHz 24-bit FLAC. Its source bitrate is recorded only as telemetry. The
   port-8096 acceptance smoke now selects the original custom DirectPlay route,
   native `VideoFrame` decode, external PQ presentation, and decoded FLAC with no
   fallback or runtime error.
-- The current development bundle is served by Jellyfin itself on port 8096;
-  the separate 8080 development frontend is not used for authoritative tests.
+- The current production bundle is served by Jellyfin 12 nightly itself on port
+  8096; the separate 8080 development frontend is not used for authoritative
+  tests.
+- Chrome 151 exposed that external-texture quantization can be amplified by the
+  version 5 Profile 5 tone/gamut path. Authorization fixture version 2 now first
+  requires the recovered 10-bit base signal to remain within 8/1023 per channel,
+  then drives the CPU output reference from that measured signal without widening
+  the existing 8/255 output tolerance. The exact route authorized with maximum
+  normalized input/output errors of 0.00497875 and 0.00267303 respectively.
+- The ordinary CDP browser smoke now applies the same request-scoped WebGPU flag
+  overlay as startup comparison and mpv A/B capture. A live Chrome 151 high-tier
+  HDR10 custom DirectPlay run passed with the exact Profile 5 fixture-version-2
+  telemetry above, external PQ authorization, decoded FLAC, and no fallback or
+  browser error while source feature flags remained disabled.
+- The final production checkpoint passed a two-session replay and one injected
+  device-loss recovery. The device was replaced exactly once without fallback,
+  playback restart, browser errors, or an observed `VideoSample` ownership
+  warning.
 
-### 2.4 Global restrictions
+### 2.7 Global restrictions
 
 These restrictions apply even where a codec row below says "implemented":
 
@@ -151,9 +235,10 @@ These restrictions apply even where a codec row below says "implemented":
 - HDR is used only after the exact production presentation route passes GPU
   readback authorization on the active device and canvas format.
 - The PCM output remains stereo 48 kHz. Mediabunny PCM accepts only the exact
-  listed 8-192 kHz rates and mono/stereo/5.1-side inputs; compressed codecs
-  remain 48 kHz only. Other rates/layouts are rejected rather than silently
-  misrepresented.
+  listed 8-192 kHz rates and mono/stereo/5.1-side inputs. DTS accepts only its
+  seven exact profile/layout/rate tuples, and TrueHD/MLP accepts only its four
+  exact codec/layout/rate tuples. Neither route authorizes a channel/rate
+  Cartesian product. Other compressed codecs remain 48 kHz only.
 - Playback rate other than 1.0 is rejected while custom decoded audio is active.
 - PiP, AirPlay, Remote Playback, DRM, and SyncPlay rate control are not claimed
   for custom decode.
@@ -162,7 +247,7 @@ These restrictions apply even where a codec row below says "implemented":
 - The source and all selected tracks must satisfy one implemented container rule.
 - Feature flags remain disabled in source `src/config.json`.
 
-### 2.5 Known `VideoSample` ownership defect
+### 2.8 Known `VideoSample` ownership defect
 
 Repeated paused-device-loss runs with bundled HEVC can intermittently emit
 Mediabunny's warning that a `VideoSample` reached finalization without an
@@ -177,7 +262,7 @@ Mediabunny behavior, and fix the ownership boundary. Do not suppress the warning
 or claim a leak-free long soak until both finalizer and memory evidence pass.
 Group H owns the investigation so codec and lifecycle work do not duplicate it.
 
-### 2.6 Mediabunny-first decoder and container policy
+### 2.9 Mediabunny-first decoder and container policy
 
 Mediabunny core and official Mediabunny decoder extensions are approved project
 dependencies. Their licensing review is complete. Use them by default whenever
@@ -203,11 +288,11 @@ This policy replaces any backlog wording that implies reimplementing a
 Mediabunny-supported demuxer or decoder. Integrate and qualify first; write new
 codec/container code only for a demonstrated gap.
 
-### 2.7 P0 acceptance target: `The Dark Knight` direct playback
+### 2.10 P0 acceptance target: High Tier HDR10 direct playback
 
-The first named real-title gate is the local UHD remux of `The Dark Knight`
-(2008), Jellyfin item `9297460e0d7bdf82d97fc5f9efa95d27`. Its relevant source
-contract is:
+The first local real-media gate is a private UHD High Tier HDR10 source.
+Its Jellyfin item ID belongs in a private harness manifest, not this portable
+plan. Its relevant source contract is:
 
 | Field | Required value |
 | --- | --- |
@@ -252,7 +337,7 @@ Acceptance requires all of the following on `http://localhost:8096`:
    not resize the decoded surface incorrectly.
 6. Console, runtime exception, worker retirement, frame ownership, dropped or
    corrupt frame, A/V drift, and retained-resource checks remain clean.
-7. Bundled HEVC, SDR, Wolfwalkers, and generated PQ/HLG routes retain their
+7. Bundled HEVC, SDR, Dolby Vision, and generated PQ/HLG routes retain their
    explicit format, geometry, level, frame-rate, throughput, and presentation
    constraints and pass regression tests.
 
@@ -278,7 +363,7 @@ decode that codec. The server profile is widened only from measured evidence.
 | H.264/AVC Constrained Baseline, Baseline, Main, High, 8-bit 4:2:0 | Exact-profile native WebCodecs decode -> owned `VideoFrame` -> WebGPU | Each profile is independently output-probed at 1920x1080. | Implemented and runtime-gated. No 4K tier, High 10, 4:2:2, 4:4:4, interlaced-output, or unusual profile claim. |
 | HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p plus a separate exact 3840x2160 tier. Bundled Main is constrained to 1920x1080, Level 120, qualified frame rate, and a passing throughput/fingerprint probe. | Implemented and runtime-gated. Source bitrate is not a route constraint. Bundled distribution still requires HEVC patent/jurisdiction review. |
 | HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Raw capability is probed at 3840x2160 and assigned only a measured 24/30/60 fps tier with 1.25x headroom. Bundled tiers retain independent geometry, level, output-fingerprint, and throughput bounds. | Implemented and runtime-gated. A slow bundled 4K decoder is correctly rejected without consulting source bitrate. |
-| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and the actual High Tier `The Dark Knight` stream. |
+| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and a local High Tier HDR10 regression source. |
 | Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. Broader real-title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
 | Dolby Vision Profile 7 MEL | HEVC base-layer decode + RPU reconstruction on the HDR10-compatible BL | Raw I420P10 route with exact device authorization. | Implemented. Must expand end-to-end disc/container and fallback coverage. |
 | Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
@@ -288,6 +373,8 @@ decode that codec. The server profile is widened only from measured evidence.
 | VP9 Profile 2, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Exact 3840x2160 raw-output probe and measured 24/30/60 fps tier. | Implemented and runtime-gated. Profiles 1/3 and 12-bit are not supported. |
 | AV1 Main, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact 1080p output plus independent 3840x2160 output qualification. | Implemented and runtime-gated. |
 | AV1 Main, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Exact 3840x2160 raw-output probe and measured 24/30/60 fps tier. | Implemented and runtime-gated. High/Professional, 12-bit, 4:2:2, and 4:4:4 are not supported. |
+| MPEG-2 Video Main, 8-bit progressive SDR | Mediabunny unknown Matroska track/packets -> focused MPEG-2-only FFmpeg `libavcodec` WASM -> owned I420 `VideoSample` -> `VideoFrame` -> WebGPU | Exact Matroska, Main Profile, progressive 1920x1080 at up to 24 fps. Runtime must reproduce all 12 reordered qualification frames, 37,324,800 decoded bytes, and the aggregate I420 fingerprint while sustaining at least 30 fps. | Implemented and fail-closed. Source bitrate is irrelevant. Interlaced content, MPEG-TS/M2TS, MPEG-PS/VOB, MPEG-1, non-Main profiles, and dimensions/frame rates above the qualified tier are explicitly out of scope. |
+| JPEG 2000 Part 1, 8-bit progressive sRGB/gray | Mediabunny `mjp2` packets -> pinned OpenJPEG WASM -> owned RGBA `VideoFrame` -> WebGPU | Exact `MJ2`/`MOV`, 960x540, 24 fps route. Runtime must reproduce the qualification RGBA fingerprint and sustain at least 30 decode/output fps. | Implemented and fail-closed. Source bitrate is irrelevant. High bit depth, HDR/XYZ, DCI 2K/4K, MXF, JPX/HTJ2K, alpha, non-zero origins/crops, and ambiguous component/color layouts remain unsupported. See `WEBGPU_JPEG2000.md`. |
 
 ### 4.2 Decoded video output-format roadmap
 
@@ -300,9 +387,9 @@ missing UHD/HDR pixel layout.
 
 | Format family | Typical sources | Current state | Priority and procedure |
 | --- | --- | --- | --- |
-| `I420`, 8-bit planar 4:2:0 | Blu-ray AVC/MPEG-2/VC-1, DVD, legacy web | Copy, layout validation, buffer pooling, and GPU rendering exist; ordinary software-decoder worker negotiation does not expose it as a general route. | **P0.** Add `I420` to the worker/session raw-output contract, protocol validation, telemetry, reusable-pool sizing, capability fingerprints, and SDR GPU readback. Make it the common output for MPEG-2, VC-1, and other 8-bit software decoders. |
+| `I420`, 8-bit planar 4:2:0 | Blu-ray AVC/MPEG-2, DVD, legacy web | Copy, layout validation, buffer pooling, and GPU rendering exist. The focused MPEG-2 decoder now emits owned I420 `VideoSample` objects through the `VideoFrame` route; ordinary software-decoder worker negotiation still does not expose I420 as a reusable raw route. | **P1 shared infrastructure.** Retain the qualified MPEG-2 path. Add a general raw I420 contract only when another in-scope decoder needs it; do not expand MPEG-2 beyond the qualified progressive Matroska route. |
 | `NV12`, 8-bit semiplanar 4:2:0 | Native browser/OS decoder surfaces | Copy and rendering exist, but it is not a negotiated custom decode output. | **P1 optimization.** Add only when a backend can supply it without an extra conversion and measurements show lower copy/upload cost than I420 or external texture. |
-| `I420P10`, 10-bit planar 4:2:0 | UHD Blu-ray HEVC Main10, HDR10/HDR10+, Dolby Vision layers, HDR VP9/AV1 | Implemented and production-qualified for exact native/bundled HDR routes. | **P0 hardening.** The actual High Tier Level 153 `The Dark Knight` route passes without a bitrate cap. Add a compact deterministic High Tier fixture, then expand real-title, peak-throughput, crop, ownership, and soak evidence without changing the format. |
+| `I420P10`, 10-bit planar 4:2:0 | UHD Blu-ray HEVC Main10, HDR10/HDR10+, Dolby Vision layers, HDR VP9/AV1 | Implemented and production-qualified for exact native/bundled HDR routes. | **P0 hardening.** A local High Tier Level 153 HDR10 route passes without a bitrate cap. Add a compact deterministic High Tier fixture, then expand real-title, peak-throughput, crop, ownership, and soak evidence without changing the format. |
 | `I420P12`, 12-bit planar 4:2:0 | Rare VP9 Profile 2, HEVC Main12, AV1 Professional | Layout/copy/render plumbing exists, but no production codec capability authorizes it. | **P1.** Add exact native or bundled 12-bit fixtures, fingerprints, shader readback, throughput tiers, and profile constraints before advertising it. |
 | `I422`, `I422P10`, `I422P12` | H.264 High 4:2:2, HEVC 4:2:2, cameras and mezzanine/archive media | Not implemented. Not required for ordinary Blu-ray or HDR streaming. | **P1 shared expansion.** Add structured plane geometry, odd-dimension rules, aligned buffer sizing, transfer validation, two-axis chroma reconstruction, chroma siting, GPU upload, fingerprints, and SDR/HDR readback once for every codec. |
 | `I444`, `I444P10`, `I444P12` | VP9 Profiles 1/3, AV1 High/Professional, H.264/HEVC 4:4:4, screen/archive media | Not implemented. Not required for ordinary Blu-ray or HDR streaming. | **P1 after 4:2:2.** Reuse the generalized chroma path with full-resolution U/V planes, exact range/matrix handling, memory ceilings, fingerprints, and per-codec qualification. |
@@ -314,14 +401,13 @@ missing UHD/HDR pixel layout.
 Implementation order is fixed to minimize duplicated code:
 
 1. Keep `I420P10` as the consumer UHD/HDR route and retain the completed High
-   Tier title acceptance in section 2.7 as a regression gate.
-2. Expose general raw `I420` end to end, including one exact SDR authorization
-   and reusable-pool route, before integrating MPEG-2 or VC-1.
-3. Implement interlaced field metadata and deinterlacing on top of I420; an
-   interlaced decoder must not invent progressive timestamps or frames.
-4. Generalize subsampling once for I422/P10/P12, then reuse that work for
+   Tier title acceptance in section 2.10 as a regression gate.
+2. Keep the qualified MPEG-2 `VideoSample` route as the exact I420 decoder
+   proof. General raw I420 is deferred until another approved codec requires
+   it. Deinterlacing is not part of the MPEG-2 route and cannot widen it.
+3. Generalize subsampling once for I422/P10/P12, then reuse that work for
    I444/P10/P12.
-5. Add P010, alpha, packed YUV, or RGB only when a selected decoder supplies a
+4. Add P010, alpha, packed YUV, or RGB only when a selected decoder supplies a
    concrete zero-copy or coverage benefit. Do not add speculative formats.
 
 ### 4.3 Unsupported video codecs and implementation procedures
@@ -331,14 +417,14 @@ required for the first release.
 
 | Unsupported codec/profile | Priority | Procedure |
 | --- | --- | --- |
-| MPEG-2 Video | P0 legacy library coverage | First test future native WebCodecs with an exact decoded-output fixture. If unavailable, integrate a legally reviewed WASM decoder behind the common adapter. Add MPEG-TS and, if demux support is added, MPEG-PS packet/extradata mapping. Implement field order and an explicit deinterlace stage before advertising interlaced sources. Add Main Profile fixtures at SD/720p/1080i, cadence and seek tests, throughput tiers, and device-profile limits. |
+| MPEG-2 Video expansion | Skipped | Keep only the implemented progressive Main Profile Matroska route. Do not add interlacing, deinterlacing, MPEG-TS/M2TS, MPEG-PS/VOB, MOV/MP4, or any other container in this checkpoint. |
+| VC-1 and WMV3 | P0 legacy disc coverage | Not implemented and not present in the MPEG-2 artifact. First qualify a mature reviewed decoder and a bounded Mediabunny or equivalent Matroska packet route. Add exact Simple/Main/Advanced profile fixtures as applicable, decoded I420 output fingerprints, B-frame timestamp ordering, pulldown/interlace rejection, seek, malformed-stream, throughput, memory, and licensing evidence. Add M2TS or ASF only after separately qualifying those demux routes; never infer VC-1 support from MPEG-2. |
 | MPEG-4 Part 2, including DivX/Xvid | P0 legacy library coverage | Add a bundled decoder adapter unless exact native output becomes available. Validate VOL/extradata, packed B-frames, decode-vs-presentation timestamp reordering, quarter-pixel/global-motion variants, and MP4/MKV carriage. Add AVI only after the demux layer has a bounded, tested AVI path. Qualify profile, decoded geometry/format, throughput, and memory bounds before profile widening. |
-| VC-1 and WMV3 | P0 legacy disc/library coverage | Select and license-review a WASM decoder, add VC-1 sequence-header mapping for MKV and MPEG-TS/M2TS, then add ASF only through a separate demux task. Implement interlace/field handling, B-frame timestamp tests, 8-bit I420 output, exact fingerprints, and hardware/reference comparisons. Never infer support from the HTML media element. |
 | H.264 High 10, High 4:2:2, High 4:4:4 | P1 advanced AVC | Add exact WebCodecs probes per profile/chroma/bit depth. If Chrome does not expose output, add a bundled decoder. Extend the raw-frame protocol, buffer pool, and shader from I420/I420P10 to required 10-bit 4:2:2 and 4:4:4 plane formats. Add chroma siting, range/matrix, crop, and throughput fixtures before advertising any profile. |
 | HEVC Main12, Main 4:2:2 10/12, Main 4:4:4 8/10/12 | P1 advanced HEVC | Extend or replace the bundled HEVC backend only after decoder and patent review. Add I420P12 plus explicit 4:2:2/4:4:4 raw formats, row-stride validation, texture upload formats, chroma reconstruction shaders, exact output fingerprints, and per-profile tier probes. Add native probes independently; do not let Main10 evidence authorize these formats. |
 | VP9 Profiles 1 and 3, 12-bit output | P1 advanced VP9 | Add exact profile codec strings and fixtures, then implement 4:2:2/4:4:4 and 12-bit raw plane formats. Require `copyTo()` fingerprints and GPU readback authorization for each distinct raw format. If raw values are inaccessible, keep the route unsupported unless an external-texture preservation test can prove exact reconstruction. |
 | AV1 High/Professional, 12-bit, 4:2:2, 4:4:4 | P1 advanced AV1 | Follow the VP9 procedure with exact AV1 sequence-header/profile fixtures. Add raw formats and shader sampling once for all codecs, then bind AV1 to that shared implementation. Qualify film-grain behavior, crop, high-resolution memory pressure, and throughput. |
-| Motion JPEG and JPEG 2000 video | P1 cameras/archives | Add exact native probes first. Otherwise adapt a JPEG/JPEG 2000 decoder to the common frame contract. Implement full/limited range and common YUV/RGB sampling, orientation/crop, high-resolution intraframe throughput, and bounded allocation tests. `MJ2` being an accepted container token does not currently mean MJPEG/JPEG 2000 video is supported. |
+| Motion JPEG | P1 cameras/archives | Add exact native probes first. Otherwise adapt a reviewed decoder to the common frame contract. Implement full/limited range and common YUV/RGB sampling, orientation/crop, high-resolution intraframe throughput, and bounded allocation tests. Do not infer Motion JPEG support from the independent OpenJPEG route. |
 | Theora | P1 open legacy media | Add Ogg demux/track mapping if Mediabunny cannot already supply exact packets, then add a reviewed software decoder adapter. Produce I420 frames, validate granule-position timestamp/seek behavior, add Ogg fixtures, and gate profile widening on output fingerprints and throughput. |
 | ProRes | Skipped | Explicitly excluded by current product direction. Do not add `@mediabunny/prores`, raw-format work solely for ProRes, fixtures, or capability claims unless the user reverses this decision. |
 | DNxHD/DNxHR | P2 professional media | Reuse the shared I422/I444 raw-format and upload work if later library demand justifies it. Add codec-specific extradata, profile/bit-depth mapping, MOV/MXF/MKV demux support as available, deterministic reference frames, and decoded-resolution/throughput/memory tiers. Do not use DNx as a reason to revive ProRes work. |
@@ -404,6 +490,8 @@ delta on this procedure, not a separate architecture.
 | Vorbis | Native WebCodecs -> PCM -> AudioWorklet | Stereo and exact-qualified six-channel input at 48 kHz, output as stereo 48 kHz. | Implemented and runtime-gated. |
 | AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The official software decoder is part of every ordinary build and lazy-loads only for a selected AC-3/E-AC-3 track. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Native availability still varies. |
 | E-AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The ordinary software route shares the same pinned official decoder and owned PCM output. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Dolby Atmos object rendering/passthrough remains unimplemented. |
+| DTS Core, 96/24, ES, DTS-HD HRA/MA | Mediabunny Matroska `A_DTS` demux -> pinned bounded `libdcadec` WebAssembly -> explicit layout/downmix/resampler -> AudioWorklet | Seven exact tuples only: 5.1 Core/48, 5.1 96/24/96, 6.1 ES/48, 7.1 HRA/48, 7.1 MA/48, 7.1 MA/96, and 5.1 MA/192; stereo 48 kHz output. | Implemented and exact-probed for MKV. DTS-HD MA carrying DTS:X is decoded as its channel bed only. DTS:X objects/passthrough are never claimed. TS/M2TS remains blocked because Mediabunny 1.52.2 does not surface Blu-ray DTS PMT stream types. See `WEBGPU_DTS.md`. |
+| TrueHD/MLP | Mediabunny Matroska `A_TRUEHD`/`A_MLP` demux -> pinned TrueHD/MLP-only FFmpeg `libavcodec` WebAssembly -> exact WAVE layout/downmix/resampler -> AudioWorklet | Four exact tuples only: TrueHD stereo/48, TrueHD 5.1/96, TrueHD 5.1/192, and MLP stereo/48; major-sync recovery, one-second seek preroll, at least 2x real-time throughput, and stereo 48 kHz output. | Implemented and exact-probed for MKV. Atmos is decoded only as its lossless channel bed; objects and passthrough are never claimed. 7.1 and M2TS remain unadvertised pending license-clean exact fixtures and bounded demux proof. See `WEBGPU_TRUEHD.md`. |
 | PCM/G.711 | Mediabunny built-in PCM decoder -> explicit channel map -> streaming sinc resampler -> AudioWorklet | `pcm-s16`, `pcm-s16be`, `pcm-s24`, `pcm-s24be`, `pcm-s32`, `pcm-s32be`, `pcm-f32`, `pcm-f32be`, `pcm-f64`, `pcm-f64be`, `pcm-u8`, `pcm-s8`, `ulaw`, and `alaw`; mono/stereo/5.1-side; exact 8-192 kHz rate list; stereo 48 kHz output. | Implemented, pushed, and port-8096 live-qualified with mono 44.1 kHz signed 24-bit PCM. Container claims are deliberately narrower than the decoder list. DVD/BD LPCM and 7.1 remain unsupported. |
 
 ### 5.2 Unsupported audio codecs and implementation procedures
@@ -411,9 +499,9 @@ delta on this procedure, not a separate architecture.
 | Unsupported codec/feature | Priority | Procedure |
 | --- | --- | --- |
 | Non-48-kHz compressed audio | P0 shared expansion | Reuse the implemented streaming sinc resampler after adding exact per-codec output probes for each source rate. Confirm codec-specific delay/rate expansion, timestamp continuity, seek reset, PCM references, and CPU headroom before widening each device-profile rate. |
-| 7.1 and arbitrary channel layouts | P0 shared expansion | Extend the explicit channel-label model beyond implemented mono/stereo/5.1-side. Add remap/downmix matrices with normalization and LFE policy, validate against FFmpeg/mpv reference PCM, and decide whether output remains stereo or can use qualified multichannel Web Audio. Reuse this for every codec. |
-| DTS Core, DTS-ES, DTS-HD HR/MA | P0 common disc libraries | Complete legal review, then add a Mediabunny decoder registration or worker adapter backed by a reviewed decoder. Add MKV/M2TS packet mapping, core-vs-extension behavior, 48/96 kHz and 2/6/8-channel fixtures, resampling/layout integration, exact PCM hashes, seek/switch tests, and device-profile constraints. DTS:X object rendering and passthrough must be a separate feature. |
-| TrueHD/MLP | P0 common disc libraries | Add a reviewed software decoder and Matroska/M2TS packet mapping, including major-sync recovery. Feed decoded channel-labeled PCM through the shared resampler/layout stage. Validate 48/96/192 kHz, 6/8 channels, lossless PCM hashes, seek preroll, and sustained CPU use. Dolby Atmos objects/passthrough remain a separate route. |
+| 7.1 and arbitrary channel layouts | P0 shared expansion | Extend non-DTS routes beyond implemented mono/stereo/5.1-side, reusing the exact 6.1/7.1 WAVE layouts already qualified for DTS. Add any additional remap/downmix matrices with normalization and LFE policy, validate against FFmpeg/mpv reference PCM, and decide whether output remains stereo or can use qualified multichannel Web Audio. Reuse this for every codec. |
+| DTS in MPEG-TS/M2TS | P0 disc-container completion | Extend Mediabunny upstream or integrate an equivalently bounded reviewed demux library for Blu-ray stream types `0x82`, `0x85`, and `0x86`. Require complete access units, signed-microsecond PTS, exact track metadata, 192/204-byte packet strides, PES/discontinuity handling, random seek, malformed PMT/PES tests, and Core/HRA/MA fixtures before adding DTS to TS/M2TS eligibility or device profiles. Reuse the implemented libdcadec/layout/resampler path unchanged. |
+| TrueHD/MLP 7.1 and M2TS | P0 disc completion | Keep the implemented four-tuple Matroska route unchanged. Obtain or generate a license-clean 7.1 TrueHD fixture, add exact PCM/layout/throughput evidence, and only then authorize eight channels. Extend Mediabunny or integrate an equivalently bounded reviewed M2TS packet route with major-sync, PES/discontinuity, random-seek, malformed-input, and timestamp tests before advertising disc containers. Dolby Atmos objects/passthrough remain a separate route. |
 | ALAC | P1 Apple/lossless libraries | Probe future native WebCodecs exactly; otherwise add a small reviewed decoder. Implement MP4 magic-cookie/extradata mapping, 44.1-192 kHz and multichannel fixtures, resampling/layout integration, lossless PCM hashes, and seek tests. |
 | DVD/BD LPCM | P0 disc-media completion | Keep the implemented Mediabunny PCM conversion and shared normalization stage. Add only the missing VOB/MPEG-PS and M2TS LPCM packet/framing adapters, explicit channel assignments, 16/20/24-bit references, 48/96/192 kHz cases, seek/discontinuity tests, and exact device-profile constraints. |
 | WMA/WMAPRO/WMALOSSLESS | P1 legacy Windows libraries | Add ASF demux first, then a reviewed decoder adapter. Validate codec private data, block alignment, seek timestamps, common rates/layouts, PCM hashes, resampling, and malformed packet handling. |
@@ -427,7 +515,7 @@ delta on this procedure, not a separate architecture.
 | MP4/M4V | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3; signed 16/24/32-bit and float 32/64-bit PCM in both endiannesses | Implemented eligibility/profile rules, subject to exact codec/runtime probes. Add negative brand/extradata/edit-list tests. |
 | MOV/QuickTime | H.264, HEVC, VP8, VP9, AV1 | MP4/M4V set plus unsigned/signed 8-bit PCM, mu-law, and A-law | Implemented with all fourteen Mediabunny PCM identifiers. Keep QuickTime-only codecs out of MP4 claims. |
 | 3GP/3G2/MJ2 | H.264, HEVC, VP8, VP9, AV1 | Compressed ISO-base audio set only | Parser eligibility exists, but the custom device profile does not yet advertise these containers. Qualify brands, range/seek, and server negotiation before claiming DirectPlay. |
-| MKV/Matroska | H.264, HEVC, VP8, VP9, AV1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3; U8, signed 16/24/32-bit LE/BE, F32LE, and F64LE PCM | Implemented; includes several Dolby Vision BL/EL topologies. Big-endian float, S8, and G.711 are intentionally not claimed for Matroska because Mediabunny does not map them there. |
+| MKV/Matroska | H.264, HEVC, VP8, VP9, AV1, progressive MPEG-2 Main | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3; the seven exact DTS tuples and four exact TrueHD/MLP tuples in section 5.1; U8, signed 16/24/32-bit LE/BE, F32LE, and F64LE PCM | Implemented; MPEG-2 is exact-probe-gated to progressive 8-bit Main at 1920x1080/24. DTS and TrueHD/MLP are non-Cartesian exact unions. DTS:X and Atmos are channel-bed-only; object rendering and passthrough fail closed. Includes several Dolby Vision BL/EL topologies. Big-endian float, S8, and G.711 are intentionally not claimed for Matroska because Mediabunny does not map them there. |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis | Implemented and deliberately narrow. |
 | TS/MTS/M2TS | H.264, HEVC | AAC, MP3, AC-3, E-AC-3 | Implemented for bounded VOD/range input; Profile 7 PID dependency discovery exists. Live transport streams remain unsupported. Expand discontinuity, wraparound, PAT/PMT change, and BDMV end-to-end tests. |
 | AVI | None | None | Not implemented. Add demux, index/seek, timestamp, OpenDML, and malformed-chunk handling before enabling MPEG-4 Part 2/MJPEG/legacy audio. |
@@ -492,7 +580,7 @@ a reduced artifact, but they must not redefine the expected color or PCM data.
 | Frame rate | 23.976, 24, 25, 29.97, 30, 50, 59.94, 60, plus just-over-limit negative cases. |
 | Color | BT.709 limited/full SDR; BT.2020 limited PQ; BT.2020 limited HLG; metadata missing/conflicting; 8/10/12-bit negatives; chroma siting and crop. |
 | Dolby Vision | Profile 5; 7 MEL; 7 FEL; 8.1; 8.4; interleaved, Matroska dual-track, ISO BMFF dual-track, TS dual-PID, M2TS dependency; absent/corrupt/stale RPU; missing/mismatched EL. |
-| Audio | Every implemented codec in stereo 48 kHz; PCM/G.711 at every exact qualified rate from 8-192 kHz and mono/stereo/5.1-side; native-media vs decoded-PCM AC-3/E-AC-3; non-48-kHz compressed and 7.1 negatives; audio-free video. |
+| Audio | Every ordinary implemented codec at its exact qualified layout/rate; PCM/G.711 at every exact qualified rate from 8-192 kHz and mono/stereo/5.1-side; native-media vs decoded-PCM AC-3/E-AC-3; the seven exact DTS tuples listed in section 5.1 with DTS:X bed-only labels, MKV positives and TS/M2TS negatives; the four exact TrueHD/MLP tuples listed in section 5.1 with major-sync recovery, seek preroll, Atmos bed-only labels, MKV positives and 7.1/TS/M2TS negatives; nearby non-qualified rates/layouts; audio-free video. |
 | Network/source | Correct ranges; server ignores range; truncated response; retry; slow/chunked transfer; authentication; expired URL; redirect; 404/416; source replacement. |
 | Lifecycle | Start, pause/resume, single seek, seek storm, next item, repeat sessions, natural EOF/audio-tail drain, audio switch, subtitle switch, stop(false), stop(true), destroy, background/foreground. |
 | Display | Window resize, DPR change, fullscreen enter/exit, crop/aspect, monitor/output change, canvas format change where observable. |
@@ -601,7 +689,7 @@ HEVC Main10 tier/level evidence, native-versus-raw HDR route isolation,
 device-profile constraints, PlaybackInfo evidence, and port-8096 title
 acceptance.
 
-**Deliverable:** complete for the current checkpoint. The exact section 2.7
+**Deliverable:** complete in the committed no-bitrate checkpoint. The exact section 2.10
 MKV/HEVC High Tier/HDR10/FLAC source uses the original file through the owned
 custom route. Source bitrate remains telemetry, saved network limits are absent
 from selection, raw/native capability envelopes do not contaminate each other,
@@ -634,8 +722,9 @@ presenter/capability contract, then generalize subsampling once for I422 and
 I444 families. Adding a codec must require a small adapter, fixtures, and route
 descriptor rather than copying HEVC-specific lifecycle logic.
 
-**First consumers:** MPEG-2 and VC-1 through canonical I420, then MPEG-4 Part 2
-and only demand-backed high-bit-depth/chroma codecs. P010 is an optimization;
+**First consumers:** only a separately approved codec may justify general raw
+I420. The completed progressive MPEG-2 Matroska route remains isolated as the
+adapter and exact-output reference and must not be widened. P010 is an optimization;
 alpha, packed YUV, and RGB remain deferred until a selected backend requires
 them. ProRes is excluded.
 
@@ -652,11 +741,17 @@ clock integration, native-media audio bridge.
 TrueHD, ALAC, PCM, and WMA adapters without per-codec output hacks.
 
 **Completed order:** standard-build `@mediabunny/ac3` -> streaming resampler ->
-mono/stereo/5.1-side layout model -> Mediabunny PCM/G.711.
+mono/stereo/5.1-side layout model -> Mediabunny PCM/G.711 -> explicit
+5.1-back/6.1/7.1 channel layouts -> bounded exact-probed libdcadec DTS family
+for the seven Matroska tuples -> bounded exact-probed FFmpeg TrueHD/MLP route
+for the four Matroska tuples -> pinned mpv/FFmpeg 7.1 downmix and loudness
+reference at 48/96 kHz.
 
-**Remaining order:** reference PCM/golden matrix -> 7.1/layout expansion ->
-non-48-kHz compressed routes -> ALAC -> DTS/TrueHD -> WMA. Separate legal
-review remains necessary only for non-Mediabunny decoder dependencies.
+**Remaining order:** extend reference PCM/loudness evidence to the remaining
+layouts/codecs -> DTS live seek and long-run qualification -> bounded
+DTS/TrueHD TS/M2TS demux -> TrueHD 7.1 exact fixture -> non-48-kHz native
+compressed routes -> ALAC -> WMA. Separate legal review remains necessary only
+for non-Mediabunny decoder dependencies.
 
 ### Group E: HDR and Dolby Vision correctness
 
@@ -671,6 +766,14 @@ with exact-device authorization and documented graceful degradation.
 FEL dual-decoder performance, HLG and HDR metadata conflicts, display controls,
 golden thresholds, and device/display changes.
 
+**Current evidence:** all seven generated HDR/Dolby Vision WGSL variants compile
+and create render pipelines in Chrome 151. A five-frame private HDR10 A/B against
+mpv's static spline improved mean SSIM from 0.9617516 to 0.9886684 and mean PSNR
+from 29.199 dB to 38.116 dB. Dynamic-reference mean SSIM is 0.989167. These are
+descriptive display-code deltas, not universal perceptual pass thresholds. The
+run used native HEVC `VideoFrame`, authorized external PQ presentation, decoded
+FLAC PCM, settings version 5, and produced no browser error or ownership warning.
+
 ### Group F: Negotiation and capability safety
 
 **Owns:** structured codec/container route descriptors, capability aggregation,
@@ -680,7 +783,7 @@ and exact transcode-reason tests.
 **Deliverable:** Jellyfin never transcodes a passing route for a false capability
 reason and never DirectPlays a route without complete evidence.
 
-**Immediate case:** preserve the completed `The Dark Knight` regression: remove
+**Immediate case:** preserve the completed High Tier HDR10 regression: remove
 all global and per-profile bitrate inputs, make the first PlaybackInfo request
 bitrate-free, prefer the exact native external-HDR route over narrower raw
 fallback routes, and keep a separate post-selection transcode-output request.
@@ -737,7 +840,7 @@ packet/audio packet structures. Codec groups consume it without embedding
 container parsing in decoder adapters.
 
 **Order:** enable and qualify Mediabunny Ogg and HLS where product policy permits,
-then MPEG-PS for MPEG-2/DVD, AVI for MPEG-4 Part 2/MJPEG, ASF for VC-1/WMA, and
+then AVI for MPEG-4 Part 2/MJPEG, ASF for WMA, and
 MXF only if professional-codec demand justifies it.
 
 ### Group K: Source transport and buffering
@@ -757,7 +860,7 @@ fallback policy remains in Group G.
 ## 9. Dependency and parallel execution plan
 
 ```text
-Group A: no-bitrate negotiation / Dark Knight gate
+Group A: no-bitrate negotiation / High Tier HDR10 gate
   -> exact tier/level and decoded-output evidence
   -> profile isolation and bitrate-free selection
   -> port-8096 real-title regression
@@ -767,7 +870,7 @@ Group I: legal/package audits -------------------------------------+-- parallel
 Group J: container contracts --------------------------------------+
 Group K: source transport/buffering -------------------------------+
                                                                     |
-Group C: I420 route -> deinterlace contract -> I422/I444 expansion  -+
+Group C: reusable I420 route -> I422/I444 expansion ----------------+
          shared adapters <- B + J + K where required                |
 Group D: audio normalization/codecs <- B + I + K -------------------+
 Group E: HDR/DV qualification <- B + stable A ----------------------+
@@ -806,9 +909,11 @@ Rules that prevent duplicated work:
 - [x] H.264 8-bit Baseline/Main/High exact native routes.
 - [x] HEVC Main/Main10 native and bundled route infrastructure.
 - [x] VP8, VP9 Profile 0/2, and AV1 Main 8/10 route infrastructure.
+- [x] Add the exact-runtime-gated OpenJPEG JPEG 2000 Part 1 route for
+  progressive 8-bit sRGB/gray `MJ2`/`MOV` through 960x540 at 24 fps.
 - [x] AAC, Opus, FLAC, MP3, Vorbis, and standard AC-3/E-AC-3 routes.
 - [x] Finish and qualify native HEVC external HDR.
-- [x] Direct-play the exact `The Dark Knight` High Tier Level 153 HDR10/FLAC
+- [x] Direct-play the exact local High Tier Level 153 HDR10/FLAC
   source on port 8096 with no false level/resolution/bitrate transcode reason.
 - [x] Remove source bitrate from custom capability, eligibility, native fallback,
   device-profile, and first-request playback selection. Retain exact decoded
@@ -818,14 +923,18 @@ Rules that prevent duplicated work:
   or support from source bitrate.
 - [ ] Expose raw 8-bit `I420` through worker negotiation, capability,
   presentation authorization, telemetry, and reusable buffer pools.
-- [ ] Add interlaced field metadata and a qualified deinterlace stage before
-  advertising interlaced Blu-ray/DVD sources.
+- [x] Keep MPEG-2 interlacing and deinterlacing out of scope; reject interlaced
+  metadata and decoded frames without advertising a fallback route.
 - [ ] Add shared I422/I422P10/I422P12, then I444/I444P10/I444P12 formats only
   once and reuse them across codecs.
 - [ ] Add P010 only for a demonstrated zero-copy/performance benefit; defer
   alpha, packed YUV, and raw RGB until a selected decoder requires them.
 - [ ] Add the shared video decoder adapter around those canonical formats.
-- [ ] Add MPEG-2, MPEG-4 Part 2, and VC-1 priority routes.
+- [x] Add an exact-probe-gated progressive MPEG-2 Main Matroska route.
+- [x] Keep the focused legacy-video decoder limited to progressive MPEG-2 Main
+  Profile Matroska.
+- [x] Explicitly exclude VC-1/WMV3 and every MPEG-2 container except Matroska;
+  do not add MPEG-2 TS/M2TS, PS/VOB, MOV/MP4, or interlaced routes.
 - [ ] Decide and implement the required P1/P2 codec subset from sections 4.3
   and 5.2 using actual library inventory and legal review.
 - [x] Add shared streaming audio resampling and explicit mono/stereo/5.1-side
@@ -836,7 +945,12 @@ Rules that prevent duplicated work:
   codec/container/rate/layout combinations.
 - [x] Skip ProRes and keep `@mediabunny/prores` absent unless product direction
   explicitly changes.
-- [ ] Add DTS family, TrueHD/MLP, and ALAC priority routes.
+- [x] Add an exact-probed bounded DTS Core/96-24/ES/HD-HRA/HD-MA Matroska
+  route through libdcadec and the owned PCM pipeline.
+- [ ] Add the missing DTS MPEG-TS/M2TS demux route before advertising Blu-ray
+  DTS container combinations.
+- [x] Add an exact-probed four-tuple TrueHD/MLP Matroska priority route.
+- [ ] Add TrueHD/MLP 7.1 and M2TS only after exact fixture and demux evidence.
 - [ ] Enable and qualify Mediabunny Ogg and applicable HLS paths.
 - [ ] Add only missing MPEG-PS, AVI, and ASF containers as their codecs require.
 - [ ] Harden authenticated range input, redirects, cancellation, retries,
@@ -846,6 +960,10 @@ Rules that prevent duplicated work:
 ### HDR and Dolby Vision
 
 - [x] Raw PQ/HLG WebGPU reconstruction and tone mapping.
+- [x] Add the version 5 static spline and shared IPTPQc4 perceptual gamut stage
+  to every external/raw HDR and Dolby Vision shader route.
+- [x] Compile all seven generated HDR/Dolby Vision shaders in real Chrome WebGPU
+  and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.
 - [x] Complete native external PQ/HLG checkpoint.
 - [ ] Build the complete HDR/DV golden and live-title matrix.
@@ -868,7 +986,26 @@ Rules that prevent duplicated work:
 - [x] Implement bounded streaming sinc resampling with deterministic latency
   and signed-microsecond timestamp accounting.
 - [x] Implement explicit channel labels and mono/stereo/5.1-side policy.
-- [ ] Add 7.1/arbitrary layout policy and FFmpeg/mpv reference downmix corpus.
+- [x] Add explicit 5.1-back, 6.1, and 7.1 WAVE-order channel layouts and bounded
+  stereo downmixes required by the DTS family.
+- [x] Qualify the 7.1 matrix at 48/96 kHz against pinned mpv/FFmpeg output,
+  exact DTS HRA/MA fingerprints, gain/peak/RMS/crest metrics, clipping bounds,
+  LFE policy, and arbitrary decode/resampler chunk boundaries.
+- [ ] Add any remaining codec-specific layouts and extend the FFmpeg/mpv
+  reference downmix/loudness corpus beyond the qualified DTS 7.1 route.
+- [x] Pin and reproduce the bounded LGPL libdcadec WebAssembly module with source,
+  license, revision, exact-output fixtures, and runtime throughput probe.
+- [x] Wire MKV `A_DTS` packets through one owned decoder context, the shared
+  resampler/AudioWorklet path, exact eligibility, and MKV-only device claims.
+- [x] Pin a TrueHD/MLP-only LGPL FFmpeg WebAssembly module and wire Mediabunny
+  MKV `A_TRUEHD`/`A_MLP` packets through exact PCM, major-sync, throughput,
+  downmix, resampler, eligibility, device-profile, and packaging gates.
+- [ ] Add a license-clean 7.1 TrueHD fixture and bounded M2TS demux route before
+  advertising eight-channel or disc-container TrueHD.
+- [ ] Live-test Core, 96/24, ES, HRA, MA, and DTS:X-bed sources for seek, switch,
+  EOF, repeated sessions, A/V drift, queue stability, and mpv PCM/loudness A/B.
+- [ ] Add a bounded, reviewed MPEG-TS/M2TS DTS demux route and its malformed,
+  discontinuity, multi-track, random-seek, and PMT/PES fixture matrix.
 - [ ] Qualify audio switching among native-media, native WebCodecs, and bundled
   decoder routes without restarting video.
 - [ ] Decide supported playback-rate behavior and implement rate-adjusted PCM or
@@ -876,13 +1013,16 @@ Rules that prevent duplicated work:
 - [ ] Decide multichannel PCM output and compressed passthrough policy.
 - [x] Approve Mediabunny and official Mediabunny decoder-extension licensing.
 - [x] Make AC-3/E-AC-3 software decode part of the ordinary verified build.
-- [ ] Ensure Atmos/DTS:X UI never overstates decoded base-channel output.
+- [x] Encode DTS:X capability semantics as MA channel-bed-only with object audio
+  explicitly false; never advertise DTS:X object rendering or passthrough.
+- [ ] Verify every Playback Info/UI surface preserves the DTS:X channel-bed-only
+  wording with licensed live media.
 
 ### Jellyfin behavior
 
 - [x] Stable wrapper identity, HTML fallback, and generation invalidation.
 - [x] Regression-test the augmented device profile and exact route isolation for
-  `The Dark Knight`; no bitrate capability cap was added or raised.
+  the local High Tier HDR10 source; no bitrate capability cap was added or raised.
 - [x] Make WebGPU DirectPlay/DirectStream/transcode selection independent of
   saved network, source, container, audio, and video bitrate.
 - [ ] Add a focused PlaybackManager API test for the two-request fallback rule:
@@ -906,6 +1046,9 @@ Rules that prevent duplicated work:
 
 ### Validation and release
 
+- [x] Make browser/mpv A/B capture inject the custom feature flags at request
+  time, independent of disabled source and built `config.json` values, for both
+  root and `/web/` frontend URLs.
 - [ ] Implement the unified validation manifest and result schema.
 - [ ] Migrate existing color, worker, browser, startup, artifact, and soak tools
   into the shared framework.
@@ -929,7 +1072,7 @@ Rules that prevent duplicated work:
 - [ ] Define staged browser/GPU rollout, telemetry privacy, rollback, and support
   documentation.
 
-## 11. Checklist for the no-bitrate DirectPlay checkpoint
+## 11. Historical no-bitrate DirectPlay checkpoint checklist
 
 This checkpoint removes bitrate from WebGPU route selection; it does not raise a
 cap. Codec/profile/tier/level, decoded format and geometry, measured throughput,
@@ -991,12 +1134,12 @@ follow separately so this negotiation fix cannot hide decoder or renderer work.
 - [x] Add focused playback bitrate-policy tests for the two-request fallback
   sequence and every gate that must prevent the second request.
 - [ ] Add a compact deterministic native High Tier access-unit fixture and exact
-  output fingerprint as portable hardening. The actual title already supplies
+  output fingerprint as portable hardening. The private regression source already supplies
   runtime evidence, so this is not permission to restore a bitrate threshold.
 
 ### 11.4 Port-8096 acceptance
 
-- [x] Run the exact Jellyfin item `9297460e0d7bdf82d97fc5f9efa95d27`
+- [x] Run the private Jellyfin High Tier HDR10 validation item
   with FLAC stream 1 through the current Jellyfin-served build.
 - [x] Require custom eligibility, native `video-frame` decode, external PQ input,
   HDR-to-SDR WebGPU presentation, decoded FLAC PCM, and no HTML fallback.
@@ -1006,7 +1149,7 @@ follow separately so this negotiation fix cannot hide decoder or renderer work.
   as explicit `DirectPlay` evidence. `TranscodingInfo` was null and no FFmpeg
   process remained.
 - [ ] Retain IMAX/2.39:1 crop transitions, natural EOF, replay, subtitle/OSD
-  stacking, visual HDR comparison, Wolfwalkers, and generated PQ/HLG as broader
+  stacking, visual HDR comparison, a Dolby Vision source, and generated PQ/HLG as broader
   validation-matrix work rather than expanding this negotiation diff.
 
 ### 11.5 Final checkpoint gate
@@ -1108,7 +1251,7 @@ as a separate checkpoint to preserve review and live-validation isolation.
 - [x] Confirm the exact external PQ authorization passes and telemetry records
   device, target format, route key, transfer, and accepted readback.
 - [x] Confirm the exact external HLG authorization independently passes.
-- [x] Play the Dark Knight Main10/FLAC case and require Jellyfin `DirectPlay`,
+- [x] Play the local High Tier Main10/FLAC case and require Jellyfin `DirectPlay`,
   not HLS transcoding or a false "codec/level/resolution/bitrate/range" reason.
 - [x] Confirm PlaybackInfo identifies `WebGPU Video Player` and the telemetry
   identifies native video-frame/external-HDR plus owned FLAC audio.
@@ -1128,7 +1271,7 @@ as a separate checkpoint to preserve review and live-validation isolation.
 - [ ] Inject device loss while playing and paused; require one replacement
   device, reauthorization, correct exact-time repaint, and no source restart.
 - [ ] Run an SDR H.264/HEVC/VP9/AV1 identity regression set.
-- [ ] Run Wolfwalkers/Dolby Vision regression cases for every route currently
+- [ ] Run private Dolby Vision regression cases for every route currently
   claimed by its source topology; distinguish actual custom DirectPlay from an
   HTML-transcoded source in the evidence.
 - [ ] Exercise one native-media audio case and one decoded-PCM case to ensure the
@@ -1174,11 +1317,9 @@ as a separate checkpoint to preserve review and live-validation isolation.
   `596.60`, WebGPU adapter vendor `nvidia` and architecture `lovelace`.
 - Server/build: Jellyfin `10.11.6` on `http://localhost:8096`, Node `24.17.0`,
   npm `11.13.0`, development webpack build.
-- PQ fixture: `pq-main10-1080p24-aac.mkv`, item
-  `5002955f082b6eb589c2cd8c28812342`, SHA-256
+- PQ fixture: `pq-main10-1080p24-aac.mkv`, historical validation item, SHA-256
   `bda7653938b6ce8e667b7abae70ce1c19b95c1e6d0b2fcdc0e0deb7c55f85cb7`.
-- HLG fixture: `hlg-main10-1080p24-aac.mkv`, item
-  `370e9984e4c8cfdf7b4abe00f0b5a0b3`, SHA-256
+- HLG fixture: `hlg-main10-1080p24-aac.mkv`, historical validation item, SHA-256
   `0e10f3d0a599a9afaffda6ebf3db6da4643379d059a4282305e4cfd2e410a018`.
 - Both runs selected owned native HEVC `video-frame` decode, SPS/HVCC color
   neutralization, external-HDR presentation, HDR-to-SDR tone mapping, and
@@ -1256,12 +1397,12 @@ as a separate checkpoint to preserve review and live-validation isolation.
 
 - Runtime remained Chrome `151.0.7922.72` on the NVIDIA GeForce RTX 4080 SUPER
   with Jellyfin `10.11.6` serving the development bundle on port 8096.
-- AC-3 fixture `pq-main10-1080p24-aac-ac3.mkv`: item
-  `0c3fbd4aab919e3804e9f49b9ec1bdb9`, target `MediaStream.Index` `2`, length
+- AC-3 fixture `pq-main10-1080p24-aac-ac3.mkv`: historical validation item,
+  target `MediaStream.Index` `2`, length
   `23940278`, SHA-256
   `fe00c1ce4aec61e2a78502fe6b29421d9f5af5e3962cf1b249c1ddb22ad482a1`.
-- E-AC-3 fixture `pq-main10-1080p24-aac-eac3.mkv`: item
-  `08196e5fc879a8c495fc823b046804dd`, target `MediaStream.Index` `2`, length
+- E-AC-3 fixture `pq-main10-1080p24-aac-eac3.mkv`: historical validation item,
+  target `MediaStream.Index` `2`, length
   `23940267`, SHA-256
   `2d099b4dd40024421ae1a29f530e3e32d00be7b04ac1922b201930c3437e7089`.
 - Both began on default AAC index `1`, advanced the owned decoder generation to
@@ -1348,8 +1489,8 @@ as a separate checkpoint to preserve review and live-validation isolation.
 
 - Runtime: Chrome `151.0.7922.72`, Jellyfin `10.11.6`, authoritative frontend
   and server `http://localhost:8096`.
-- Fixture `pq-main10-1080p24-aac-pcm_s24le-44100-mono.mkv`: item
-  `a3b8e935d43d9756a6dc28e222a2eb9a`, target `MediaStream.Index` `2`, length
+- Fixture `pq-main10-1080p24-aac-pcm_s24le-44100-mono.mkv`: historical
+  validation item, target `MediaStream.Index` `2`, length
   `27246184`, SHA-256
   `0640c55cd00111db4da231c5efe94dafc3c31fe291a57756e9164ec8666ae9cd`.
 - Playback began on AAC generation `1`, switched in-session to Mediabunny

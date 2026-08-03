@@ -1,0 +1,8 @@
+FFmpeg commit: a59498db085e3d635532397128550141ab87408a
+FFmpeg source SHA-256: fff68fd0b5061b1befba1cd9fc95357d9fc85eb3201bfed597c70d5f8033567e
+Emscripten: 4.0.13
+Emscripten revision: 2659582941bef14008476903f48941909db1b196
+Configured license: LGPL version 2.1 or later
+Bridge SHA-256: afc1314afac62f3985a814706ef2ec471d2015b61816cb5df751e9dae4711bf2
+Runtime module SHA-256: e69f9e1e7fbfdd2b7c8c750de59ccfb887c88c633e407c4b46a8ce875d13c630
+Isolated reproducible rebuild: verified

@@ -8,7 +8,10 @@ import {
     processEncodedRGB,
     type ColorTriplet
 } from '../color/ColorPipeline';
-import { createExternalDolbyVisionColorPipelineWGSL } from '../color/ColorPipelineShader';
+import {
+    createExternalDolbyVisionColorPipelineWGSL,
+    createExternalDolbyVisionInputProbeWGSL
+} from '../color/ColorPipelineShader';
 import { reconstructDolbyVisionBT2020PQ } from '../color/DolbyVisionColorTransform';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../custom/DolbyVisionRPUParser';
 import type {
@@ -23,7 +26,8 @@ import { createDolbyVisionAuthorizationRPUFixture } from './DolbyVisionAuthoriza
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
     GPUCanvasPixelReader,
-    getValidationTextureUsage
+    getValidationTextureUsage,
+    type GPUCanvasPixelsReadbackResult
 } from './GPUCanvasReadback';
 import {
     calculateRawHDRAuthorizationOutputDither,
@@ -33,13 +37,15 @@ import {
     type RawHDRFixtureObservation
 } from './RawHDRPresentationAuthorization';
 
-export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 1;
+export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION = 2;
 export const EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY =
     'external-I420P10-bt709-limited:dovi-p5-rpu-v1';
 
 const FLOATS_PER_PRESENTATION_UNIFORM = 4;
 const MAXIMUM_10_BIT_CODE = 1_023;
 const EXTERNAL_AUTHORIZATION_TOLERANCE = 8 / 255;
+const EXTERNAL_INPUT_PROBE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
+const EXTERNAL_INPUT_SIGNAL_TOLERANCE = 8 / MAXIMUM_10_BIT_CODE;
 const VERTEX_COUNT = 6;
 const AUTHORIZED_TARGET_FORMATS = new Set<GPUTextureFormat>([
     'bgra8unorm',
@@ -69,6 +75,7 @@ export type ExternalDolbyVisionAuthorizationFailureReason =
     | 'frame-import-failed'
     | 'gpu-api-unavailable'
     | 'gpu-validation-failed'
+    | 'input-mismatch'
     | 'pixel-mismatch'
     | 'readback-failed'
     | 'target-format-unsupported'
@@ -81,6 +88,7 @@ export type ExternalDolbyVisionAuthorizationDecision = {
     failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
     fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
     maximumChannelError: number | null
+    maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
     sampleCount: number
@@ -93,6 +101,7 @@ export type ExternalDolbyVisionAuthorizationTelemetry = {
     failureReason: ExternalDolbyVisionAuthorizationFailureReason | null
     fixtureVersion: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION
     maximumChannelError: number | null
+    maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: typeof EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY
     sampleCount: number
@@ -155,15 +164,12 @@ function sampleExternalI420P10Fixture(
     ];
 }
 
-/** Computes the CPU reference using Chromium's pixel-centered 4:2:0 siting. */
-export function createExpectedExternalDolbyVisionAuthorizationObservations(
-    packedRPUData: ArrayBuffer,
-    settings: HDRToSDRRenderSettings
-): readonly RawHDRFixtureObservation[] {
+/** Returns the ideal normalized base signal at each bounded fixture coordinate. */
+export function createExpectedExternalDolbyVisionInputObservations():
+readonly RawHDRFixtureObservation[] {
     const frame = createRawHDRAuthorizationFixture(
         'I420P10:bt2020-ncl:bt2020:limited:pq'
     );
-    const outputMetadata = createPQColorMetadata({ range: 'full' });
     return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map(sample => {
         const rawSignal = sampleExternalI420P10Fixture(
             frame,
@@ -175,8 +181,27 @@ export function createExpectedExternalDolbyVisionAuthorizationObservations(
             rawSignal[1] / MAXIMUM_10_BIT_CODE,
             rawSignal[2] / MAXIMUM_10_BIT_CODE
         ];
+        return {
+            linearRGB: normalizedSignal,
+            sampleX: sample.sampleX,
+            sampleY: sample.sampleY
+        };
+    });
+}
+
+/** Computes output references from the base signal recovered by the browser bridge. */
+export function createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
+    recoveredInput: readonly ColorTriplet[],
+    packedRPUData: ArrayBuffer,
+    settings: HDRToSDRRenderSettings
+): readonly RawHDRFixtureObservation[] {
+    if (recoveredInput.length !== RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length) {
+        throw new RangeError('Recovered external Dolby Vision input sample count is invalid');
+    }
+    const outputMetadata = createPQColorMetadata({ range: 'full' });
+    return RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.map((sample, sampleIndex) => {
         const encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
-            normalizedSignal,
+            recoveredInput[sampleIndex],
             packedRPUData
         );
         const referenceRGB = processEncodedRGB(
@@ -200,19 +225,38 @@ export function createExpectedExternalDolbyVisionAuthorizationObservations(
     });
 }
 
+/** Computes the ideal CPU reference before browser external-texture quantization. */
+export function createExpectedExternalDolbyVisionAuthorizationObservations(
+    packedRPUData: ArrayBuffer,
+    settings: HDRToSDRRenderSettings
+): readonly RawHDRFixtureObservation[] {
+    const idealInput = createExpectedExternalDolbyVisionInputObservations().map(
+        (observation: RawHDRFixtureObservation): ColorTriplet => observation.linearRGB
+    );
+    return createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
+        idealInput,
+        packedRPUData,
+        settings
+    );
+}
+
 /** Creates a stable identity for the exact external-texture production route. */
 export function createExternalDolbyVisionShaderSignature(
     targetFormat: GPUTextureFormat,
-    shaderCode: string
+    shaderCode: string,
+    inputProbeShaderCode = createExternalDolbyVisionInputProbeWGSL()
 ): string {
     const signatureInput = [
         `fixture=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
         'frame=I420P10:bt709:bt709:bt709:limited',
+        `input-format=${EXTERNAL_INPUT_PROBE_TARGET_FORMAT}`,
+        `input-tolerance=${EXTERNAL_INPUT_SIGNAL_TOLERANCE}`,
         `tolerance=${EXTERNAL_AUTHORIZATION_TOLERANCE}`,
         `target=${targetFormat}`,
-        shaderCode
+        shaderCode,
+        inputProbeShaderCode
     ].join('\u0000');
     let hash = 0x811C_9DC5;
     for (let characterIndex = 0; characterIndex < signatureInput.length; characterIndex += 1) {
@@ -286,13 +330,15 @@ function createRejectedDecision(
     shaderSignature: string,
     failureReason: ExternalDolbyVisionAuthorizationFailureReason,
     sampleCount = 0,
-    maximumChannelError: number | null = null
+    maximumChannelError: number | null = null,
+    maximumInputChannelError: number | null = null
 ): ExternalDolbyVisionAuthorizationDecision {
     return {
         device,
         failureReason,
         fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
         maximumChannelError,
+        maximumInputChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
         sampleCount,
@@ -300,6 +346,17 @@ function createRejectedDecision(
         status: 'rejected',
         targetFormat
     };
+}
+
+function createAuthorizationShaderSignature(
+    targetFormat: GPUTextureFormat,
+    settings: HDRToSDRRenderSettings
+): string {
+    return createExternalDolbyVisionShaderSignature(
+        targetFormat,
+        createExternalDolbyVisionColorPipelineWGSL(settings),
+        createExternalDolbyVisionInputProbeWGSL()
+    );
 }
 
 function discardErrorScope(device: GPUDevice): void {
@@ -350,9 +407,11 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
     ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const settings = createSettings();
         const shaderCode = createExternalDolbyVisionColorPipelineWGSL(settings);
+        const inputProbeShaderCode = createExternalDolbyVisionInputProbeWGSL();
         const shaderSignature = createExternalDolbyVisionShaderSignature(
             targetFormat,
-            shaderCode
+            shaderCode,
+            inputProbeShaderCode
         );
         if (!AUTHORIZED_TARGET_FORMATS.has(targetFormat)) {
             return createRejectedDecision(
@@ -377,18 +436,29 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
         }
 
         let targetTexture: GPUTexture | null = null;
+        let inputProbeTexture: GPUTexture | null = null;
         let presentationUniformBuffer: GPUBuffer | null = null;
         let renderSettingsUniformBuffer: GPUBuffer | null = null;
         let RPUStorageBuffer: GPUBuffer | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
+        let inputPixelReader: GPUCanvasPixelReader | null = null;
         let frame: VideoFrame | null = null;
         let errorScopePushed = false;
         let phase: AuthorizationPhase = 'gpu-render';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
-            const pipeline = await deadline.wait(
-                createRenderPipeline(device, targetFormat, shaderCode)
+            const pipelines = await deadline.wait(
+                Promise.all([
+                    createRenderPipeline(device, targetFormat, shaderCode),
+                    createRenderPipeline(
+                        device,
+                        EXTERNAL_INPUT_PROBE_TARGET_FORMAT,
+                        inputProbeShaderCode
+                    )
+                ])
             );
+            const pipeline: GPURenderPipeline = pipelines[0];
+            const inputProbePipeline: GPURenderPipeline = pipelines[1];
             const sampler = device.createSampler({
                 magFilter: 'linear',
                 minFilter: 'linear'
@@ -426,6 +496,17 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 },
                 usage: targetUsage
             });
+            inputProbeTexture = device.createTexture({
+                dimension: '2d',
+                format: EXTERNAL_INPUT_PROBE_TARGET_FORMAT,
+                label: 'WebGPU external Dolby Vision authorization input probe',
+                size: {
+                    depthOrArrayLayers: 1,
+                    height: frame.displayHeight,
+                    width: frame.displayWidth
+                },
+                usage: targetUsage
+            });
 
             device.pushErrorScope('validation');
             errorScopePushed = true;
@@ -454,9 +535,43 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 }],
                 layout: pipeline.getBindGroupLayout(0)
             });
+            const inputProbeBindGroup = device.createBindGroup({
+                entries: [{
+                    binding: 0,
+                    resource: sampler
+                }, {
+                    binding: 1,
+                    resource: externalTexture
+                }, {
+                    binding: 2,
+                    resource: { buffer: presentationUniformBuffer }
+                }],
+                layout: inputProbePipeline.getBindGroupLayout(0)
+            });
             const commandEncoder = device.createCommandEncoder({
                 label: 'WebGPU external Dolby Vision authorization commands'
             });
+            const inputProbeRenderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    clearValue: { a: 1, b: 0, g: 0, r: 0 },
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    view: inputProbeTexture.createView()
+                }],
+                label: 'WebGPU external Dolby Vision authorization input probe pass'
+            });
+            inputProbeRenderPass.setPipeline(inputProbePipeline);
+            inputProbeRenderPass.setBindGroup(0, inputProbeBindGroup);
+            inputProbeRenderPass.setViewport(
+                0,
+                0,
+                frame.displayWidth,
+                frame.displayHeight,
+                0,
+                1
+            );
+            inputProbeRenderPass.draw(VERTEX_COUNT);
+            inputProbeRenderPass.end();
             const renderPass = commandEncoder.beginRenderPass({
                 colorAttachments: [{
                     clearValue: { a: 1, b: 0, g: 0, r: 0 },
@@ -492,6 +607,56 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 );
             }
 
+            inputPixelReader = new GPUCanvasPixelReader({
+                device,
+                format: EXTERNAL_INPUT_PROBE_TARGET_FORMAT,
+                maximumReadbacks: RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length
+            });
+            const inputReadback: GPUCanvasPixelsReadbackResult = await deadline.wait(
+                inputPixelReader.readPixels(
+                    RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES,
+                    inputProbeTexture
+                ),
+                (): void => inputPixelReader?.destroy()
+            );
+            if (inputReadback.failure || !inputReadback.linearRGB) {
+                return createRejectedDecision(
+                    device,
+                    targetFormat,
+                    shaderSignature,
+                    'readback-failed'
+                );
+            }
+            const recoveredInputObservations: RawHDRFixtureObservation[] = [];
+            for (let sampleIndex = 0;
+                sampleIndex < RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES.length;
+                sampleIndex += 1) {
+                const sample = RAW_HDR_AUTHORIZATION_FIXTURE_SAMPLES[sampleIndex];
+                recoveredInputObservations.push({
+                    linearRGB: inputReadback.linearRGB[sampleIndex],
+                    sampleX: sample.sampleX,
+                    sampleY: sample.sampleY
+                });
+            }
+            const expectedInputObservations =
+                createExpectedExternalDolbyVisionInputObservations();
+            const inputComparison = evaluateRawHDRFixtureObservations(
+                expectedInputObservations,
+                recoveredInputObservations,
+                EXTERNAL_INPUT_SIGNAL_TOLERANCE
+            );
+            if (!inputComparison.accepted) {
+                return createRejectedDecision(
+                    device,
+                    targetFormat,
+                    shaderSignature,
+                    'input-mismatch',
+                    recoveredInputObservations.length,
+                    null,
+                    inputComparison.maximumChannelError
+                );
+            }
+
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
@@ -521,7 +686,8 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 });
             }
             const expectedObservations =
-                createExpectedExternalDolbyVisionAuthorizationObservations(
+                createExpectedExternalDolbyVisionAuthorizationObservationsFromInput(
+                    inputReadback.linearRGB,
                     packedRPUData,
                     settings
                 );
@@ -537,7 +703,8 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                     shaderSignature,
                     'pixel-mismatch',
                     actualObservations.length,
-                    comparison.maximumChannelError
+                    comparison.maximumChannelError,
+                    inputComparison.maximumChannelError
                 );
             }
             return {
@@ -545,6 +712,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 failureReason: null,
                 fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
                 maximumChannelError: comparison.maximumChannelError,
+                maximumInputChannelError: inputComparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
                 sampleCount: actualObservations.length,
@@ -565,10 +733,12 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 discardErrorScope(device);
             }
             frame?.close();
+            inputPixelReader?.destroy();
             pixelReader?.destroy();
             presentationUniformBuffer?.destroy();
             renderSettingsUniformBuffer?.destroy();
             RPUStorageBuffer?.destroy();
+            inputProbeTexture?.destroy();
             targetTexture?.destroy();
         }
     }
@@ -624,13 +794,10 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
                 return decision;
             },
             (): ExternalDolbyVisionAuthorizationDecision => {
-                const shaderCode = createExternalDolbyVisionColorPipelineWGSL(
-                    createSettings()
-                );
                 const decision = createRejectedDecision(
                     device,
                     targetFormat,
-                    createExternalDolbyVisionShaderSignature(targetFormat, shaderCode),
+                    createAuthorizationShaderSignature(targetFormat, createSettings()),
                     'unexpected-error'
                 );
                 probe.decision = decision;
@@ -647,11 +814,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         targetFormat: GPUTextureFormat,
         settings: HDRToSDRRenderSettings
     ): boolean {
-        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(settings);
-        const shaderSignature = createExternalDolbyVisionShaderSignature(
-            targetFormat,
-            shaderCode
-        );
+        const shaderSignature = createAuthorizationShaderSignature(targetFormat, settings);
         const decision = this.getCachedProbe(device, targetFormat)?.decision;
         return decision?.status === 'authorized'
             && decision.device === device
@@ -668,6 +831,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
             failureReason: null,
             fixtureVersion: EXTERNAL_DOLBY_VISION_AUTHORIZATION_FIXTURE_VERSION,
             maximumChannelError: null,
+            maximumInputChannelError: null,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
             routeKey: EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY,
             sampleCount: 0,
@@ -688,6 +852,7 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
             failureReason: probe.decision.failureReason,
             fixtureVersion: probe.decision.fixtureVersion,
             maximumChannelError: probe.decision.maximumChannelError,
+            maximumInputChannelError: probe.decision.maximumInputChannelError,
             renderSettingsVersion: probe.decision.renderSettingsVersion,
             routeKey: probe.decision.routeKey,
             sampleCount: probe.decision.sampleCount,
@@ -697,10 +862,9 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
     }
 
     private createCacheKey(targetFormat: GPUTextureFormat): string {
-        const shaderCode = createExternalDolbyVisionColorPipelineWGSL(createSettings());
-        return `${targetFormat}\u0000${createExternalDolbyVisionShaderSignature(
+        return `${targetFormat}\u0000${createAuthorizationShaderSignature(
             targetFormat,
-            shaderCode
+            createSettings()
         )}`;
     }
 

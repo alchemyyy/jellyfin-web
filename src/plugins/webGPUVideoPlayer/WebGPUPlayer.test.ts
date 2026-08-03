@@ -471,7 +471,7 @@ vi.mock('./WebGPUPresenter', () => {
             sessionStartedMicroseconds: 0,
             state: 'idle'
         }));
-        getRenderSettings = vi.fn(() => ({ mode: 'identity-sdr', version: 4 }));
+        getRenderSettings = vi.fn(() => ({ mode: 'identity-sdr', version: 5 }));
         updateRenderSettings = vi.fn(() => true);
         acquireValidationDevice = vi.fn(() => Promise.resolve(this.validationDevice));
         isValidationDevice = vi.fn((device: GPUDevice | null) => (
@@ -559,9 +559,10 @@ vi.mock('./WebGPUPresenter', () => {
         }));
         getExternalDolbyVisionAuthorizationTelemetry = vi.fn(() => ({
             failureReason: presenterMockState.dolbyVisionAuthorized ? null : 'pixel-mismatch',
-            fixtureVersion: 1,
+            fixtureVersion: 2,
             maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
-            renderSettingsVersion: 4,
+            maximumInputChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
+            renderSettingsVersion: 5,
             routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
             sampleCount: 9,
             status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
@@ -2669,6 +2670,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.eligible = true;
         customDecodeMockState.audioTrackIndex = 1;
         await player.play(createKnownSDRAudioPlayOptions());
+        expect(player.getCustomPlaybackSelectedAudioStreamIndex()).toBe(1);
         const customPlaybackController = getCustomPlaybackController();
         const firstSelection = createDeferred<boolean>();
         const secondSelection = createDeferred<boolean>();
@@ -2679,6 +2681,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         player.setAudioStreamIndex(3);
         player.setAudioStreamIndex(4);
+        expect(player.getCustomPlaybackSelectedAudioStreamIndex()).toBe(4);
         secondSelection.resolve(true);
         await vi.waitFor(() => (
             expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledOnce()
@@ -2721,7 +2724,7 @@ describe('WebGPUPlayer HTML delegation', () => {
                 outputPeakNits: 100,
                 paperWhiteNits: 203
             },
-            version: 4 as const
+            version: 5 as const
         };
 
         expect(stats.categories[0].stats).toContainEqual({
@@ -2731,7 +2734,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.getStats).not.toHaveBeenCalled();
         expect(player.updateRenderSettings(settings)).toBe(true);
         expect(presenter.updateRenderSettings).toHaveBeenCalledWith(settings, 1);
-        expect(player.getRenderSettings()).toEqual({ mode: 'identity-sdr', version: 4 });
+        expect(player.getRenderSettings()).toEqual({ mode: 'identity-sdr', version: 5 });
     });
 
     it('preserves a custom audio switch when later falling back to native playback', async () => {

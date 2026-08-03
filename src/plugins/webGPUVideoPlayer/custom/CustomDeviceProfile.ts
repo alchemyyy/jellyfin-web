@@ -12,6 +12,7 @@ import {
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
+    CUSTOM_WEB_CODECS_AUDIO_CODECS,
     isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
@@ -29,6 +30,12 @@ import {
     getSupportedCustomAudioInputSampleRates,
     isCustomMediabunnyPCMAudioCodec
 } from './CustomAudioOutputPolicy';
+import {
+    DTS_EXACT_INPUT_ROUTES,
+    DTS_PROFILE_VALUE_BY_TOKEN,
+    TRUEHD_EXACT_INPUT_ROUTES,
+    type DTSProfileToken
+} from './CustomCompressedAudioRoute';
 import {
     NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS,
     NATIVE_MEDIA_AUDIO_SAMPLE_RATE,
@@ -116,10 +123,14 @@ const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = [
     'ac3',
     'eac3'
 ];
+const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] =
+    CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => (
+        codec !== 'jpeg2000' && codec !== 'mpeg2video'
+    ));
 const ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
     container: 'mp4,m4v,mov',
-    videoCodecs: CUSTOM_VIDEO_CODECS
+    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
 };
 const ISO_BASE_MEDIA_PCM_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: [
@@ -135,16 +146,19 @@ const ISO_BASE_MEDIA_PCM_VIDEO_RULE: VideoContainerRule = {
         'pcm_f64be'
     ],
     container: 'mp4,m4v,mov',
-    videoCodecs: CUSTOM_VIDEO_CODECS
+    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
 };
 const QUICKTIME_PCM_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     container: 'mov',
-    videoCodecs: CUSTOM_VIDEO_CODECS
+    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
 };
 const MATROSKA_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: [
         ...CUSTOM_COMPRESSED_AUDIO_CODECS,
+        'dts',
+        'mlp',
+        'truehd',
         'pcm_u8',
         'pcm_s16le',
         'pcm_s16be',
@@ -156,7 +170,17 @@ const MATROSKA_VIDEO_RULE: VideoContainerRule = {
         'pcm_f64le'
     ],
     container: 'mkv',
-    videoCodecs: CUSTOM_VIDEO_CODECS
+    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
+};
+const JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
+    audioCodecs: CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    container: 'mov,mj2',
+    videoCodecs: [ 'jpeg2000' ]
+};
+const LEGACY_MATROSKA_VIDEO_RULE: VideoContainerRule = {
+    audioCodecs: CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    container: 'mkv',
+    videoCodecs: [ 'mpeg2video' ]
 };
 const WEBM_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: [ 'opus', 'vorbis' ],
@@ -173,6 +197,8 @@ const VIDEO_CONTAINER_RULES: readonly VideoContainerRule[] = [
     ISO_BASE_MEDIA_PCM_VIDEO_RULE,
     QUICKTIME_PCM_VIDEO_RULE,
     MATROSKA_VIDEO_RULE,
+    JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE,
+    LEGACY_MATROSKA_VIDEO_RULE,
     WEBM_VIDEO_RULE,
     MPEG_TS_VIDEO_RULE
 ];
@@ -180,6 +206,7 @@ const CUSTOM_VIDEO_CONTAINERS = [
     'mp4',
     'm4v',
     'mov',
+    'mj2',
     'mkv',
     'webm',
     'ts',
@@ -201,6 +228,7 @@ const VIDEO_LEVEL_PROPERTY = 'VideoLevel';
 const VIDEO_PROFILE_PROPERTY = 'VideoProfile';
 const VIDEO_WIDTH_PROPERTY = 'Width';
 const AUDIO_CHANNELS_PROPERTY = 'AudioChannels';
+const AUDIO_PROFILE_PROPERTY = 'AudioProfile';
 const AUDIO_SAMPLE_RATE_PROPERTY = 'AudioSampleRate';
 const EQUALS_ANY_CONDITION = 'EqualsAny';
 const LESS_THAN_EQUAL_CONDITION = 'LessThanEqual';
@@ -214,6 +242,8 @@ const BITRATE_CONDITION_PROPERTIES = new Set<string>([
     AUDIO_BITRATE_PROPERTY,
     VIDEO_BITRATE_PROPERTY
 ]);
+const SUPPORTED_DTS_AUDIO_PROFILES: readonly string[] =
+    Object.freeze(Object.values(DTS_PROFILE_VALUE_BY_TOKEN));
 
 function getDolbyVisionVideoRangeTypes(
     capabilities: CustomDecodeCapabilities,
@@ -324,6 +354,8 @@ const NATIVE_VIDEO_PROFILES: Readonly<Record<CustomVideoCodec, readonly string[]
     av1: [ 'main' ],
     h264: [],
     hevc: [ 'main' ],
+    jpeg2000: [],
+    mpeg2video: [ 'main' ],
     vp8: [],
     vp9: [ 'profile 0' ]
 };
@@ -351,6 +383,12 @@ function supportsNativeVideoCodec(
     if (codec === 'hevc') {
         return capabilities.video.hevc.status === 'supported'
             || capabilities.bundledHEVC?.tiers['main-1080p'].status === 'supported';
+    }
+    if (codec === 'jpeg2000') {
+        return capabilities.bundledJPEG2000?.status === 'supported';
+    }
+    if (codec === 'mpeg2video') {
+        return capabilities.bundledLegacyVideo?.status === 'supported';
     }
     return capabilities.video[codec].status === 'supported';
 }
@@ -484,6 +522,13 @@ function getSupportedAudioCodecs(
 ): CustomAudioCodec[] {
     const supportedCodecs: CustomAudioCodec[] = [];
     for (const codec of CUSTOM_AUDIO_CODECS) {
+        if (codec === 'dts' && capabilities.bundledDTS?.status !== 'supported') {
+            continue;
+        }
+        if ((codec === 'mlp' || codec === 'truehd')
+            && capabilities.bundledTrueHD?.status !== 'supported') {
+            continue;
+        }
         const nativeMediaSupported = (codec === 'ac3' || codec === 'eac3')
             && nativeMediaAudioCapabilities?.audio[codec].status === 'supported';
         if (capabilities.audio[codec].status === 'supported' || nativeMediaSupported) {
@@ -1192,6 +1237,8 @@ function getNativeMeasuredVideoDimensions(
             break;
         }
         case 'h264':
+        case 'jpeg2000':
+        case 'mpeg2video':
         case 'vp8':
             break;
     }
@@ -1204,6 +1251,46 @@ function createNativeMeasuredVideoRoute(
 ): MeasuredVideoRoute | null {
     if (!supportsNativeVideoCodec(codec, capabilities)) {
         return null;
+    }
+
+    if (codec === 'jpeg2000') {
+        const capability = capabilities.bundledJPEG2000;
+        if (
+            capability?.status !== 'supported'
+            || capability.maximumFramesPerSecond !== 24
+        ) {
+            return null;
+        }
+        return {
+            bitDepth: capability.bitDepth,
+            codec,
+            maximumFrameRate: capability.maximumFramesPerSecond,
+            maximumHeight: capability.maximumCodedHeight,
+            maximumLevel: null,
+            maximumWidth: capability.maximumCodedWidth,
+            profiles: [],
+            rangeTypes: [ 'SDR' ]
+        };
+    }
+
+    if (codec === 'mpeg2video') {
+        const capability = capabilities.bundledLegacyVideo;
+        if (
+            capability?.status !== 'supported'
+            || capability.maximumFramesPerSecond !== 24
+        ) {
+            return null;
+        }
+        return {
+            bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
+            codec,
+            maximumFrameRate: capability.maximumFramesPerSecond,
+            maximumHeight: capability.maximumCodedHeight,
+            maximumLevel: null,
+            maximumWidth: capability.maximumCodedWidth,
+            profiles: NATIVE_VIDEO_PROFILES.mpeg2video,
+            rangeTypes: [ 'SDR' ]
+        };
     }
 
     let bundledMain: BundledHEVCExactTierCapability | null = null;
@@ -1574,6 +1661,156 @@ function createMeasuredAudioRouteProfile(
     };
 }
 
+function createRequiredAudioRouteCondition(
+    property: typeof AUDIO_CHANNELS_PROPERTY
+        | typeof AUDIO_PROFILE_PROPERTY
+        | typeof AUDIO_SAMPLE_RATE_PROPERTY,
+    values: readonly (number | string)[]
+): ProfileCondition {
+    return {
+        Condition: values.length === 1 ? 'Equals' : EQUALS_ANY_CONDITION,
+        IsRequired: true,
+        Property: property,
+        Value: values.join('|')
+    };
+}
+
+function createMeasuredExactAudioRouteProfile(
+    codec: 'dts' | 'mlp' | 'truehd',
+    conditions: readonly ProfileCondition[],
+    applyConditions: readonly ProfileCondition[] = []
+): CodecProfile {
+    return {
+        ...(applyConditions.length > 0 ? { ApplyConditions: [ ...applyConditions ] } : {}),
+        Codec: codec,
+        Conditions: [ ...conditions ],
+        Container: MATROSKA_VIDEO_RULE.container,
+        Type: 'VideoAudio'
+    };
+}
+
+type DTSProfileRouteGroup = {
+    channelCount: number
+    profileTokens: DTSProfileToken[]
+    sampleRate: number
+};
+
+function createMeasuredDTSRouteProfiles(): CodecProfile[] {
+    const measuredProfiles: CodecProfile[] = [];
+    measuredProfiles.push(createMeasuredExactAudioRouteProfile('dts', [
+        createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, [ 6, 7, 8 ]),
+        createRequiredAudioRouteCondition(AUDIO_SAMPLE_RATE_PROPERTY, [ 48_000, 96_000, 192_000 ]),
+        createRequiredAudioRouteCondition(AUDIO_PROFILE_PROPERTY, SUPPORTED_DTS_AUDIO_PROFILES)
+    ]));
+
+    const sampleRatesByChannelCount = new Map<number, Set<number>>();
+    const routeGroupsByKey = new Map<string, DTSProfileRouteGroup>();
+    for (const route of DTS_EXACT_INPUT_ROUTES) {
+        let sampleRates = sampleRatesByChannelCount.get(route.channelCount);
+        if (!sampleRates) {
+            sampleRates = new Set<number>();
+            sampleRatesByChannelCount.set(route.channelCount, sampleRates);
+        }
+        sampleRates.add(route.sampleRate);
+
+        const routeKey = `${route.channelCount}|${route.sampleRate}`;
+        let routeGroup = routeGroupsByKey.get(routeKey);
+        if (!routeGroup) {
+            routeGroup = {
+                channelCount: route.channelCount,
+                profileTokens: [],
+                sampleRate: route.sampleRate
+            };
+            routeGroupsByKey.set(routeKey, routeGroup);
+        }
+        for (const profileToken of route.profileTokens) {
+            if (!routeGroup.profileTokens.includes(profileToken)) {
+                routeGroup.profileTokens.push(profileToken);
+            }
+        }
+    }
+
+    for (const [ channelCount, sampleRateSet ] of sampleRatesByChannelCount) {
+        const sampleRates = [ ...sampleRateSet ].sort((left, right) => left - right);
+        measuredProfiles.push(createMeasuredExactAudioRouteProfile(
+            'dts',
+            [ createRequiredAudioRouteCondition(AUDIO_SAMPLE_RATE_PROPERTY, sampleRates) ],
+            [ createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, [ channelCount ]) ]
+        ));
+    }
+    for (const routeGroup of routeGroupsByKey.values()) {
+        const profileValues = routeGroup.profileTokens.map(profileToken => (
+            DTS_PROFILE_VALUE_BY_TOKEN[profileToken]
+        ));
+        measuredProfiles.push(createMeasuredExactAudioRouteProfile(
+            'dts',
+            [ createRequiredAudioRouteCondition(AUDIO_PROFILE_PROPERTY, profileValues) ],
+            [
+                createRequiredAudioRouteCondition(
+                    AUDIO_CHANNELS_PROPERTY,
+                    [ routeGroup.channelCount ]
+                ),
+                createRequiredAudioRouteCondition(
+                    AUDIO_SAMPLE_RATE_PROPERTY,
+                    [ routeGroup.sampleRate ]
+                )
+            ]
+        ));
+    }
+    return measuredProfiles;
+}
+
+function createMeasuredTrueHDRouteProfiles(
+    codec: 'mlp' | 'truehd'
+): CodecProfile[] {
+    const measuredProfiles: CodecProfile[] = [];
+    const sampleRatesByChannelCount = new Map<number, Set<number>>();
+    for (const route of TRUEHD_EXACT_INPUT_ROUTES) {
+        if (route.codec !== codec) {
+            continue;
+        }
+        let sampleRates = sampleRatesByChannelCount.get(route.channelCount);
+        if (!sampleRates) {
+            sampleRates = new Set<number>();
+            sampleRatesByChannelCount.set(route.channelCount, sampleRates);
+        }
+        sampleRates.add(route.sampleRate);
+    }
+    if (sampleRatesByChannelCount.size === 0) {
+        return measuredProfiles;
+    }
+
+    const channelCounts = [ ...sampleRatesByChannelCount.keys() ].sort(
+        (left, right) => left - right
+    );
+    const allSampleRates = new Set<number>();
+    for (const sampleRates of sampleRatesByChannelCount.values()) {
+        for (const sampleRate of sampleRates) {
+            allSampleRates.add(sampleRate);
+        }
+    }
+    measuredProfiles.push(createMeasuredExactAudioRouteProfile(codec, [
+        createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, channelCounts),
+        createRequiredAudioRouteCondition(
+            AUDIO_SAMPLE_RATE_PROPERTY,
+            [ ...allSampleRates ].sort((left, right) => left - right)
+        )
+    ]));
+    for (const [ channelCount, sampleRateSet ] of sampleRatesByChannelCount) {
+        measuredProfiles.push(createMeasuredExactAudioRouteProfile(
+            codec,
+            [
+                createRequiredAudioRouteCondition(
+                    AUDIO_SAMPLE_RATE_PROPERTY,
+                    [ ...sampleRateSet ].sort((left, right) => left - right)
+                )
+            ],
+            [ createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, [ channelCount ]) ]
+        ));
+    }
+    return measuredProfiles;
+}
+
 const CUSTOM_AUDIO_ROUTE_PROPERTIES = new Set<string>([
     AUDIO_CHANNELS_PROPERTY,
     AUDIO_SAMPLE_RATE_PROPERTY,
@@ -1594,6 +1831,20 @@ function isMeasuredAudioRouteProfile(codecProfile: CodecProfile): boolean {
         ))
         && conditions.some(condition => condition.Property === AUDIO_CHANNELS_PROPERTY)
         && conditions.some(condition => condition.Property === AUDIO_SAMPLE_RATE_PROPERTY);
+}
+
+function isMeasuredDTS192KHZRouteProfile(codecProfile: CodecProfile): boolean {
+    const applyConditions = codecProfile.ApplyConditions ?? [];
+    const conditions = codecProfile.Conditions ?? [];
+    return codecProfile.Type === 'VideoAudio'
+        && normalizeList(codecProfile.Codec) === 'dts'
+        && normalizeList(codecProfile.Container) === MATROSKA_VIDEO_RULE.container
+        && applyConditions.length === 1
+        && applyConditions[0].Condition === 'Equals'
+        && applyConditions[0].Property === AUDIO_SAMPLE_RATE_PROPERTY
+        && applyConditions[0].Value === '192000'
+        && conditions.some(condition => condition.Property === AUDIO_CHANNELS_PROPERTY)
+        && conditions.some(condition => condition.Property === AUDIO_PROFILE_PROPERTY);
 }
 
 function getDeclaredDirectPlayAudioCodecs(profile: DeviceProfile): string[] {
@@ -1617,6 +1868,7 @@ function shouldSplitAudioRouteProfile(codecProfile: CodecProfile): boolean {
         && !codecProfile.SubContainer
         && !codecProfile.Container?.trim().startsWith('-')
         && !isMeasuredAudioRouteProfile(codecProfile)
+        && !isMeasuredDTS192KHZRouteProfile(codecProfile)
         && conditions.some(condition => (
             CUSTOM_AUDIO_ROUTE_PROPERTIES.has(condition.Property ?? '')
         ));
@@ -1798,6 +2050,11 @@ function hasQualifiedDecodedSurroundRoute(
         case 'ac3':
         case 'eac3':
             return true;
+        case 'dts':
+            return capabilities.bundledDTS?.status === 'supported';
+        case 'mlp':
+        case 'truehd':
+            return capabilities.bundledTrueHD?.status === 'supported';
         case 'aac':
         case 'flac':
         case 'opus':
@@ -1840,6 +2097,9 @@ function appendMeasuredAudioRouteProfiles(
         sampleRates: readonly number[]
     }>();
     for (const codec of decodedAudioCodecs) {
+        if (codec === 'dts' || codec === 'mlp' || codec === 'truehd') {
+            continue;
+        }
         const channelCounts = hasQualifiedDecodedSurroundRoute(codec, capabilities) ?
             getSupportedCustomAudioInputChannelCounts(codec) :
             [ CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT ];
@@ -1862,6 +2122,15 @@ function appendMeasuredAudioRouteProfiles(
             routeGroup.channelCounts,
             routeGroup.sampleRates
         ));
+    }
+    if (decodedAudioCodecs.includes('dts')) {
+        measuredProfiles.push(...createMeasuredDTSRouteProfiles());
+    }
+    if (decodedAudioCodecs.includes('mlp')) {
+        measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('mlp'));
+    }
+    if (decodedAudioCodecs.includes('truehd')) {
+        measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('truehd'));
     }
 
     for (const measuredProfile of measuredProfiles) {

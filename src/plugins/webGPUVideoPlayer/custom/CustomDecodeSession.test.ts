@@ -296,6 +296,35 @@ function emitRawFrame(
 }
 
 describe('CustomDecodeSession', () => {
+    it('forwards the qualified legacy software backend to the worker', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        session.start({
+            dolbyVisionProfile: null,
+            generation: 5,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+
+        expect(worker.postedMessages[0]).toMatchObject({
+            generation: 5,
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
     it('forwards the selected Dolby Vision profile to the worker', () => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(

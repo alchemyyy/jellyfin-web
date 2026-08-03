@@ -7,6 +7,7 @@ import {
     UrlSource,
     VideoSampleSink,
     type AudioSample,
+    type AudioCodec,
     type EncodedPacket,
     type InputAudioTrack,
     type InputVideoTrack,
@@ -115,6 +116,15 @@ import {
 import {
     readMPEGTransportStreamDolbyVisionTrackConfiguration
 } from './MPEGTransportStreamDolbyVisionConfiguration';
+import JPEG2000SoftwareVideoDecoder from './JPEG2000SoftwareVideoDecoder';
+import DTSSoftwareAudioDecoder, {
+    type DTSDecodedAudioOutput
+} from './DTSSoftwareAudioDecoder';
+import TrueHDSoftwareAudioDecoder, {
+    type TrueHDDecodedAudioOutput,
+    type TrueHDDecoderCodec
+} from './TrueHDSoftwareAudioDecoder';
+import LegacySoftwareVideoDecoder from './LegacySoftwareVideoDecoder';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -127,6 +137,12 @@ const OWNED_HEVC_PACKET_OPTIONS = {
     metadataOnly: false,
     verifyKeyPackets: true
 } as const;
+const OPENJPEG_PACKET_OPTIONS = { metadataOnly: false } as const;
+const LEGACY_VIDEO_PACKET_OPTIONS = {
+    metadataOnly: false,
+    verifyKeyPackets: true
+} as const;
+const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -161,7 +177,7 @@ type DecodeRun = {
 
 type PreparedVideoTrack = {
     availableVideoTracks: readonly InputVideoTrack[]
-    codec: VideoCodec
+    codec: VideoCodec | 'jpeg2000' | 'mpeg2video'
     containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
@@ -196,11 +212,23 @@ type ContainerDolbyVisionTrackConfiguration = {
 type PreparedAudioTrack = {
     audioConfiguration: DecodeWorkerReadyAudioConfiguration
     audioTrack: InputAudioTrack
-    decoderConfig: AudioDecoderConfig
+    decoderBackend: 'dts' | 'mediabunny' | TrueHDDecoderCodec
+    decoderConfig: AudioDecoderConfig | null
     inputChannelCount: number
     inputChannelLayout: CustomAudioChannelLayout
     outputMode: CustomDecodeAudioOutputMode
     sourceSampleRate: number
+};
+
+type SelectedAudioTrackMetadata = {
+    audioTrack: InputAudioTrack
+    channelCount: number
+    codec: AudioCodec | null
+    decoderConfig: AudioDecoderConfig | null
+    inputChannelLayout: CustomAudioChannelLayout
+    isDTS: boolean
+    sampleRate: number
+    trueHDDecoderCodec: TrueHDDecoderCodec | null
 };
 
 type WorkerScope = {
@@ -419,6 +447,97 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
     return 'decode-failed';
 }
 
+type FocusedSoftwareVideoRoute = Readonly<{
+    codec: 'jpeg2000' | 'mpeg2video'
+    decoderCodec: string
+    errorName: string
+    expectedInternalCodecID: string
+    includeColorSpace: boolean
+}>;
+
+type FocusedSoftwareVideoTrackInput = Readonly<{
+    availableVideoTracks: readonly InputVideoTrack[]
+    codedHeight: number
+    codedWidth: number
+    containerCodec: VideoCodec | null
+    displayHeight: number
+    displayWidth: number
+    internalCodecID: unknown
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>
+    videoTrack: InputVideoTrack
+}>;
+
+function getFocusedSoftwareVideoRoute(
+    backend: CustomDecodeVideoDecoderBackend
+): FocusedSoftwareVideoRoute | null {
+    switch (backend) {
+        case 'openjpeg':
+            return {
+                codec: 'jpeg2000',
+                decoderCodec: 'mjp2',
+                errorName: 'OpenJPEG MJ2',
+                expectedInternalCodecID: 'mjp2',
+                includeColorSpace: false
+            };
+        case 'legacy-software':
+            return {
+                codec: 'mpeg2video',
+                decoderCodec: 'mpeg2video',
+                errorName: 'MPEG-2 software',
+                expectedInternalCodecID: 'V_MPEG2',
+                includeColorSpace: true
+            };
+        case 'bundled-hevc':
+        case 'native':
+            return null;
+    }
+}
+
+async function prepareFocusedSoftwareVideoTrack(
+    input: FocusedSoftwareVideoTrackInput
+): Promise<PreparedVideoTrack | null> {
+    const route = getFocusedSoftwareVideoRoute(input.request.videoDecoderBackend);
+    if (!route) {
+        return null;
+    }
+    if (
+        input.containerCodec !== null
+        || input.internalCodecID !== route.expectedInternalCodecID
+        || input.request.videoOutputMode !== 'video-frame'
+        || input.request.dolbyVisionProfile !== null
+        || input.request.neutralizeHDRColorMetadata
+        || input.request.nativeHDRTransfer !== null
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            `The selected video track does not match the negotiated ${route.errorName} route`
+        );
+    }
+
+    const colorSpace = route.includeColorSpace ? await input.videoTrack.getColorSpace() : null;
+    return {
+        availableVideoTracks: input.availableVideoTracks,
+        codec: route.codec,
+        containerTrackNumber: input.videoTrack.id,
+        decoderConfig: {
+            codec: route.decoderCodec,
+            codedHeight: input.codedHeight,
+            codedWidth: input.codedWidth,
+            ...(colorSpace ? { colorSpace } : {}),
+            displayAspectHeight: input.displayHeight,
+            displayAspectWidth: input.displayWidth,
+            hardwareAcceleration: 'prefer-software',
+            optimizeForLatency: true
+        },
+        geometry: {
+            codedHeight: input.codedHeight,
+            codedWidth: input.codedWidth,
+            displayHeight: input.displayHeight,
+            displayWidth: input.displayWidth
+        },
+        videoTrack: input.videoTrack
+    };
+}
+
 async function prepareVideoTrack(
     input: Input,
     run: DecodeRun,
@@ -438,39 +557,19 @@ async function prepareVideoTrack(
 
     const [
         codec,
-        decoderConfig,
-        canDecode,
+        internalCodecID,
         codedHeight,
         codedWidth,
         displayHeight,
         displayWidth
     ] = await Promise.all([
         videoTrack.getCodec(),
-        videoTrack.getDecoderConfig(),
-        videoTrack.canDecode(),
+        videoTrack.getInternalCodecId(),
         videoTrack.getCodedHeight(),
         videoTrack.getCodedWidth(),
         videoTrack.getDisplayHeight(),
         videoTrack.getDisplayWidth()
     ]);
-    if (!codec || !decoderConfig) {
-        throw new UnsupportedCustomDecodeSourceError('The selected video codec configuration is unavailable');
-    }
-    if (request.videoDecoderBackend === 'bundled-hevc' && codec !== 'hevc') {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The selected video track does not match the negotiated bundled HEVC decoder'
-        );
-    }
-    if (request.neutralizeHDRColorMetadata && codec !== 'hevc') {
-        throw new UnsupportedCustomDecodeSourceError(
-            'HDR color neutralization requires an HEVC video track'
-        );
-    }
-    if (!canDecode) {
-        throw new UnsupportedCustomDecodeSourceError(
-            `The browser cannot decode the selected ${codec} video configuration`
-        );
-    }
     const dimensions = [ codedHeight, codedWidth, displayHeight, displayWidth ];
     if (dimensions.some(dimension => !Number.isSafeInteger(dimension) || dimension <= 0)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video dimensions are invalid');
@@ -486,6 +585,46 @@ async function prepareVideoTrack(
     if (!Number.isSafeInteger(videoTrack.id) || videoTrack.id <= 0) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected video container track number is invalid'
+        );
+    }
+
+    const softwareTrack = await prepareFocusedSoftwareVideoTrack({
+        availableVideoTracks: videoTracks,
+        codedHeight,
+        codedWidth,
+        containerCodec: codec,
+        displayHeight,
+        displayWidth,
+        internalCodecID,
+        request,
+        videoTrack
+    });
+    if (softwareTrack) {
+        return softwareTrack;
+    }
+
+    const [ decoderConfig, canDecode ] = await Promise.all([
+        videoTrack.getDecoderConfig(),
+        videoTrack.canDecode()
+    ]);
+    if (!codec || !decoderConfig) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected video codec configuration is unavailable'
+        );
+    }
+    if (request.videoDecoderBackend === 'bundled-hevc' && codec !== 'hevc') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected video track does not match the negotiated bundled HEVC decoder'
+        );
+    }
+    if (request.neutralizeHDRColorMetadata && codec !== 'hevc') {
+        throw new UnsupportedCustomDecodeSourceError(
+            'HDR color neutralization requires an HEVC video track'
+        );
+    }
+    if (!canDecode) {
+        throw new UnsupportedCustomDecodeSourceError(
+            `The browser cannot decode the selected ${codec} video configuration`
         );
     }
 
@@ -693,12 +832,11 @@ async function createSeparateDolbyVisionEnhancementDecoderConfiguration(
     };
 }
 
-async function prepareAudioTrack(
+async function getSelectedAudioTrackMetadata(
     input: Input,
     run: DecodeRun,
-    audioTrackOrdinal: number,
-    outputMode: CustomDecodeAudioOutputMode
-): Promise<PreparedAudioTrack> {
+    audioTrackOrdinal: number
+): Promise<SelectedAudioTrackMetadata> {
     const audioTracks = await input.getAudioTracks();
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -711,13 +849,24 @@ async function prepareAudioTrack(
         );
     }
 
-    const [ codec, decoderConfig, channelCount, sampleRate ] = await Promise.all([
+    const [ codec, decoderConfig, internalCodecID, channelCount, sampleRate ] = await Promise.all([
         audioTrack.getCodec(),
         audioTrack.getDecoderConfig(),
+        audioTrack.getInternalCodecId(),
         audioTrack.getNumberOfChannels(),
         audioTrack.getSampleRate()
     ]);
-    if (!codec || !decoderConfig) {
+    const isDTS = codec === null && internalCodecID === 'A_DTS';
+    let trueHDDecoderCodec: TrueHDDecoderCodec | null = null;
+    switch (internalCodecID) {
+        case 'A_MLP':
+            trueHDDecoderCodec = 'mlp';
+            break;
+        case 'A_TRUEHD':
+            trueHDDecoderCodec = 'truehd';
+            break;
+    }
+    if ((!codec || !decoderConfig) && !isDTS && trueHDDecoderCodec === null) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
     }
     if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
@@ -733,37 +882,145 @@ async function prepareAudioTrack(
         );
     }
 
-    if (outputMode === 'native-media') {
-        const codecMatchesDecoderConfiguration =
-            (codec === 'ac3' && decoderConfig.codec === 'ac-3')
-            || (codec === 'eac3' && decoderConfig.codec === 'ec-3');
-        if (!codecMatchesDecoderConfiguration
-            || (channelCount !== 2 && channelCount !== 6)
-            || sampleRate !== 48_000) {
-            throw new UnsupportedCustomDecodeSourceError(
-                'The selected audio track does not match the qualified native media route'
-            );
-        }
-        const audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration = {
-            channelCount,
-            codec: decoderConfig.codec,
-            mimeType: `audio/mp4; codecs="${decoderConfig.codec}"`,
-            outputMode: 'native-media',
-            sampleRate,
-            sourceChannelCount: channelCount,
-            sourceSampleRate: sampleRate
-        };
-        return {
-            audioConfiguration,
-            audioTrack,
-            decoderConfig,
-            inputChannelCount: channelCount,
-            inputChannelLayout,
-            outputMode,
-            sourceSampleRate: sampleRate
-        };
+    return {
+        audioTrack,
+        channelCount,
+        codec,
+        decoderConfig,
+        inputChannelLayout,
+        isDTS,
+        sampleRate,
+        trueHDDecoderCodec
+    };
+}
+
+function prepareNativeMediaAudioTrack(
+    metadata: SelectedAudioTrackMetadata
+): PreparedAudioTrack {
+    const {
+        audioTrack,
+        channelCount,
+        codec,
+        decoderConfig,
+        inputChannelLayout,
+        sampleRate
+    } = metadata;
+    if (!codec || !decoderConfig) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected native audio codec configuration is unavailable'
+        );
+    }
+    const codecMatchesDecoderConfiguration =
+        (codec === 'ac3' && decoderConfig.codec === 'ac-3')
+        || (codec === 'eac3' && decoderConfig.codec === 'ec-3');
+    if (!codecMatchesDecoderConfiguration
+        || (channelCount !== 2 && channelCount !== 6)
+        || sampleRate !== 48_000) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected audio track does not match the qualified native media route'
+        );
+    }
+    const audioConfiguration: DecodeWorkerNativeMediaAudioConfiguration = {
+        channelCount,
+        codec: decoderConfig.codec,
+        mimeType: `audio/mp4; codecs="${decoderConfig.codec}"`,
+        outputMode: 'native-media',
+        sampleRate,
+        sourceChannelCount: channelCount,
+        sourceSampleRate: sampleRate
+    };
+    return {
+        audioConfiguration,
+        audioTrack,
+        decoderBackend: 'mediabunny',
+        decoderConfig,
+        inputChannelCount: channelCount,
+        inputChannelLayout,
+        outputMode: 'native-media',
+        sourceSampleRate: sampleRate
+    };
+}
+
+function prepareDTSAudioTrack(
+    metadata: SelectedAudioTrackMetadata
+): PreparedAudioTrack {
+    const { audioTrack, channelCount, inputChannelLayout, sampleRate } = metadata;
+    if (!isSupportedCustomAudioInputLayout('dts', channelCount, sampleRate)) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected audio track does not match a qualified decoded PCM route'
+        );
     }
 
+    return {
+        audioConfiguration: {
+            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            codec: 'dts',
+            sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+            sourceChannelCount: channelCount,
+            sourceSampleRate: sampleRate
+        },
+        audioTrack,
+        decoderBackend: 'dts',
+        decoderConfig: null,
+        inputChannelCount: channelCount,
+        inputChannelLayout,
+        outputMode: 'decoded-pcm',
+        sourceSampleRate: sampleRate
+    };
+}
+
+function prepareTrueHDAudioTrack(
+    metadata: SelectedAudioTrackMetadata
+): PreparedAudioTrack {
+    const {
+        audioTrack,
+        channelCount,
+        inputChannelLayout,
+        sampleRate,
+        trueHDDecoderCodec
+    } = metadata;
+    if (!trueHDDecoderCodec
+        || !isSupportedCustomAudioInputLayout(trueHDDecoderCodec, channelCount, sampleRate)) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected TrueHD track does not match a qualified decoded PCM route'
+        );
+    }
+
+    return {
+        audioConfiguration: {
+            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            codec: trueHDDecoderCodec,
+            sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+            sourceChannelCount: channelCount,
+            sourceSampleRate: sampleRate
+        },
+        audioTrack,
+        decoderBackend: trueHDDecoderCodec,
+        decoderConfig: null,
+        inputChannelCount: channelCount,
+        inputChannelLayout,
+        outputMode: 'decoded-pcm',
+        sourceSampleRate: sampleRate
+    };
+}
+
+async function prepareMediabunnyDecodedAudioTrack(
+    metadata: SelectedAudioTrackMetadata,
+    run: DecodeRun
+): Promise<PreparedAudioTrack> {
+    const {
+        audioTrack,
+        channelCount,
+        codec,
+        decoderConfig,
+        inputChannelLayout,
+        sampleRate
+    } = metadata;
+    if (!codec || !decoderConfig) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The decoded PCM audio configuration is unavailable'
+        );
+    }
     if (!isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected audio track does not match a qualified decoded PCM route'
@@ -789,12 +1046,33 @@ async function prepareAudioTrack(
             sourceSampleRate: sampleRate
         },
         audioTrack,
+        decoderBackend: 'mediabunny',
         decoderConfig,
         inputChannelCount: channelCount,
         inputChannelLayout,
-        outputMode,
+        outputMode: 'decoded-pcm',
         sourceSampleRate: sampleRate
     };
+}
+
+async function prepareAudioTrack(
+    input: Input,
+    run: DecodeRun,
+    audioTrackOrdinal: number,
+    outputMode: CustomDecodeAudioOutputMode
+): Promise<PreparedAudioTrack> {
+    const metadata = await getSelectedAudioTrackMetadata(input, run, audioTrackOrdinal);
+    switch (outputMode) {
+        case 'native-media':
+            return prepareNativeMediaAudioTrack(metadata);
+        case 'decoded-pcm':
+            if (metadata.isDTS) {
+                return prepareDTSAudioTrack(metadata);
+            }
+            return metadata.trueHDDecoderCodec ?
+                prepareTrueHDAudioTrack(metadata) :
+                prepareMediabunnyDecodedAudioTrack(metadata, run);
+    }
 }
 
 function postReadyResponse(
@@ -1230,6 +1508,91 @@ function normalizeAudioSample(
     }
 }
 
+function normalizeDTSAudioOutput(
+    output: DTSDecodedAudioOutput,
+    preparedAudioTrack: PreparedAudioTrack,
+    startTimeMicroseconds: Microseconds,
+    resampler: StreamingAudioResampler
+): StreamingAudioResamplerOutput[] {
+    if (output.channelData.length !== preparedAudioTrack.inputChannelCount
+        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
+        || !isSupportedCustomAudioInputLayout(
+            'dts',
+            output.channelData.length,
+            output.sampleRate
+        )) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'Decoded DTS audio format changed during playback'
+        );
+    }
+    const sampleWindow = getAudioSampleWindow(
+        output.mediaTimeMicroseconds,
+        output.frameCount,
+        output.sampleRate,
+        startTimeMicroseconds
+    );
+    if (!sampleWindow) {
+        return [];
+    }
+
+    const inputChannelData: Float32Array[] = [];
+    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
+    for (const channel of output.channelData) {
+        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
+    }
+    const channelData = mixCustomAudioToStereo(
+        inputChannelData,
+        output.channelLayout
+    );
+    return resampler.push({
+        channelData,
+        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+    });
+}
+
+function normalizeTrueHDAudioOutput(
+    output: TrueHDDecodedAudioOutput,
+    preparedAudioTrack: PreparedAudioTrack,
+    startTimeMicroseconds: Microseconds,
+    resampler: StreamingAudioResampler
+): StreamingAudioResamplerOutput[] {
+    if (output.codec !== preparedAudioTrack.decoderBackend
+        || output.channelData.length !== preparedAudioTrack.inputChannelCount
+        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
+        || !isSupportedCustomAudioInputLayout(
+            'truehd',
+            output.channelData.length,
+            output.sampleRate
+        )) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'Decoded TrueHD audio format changed during playback'
+        );
+    }
+    const sampleWindow = getAudioSampleWindow(
+        output.mediaTimeMicroseconds,
+        output.frameCount,
+        output.sampleRate,
+        startTimeMicroseconds
+    );
+    if (!sampleWindow) {
+        return [];
+    }
+
+    const inputChannelData: Float32Array[] = [];
+    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
+    for (const channel of output.channelData) {
+        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
+    }
+    const channelData = mixCustomAudioToStereo(
+        inputChannelData,
+        output.channelLayout
+    );
+    return resampler.push({
+        channelData,
+        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+    });
+}
+
 async function postNormalizedAudioOutput(
     run: DecodeRun,
     outputs: readonly StreamingAudioResamplerOutput[],
@@ -1414,6 +1777,10 @@ function createOwnedHEVCVideoDecoderPort(
                     neutralizeHDRColorMetadata: run.neutralizeHDRColorMetadata
                 }
             );
+        case 'openjpeg':
+            throw new Error('The OpenJPEG route does not use an HEVC decoder port');
+        case 'legacy-software':
+            throw new Error('The legacy software route does not use an HEVC decoder port');
     }
 }
 
@@ -2153,11 +2520,320 @@ async function streamOwnedHEVCFrames(
     }
 }
 
+async function streamJPEG2000Frames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack
+): Promise<void> {
+    if (
+        preparedVideoTrack.codec !== 'jpeg2000'
+        || run.videoDecoderBackend !== 'openjpeg'
+        || run.videoOutputMode !== 'video-frame'
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The OpenJPEG decoder requires a negotiated JPEG 2000 VideoFrame route'
+        );
+    }
+
+    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const startPacket = await packetSink.getPacket(
+        microsecondsToSeconds(request.startTimeMicroseconds),
+        OPENJPEG_PACKET_OPTIONS
+    ) ?? await packetSink.getFirstPacket(OPENJPEG_PACKET_OPTIONS);
+    if (!startPacket || run.cancelled) {
+        return;
+    }
+    const firstPacketMediaTimeMicroseconds = requireMicroseconds(
+        startPacket.microsecondTimestamp,
+        'OpenJPEG first packet timestamp'
+    );
+    postVideoStartupProgress(
+        run,
+        'video-key-packet-ready',
+        0,
+        firstPacketMediaTimeMicroseconds
+    );
+
+    const decoder = new JPEG2000SoftwareVideoDecoder();
+    try {
+        await decoder.init();
+        if (run.cancelled) {
+            return;
+        }
+        postVideoStartupProgress(
+            run,
+            'video-decoder-ready',
+            0,
+            firstPacketMediaTimeMicroseconds
+        );
+
+        const packetIterator = packetSink.packets(
+            startPacket,
+            undefined,
+            OPENJPEG_PACKET_OPTIONS
+        );
+        run.videoIterator = packetIterator;
+        let packetCount = 0;
+        while (await waitForFrameCredit(run)) {
+            const packetResult = await packetIterator.next();
+            if (run.cancelled || packetResult.done) {
+                return;
+            }
+
+            packetCount += 1;
+            const packet = packetResult.value;
+            const packetMediaTimeMicroseconds = requireMicroseconds(
+                packet.microsecondTimestamp,
+                'OpenJPEG packet timestamp'
+            );
+            const packetDurationMicroseconds = requireMicroseconds(
+                packet.microsecondDuration,
+                'OpenJPEG packet duration'
+            );
+            if (packetDurationMicroseconds < 0) {
+                throw new RangeError('OpenJPEG packet duration must not be negative');
+            }
+            postVideoStartupProgress(
+                run,
+                'video-packet-started',
+                packetCount,
+                packetMediaTimeMicroseconds
+            );
+            let frame: VideoFrame | null = decoder.decode(
+                packet,
+                preparedVideoTrack.geometry
+            );
+            try {
+                postVideoStartupProgress(
+                    run,
+                    'video-packet-decoded',
+                    packetCount,
+                    packetMediaTimeMicroseconds
+                );
+                const ownedFrame = frame;
+                frame = null;
+                await postVideoFrame(
+                    run,
+                    {
+                        durationMicroseconds: packetDurationMicroseconds,
+                        encodedDolbyVisionMetadata: null,
+                        mediaTimeMicroseconds: packetMediaTimeMicroseconds,
+                        source: {
+                            frame: ownedFrame,
+                            geometry: preparedVideoTrack.geometry,
+                            kind: 'native-frame'
+                        }
+                    },
+                    preparedVideoTrack.geometry
+                );
+            } finally {
+                frame?.close();
+            }
+        }
+    } finally {
+        decoder.close();
+    }
+}
+
+function closeLegacyVideoSamples(samples: VideoSample[]): void {
+    for (const sample of samples.splice(0)) {
+        sample.close();
+    }
+}
+
+async function postLegacyVideoSamples(
+    run: DecodeRun,
+    samples: VideoSample[],
+    expectedGeometry: RawVideoFrameGeometry,
+    startTimeMicroseconds: Microseconds
+): Promise<boolean> {
+    while (samples.length > 0) {
+        const sample = samples.shift();
+        if (!sample) {
+            continue;
+        }
+        try {
+            const timing = getOwnedDecodedVideoTiming({
+                kind: 'video-sample',
+                sample
+            });
+            if (
+                timing.mediaTimeMicroseconds + timing.durationMicroseconds
+                <= startTimeMicroseconds
+            ) {
+                continue;
+            }
+            if (!await waitForFrameCredit(run) || run.cancelled) {
+                return false;
+            }
+            await postVideoFrame(
+                run,
+                {
+                    durationMicroseconds: timing.durationMicroseconds,
+                    encodedDolbyVisionMetadata: null,
+                    mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
+                    source: {
+                        kind: 'video-sample',
+                        sample
+                    }
+                },
+                expectedGeometry
+            );
+        } finally {
+            sample.close();
+        }
+    }
+    return !run.cancelled;
+}
+
+async function streamLegacyVideoFrames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack
+): Promise<void> {
+    if (
+        preparedVideoTrack.codec !== 'mpeg2video'
+        || run.videoDecoderBackend !== 'legacy-software'
+        || run.videoOutputMode !== 'video-frame'
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The legacy software decoder requires a negotiated MPEG-2 VideoFrame route'
+        );
+    }
+
+    const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
+    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
+    const keyPacket = await packetSink.getKeyPacket(
+        startTimeSeconds,
+        LEGACY_VIDEO_PACKET_OPTIONS
+    ) ?? await packetSink.getFirstKeyPacket(LEGACY_VIDEO_PACKET_OPTIONS);
+    if (!keyPacket || run.cancelled) {
+        return;
+    }
+    const keyPacketMediaTimeMicroseconds = requireMicroseconds(
+        keyPacket.microsecondTimestamp,
+        'Legacy video key packet timestamp'
+    );
+    postVideoStartupProgress(
+        run,
+        'video-key-packet-ready',
+        0,
+        keyPacketMediaTimeMicroseconds
+    );
+
+    const pendingSamples: VideoSample[] = [];
+    let decoderError: unknown = null;
+    const decoder = new LegacySoftwareVideoDecoder({
+        codec: 'mpeg2video',
+        codedHeight: preparedVideoTrack.geometry.codedHeight,
+        codedWidth: preparedVideoTrack.geometry.codedWidth,
+        colorSpace: preparedVideoTrack.decoderConfig.colorSpace,
+        displayHeight: preparedVideoTrack.geometry.displayHeight,
+        displayWidth: preparedVideoTrack.geometry.displayWidth
+    }, {
+        onError: (error: unknown): void => {
+            decoderError = error;
+        },
+        onSample: (sample: VideoSample): void => {
+            if (pendingSamples.length >= OWNED_VIDEO_DECODER_QUEUE_HIGH_WATER_MARK) {
+                throw new RangeError('The legacy decoded frame queue exceeded its bound');
+            }
+            pendingSamples.push(sample);
+        }
+    });
+    const packetIterator = packetSink.packets(
+        keyPacket,
+        undefined,
+        LEGACY_VIDEO_PACKET_OPTIONS
+    );
+    run.videoIterator = packetIterator;
+    try {
+        await decoder.init();
+        if (run.cancelled) {
+            return;
+        }
+        postVideoStartupProgress(
+            run,
+            'video-decoder-ready',
+            0,
+            keyPacketMediaTimeMicroseconds
+        );
+
+        let packetCount = 0;
+        while (!run.cancelled) {
+            const packetResult = await packetIterator.next();
+            if (run.cancelled) {
+                return;
+            }
+            if (packetResult.done) {
+                break;
+            }
+            packetCount += 1;
+            const packet = packetResult.value;
+            const packetMediaTimeMicroseconds = requireMicroseconds(
+                packet.microsecondTimestamp,
+                'Legacy video packet timestamp'
+            );
+            postVideoStartupProgress(
+                run,
+                'video-packet-started',
+                packetCount,
+                packetMediaTimeMicroseconds
+            );
+            decoder.decode(packet);
+            if (decoderError !== null) {
+                throw decoderError;
+            }
+            postVideoStartupProgress(
+                run,
+                'video-packet-decoded',
+                packetCount,
+                packetMediaTimeMicroseconds
+            );
+            if (!await postLegacyVideoSamples(
+                run,
+                pendingSamples,
+                preparedVideoTrack.geometry,
+                request.startTimeMicroseconds
+            )) {
+                return;
+            }
+        }
+        if (run.cancelled) {
+            return;
+        }
+        decoder.flush();
+        if (decoderError !== null) {
+            throw decoderError;
+        }
+        await postLegacyVideoSamples(
+            run,
+            pendingSamples,
+            preparedVideoTrack.geometry,
+            request.startTimeMicroseconds
+        );
+    } finally {
+        closeLegacyVideoSamples(pendingSamples);
+        try {
+            await packetIterator.return?.();
+        } catch {
+            // Input disposal is the authoritative cancellation signal
+        }
+        decoder.close();
+    }
+}
+
 async function streamVideoFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
+    if (run.videoDecoderBackend === 'openjpeg') {
+        return streamJPEG2000Frames(run, request, preparedVideoTrack);
+    }
+    if (run.videoDecoderBackend === 'legacy-software') {
+        return streamLegacyVideoFrames(run, request, preparedVideoTrack);
+    }
     if (preparedVideoTrack.codec === 'hevc') {
         return streamOwnedHEVCFrames(run, request, preparedVideoTrack);
     }
@@ -2249,6 +2925,123 @@ async function streamAudioSamples(
     }
 }
 
+async function streamDTSAudioPackets(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const startPacket = await packetSink.getPacket(
+        microsecondsToSeconds(request.startTimeMicroseconds)
+    );
+    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
+        MediaSampleIterator<EncodedPacket>;
+    run.audioIterator = iterator;
+    const decoder = await DTSSoftwareAudioDecoder.create();
+    const resampler = new StreamingAudioResampler({
+        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    });
+
+    try {
+        while (await waitForAudioSampleCredit(run)) {
+            const iteratorResult = await iterator.next();
+            if (run.cancelled) {
+                return;
+            }
+            if (iteratorResult.done) {
+                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                return;
+            }
+            const packet = iteratorResult.value;
+            const output = decoder.decode(
+                packet.data,
+                requireMicroseconds(
+                    packet.microsecondTimestamp,
+                    'Encoded DTS packet timestamp'
+                )
+            );
+            const normalizedOutput = normalizeDTSAudioOutput(
+                output,
+                preparedAudioTrack,
+                request.startTimeMicroseconds,
+                resampler
+            );
+            if (!await postNormalizedAudioOutput(run, normalizedOutput, true)) {
+                return;
+            }
+        }
+    } finally {
+        decoder.close();
+    }
+}
+
+async function streamTrueHDAudioPackets(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    const decoderCodec = preparedAudioTrack.decoderBackend;
+    if (decoderCodec !== 'truehd' && decoderCodec !== 'mlp') {
+        throw new UnsupportedCustomDecodeSourceError('TrueHD decoder selection is unavailable');
+    }
+    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const prerollTimeMicroseconds = Math.max(
+        0,
+        request.startTimeMicroseconds - TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS
+    ) as Microseconds;
+    const startPacket = await packetSink.getPacket(
+        microsecondsToSeconds(prerollTimeMicroseconds)
+    );
+    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
+        MediaSampleIterator<EncodedPacket>;
+    run.audioIterator = iterator;
+    const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
+    const resampler = new StreamingAudioResampler({
+        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    });
+
+    try {
+        while (await waitForAudioSampleCredit(run)) {
+            const iteratorResult = await iterator.next();
+            if (run.cancelled) {
+                return;
+            }
+            if (iteratorResult.done) {
+                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                return;
+            }
+            const packet = iteratorResult.value;
+            const decodedOutputs = decoder.decode(
+                packet.data,
+                requireMicroseconds(
+                    packet.microsecondTimestamp,
+                    'Encoded TrueHD packet timestamp'
+                )
+            );
+            const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
+            for (const output of decodedOutputs) {
+                normalizedOutputs.push(...normalizeTrueHDAudioOutput(
+                    output,
+                    preparedAudioTrack,
+                    request.startTimeMicroseconds,
+                    resampler
+                ));
+            }
+            if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
+                return;
+            }
+        }
+    } finally {
+        decoder.close();
+    }
+}
+
 function takeOwnedArrayBuffer(data: Uint8Array): ArrayBuffer {
     if (data.buffer instanceof ArrayBuffer
         && data.byteOffset === 0
@@ -2306,6 +3099,12 @@ async function streamNativeAudioPackets(
     const codec: NativeMediaAudioFMP4Codec = audioConfiguration.codec === 'ac-3' ?
         'ac3' :
         'eac3';
+    const decoderConfig = preparedAudioTrack.decoderConfig;
+    if (!decoderConfig) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'Native audio decoder configuration is unavailable'
+        );
+    }
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const startPacket = await packetSink.getPacket(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -2316,7 +3115,7 @@ async function streamNativeAudioPackets(
     const remuxer = new NativeMediaAudioFMP4Remuxer({
         channelCount: audioConfiguration.channelCount as 2 | 6,
         codec,
-        decoderConfig: preparedAudioTrack.decoderConfig,
+        decoderConfig,
         sampleRate: 48_000
     });
 
@@ -2365,7 +3164,18 @@ function streamPreparedAudio(
 ): Promise<void> {
     switch (preparedAudioTrack.outputMode) {
         case 'decoded-pcm':
-            return streamAudioSamples(run, request, preparedAudioTrack);
+            switch (preparedAudioTrack.decoderBackend) {
+                case 'dts':
+                    return streamDTSAudioPackets(run, request, preparedAudioTrack);
+                case 'mlp':
+                case 'truehd':
+                    return streamTrueHDAudioPackets(run, request, preparedAudioTrack);
+                case 'mediabunny':
+                    return streamAudioSamples(run, request, preparedAudioTrack);
+            }
+            throw new UnsupportedCustomDecodeSourceError(
+                'The selected audio decoder backend is unsupported'
+            );
         case 'native-media':
             return streamNativeAudioPackets(run, request, preparedAudioTrack);
     }

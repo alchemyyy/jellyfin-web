@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN,
+    SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN
+} from './CustomAudioDownmix';
+import {
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_MONO_CHANNEL_LAYOUT,
+    CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     getCustomAudioChannelLayout,
     mixCustomAudioToStereo
@@ -13,8 +19,31 @@ describe('CustomAudioChannelLayout', () => {
         expect(getCustomAudioChannelLayout(1)).toBe(CUSTOM_MONO_CHANNEL_LAYOUT);
         expect(getCustomAudioChannelLayout(2)).toBe(CUSTOM_STEREO_CHANNEL_LAYOUT);
         expect(getCustomAudioChannelLayout(6)).toBe(CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT);
+        expect(getCustomAudioChannelLayout(7)).toBe(CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT);
+        expect(getCustomAudioChannelLayout(8)).toBe(CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT);
         expect(getCustomAudioChannelLayout(0)).toBeNull();
-        expect(getCustomAudioChannelLayout(8)).toBeNull();
+    });
+
+    it('uses the shared 6.1 matrix in explicit WAVE channel order', () => {
+        const channels: Float32Array[] = [];
+        for (let channelIndex = 0; channelIndex < 7; channelIndex += 1) {
+            channels.push(new Float32Array([ channelIndex + 1 ]));
+        }
+
+        const output = mixCustomAudioToStereo(
+            channels,
+            CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT
+        );
+        const directGain = 1 / (1 + 3 / Math.SQRT2);
+        const mixedGain = directGain / Math.SQRT2;
+        expect(output[0][0]).toBeCloseTo(
+            1 * directGain + (3 + 5 + 6) * mixedGain,
+            6
+        );
+        expect(output[1][0]).toBeCloseTo(
+            2 * directGain + (3 + 5 + 7) * mixedGain,
+            6
+        );
     });
 
     it('duplicates mono without changing its level', () => {
@@ -64,5 +93,31 @@ describe('CustomAudioChannelLayout', () => {
             channels.slice(0, 2),
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT
         )).toThrow('5.1-side audio requires exactly 6 input channels');
+    });
+
+    it('uses the shared 7.1 matrix in explicit WAVE channel order', () => {
+        const channels: Float32Array[] = [];
+        for (let channelIndex = 0; channelIndex < 8; channelIndex += 1) {
+            channels.push(new Float32Array([ channelIndex + 1 ]));
+        }
+
+        const output = mixCustomAudioToStereo(
+            channels,
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT
+        );
+        const directGain = SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN;
+        const mixedGain = SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN;
+        expect(output[0][0]).toBeCloseTo(
+            1 * directGain + (3 + 5 + 7) * mixedGain,
+            6
+        );
+        expect(output[1][0]).toBeCloseTo(
+            2 * directGain + (3 + 6 + 8) * mixedGain,
+            6
+        );
+        expect(() => mixCustomAudioToStereo(
+            channels.slice(0, 6),
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT
+        )).toThrow('7.1 audio requires exactly 8 input channels');
     });
 });

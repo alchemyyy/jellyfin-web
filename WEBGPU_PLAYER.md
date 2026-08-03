@@ -156,9 +156,9 @@ Eligibility remains narrower than the decoder's theoretical support:
   seven exact outputs, and quantizes measured throughput to 24, 30, or 60 fps
   only with the same 1.25x headroom. Eligibility is bounded to progressive
   Main10, Level 153, 3840x2160, and the qualified frame-rate tier. Source
-  bitrate is not a capability bound. The actual High Tier Level 153
-  `The Dark Knight` stream has passed this native route on the development
-  machine; a compact deterministic High Tier fixture remains portable
+  bitrate is not a capability bound. A local High Tier Level 153 HDR10
+  regression source has passed this native route on the development machine;
+  a compact deterministic High Tier fixture remains portable
   regression hardening rather than a bitrate threshold.
   Jellyfin metadata must explicitly provide transfer, primaries, and matrix.
   `ColorRange` may be absent because some Jellyfin scans omit it, but the

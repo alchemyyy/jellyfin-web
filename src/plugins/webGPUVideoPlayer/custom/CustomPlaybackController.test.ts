@@ -444,6 +444,39 @@ async function startReadyPlayback(harness: ControllerHarness, withAudio: boolean
 }
 
 describe('CustomPlaybackController', () => {
+    it.each([ 'legacy-software', 'openjpeg' ] as const)(
+        'starts the qualified %s SDR VideoFrame route',
+        async videoDecoderBackend => {
+            const harness = createControllerHarness(false);
+            const startPromise = harness.controller.play({
+                ...createPlayOptions(),
+                videoDecoderBackend
+            });
+            await flushAsyncWork();
+            const generation = harness.videoDecodeSession.starts[0]?.generation;
+            if (!generation) {
+                throw new Error('Software video decode did not start');
+            }
+
+            expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+                generation,
+                videoDecoderBackend,
+                videoOutputMode: 'video-frame'
+            });
+            harness.videoDecodeSession.emit({
+                audio: null,
+                codec: videoDecoderBackend === 'openjpeg' ? 'mjp2' : 'mpeg2video',
+                generation,
+                type: 'ready'
+            });
+            await expect(startPromise).resolves.toMatchObject({
+                generation,
+                status: 'started'
+            });
+            await harness.controller.destroy();
+        }
+    );
+
     it('forwards native HDR metadata neutralization to the decode session', async () => {
         const harness = createControllerHarness(false);
         const startPromise = harness.controller.play({

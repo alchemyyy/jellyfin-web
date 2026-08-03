@@ -1,0 +1,53 @@
+{
+  "audio": {
+    "channelCount": 2,
+    "channelLayout": "stereo",
+    "durationMicroseconds": 10000000,
+    "mpvAudioTrack": 1,
+    "sampleRate": 48000,
+    "startTimeMicroseconds": 60000000
+  },
+  "caseId": "local-hdr10-flac-reference",
+  "jellyfin": {
+    "audioStreamIndex": 1,
+    "expected": {
+      "audioCodec": "flac",
+      "audioPath": "ready",
+      "videoDecoder": "native",
+      "videoOutput": "video-frame"
+    },
+    "itemId": "replace-with-local-jellyfin-item-id"
+  },
+  "mpvProfiles": [
+    {
+      "gamutMapping": "perceptual",
+      "hdrComputePeak": false,
+      "id": "static-spline",
+      "toneMapping": "spline"
+    },
+    {
+      "gamutMapping": "perceptual",
+      "hdrComputePeak": true,
+      "id": "dynamic-spline",
+      "toneMapping": "spline"
+    }
+  ],
+  "pacing": {
+    "durationMilliseconds": 10000,
+    "startTimeMicroseconds": 60000000
+  },
+  "schemaVersion": 1,
+  "visual": {
+    "captureToleranceMicroseconds": 2000,
+    "height": 1080,
+    "outputPeakNits": 100,
+    "timestampsMicroseconds": [
+      60000000,
+      120000000,
+      180000000,
+      240000000,
+      300000000
+    ],
+    "width": 1920
+  }
+}

@@ -152,6 +152,17 @@ describe('AudioWorkletProcessorSource', () => {
             acceptedChannelData.map(channel => channel.buffer)
         );
         expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            reason: 'periodic',
+            signal: {
+                analyzedFrameCount: 4,
+                analyzedSampleCount: 8,
+                clippedSampleCount: 7,
+                nonFiniteSampleCount: 0,
+                samplePeak: 8,
+                sampleSquareSum: 204
+            }
+        }));
+        expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
             hasPhysicalOutputTimeCorrelation: false,
             mediaTimeContextTimeMicroseconds: null,
             overflowEvents: 1,
@@ -198,7 +209,57 @@ describe('AudioWorkletProcessorSource', () => {
             mediaTimeContextTimeMicroseconds: null,
             mediaTimeMicroseconds: -5_000_000,
             queuedFrames: 0,
-            reason: 'flush'
+            reason: 'flush',
+            signal: {
+                analyzedFrameCount: 0,
+                analyzedSampleCount: 0,
+                clippedSampleCount: 0,
+                nonFiniteSampleCount: 0,
+                samplePeak: 0,
+                sampleSquareSum: 0
+            }
+        }));
+    });
+
+    it('measures the post-gain signal without counting underflow silence', () => {
+        let Processor: ProcessorConstructor | null = null;
+        evaluateWorkletModule((_name, constructor): void => {
+            Processor = constructor;
+        }, 1_000, 20_000);
+        const ProcessorConstructor = requireProcessorConstructor(Processor);
+        const processor = Reflect.construct(ProcessorConstructor, [ {
+            processorOptions: {
+                channelCount: 1,
+                maxBufferedFrames: 4,
+                maxChunks: 2,
+                telemetryIntervalFrames: 2
+            }
+        } ]) as ProcessorHarness;
+        processor.port.deliver({ muted: false, type: 'gain', volume: 0.25 });
+        processor.port.deliver({
+            channelData: [ new Float32Array([ 2, -2 ]) ],
+            generation: 1,
+            sequence: 1,
+            timestampMicroseconds: 0,
+            type: 'enqueue'
+        });
+        processor.port.deliver({ playing: true, type: 'playback' });
+
+        const output = [ new Float32Array(4) ];
+        processor.process([], [ output ]);
+
+        expect(Array.from(output[0])).toEqual([ 0.5, -0.5, 0, 0 ]);
+        expect(processor.port.postedMessages).toContainEqual(expect.objectContaining({
+            reason: 'underflow',
+            signal: {
+                analyzedFrameCount: 2,
+                analyzedSampleCount: 2,
+                clippedSampleCount: 0,
+                nonFiniteSampleCount: 0,
+                samplePeak: 0.5,
+                sampleSquareSum: 0.5
+            },
+            underflowFrames: 2
         }));
     });
 

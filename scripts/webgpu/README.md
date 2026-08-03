@@ -320,11 +320,11 @@ existing page.
 
 Prerequisites:
 
-- Build Jellyfin Web with `enableWebGPUVideoPlayer` and
-  `enableWebGPUCustomDecode` enabled in the served `dist/config.json`. Enable
-  `multiserver` when the static frontend and Jellyfin API use different ports.
-  The isolated startup comparison overlays only the four WebGPU flags in CDP
-  responses and does not require or modify those served flag values.
+- Build and serve Jellyfin Web normally. The harness overlays the four WebGPU
+  flags only in intercepted `config.json` responses for ordinary custom smoke
+  and isolated startup-comparison pages; it does not require or modify the
+  served flag values. Enable `multiserver` in the served configuration when the
+  static frontend and Jellyfin API use different ports.
 - Serve the frontend and Jellyfin backend on `localhost`.
 - Start Chrome or Edge with a remote-debugging port and leave one page open.
   Automated hidden-window runs must disable occlusion and renderer background
@@ -524,7 +524,8 @@ node --test scripts/webgpu/create-dual-track-dolby-vision-mp4-fixture.node-test.
 ```
 
 For server-metadata validation, copy the `.mp4` into an ignored Jellyfin test
-library and refresh it. Jellyfin 10.11.6 must expose exactly two HEVC video
+library on the configured Jellyfin 12 nightly server and refresh it. The server
+must expose exactly two HEVC video
 streams: a 10-bit PQ BL and a matching Profile 7.6 RPU/EL track. The MP4 EL is
 expected to report `BlPresentFlag=0`; the equivalent separate-track Matroska
 fixture currently reports `BlPresentFlag=1`. Eligibility accepts either value
@@ -634,6 +635,9 @@ harness requires `external-dolby-vision` presentation and authorized route
 `external-I420P10-bt709-limited:dovi-p5-rpu-v1`; it does not infer SDR merely
 from the output mode. Reports retain both that active authorization and the
 prewarmed Profile 7 authorization so one smoke session verifies route isolation.
+Fixture version 2 also reports finite `maximumInputChannelError` and
+`maximumChannelError` values for the recovered base signal and final output;
+the harness rejects older authorization telemetry that lacks either measurement.
 The capability snapshot also reports the measured native Profile 5 throughput
 and its qualified 24, 30, or 60 fps device-profile tier.
 
@@ -866,6 +870,100 @@ The command writes one JSON result and returns a nonzero exit code on failure.
 Output includes only bounded counters, states, and failure codes. URLs,
 usernames, passwords, authorization fields, cookies, and token-like query
 parameters are recursively removed before serialization.
+
+## JPEG 2000 qualification
+
+The OpenJPEG route uses the checked-in
+`jpeg2000-capability-fixtures/srgb-960x540.jp2` fixture. Regenerate and verify it
+with:
+
+```powershell
+python scripts/webgpu/generate_jpeg2000_capability_fixture.py
+node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
+```
+
+The browser exact-capability worker verifies the full decoded RGBA fingerprint
+and steady-state throughput before the device profile advertises `jpeg2000`.
+See `WEBGPU_JPEG2000.md` for the supported envelope and expansion procedure.
+
+## Legacy video qualification
+
+The progressive MPEG-2 route uses the focused FFmpeg build and checked-in
+`legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv` fixture.
+Regenerate, rebuild, and verify it with:
+
+```powershell
+python scripts/webgpu/generate_legacy_video_capability_fixture.py
+python scripts/webgpu/legacy-video-decoder/build_legacy_video_decoder.py --verify-reproducible
+node scripts/webgpu/verify-legacy-video-decoder-artifacts.mjs
+npm test -- src/plugins/webGPUVideoPlayer/custom/LegacyVideoDecoderIntegration.test.ts
+node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
+```
+
+The browser probe performs full Matroska demux, reordered decode, byte-count,
+I420 fingerprint, and throughput validation before the device profile
+advertises `mpeg2video`. See `WEBGPU_LEGACY_VIDEO.md` for the supported envelope
+and explicit container, profile, geometry, frame-rate, and interlace exclusions.
+This route is progressive MPEG-2 Main in Matroska only. It does not authorize
+VC-1/WMV3, interlaced MPEG-2, or MPEG-2 in TS/MTS/M2TS, PS/VOB, MOV, or MP4.
+
+## TrueHD/MLP qualification
+
+The Matroska TrueHD/MLP route keeps Mediabunny as the container, range, packet,
+timestamp, and seek layer and lazy-loads a pinned TrueHD/MLP-only FFmpeg
+`libavcodec` WebAssembly decoder. Rebuild the focused LGPL artifact, regenerate
+the embedded deterministic packet/PCM records, and verify exact bytes with:
+
+```powershell
+python scripts/webgpu/build_truehd_decoder.py --verify-reproducible
+python scripts/webgpu/generate_truehd_capability_fixtures.py
+node scripts/webgpu/verify-truehd-decoder-artifacts.mjs
+npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts
+npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts
+npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts
+```
+
+The browser exact-capability worker requires lossless PCM fingerprints for
+TrueHD stereo/48, TrueHD 5.1/96, TrueHD 5.1/192, and MLP stereo/48, recovery at
+a later major sync after dependent-frame startup, and at least 2x real-time
+throughput. These four tuples are an exact union, not a channel/rate Cartesian
+product.
+Atmos is explicitly channel-bed-only. Seven/eight-channel and M2TS routes remain
+unadvertised pending exact fixtures and bounded demux evidence. See
+`WEBGPU_TRUEHD.md` for the supported envelope and expansion procedure.
+
+## DTS qualification
+
+The Matroska DTS route uses Mediabunny packet demux and a pinned libdcadec
+codec-only WebAssembly module. Release artifacts are built twice from isolated
+source trees and must match exactly:
+
+```powershell
+python scripts/webgpu/build_dts_decoder.py --verify-reproducible
+python scripts/webgpu/generate_dts_capability_fixtures.py --check
+python scripts/webgpu/generate_seven_point_one_downmix_reference.py --check
+node scripts/webgpu/verify-dts-decoder-artifacts.mjs
+npx vite-node --script scripts/webgpu/report_dts_downmix_reference.ts --check
+npm test -- src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts
+npm test -- src/plugins/webGPUVideoPlayer/custom/DTSMediabunnyDemuxIntegration.test.ts
+```
+
+Capability and server negotiation authorize only the seven exact
+profile/layout/rate tuples recorded in `WEBGPU_DTS.md`. They do not authorize a
+Cartesian product. DTS:X means decoded DTS-HD MA channel bed only. Eight-channel
+output uses the WAVE `FL, FR, FC, LFE, BL, BR, SL, SR` order and the explicitly
+selected `mpv --audio-normalize-downmix=yes` stereo matrix. See
+`WEBGPU_AUDIO_DOWNMIX.md` for the pinned mpv/FFmpeg comparison, metrics, and
+external reproduction command.
+
+## Portable mpv/browser A/B manifest
+
+Copy `scripts/webgpu/mpv-ab-manifest.example.json` to an ignored local manifest
+before running `run_mpv_ab.py`. Replace its placeholder Jellyfin item ID and
+timestamps with values for the local validation source. Supply server URLs and
+credentials through environment variables; never add an authenticated URL,
+account value, local media identifier, or machine-specific tool path to the
+portable example or a committed report.
 
 Run the pure helper tests without opening or navigating a browser:
 

@@ -509,6 +509,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
                 || (typeof candidate.sequence === 'number'
                     && Number.isSafeInteger(candidate.sequence)
                     && candidate.sequence > 0))
+            && this.isSignalTelemetry(candidate.signal)
             && isNonNegativeSafeInteger(candidate.staleChunks)
             && isNonNegativeSafeInteger(candidate.underflowEvents)
             && isNonNegativeSafeInteger(candidate.underflowFrames)
@@ -516,6 +517,22 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
             && Number.isFinite(candidate.volume)
             && candidate.volume >= 0
             && candidate.volume <= 1;
+    }
+
+    private isSignalTelemetry(
+        value: AudioWorkletTelemetry['signal'] | undefined
+    ): boolean {
+        if (value === undefined) {
+            return true;
+        }
+        return isNonNegativeSafeInteger(value.analyzedFrameCount)
+            && isNonNegativeSafeInteger(value.analyzedSampleCount)
+            && isNonNegativeSafeInteger(value.clippedSampleCount)
+            && isNonNegativeSafeInteger(value.nonFiniteSampleCount)
+            && Number.isFinite(value.samplePeak)
+            && value.samplePeak >= 0
+            && Number.isFinite(value.sampleSquareSum)
+            && value.sampleSquareSum >= 0;
     }
 
     private postGain(): void {

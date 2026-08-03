@@ -80,6 +80,14 @@ function createTelemetry(overrides: Partial<AudioWorkletTelemetry> = {}): AudioW
         queuedFrames: 2,
         reason: 'periodic',
         sequence: null,
+        signal: {
+            analyzedFrameCount: 4,
+            analyzedSampleCount: 8,
+            clippedSampleCount: 0,
+            nonFiniteSampleCount: 0,
+            samplePeak: 0.5,
+            sampleSquareSum: 1
+        },
         staleChunks: 0,
         type: 'telemetry',
         underflowEvents: 0,
@@ -216,6 +224,12 @@ describe('AudioWorkletController', () => {
         }));
         harness.port.dispatchEvent(new MessageEvent('message', {
             data: { ...createTelemetry(), consumedFrames: 0.5 }
+        }));
+        harness.port.dispatchEvent(new MessageEvent('message', {
+            data: {
+                ...createTelemetry(),
+                signal: { ...createTelemetry().signal, sampleSquareSum: Number.NaN }
+            }
         }));
         expect(listener).toHaveBeenCalledOnce();
         expect(listener).toHaveBeenCalledWith(telemetry);

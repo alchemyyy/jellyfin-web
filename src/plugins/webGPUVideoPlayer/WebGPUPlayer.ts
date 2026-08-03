@@ -1396,6 +1396,29 @@ export default class WebGPUPlayer {
         return telemetry ? { ...telemetry } : null;
     }
 
+    /** Returns the selected Jellyfin stream index rather than the decoder track ordinal. */
+    getCustomPlaybackSelectedAudioStreamIndex(): number | null {
+        if (!this.getActiveCustomPlaybackController()
+            || !this.currentPlaybackOptions
+            || typeof this.currentPlaybackOptions !== 'object') {
+            return null;
+        }
+
+        const playbackOptions = this.currentPlaybackOptions as PlaybackOptionsRecord;
+        const requestedIndex = playbackOptions.audioStreamIndex;
+        if (Number.isSafeInteger(requestedIndex) && Number(requestedIndex) >= 0) {
+            return Number(requestedIndex);
+        }
+        const mediaSource = playbackOptions.mediaSource;
+        if (!mediaSource || typeof mediaSource !== 'object') {
+            return null;
+        }
+        const defaultIndex = (mediaSource as PlaybackOptionsRecord).DefaultAudioStreamIndex;
+        return Number.isSafeInteger(defaultIndex) && Number(defaultIndex) >= 0 ?
+            Number(defaultIndex) :
+            null;
+    }
+
     /** Returns the last eligibility decision without operational source data. */
     getCustomPlaybackEligibility(): CustomPlaybackEligibilityTelemetry | null {
         const eligibility = this.lastCustomPlaybackEligibility;

@@ -1,0 +1,7 @@
+libdcadec commit: b93deed1a231dd6dd7e39b9fe7d2abe05aa00158
+libdcadec source SHA-256: a33105039c74f913264ba4cca5d40e23d25b11f4149c9411fe4aad4d1c6a3a41
+Emscripten: 4.0.13
+Emscripten revision: 2659582941bef14008476903f48941909db1b196
+Bridge SHA-256: c559bfbe26cdda5d1a865df3124df788d6c9387d1edd46163ee2083e450d78d8
+Runtime module SHA-256: baffcd99728856cd7f8300e92425b0c59d444988e7d3370aa5dc9de72b446073
+Isolated reproducible rebuild: verified

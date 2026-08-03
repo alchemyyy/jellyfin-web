@@ -1,0 +1,25 @@
+{
+  "artifacts": {
+    "legacy-video-decode.js": "d43c51795d5d77ae5dd1bd7cda5bb086d90e91638030165645a4295a08ea1563",
+    "legacy-video-decode.wasm": "322a09a902af2b896958b6685f399fc44c73be3dc2d4c67b66eaf5ee3857149a"
+  },
+  "bridgeSHA256": "a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da",
+  "configuredComponents": [
+    "--disable-all",
+    "--disable-everything",
+    "--disable-gpl",
+    "--disable-version3",
+    "--disable-nonfree",
+    "--enable-avcodec",
+    "--enable-decoder=mpeg2video"
+  ],
+  "decoders": [
+    "mpeg2video"
+  ],
+  "emscripten": "4.0.13",
+  "emscriptenRevision": "2659582941bef14008476903f48941909db1b196",
+  "ffmpegRevision": "a59498db085e3d635532397128550141ab87408a",
+  "ffmpegSourceSHA256": "fff68fd0b5061b1befba1cd9fc95357d9fc85eb3201bfed597c70d5f8033567e",
+  "license": "LGPL version 2.1 or later",
+  "reproducibleBuild": true
+}

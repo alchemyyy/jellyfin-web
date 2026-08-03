@@ -142,6 +142,95 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
     };
 }
 
+function createBundledDTSCapability(): NonNullable<
+    CustomDecodeCapabilities['bundledDTS']
+> {
+    return Object.freeze({
+        channelBedOnly: true,
+        codec: 'dts',
+        codecString: 'dts',
+        decodeMilliseconds: 8,
+        libraryVersion: 131_073,
+        maximumChannelCount: 8,
+        measuredRealTimeFactor: 32,
+        objectAudioRendered: false,
+        profiles: Object.freeze([
+            'core',
+            'core-96-24',
+            'es',
+            'hd-hra',
+            'hd-ma'
+        ] as const),
+        reason: 'decode-output-verified',
+        sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
+        status: 'supported',
+        verifiedFixtureCount: 7,
+        verifiedProfileMask: 0x1f
+    });
+}
+
+function createBundledTrueHDCapability(): NonNullable<
+    CustomDecodeCapabilities['bundledTrueHD']
+> {
+    return Object.freeze({
+        channelBedOnly: true,
+        channelCounts: Object.freeze([ 2, 6 ] as const),
+        codecs: Object.freeze([ 'truehd', 'mlp' ] as const),
+        decodeMilliseconds: 12,
+        library: 'ffmpeg-libavcodec',
+        libraryVersion: 4_079_728,
+        majorSyncRecoveryVerified: true,
+        measuredRealTimeFactor: 12,
+        objectAudioRendered: false,
+        passthrough: false,
+        reason: 'decode-output-verified',
+        sampleRates: Object.freeze([ 48_000, 96_000, 192_000 ] as const),
+        status: 'supported',
+        verifiedChannelCountMask: (1 << 2) | (1 << 6),
+        verifiedCodecMask: 0x03,
+        verifiedFixtureCount: 4,
+        verifiedSampleRateMask: 0x07
+    });
+}
+
+function createBundledJPEG2000Capability(): NonNullable<
+    CustomDecodeCapabilities['bundledJPEG2000']
+> {
+    return Object.freeze({
+        bitDepth: 8,
+        codec: 'jpeg2000',
+        codecString: 'mjp2',
+        decodeMilliseconds: 200,
+        decodedRGBAByteLength: 2_073_600,
+        decodedRGBAFingerprint: 1_076_220_778,
+        maximumCodedHeight: 540,
+        maximumCodedWidth: 960,
+        maximumFramesPerSecond: 24,
+        measuredFramesPerSecond: 40,
+        reason: 'decode-output-verified',
+        status: 'supported'
+    });
+}
+
+function createBundledLegacyVideoCapability(): NonNullable<
+    CustomDecodeCapabilities['bundledLegacyVideo']
+> {
+    return Object.freeze({
+        codec: 'mpeg2video',
+        decodeMilliseconds: 400,
+        decodedFrameByteLength: 3_110_400,
+        decodedFrameCount: 12,
+        decodedI420Fingerprint: 544_635_241,
+        decodedTotalByteLength: 37_324_800,
+        maximumCodedHeight: 1_080,
+        maximumCodedWidth: 1_920,
+        maximumFramesPerSecond: 24,
+        measuredFramesPerSecond: 35,
+        reason: 'decode-output-verified',
+        status: 'supported'
+    });
+}
+
 function createCapabilities(): CustomDecodeCapabilities {
     const createRawHDRCapability = (
         codec: CustomRawHDRVideoCodec
@@ -166,7 +255,9 @@ function createCapabilities(): CustomDecodeCapabilities {
     }
     return {
         audio,
+        bundledDTS: createBundledDTSCapability(),
         bundledHEVC: createBundledHEVCCapabilities(),
+        bundledTrueHD: createBundledTrueHDCapability(),
         h264Profiles: createH264ProfileCapabilities(),
         nativeDolbyVisionHEVC: {
             bitDepth: 10,
@@ -223,6 +314,8 @@ function createCapabilities(): CustomDecodeCapabilities {
             av1: createCapability('av1', true),
             h264: createCapability('h264', true),
             hevc: createCapability('hevc', true),
+            jpeg2000: createCapability('jpeg2000', false),
+            mpeg2video: createCapability('mpeg2video', false),
             vp8: createCapability('vp8', true),
             vp9: createCapability('vp9', true)
         }
@@ -361,6 +454,194 @@ function createOptions(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 describe('CustomPlaybackEligibility', () => {
+    it.each([ 'MPEG2VIDEO', 'MPEG2', 'MPEG-2' ])(
+        'selects the exact progressive MPEG-2 Matroska route for %s metadata',
+        (codecName) => {
+            const baseCapabilities = createCapabilities();
+            const capabilities: CustomDecodeCapabilities = {
+                ...baseCapabilities,
+                bundledLegacyVideo: createBundledLegacyVideoCapability(),
+                video: {
+                    ...baseCapabilities.video,
+                    mpeg2video: createCapability('mpeg2video', true)
+                }
+            };
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[0] = {
+                AverageFrameRate: 24,
+                BitDepth: 8,
+                BitRate: 1_500_000_000,
+                Codec: codecName,
+                Height: 1_080,
+                Index: 0,
+                IsInterlaced: false,
+                Profile: 'Main',
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 1_920
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                eligible: true,
+                maximumCodedHeight: 1_080,
+                maximumCodedWidth: 1_920,
+                videoDecoderBackend: 'legacy-software',
+                videoOutputMode: 'video-frame'
+            });
+        }
+    );
+
+    it.each([
+        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false ],
+        [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mkv', true ],
+        [ 'excessive width', { AverageFrameRate: 24, Width: 1_921 }, 'mkv', true ],
+        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true ],
+        [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true ],
+        [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true ],
+        [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true ],
+        [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true ],
+        [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true ],
+        [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true ],
+        [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true ],
+        [ 'MPEG-PS container', { AverageFrameRate: 24 }, 'mpegps', true ],
+        [ 'MPEG container', { AverageFrameRate: 24 }, 'mpeg', true ],
+        [ 'MPG container', { AverageFrameRate: 24 }, 'mpg', true ],
+        [ 'VOB container', { AverageFrameRate: 24 }, 'vob', true ],
+        [ 'MOV container', { AverageFrameRate: 24 }, 'mov', true ],
+        [ 'MP4 container', { AverageFrameRate: 24 }, 'mp4', true ],
+        [ 'other container', { AverageFrameRate: 24 }, 'webm', true ]
+    ] as const)(
+        'rejects MPEG-2 with %s',
+        (_label, metadataOverride, container, includeCapability) => {
+            const baseCapabilities = createCapabilities();
+            const capabilities: CustomDecodeCapabilities = {
+                ...baseCapabilities,
+                ...(includeCapability ? {
+                    bundledLegacyVideo: createBundledLegacyVideoCapability()
+                } : {})
+            };
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[0] = {
+                BitDepth: 8,
+                Codec: 'MPEG2VIDEO',
+                Height: 1_080,
+                Index: 0,
+                IsInterlaced: false,
+                Profile: 'Main',
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 1_920,
+                ...metadataOverride
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            ).eligible).toBe(false);
+        }
+    );
+
+    it.each([ 'JPEG2000', 'JPEG 2000', 'J2K' ])(
+        'selects the exact OpenJPEG MJ2 route for %s metadata',
+        (codecName) => {
+            const baseCapabilities = createCapabilities();
+            const capabilities: CustomDecodeCapabilities = {
+                ...baseCapabilities,
+                bundledJPEG2000: createBundledJPEG2000Capability(),
+                video: {
+                    ...baseCapabilities.video,
+                    jpeg2000: createCapability('jpeg2000', true)
+                }
+            };
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mj2';
+            mediaSource.MediaStreams[0] = {
+                AverageFrameRate: 24,
+                BitDepth: 8,
+                Codec: codecName,
+                Height: 540,
+                Index: 0,
+                IsInterlaced: false,
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 960
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                eligible: true,
+                maximumCodedHeight: 540,
+                maximumCodedWidth: 960,
+                videoDecoderBackend: 'openjpeg',
+                videoOutputMode: 'video-frame'
+            });
+        }
+    );
+
+    it.each([
+        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mj2', false ],
+        [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mj2', true ],
+        [ 'excessive width', { AverageFrameRate: 24, Width: 961 }, 'mj2', true ],
+        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true ],
+        [ 'unqualified container', { AverageFrameRate: 24 }, 'mp4', true ]
+    ] as const)(
+        'rejects JPEG 2000 with %s',
+        (_label, metadataOverride, container, includeCapability) => {
+            const baseCapabilities = createCapabilities();
+            const capabilities: CustomDecodeCapabilities = {
+                ...baseCapabilities,
+                ...(includeCapability ? {
+                    bundledJPEG2000: createBundledJPEG2000Capability()
+                } : {})
+            };
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[0] = {
+                BitDepth: 8,
+                Codec: 'JPEG2000',
+                Height: 540,
+                Index: 0,
+                IsInterlaced: false,
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 960,
+                ...metadataOverride
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                capabilities,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            ).eligible).toBe(false);
+        }
+    );
+
     it.each([
         [ 'missing', undefined ],
         [ 'arbitrarily high', 1_500_000_000 ]
@@ -1770,6 +2051,259 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     });
+
+    it.each([
+        [ 'DTS', 6, 48_000 ],
+        [ 'DTS 96/24', 6, 96_000 ],
+        [ 'DTS-ES', 7, 48_000 ],
+        [ 'DTS-HD HRA', 8, 48_000 ],
+        [ 'DTS-HD MA', 8, 48_000 ],
+        [ 'DTS-HD MA', 6, 192_000 ],
+        [ 'DTS-HD MA + DTS:X', 8, 48_000 ]
+    ] as const)(
+        'selects the exact qualified Matroska DTS channel-bed route for %s',
+        (profile, channelCount, sampleRate) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = 'dts';
+            mediaSource.MediaStreams[1].Profile = profile;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+            const bundledRuntime: CustomPlaybackRuntimeAvailability = {
+                available: true,
+                environment: {
+                    ...AVAILABLE_RUNTIME.environment,
+                    audioData: false,
+                    audioDecoder: false
+                },
+                reason: null
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: bundledRuntime }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it('accepts the Matroska DCA alias through the same exact DTS route', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'matroska';
+        mediaSource.MediaStreams[1].Channels = 6;
+        mediaSource.MediaStreams[1].Codec = 'dca';
+        mediaSource.MediaStreams[1].Profile = 'DTS';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            eligible: true
+        });
+    });
+
+    it('limits 192 kHz DTS to the exact 5.1-channel Master Audio bed', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1].Channels = 8;
+        mediaSource.MediaStreams[1].Codec = 'dts';
+        mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
+        mediaSource.MediaStreams[1].SampleRate = 192_000;
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+
+        mediaSource.MediaStreams[1].Channels = 6;
+        mediaSource.MediaStreams[1].Profile = 'DTS-HD HRA';
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+    });
+
+    it.each([ 'm2ts', 'mts', 'ts' ] as const)(
+        'does not advertise DTS in the unsupported Mediabunny %s demux route',
+        container => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = 8;
+            mediaSource.MediaStreams[1].Codec = 'dts';
+            mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'container-unsupported' });
+        }
+    );
+
+    it('rejects unqualified DTS profiles and missing exact decoder evidence', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1].Channels = 8;
+        mediaSource.MediaStreams[1].Codec = 'dts';
+        mediaSource.MediaStreams[1].Profile = 'DTS-UHD';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+
+        mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
+        const baseCapabilities = createCapabilities();
+        const unqualifiedCapabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            audio: {
+                ...baseCapabilities.audio,
+                dts: createCapability('dts', false)
+            },
+            bundledDTS: {
+                ...createBundledDTSCapability(),
+                reason: 'output-mismatch',
+                status: 'unsupported',
+                verifiedFixtureCount: 5,
+                verifiedProfileMask: 0x0f
+            }
+        };
+        expect(getCustomPlaybackEligibility(
+            options,
+            unqualifiedCapabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
+    });
+
+    it.each([
+        [ 'mkv', 'truehd', 'Dolby TrueHD', 2, 48_000 ],
+        [ 'matroska', 'truehd', 'Dolby TrueHD + Dolby Atmos', 6, 96_000 ],
+        [ 'mkv', 'mlp', undefined, 2, 48_000 ]
+    ] as const)(
+        'selects the exact qualified %s/%s TrueHD channel-bed route',
+        (container, codec, profile, channelCount, sampleRate) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].Profile = profile;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+            const bundledRuntime: CustomPlaybackRuntimeAvailability = {
+                available: true,
+                environment: {
+                    ...AVAILABLE_RUNTIME.environment,
+                    audioData: false,
+                    audioDecoder: false
+                },
+                reason: null
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: bundledRuntime }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it('rejects unqualified TrueHD layouts and missing exact decoder evidence', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1].Channels = 8;
+        mediaSource.MediaStreams[1].Codec = 'truehd';
+        mediaSource.MediaStreams[1].Profile = 'Dolby TrueHD + Dolby Atmos';
+        mediaSource.MediaStreams[1].SampleRate = 48_000;
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+
+        mediaSource.MediaStreams[1].Channels = 6;
+        const baseCapabilities = createCapabilities();
+        const capabilitiesWithoutExactEvidence: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            audio: {
+                ...baseCapabilities.audio,
+                truehd: createCapability('truehd', false)
+            },
+            bundledTrueHD: {
+                ...createBundledTrueHDCapability(),
+                majorSyncRecoveryVerified: false,
+                reason: 'major-sync-recovery-failed',
+                status: 'unsupported',
+                verifiedFixtureCount: 3
+            }
+        };
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilitiesWithoutExactEvidence,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
+    });
+
+    it.each([ 'mp4', 'm2ts', 'mts', 'ts' ] as const)(
+        'does not advertise TrueHD in the unsupported Mediabunny %s demux route',
+        container => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = 6;
+            mediaSource.MediaStreams[1].Codec = 'truehd';
+            mediaSource.MediaStreams[1].SampleRate = 96_000;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'container-unsupported' });
+        }
+    );
 
     it.each([
         [ 'mkv', 'pcm_s24le', 1, 44_100 ],

@@ -229,7 +229,7 @@ function createAuthorizedDecision(
         failureReason: null,
         fixtureVersion: RAW_HDR_AUTHORIZATION_FIXTURE_VERSION,
         maximumChannelError: 0,
-        renderSettingsVersion: 4,
+        renderSettingsVersion: settings.version,
         routeKey,
         sampleCount: 9,
         shaderSignature: createRawHDRShaderSignature(targetFormat, shaderCode),
