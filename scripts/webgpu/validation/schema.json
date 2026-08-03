@@ -1,0 +1,580 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json",
+  "$defs": {
+    "assertion": {
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "enum": [
+            "absent",
+            "empty",
+            "equals",
+            "zero"
+          ]
+        },
+        "path": {
+          "pattern": "^/(?:[^~/]|~[01])+(?:/(?:[^~/]|~[01])+)*$",
+          "type": "string"
+        },
+        "value": {}
+      },
+      "required": [
+        "path",
+        "operator"
+      ],
+      "type": "object"
+    },
+    "case": {
+      "additionalProperties": false,
+      "properties": {
+        "checkIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "expectations": {
+          "additionalProperties": false,
+          "properties": {
+            "audioRoute": {
+              "enum": [
+                "decoded-pcm",
+                "disabled",
+                "native-media"
+              ]
+            },
+            "capability": {
+              "enum": [
+                "supported",
+                "unsupported"
+              ]
+            },
+            "decoderBackend": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "fallback": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "frameMode": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "jellyfinPlayMethod": {
+              "enum": [
+                "DirectPlay",
+                "DirectStream",
+                "Transcode",
+                "not-applicable"
+              ]
+            },
+            "permittedTranscodeReasons": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "presentationRoute": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "capability",
+            "decoderBackend",
+            "frameMode",
+            "presentationRoute",
+            "fallback",
+            "audioRoute",
+            "jellyfinPlayMethod",
+            "permittedTranscodeReasons"
+          ],
+          "type": "object"
+        },
+        "fixtureIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "manualSteps": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "$ref": "#/$defs/tag"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "fixtureIds",
+        "checkIds",
+        "tags",
+        "expectations"
+      ],
+      "type": "object"
+    },
+    "check": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "enum": [
+            "artifact-verifier",
+            "browser-smoke",
+            "eslint",
+            "mpv-ab",
+            "node-script",
+            "node-test",
+            "python-script",
+            "python-unittest",
+            "stylelint",
+            "toolchain-probe",
+            "typescript",
+            "vite-node",
+            "vitest",
+            "webpack-development",
+            "webpack-production",
+            "worker-smoke"
+          ]
+        },
+        "arguments": {
+          "items": {
+            "$ref": "#/$defs/safeArgument"
+          },
+          "type": "array"
+        },
+        "dependsOn": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "environmentArguments": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "environment": {
+                "$ref": "#/$defs/environmentName"
+              },
+              "option": {
+                "pattern": "^--[a-z0-9][a-z0-9-]{0,63}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "option",
+              "environment"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "requiredEnvironment": {
+          "items": {
+            "$ref": "#/$defs/environmentName"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "resultAssertions": {
+          "items": {
+            "$ref": "#/$defs/assertion"
+          },
+          "type": "array"
+        },
+        "resultFormat": {
+          "enum": [
+            "json",
+            "text"
+          ]
+        },
+        "supersedes": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "tags": {
+          "items": {
+            "$ref": "#/$defs/tag"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "targets": {
+          "items": {
+            "$ref": "#/$defs/repositoryPath"
+          },
+          "type": "array"
+        },
+        "timeoutSeconds": {
+          "maximum": 7200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "adapter",
+        "timeoutSeconds"
+      ],
+      "type": "object"
+    },
+    "environmentName": {
+      "pattern": "^[A-Z][A-Z0-9_]{1,127}$",
+      "type": "string"
+    },
+    "fixture": {
+      "additionalProperties": false,
+      "properties": {
+        "byteLength": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "license": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/uri"
+            },
+            "expression": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "expression",
+            "evidence"
+          ],
+          "type": "object"
+        },
+        "media": {
+          "additionalProperties": false,
+          "properties": {
+            "audio": {
+              "additionalProperties": false,
+              "properties": {
+                "bitsPerSample": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "channelCount": {
+                  "maximum": 32,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "channelLayout": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "codec": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "profile": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "sampleRate": {
+                  "maximum": 768000,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "codec",
+                "profile",
+                "sampleRate",
+                "channelLayout",
+                "channelCount",
+                "bitsPerSample"
+              ],
+              "type": "object"
+            },
+            "container": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "packetization": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "video": {
+              "additionalProperties": false,
+              "properties": {
+                "bitDepth": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "chroma": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "codec": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "frameRate": {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                "height": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "matrix": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "primaries": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "profile": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "progressive": {
+                  "type": "boolean"
+                },
+                "range": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "transfer": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "width": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "codec",
+                "profile",
+                "width",
+                "height",
+                "frameRate",
+                "bitDepth",
+                "chroma",
+                "range",
+                "primaries",
+                "transfer",
+                "matrix",
+                "progressive"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "container",
+            "packetization"
+          ],
+          "type": "object"
+        },
+        "provenance": {
+          "additionalProperties": false,
+          "properties": {
+            "generatorArguments": {
+              "items": {
+                "$ref": "#/$defs/safeArgument"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "generated",
+                "upstream"
+              ]
+            },
+            "revision": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "source": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "revision",
+            "generatorArguments"
+          ],
+          "type": "object"
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "uri": {
+          "$ref": "#/$defs/uri"
+        }
+      },
+      "required": [
+        "id",
+        "uri",
+        "byteLength",
+        "sha256",
+        "license",
+        "provenance",
+        "media"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    },
+    "matrix": {
+      "additionalProperties": false,
+      "properties": {
+        "caseIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "requiredCheckIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requireManualObservations": {
+          "type": "boolean"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "caseIds",
+        "requiredCheckIds",
+        "requireManualObservations"
+      ],
+      "type": "object"
+    },
+    "repositoryPath": {
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.*/?\\[\\]-]+$",
+      "type": "string"
+    },
+    "safeArgument": {
+      "maxLength": 512,
+      "minLength": 1,
+      "pattern": "^[^\\r\\n\\u0000]+$",
+      "type": "string"
+    },
+    "tag": {
+      "pattern": "^(?:[a-z0-9][a-z0-9-]{0,31})(?::[a-z0-9][a-z0-9.-]{0,63})?$",
+      "type": "string"
+    },
+    "uri": {
+      "pattern": "^(?:repo://[A-Za-z0-9_.\\-/]+|env://[A-Z][A-Z0-9_]{1,127})$",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/case"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/check"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "failureVocabulary": {
+      "$ref": "#/$defs/uri"
+    },
+    "fixtures": {
+      "items": {
+        "$ref": "#/$defs/fixture"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "matrices": {
+      "items": {
+        "$ref": "#/$defs/matrix"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "failureVocabulary",
+    "fixtures",
+    "checks",
+    "cases",
+    "matrices"
+  ],
+  "type": "object"
+}

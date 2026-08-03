@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-validation-overlay-v1.json",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "cases": {
+      "items": {
+        "$ref": "schema.json#/$defs/case"
+      },
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "$ref": "schema.json#/$defs/check"
+      },
+      "type": "array"
+    },
+    "fixtures": {
+      "items": {
+        "$ref": "schema.json#/$defs/fixture"
+      },
+      "type": "array"
+    },
+    "matrices": {
+      "items": {
+        "$ref": "schema.json#/$defs/matrix"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schemaVersion"
+  ],
+  "type": "object"
+}

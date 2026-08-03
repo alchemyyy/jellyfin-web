@@ -1,0 +1,24 @@
+{
+  "$schema": "failure-codes-schema.json",
+  "codes": {
+    "capability-unknown": "A required runtime capability did not resolve to an explicit supported or unsupported result.",
+    "command-failed": "A checked adapter command returned a nonzero exit code.",
+    "command-timeout": "A checked adapter command exceeded its declared timeout.",
+    "configuration-invalid": "The manifest, overlay, selector, or command configuration is invalid.",
+    "console-error": "A live browser case reported an unexpected console or player error.",
+    "expectation-mismatch": "Structured adapter output did not satisfy an explicit case expectation.",
+    "fixture-hash-mismatch": "A fixture SHA-256 differs from the reviewed manifest record.",
+    "fixture-missing": "A required repository or environment-backed fixture is unavailable.",
+    "fixture-size-mismatch": "A fixture byte length differs from the reviewed manifest record.",
+    "input-missing": "A private or runtime adapter input was not supplied through its declared environment variable.",
+    "ownership-warning": "A decoder sample, frame, finalizer, or ownership warning was observed.",
+    "required-case-missing": "A selected matrix does not contain one of its required case IDs.",
+    "required-check-missing": "A selected matrix or case does not contain one of its required check IDs.",
+    "resource-leak": "A retention gate found an unretired resource or an out-of-bounds resource trend.",
+    "result-invalid": "An adapter emitted malformed or unsupported structured evidence.",
+    "tool-missing": "A fixed adapter executable is unavailable.",
+    "unexpected-transcode": "Live Jellyfin negotiation selected a transcode not permitted by the case.",
+    "unsanitized-secret": "A report still contained a declared credential, private input, or signed URL after sanitization."
+  },
+  "schemaVersion": 1
+}

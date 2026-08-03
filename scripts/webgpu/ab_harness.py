@@ -191,7 +191,32 @@ def run_checked(
     environment: Mapping[str, str] | None = None,
     timeout_seconds: float,
 ) -> CompletedCommand:
-    """Runs one argument vector and preserves bounded diagnostic output."""
+    """Runs one argument vector and raises when the process does not succeed."""
+
+    result = run_command(
+        arguments,
+        working_directory=working_directory,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+    )
+    if result.return_code != 0:
+        diagnostic_lines = (result.standard_error or result.standard_output).splitlines()
+        diagnostic_tail = "\n".join(diagnostic_lines[-40:])
+        raise HarnessError(
+            f"Command failed with exit code {result.return_code}: {arguments[0]}\n"
+            f"{diagnostic_tail}"
+        )
+    return result
+
+
+def run_command(
+    arguments: Sequence[str],
+    *,
+    working_directory: Path,
+    environment: Mapping[str, str] | None = None,
+    timeout_seconds: float,
+) -> CompletedCommand:
+    """Runs one argument vector and returns its exit code and diagnostic output."""
 
     command_environment = os.environ.copy()
     if environment:
@@ -214,20 +239,12 @@ def run_checked(
     except OSError as error:
         raise HarnessError(f"Unable to execute {arguments[0]}: {error}") from error
 
-    result = CompletedCommand(
+    return CompletedCommand(
         arguments=tuple(str(argument) for argument in arguments),
         return_code=completed_process.returncode,
         standard_error=completed_process.stderr,
         standard_output=completed_process.stdout,
     )
-    if result.return_code != 0:
-        diagnostic_lines = (result.standard_error or result.standard_output).splitlines()
-        diagnostic_tail = "\n".join(diagnostic_lines[-40:])
-        raise HarnessError(
-            f"Command failed with exit code {result.return_code}: {arguments[0]}\n"
-            f"{diagnostic_tail}"
-        )
-    return result
 
 
 def normalize_manifest(value: object) -> dict[str, object]:

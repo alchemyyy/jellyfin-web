@@ -1,0 +1,1224 @@
+{
+  "$schema": "schema.json",
+  "cases": [
+    {
+      "checkIds": [
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "disabled",
+        "capability": "supported",
+        "decoderBackend": "openjpeg",
+        "fallback": "none",
+        "frameMode": "video-frame",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "custom-webgpu"
+      },
+      "fixtureIds": [
+        "jpeg2000-srgb-960x540"
+      ],
+      "id": "jpeg2000-srgb-960x540-exact",
+      "tags": [
+        "checkpoint",
+        "codec:jpeg2000",
+        "container:jp2",
+        "route:openjpeg"
+      ],
+      "thresholds": {
+        "minimumDecodeFramesPerSecond": 30
+      },
+      "title": "JPEG 2000 8-bit sRGB exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "disabled",
+        "capability": "supported",
+        "decoderBackend": "legacy-software",
+        "fallback": "none",
+        "frameMode": "raw-i420",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "custom-webgpu"
+      },
+      "fixtureIds": [
+        "mpeg2-main-progressive-1080p24-matroska"
+      ],
+      "id": "mpeg2-main-progressive-1080p24-matroska-exact",
+      "tags": [
+        "checkpoint",
+        "codec:mpeg2video",
+        "container:matroska",
+        "route:legacy-software"
+      ],
+      "thresholds": {
+        "minimumDecodeFramesPerSecond": 30
+      },
+      "title": "Progressive MPEG-2 Main 1080p24 Matroska exact demux route"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-core-5-1-48k"
+      ],
+      "id": "dts-core-5-1-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS Core 5.1 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-96-24-5-1-96k"
+      ],
+      "id": "dts-96-24-5-1-96k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS 96/24 5.1 96 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-es-6-1-48k"
+      ],
+      "id": "dts-es-6-1-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS-ES 6.1 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-hd-hra-7-1-48k"
+      ],
+      "id": "dts-hd-hra-7-1-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS-HD HRA 7.1 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-hd-ma-7-1-48k"
+      ],
+      "id": "dts-hd-ma-7-1-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS-HD MA 7.1 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-hd-ma-7-1-96k"
+      ],
+      "id": "dts-hd-ma-7-1-96k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS-HD MA 7.1 96 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-hd-ma-5-1-192k"
+      ],
+      "id": "dts-hd-ma-5-1-192k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:dts-hd",
+        "route:libdcadec"
+      ],
+      "title": "DTS-HD MA 5.1 192 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "dts-fixtures-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "libdcadec",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "dts-core-5-1-48k-matroska"
+      ],
+      "id": "dts-core-5-1-48k-matroska-route",
+      "tags": [
+        "checkpoint",
+        "codec:dts",
+        "container:matroska",
+        "route:libdcadec"
+      ],
+      "title": "DTS Core Matroska exact demux route"
+    },
+    {
+      "checkIds": [
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "ffmpeg-truehd",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "truehd-stereo-48k"
+      ],
+      "id": "truehd-stereo-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:truehd",
+        "container:truehd",
+        "route:ffmpeg-truehd"
+      ],
+      "title": "TrueHD stereo 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "ffmpeg-truehd",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "truehd-5-1-side-96k"
+      ],
+      "id": "truehd-5-1-side-96k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:truehd",
+        "container:truehd",
+        "route:ffmpeg-truehd"
+      ],
+      "title": "TrueHD 5.1-side 96 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "ffmpeg-truehd",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "truehd-5-1-side-192k"
+      ],
+      "id": "truehd-5-1-side-192k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:truehd",
+        "container:truehd",
+        "route:ffmpeg-truehd"
+      ],
+      "title": "TrueHD 5.1-side 192 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "ffmpeg-truehd",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "mlp-stereo-48k"
+      ],
+      "id": "mlp-stereo-48k-exact",
+      "tags": [
+        "checkpoint",
+        "codec:mlp",
+        "container:mlp",
+        "route:ffmpeg-truehd"
+      ],
+      "title": "MLP stereo 48 kHz exact decoder qualification"
+    },
+    {
+      "checkIds": [
+        "downmix-reference-current",
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "decoded-pcm",
+        "capability": "supported",
+        "decoderBackend": "ffmpeg-truehd",
+        "fallback": "none",
+        "frameMode": "audio-only",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "audio-worklet-stereo-48k"
+      },
+      "fixtureIds": [
+        "truehd-5-1-side-96k-matroska"
+      ],
+      "id": "truehd-5-1-side-96k-matroska-route",
+      "tags": [
+        "checkpoint",
+        "codec:truehd",
+        "container:matroska",
+        "route:ffmpeg-truehd"
+      ],
+      "title": "TrueHD 5.1-side Matroska exact demux route"
+    }
+  ],
+  "checks": [
+    {
+      "adapter": "python-unittest",
+      "arguments": [
+        "discover",
+        "-s",
+        "scripts/webgpu",
+        "-p",
+        "*_test.py"
+      ],
+      "id": "python-harness-tests",
+      "tags": [
+        "static"
+      ],
+      "timeoutSeconds": 300,
+      "title": "Python WebGPU harness tests"
+    },
+    {
+      "adapter": "typescript",
+      "id": "typescript-check",
+      "tags": [
+        "static"
+      ],
+      "timeoutSeconds": 600,
+      "title": "TypeScript build check"
+    },
+    {
+      "adapter": "vitest",
+      "id": "vitest-codec-contracts",
+      "tags": [
+        "static"
+      ],
+      "targets": [
+        "src/plugins/webGPUVideoPlayer/custom/CustomAudioOutputPolicy.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/CustomDecodeCapabilities.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/DTSChannelLayout.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/DTSExactCapabilityProbe.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/DTSMediabunnyDemuxIntegration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/JPEG2000ExactCapabilityProbe.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/JPEG2000SoftwareVideoDecoder.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/LegacySoftwareVideoDecoder.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/LegacyVideoDecoderIntegration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/LegacyVideoExactCapabilityProbe.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityProbe.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts",
+        "src/plugins/webGPUVideoPlayer/custom/TrueHDSoftwareAudioDecoder.test.ts"
+      ],
+      "timeoutSeconds": 900,
+      "title": "Exact custom codec contract and integration tests"
+    },
+    {
+      "adapter": "node-test",
+      "id": "node-webgpu-tool-tests",
+      "tags": [
+        "static"
+      ],
+      "targets": [
+        "scripts/webgpu/*.node-test.mjs"
+      ],
+      "timeoutSeconds": 600,
+      "title": "Standalone Node WebGPU tool tests"
+    },
+    {
+      "adapter": "python-script",
+      "arguments": [
+        "--check"
+      ],
+      "id": "dts-fixtures-current",
+      "tags": [
+        "codec:dts"
+      ],
+      "targets": [
+        "scripts/webgpu/generate_dts_capability_fixtures.py"
+      ],
+      "timeoutSeconds": 120,
+      "title": "DTS generated exact-capability table is current"
+    },
+    {
+      "adapter": "python-script",
+      "arguments": [
+        "--check"
+      ],
+      "id": "downmix-reference-current",
+      "tags": [
+        "route:audio-worklet-stereo-48k"
+      ],
+      "targets": [
+        "scripts/webgpu/generate_seven_point_one_downmix_reference.py"
+      ],
+      "timeoutSeconds": 120,
+      "title": "7.1-to-stereo reference data is current"
+    },
+    {
+      "adapter": "vite-node",
+      "arguments": [
+        "--check"
+      ],
+      "id": "dts-downmix-report-current",
+      "tags": [
+        "codec:dts"
+      ],
+      "targets": [
+        "scripts/webgpu/report_dts_downmix_reference.ts"
+      ],
+      "timeoutSeconds": 180,
+      "title": "DTS exact downmix fingerprint report"
+    },
+    {
+      "adapter": "webpack-development",
+      "id": "development-build",
+      "tags": [
+        "checkpoint"
+      ],
+      "timeoutSeconds": 1800,
+      "title": "Development Webpack build"
+    },
+    {
+      "adapter": "webpack-production",
+      "id": "production-build",
+      "supersedes": [
+        "development-build"
+      ],
+      "tags": [
+        "release"
+      ],
+      "timeoutSeconds": 2400,
+      "title": "Production Webpack build"
+    },
+    {
+      "adapter": "artifact-verifier",
+      "dependsOn": [
+        "production-build"
+      ],
+      "id": "production-codec-artifacts",
+      "resultFormat": "json",
+      "tags": [
+        "release"
+      ],
+      "timeoutSeconds": 300,
+      "title": "Production custom codec artifact and license verification"
+    },
+    {
+      "adapter": "vitest",
+      "id": "full-vitest",
+      "supersedes": [
+        "vitest-codec-contracts"
+      ],
+      "tags": [
+        "release"
+      ],
+      "timeoutSeconds": 1800,
+      "title": "Full Vitest suite"
+    },
+    {
+      "adapter": "eslint",
+      "id": "full-eslint",
+      "tags": [
+        "release"
+      ],
+      "timeoutSeconds": 1200,
+      "title": "Full ESLint suite"
+    },
+    {
+      "adapter": "stylelint",
+      "id": "full-stylelint",
+      "tags": [
+        "release"
+      ],
+      "timeoutSeconds": 600,
+      "title": "Full Stylelint suite"
+    },
+    {
+      "adapter": "toolchain-probe",
+      "arguments": [
+        "--check-runtime"
+      ],
+      "id": "local-runtime-toolchain",
+      "resultAssertions": [
+        {
+          "operator": "equals",
+          "path": "/status",
+          "value": "ready"
+        }
+      ],
+      "resultFormat": "json",
+      "tags": [
+        "checkpoint"
+      ],
+      "timeoutSeconds": 120,
+      "title": "Pinned mpv, FFmpeg, Chromium CDP, and Jellyfin runtime readiness"
+    }
+  ],
+  "failureVocabulary": "repo://scripts/webgpu/validation/failure-codes.json",
+  "fixtures": [
+    {
+      "byteLength": 107107,
+      "id": "jpeg2000-srgb-960x540",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "container": "jp2",
+        "packetization": "jpeg2000-codestream",
+        "video": {
+          "bitDepth": 8,
+          "chroma": "4:4:4",
+          "codec": "jpeg2000",
+          "frameRate": 24,
+          "height": 540,
+          "matrix": "rgb",
+          "primaries": "srgb",
+          "profile": "part-1-reversible",
+          "progressive": true,
+          "range": "full",
+          "transfer": "srgb",
+          "width": 960
+        }
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_jpeg2000_capability_fixture.py"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "FFmpeg testsrc2 with the reversible JPEG 2000 encoder"
+      },
+      "sha256": "3d23398ce6857e4e7bc1851c4068d46aa1be1fd1506d7b8b3971e535e18acc94",
+      "uri": "repo://scripts/webgpu/jpeg2000-capability-fixtures/srgb-960x540.jp2"
+    },
+    {
+      "byteLength": 1532498,
+      "id": "mpeg2-main-progressive-1080p24-matroska",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "container": "matroska",
+        "packetization": "mpeg2video-access-units",
+        "video": {
+          "bitDepth": 8,
+          "chroma": "4:2:0",
+          "codec": "mpeg2video",
+          "frameRate": 24,
+          "height": 1080,
+          "matrix": "unspecified",
+          "primaries": "unspecified",
+          "profile": "main",
+          "progressive": true,
+          "range": "unspecified",
+          "transfer": "unspecified",
+          "width": 1920
+        }
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_legacy_video_capability_fixture.py"
+        ],
+        "kind": "generated",
+        "revision": "jellyfin-ffmpeg-8.1.2",
+        "source": "FFmpeg testsrc2 deterministic MPEG-2 Main encoding"
+      },
+      "sha256": "86db9dfebafb85c3c6001c762c5a1c91427d2039fcd5fbffba8c8c42efaf43b1",
+      "uri": "repo://scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv"
+    },
+    {
+      "byteLength": 7368,
+      "id": "dts-core-5-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "core",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "95653e7d94307a9d467c28ae10883440dcc39f06ac79d7401b27eb422cd99009",
+      "uri": "repo://scripts/webgpu/dts/fixtures/core_51_24_48_768_0.dtshd"
+    },
+    {
+      "byteLength": 14284,
+      "id": "dts-96-24-5-1-96k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "96-24",
+          "sampleRate": 96000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "d4d4df6d83042799df124fe48d3465381c57f4f3b2483cb0fe8aa52ea403a9f5",
+      "uri": "repo://scripts/webgpu/dts/fixtures/x96_51_24_96_1509.dtshd"
+    },
+    {
+      "byteLength": 7368,
+      "id": "dts-es-6-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 7,
+          "channelLayout": "6.1",
+          "codec": "dts",
+          "profile": "es",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "db7c44e47b3c01c57829ac9947a0e77aa93798475773e1f2fd74f99a607c48b7",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xch_61_24_48_768.dtshd"
+    },
+    {
+      "byteLength": 36064,
+      "id": "dts-hd-hra-7-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-hra",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "b24e66db937a45b7ce522b773388d29492a88e83fc8680930be00c5987ac93a1",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xbr_xxch_71_24_48_3840.dtshd"
+    },
+    {
+      "byteLength": 32888,
+      "id": "dts-hd-ma-7-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "8d380d1323a6fff90a8885d65697217b1bbc4f2c027e30af870fa0dfa50f8eb3",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_71_24_48_768_0.dtshd"
+    },
+    {
+      "byteLength": 54184,
+      "id": "dts-hd-ma-7-1-96k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 96000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "d2911b34183f7379359cf914ee93228796894e0b0f0055e6ee5baefa4fd6a923",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_71_24_96_768.dtshd"
+    },
+    {
+      "byteLength": 44608,
+      "id": "dts-hd-ma-5-1-192k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 16,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 192000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "34441a4f2df89e086f67a7b0f72aa871e1cbb3b04b301470a7727038bb91b618",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_51_16_192_768_0.dtshd"
+    },
+    {
+      "byteLength": 6636,
+      "id": "dts-core-5-1-48k-matroska",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "core",
+          "sampleRate": 48000
+        },
+        "container": "matroska",
+        "packetization": "a-dts"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "ffmpeg",
+          "-fflags",
+          "+bitexact",
+          "-i",
+          "core_51_24_48_768_0.dtshd",
+          "-c:a",
+          "copy",
+          "-f",
+          "matroska",
+          "core_51_24_48_768_0.mka"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a-remux-v1",
+        "source": "foo86/dcadec-samples remuxed without metadata"
+      },
+      "sha256": "8a82706387b2609b1d6fce40fc65dea860cfd4e5a6f7f7021bb4480af09e8c6d",
+      "uri": "repo://scripts/webgpu/dts/fixtures/core_51_24_48_768_0.mka"
+    },
+    {
+      "byteLength": 5488,
+      "id": "truehd-stereo-48k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 2,
+          "channelLayout": "stereo",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 48000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "4ae1dd30bae837f377e094fbc180c9c642a6b874331220d0bb42a6afecd1fb32",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_stereo_24_48000.truehd"
+    },
+    {
+      "byteLength": 25302,
+      "id": "truehd-5-1-side-96k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 96000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "0bbfcaa1910a92ef9a1434ec8ba3bc99f8f5e7309bde2305282d4d3c19d5953e",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_96000.truehd"
+    },
+    {
+      "byteLength": 46634,
+      "id": "truehd-5-1-side-192k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 192000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "b6d447fd0d80c8fe1b624742cb64cd2161569eca3c1f0e32c292cc6404e369ce",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_192000.truehd"
+    },
+    {
+      "byteLength": 5488,
+      "id": "mlp-stereo-48k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 2,
+          "channelLayout": "stereo",
+          "codec": "mlp",
+          "profile": "mlp",
+          "sampleRate": 48000
+        },
+        "container": "mlp",
+        "packetization": "mlp-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "0a8ecef742d164ad74d99576b22e4688ef76e899ca36ce601666b2c8c71d1d72",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/mlp_stereo_24_48000.mlp"
+    },
+    {
+      "byteLength": 26169,
+      "id": "truehd-5-1-side-96k-matroska",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 96000
+        },
+        "container": "matroska",
+        "packetization": "a-truehd"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "ffmpeg",
+          "-fflags",
+          "+bitexact",
+          "-f",
+          "truehd",
+          "-i",
+          "truehd_51_side_24_96000.truehd",
+          "-c:a",
+          "copy",
+          "-f",
+          "matroska",
+          "truehd_51_side_24_96000.mka"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1-remux-v1",
+        "source": "Mathematically generated sine tones remuxed without metadata"
+      },
+      "sha256": "ddeafef97bd560b548ae93af4cc02f7aa43c7a69b231471d93922e7e36fbbf9e",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_96000.mka"
+    }
+  ],
+  "matrices": [
+    {
+      "caseIds": [
+        "jpeg2000-srgb-960x540-exact",
+        "mpeg2-main-progressive-1080p24-matroska-exact",
+        "dts-core-5-1-48k-exact",
+        "dts-96-24-5-1-96k-exact",
+        "dts-es-6-1-48k-exact",
+        "dts-hd-hra-7-1-48k-exact",
+        "dts-hd-ma-7-1-48k-exact",
+        "dts-hd-ma-7-1-96k-exact",
+        "dts-hd-ma-5-1-192k-exact",
+        "dts-core-5-1-48k-matroska-route",
+        "truehd-stereo-48k-exact",
+        "truehd-5-1-side-96k-exact",
+        "truehd-5-1-side-192k-exact",
+        "mlp-stereo-48k-exact",
+        "truehd-5-1-side-96k-matroska-route"
+      ],
+      "id": "static",
+      "requireManualObservations": false,
+      "requiredCheckIds": [
+        "python-harness-tests",
+        "typescript-check",
+        "vitest-codec-contracts",
+        "node-webgpu-tool-tests"
+      ],
+      "title": "Static exact-codec validation"
+    },
+    {
+      "caseIds": [
+        "jpeg2000-srgb-960x540-exact",
+        "mpeg2-main-progressive-1080p24-matroska-exact",
+        "dts-core-5-1-48k-exact",
+        "dts-96-24-5-1-96k-exact",
+        "dts-es-6-1-48k-exact",
+        "dts-hd-hra-7-1-48k-exact",
+        "dts-hd-ma-7-1-48k-exact",
+        "dts-hd-ma-7-1-96k-exact",
+        "dts-hd-ma-5-1-192k-exact",
+        "dts-core-5-1-48k-matroska-route",
+        "truehd-stereo-48k-exact",
+        "truehd-5-1-side-96k-exact",
+        "truehd-5-1-side-192k-exact",
+        "mlp-stereo-48k-exact",
+        "truehd-5-1-side-96k-matroska-route"
+      ],
+      "id": "checkpoint",
+      "requireManualObservations": false,
+      "requiredCheckIds": [
+        "python-harness-tests",
+        "typescript-check",
+        "vitest-codec-contracts",
+        "node-webgpu-tool-tests",
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "dts-downmix-report-current",
+        "development-build",
+        "local-runtime-toolchain"
+      ],
+      "title": "Local codec checkpoint with build and runtime readiness"
+    },
+    {
+      "caseIds": [
+        "jpeg2000-srgb-960x540-exact",
+        "mpeg2-main-progressive-1080p24-matroska-exact",
+        "dts-core-5-1-48k-exact",
+        "dts-96-24-5-1-96k-exact",
+        "dts-es-6-1-48k-exact",
+        "dts-hd-hra-7-1-48k-exact",
+        "dts-hd-ma-7-1-48k-exact",
+        "dts-hd-ma-7-1-96k-exact",
+        "dts-hd-ma-5-1-192k-exact",
+        "dts-core-5-1-48k-matroska-route",
+        "truehd-stereo-48k-exact",
+        "truehd-5-1-side-96k-exact",
+        "truehd-5-1-side-192k-exact",
+        "mlp-stereo-48k-exact",
+        "truehd-5-1-side-96k-matroska-route"
+      ],
+      "id": "release",
+      "requireManualObservations": true,
+      "requiredCheckIds": [
+        "python-harness-tests",
+        "typescript-check",
+        "full-vitest",
+        "node-webgpu-tool-tests",
+        "dts-fixtures-current",
+        "downmix-reference-current",
+        "dts-downmix-report-current",
+        "production-build",
+        "production-codec-artifacts",
+        "full-eslint",
+        "full-stylelint",
+        "local-runtime-toolchain"
+      ],
+      "title": "Release build, artifacts, lint, and exact-codec validation"
+    }
+  ],
+  "schemaVersion": 1
+}

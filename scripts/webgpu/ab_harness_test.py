@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import struct
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from ab_harness import (
     normalize_manifest,
     parse_psnr_output,
     parse_ssim_output,
+    run_command,
 )
 from run_mpv_ab import index_captures, parse_stages
 from run_mpv_ab import (
@@ -149,6 +151,20 @@ class ReportParsingTests(unittest.TestCase):
                 "minimumDecibels": 42.5,
             },
         )
+
+    def test_nonraising_command_preserves_failure_diagnostics(self) -> None:
+        result = run_command(
+            [
+                os.sys.executable,
+                "-c",
+                "import sys; print('failure-output'); sys.exit(7)",
+            ],
+            working_directory=Path(__file__).resolve().parents[2],
+            timeout_seconds=10,
+        )
+
+        self.assertEqual(result.return_code, 7)
+        self.assertIn("failure-output", result.standard_output)
 
     def test_formats_time_and_redacts_commands(self) -> None:
         self.assertEqual(format_media_seconds(1_234_567), "1.234567")

@@ -1,5 +1,23 @@
 # WebGPU color diagnostics and playback harnesses
 
+The unified entry point is
+`python scripts/webgpu/validation_matrix.py`. It validates the canonical
+content-addressed fixture registry, selects fixed adapters without shell
+strings, deduplicates shared checks, and writes sanitized JSON, Markdown, HTML,
+and manual-checklist reports. See
+`scripts/webgpu/validation/README.md` for matrices, selectors, private live-case
+overlays, schemas, and the shared failure vocabulary.
+
+```powershell
+python scripts/webgpu/validation_matrix.py validate --verify-fixtures
+python scripts/webgpu/validation_matrix.py plan --matrix static
+python scripts/webgpu/validation_matrix.py run --matrix static
+```
+
+The individual commands below remain adapter implementations and focused
+debugging entry points. New release orchestration belongs in the shared matrix,
+not another top-level smoke wrapper.
+
 External-texture measurements are diagnostics only. WebGPU imports convert video
 frames into the requested `srgb` color space, so a passing measurement cannot
 authorize source-transfer decoding or HDR tone mapping in production. The raw

@@ -3,12 +3,12 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `460c9a98a4a109699bad833f6614f3ed4d224c8e`
-- Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, and
-  TrueHD/MLP checkpoint has passed its combined automated, reproducible-build,
-  artifact, production-bundle, core Jellyfin lifecycle, repeated-session, and
-  device-loss gates. Per-tuple real-media qualification and long-run resource
-  validation remain before a general rollout.
+- Parent checkpoint: `750a47081788c02b196ac38d9ac66f0fc921bff1`
+- Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
+  downmix, artifact-provenance, and HDR checkpoint is committed and pushed.
+  Group B validation-framework integration is active. Per-tuple real-media
+  qualification and long-run resource validation remain before a general
+  rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
@@ -638,6 +638,38 @@ combinations, then explicit full cross-products at architectural boundaries:
     results, unexpected transcodes, console errors, finalizer warnings, leaked
     resources, or unsanitized credentials.
 
+### 7.5.1 Implemented Group B foundation
+
+The version 1 foundation now lives under `scripts/webgpu/validation/` and is
+driven by `scripts/webgpu/validation_matrix.py`:
+
+- checked manifest, overlay, failure-vocabulary, and result schemas;
+- 15 content-addressed exact-codec fixtures and 15 authoritative case IDs for
+  the current JPEG 2000, progressive MPEG-2, DTS, and TrueHD/MLP checkpoint;
+- repository and environment-backed fixture resolution with byte-length,
+  SHA-256, provenance, generator, and redistribution-license validation;
+- fixed no-shell adapters for TypeScript, Vitest, Node/Python tests, lint,
+  Webpack, artifact verification, Vite Node, browser/worker smoke, runtime
+  readiness, and mpv/browser A/B capture;
+- dependency ordering and explicit supersession, so a release matrix does not
+  rerun focused Vitest when the full suite already covers it;
+- `case`, `codec`, `route`, `gpu`, tag, and soak selection with OR inside one
+  axis and AND across axes;
+- bounded sanitized JSON evidence plus canonical JSON, Markdown, HTML, and
+  manual-checklist reports under the ignored artifact root;
+- shared classification for missing inputs, unknown capability, unexpected
+  transcode, console error, ownership warning, resource leak, and secret leak.
+
+The first static matrix passed all 15 fixture hashes and cases, 38 Python tests,
+135 standalone Node tests, 383 focused Vitest tests, and TypeScript. This is
+static exact-codec evidence, not a substitute for live DirectPlay cases.
+
+Remaining Group B work is baseline approval/comparison, generator-emitted
+registry fragments, one case-ID failure-injection vocabulary across the smoke
+tools, server API/log evidence, manual-observation ingestion, pairwise matrix
+generation, and migration of HDR/color/startup/soak/live cases into canonical
+or private content-addressed records.
+
 ### 7.6 Minimum gates
 
 **Every change**
@@ -1049,10 +1081,12 @@ Rules that prevent duplicated work:
 - [x] Make browser/mpv A/B capture inject the custom feature flags at request
   time, independent of disabled source and built `config.json` values, for both
   root and `/web/` frontend URLs.
-- [ ] Implement the unified validation manifest and result schema.
+- [x] Implement the unified validation manifest and result schema foundation.
 - [ ] Migrate existing color, worker, browser, startup, artifact, and soak tools
   into the shared framework.
-- [ ] Record deterministic fixtures, hashes, generators, provenance, and license.
+- [x] Record deterministic fixtures, hashes, generators, provenance, and license
+  for the current exact JPEG 2000, progressive MPEG-2, DTS, and TrueHD/MLP
+  checkpoint. Add HDR/live/private records as those matrices migrate.
 - [ ] Add automated FFmpeg/mpv reference generation from pinned revisions.
 - [ ] Add required Windows Chrome/Edge and AMD/NVIDIA/Intel matrix runners.
 - [ ] Add pairwise generation plus the explicit boundary cross-products.

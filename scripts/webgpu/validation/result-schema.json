@@ -1,0 +1,442 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-validation-result-v1.json",
+  "$defs": {
+    "failure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "identifier": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "blocked",
+        "failed",
+        "incomplete",
+        "passed",
+        "skipped"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "artifacts": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "cases": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "checkIds": {
+            "items": {
+              "$ref": "#/$defs/identifier"
+            },
+            "type": "array"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/failure"
+            },
+            "type": "array"
+          },
+          "fixtureIds": {
+            "items": {
+              "$ref": "#/$defs/identifier"
+            },
+            "type": "array"
+          },
+          "expectations": {
+            "type": "object"
+          },
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "manualObservation": {
+            "enum": [
+              "not-required",
+              "not-recorded"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/status"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "fixtureIds",
+          "checkIds",
+          "expectations",
+          "thresholds",
+          "manualObservation",
+          "failures"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "durationMilliseconds": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/failure"
+            },
+            "type": "array"
+          },
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "standardErrorTail": {
+            "type": "string"
+          },
+          "standardOutputTail": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/status"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "adapter",
+          "status",
+          "durationMilliseconds",
+          "arguments",
+          "exitCode",
+          "standardOutputTail",
+          "standardErrorTail",
+          "evidence",
+          "failures"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "completedAtUTC": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "environment": {
+      "additionalProperties": false,
+      "properties": {
+        "browser": {
+          "type": "object"
+        },
+        "featureFlags": {
+          "type": "object"
+        },
+        "gpu": {
+          "type": "object"
+        },
+        "host": {
+          "type": "object"
+        },
+        "repository": {
+          "type": "object"
+        },
+        "server": {
+          "type": "object"
+        },
+        "tools": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "repository",
+        "host",
+        "tools",
+        "browser",
+        "gpu",
+        "server",
+        "featureFlags"
+      ],
+      "type": "object"
+    },
+    "failures": {
+      "items": {
+        "$ref": "#/$defs/failure"
+      },
+      "type": "array"
+    },
+    "fixtures": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "byteLength": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/$defs/failure"
+            },
+            "type": "array"
+          },
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "license": {
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/status"
+          },
+          "uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "uri",
+          "byteLength",
+          "sha256",
+          "license",
+          "status",
+          "failures"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "overlaySHA256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "sha256",
+        "overlaySHA256",
+        "schemaVersion"
+      ],
+      "type": "object"
+    },
+    "matrix": {
+      "$ref": "#/$defs/identifier"
+    },
+    "runId": {
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{7,40}$",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "selection": {
+      "additionalProperties": false,
+      "properties": {
+        "caseIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array"
+        },
+        "checkIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array"
+        },
+        "fixtureIds": {
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "array"
+        },
+        "selectors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "supersededChecks": {
+          "additionalProperties": {
+            "$ref": "#/$defs/identifier"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "selectors",
+        "caseIds",
+        "checkIds",
+        "fixtureIds",
+        "supersededChecks"
+      ],
+      "type": "object"
+    },
+    "startedAtUTC": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "failed",
+        "incomplete",
+        "passed"
+      ]
+    },
+    "summary": {
+      "additionalProperties": false,
+      "properties": {
+        "blockedChecks": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failedCases": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failedChecks": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failedFixtures": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "incompleteCases": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "passedCases": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "passedChecks": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "passedFixtures": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalCases": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalChecks": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "totalFixtures": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "totalFixtures",
+        "passedFixtures",
+        "failedFixtures",
+        "totalChecks",
+        "passedChecks",
+        "failedChecks",
+        "blockedChecks",
+        "totalCases",
+        "passedCases",
+        "failedCases",
+        "incompleteCases"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "runId",
+    "startedAtUTC",
+    "completedAtUTC",
+    "status",
+    "matrix",
+    "manifest",
+    "selection",
+    "environment",
+    "fixtures",
+    "checks",
+    "cases",
+    "failures",
+    "summary",
+    "artifacts"
+  ],
+  "type": "object"
+}
