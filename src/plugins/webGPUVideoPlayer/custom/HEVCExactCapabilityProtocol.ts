@@ -29,7 +29,6 @@ export type HEVCExactCapabilityTierDefinition = Readonly<{
     codedWidth: 1_920 | 3_840
     decodedFrameFingerprints: readonly number[]
     format: HEVCExactCapabilityFormat
-    maximumBitrate: 12_000_000 | 40_000_000
     maximumDecodeMilliseconds: number
     minimumFramesPerSecond: number
     profile: HEVCExactCapabilityProfile
@@ -63,7 +62,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420',
         levelIDC: 120,
-        maximumBitrate: 12_000_000,
         maximumDecodeMilliseconds: 1_750,
         minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main',
@@ -95,7 +93,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420P10',
         levelIDC: 120,
-        maximumBitrate: 12_000_000,
         maximumDecodeMilliseconds: 1_750,
         minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main10',
@@ -127,7 +124,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420P10',
         levelIDC: 153,
-        maximumBitrate: 40_000_000,
         maximumDecodeMilliseconds: 2_750,
         minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main10',

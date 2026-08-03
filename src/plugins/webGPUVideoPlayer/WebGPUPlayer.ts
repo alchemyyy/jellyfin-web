@@ -69,6 +69,7 @@ import {
 } from './custom/NativeMediaAudioCapabilities';
 import {
     augmentDeviceProfileForCustomDecode,
+    createBitrateIndependentDeviceProfile,
     type CustomDeviceProfileOptions,
     type CustomDeviceProfileTelemetry
 } from './custom/CustomDeviceProfile';
@@ -121,6 +122,11 @@ type BackendPlayer = HTMLPlayerDelegate['player'];
 
 type DeviceProfileRequestOptions = {
     isRetry?: unknown
+};
+
+type StreamingBitrateRequest = {
+    fallbackBitrate?: number | null
+    purpose?: 'playback-selection' | 'transcode-output'
 };
 
 type HTMLPlayerSelectionContract = {
@@ -546,6 +552,14 @@ export default class WebGPUPlayer {
         return this.htmlDelegate.player.currentSrc();
     }
 
+    /** Keeps bitrate out of selection while retaining an explicit transcode target. */
+    getMaxStreamingBitrate(request?: StreamingBitrateRequest): number | null {
+        if (request?.purpose === 'transcode-output') {
+            return request.fallbackBitrate ?? null;
+        }
+        return null;
+    }
+
     /** Synchronously reports media-type compatibility for player selection. */
     canPlayMediaType = (mediaType: string | null | undefined): boolean => {
         const backend = this.htmlDelegate.player as unknown as HTMLPlayerSelectionContract;
@@ -570,12 +584,15 @@ export default class WebGPUPlayer {
         if (!isRetry && profile && typeof profile === 'object') {
             this.rememberNativeDeviceProfile(item, profile as DeviceProfile);
         }
+        const playbackProfile = !isRetry && profile && typeof profile === 'object' ?
+            createBitrateIndependentDeviceProfile(profile as DeviceProfile) :
+            profile;
         if (!await getWebGPUCustomDecodeEnabled()) {
             this.lastCustomDecodeCapabilities = null;
             this.lastCustomDeviceProfileTelemetry = null;
             this.lastCustomPlaybackRuntimeAvailability = null;
             this.lastNativeMediaAudioCapabilities = null;
-            return profile;
+            return playbackProfile;
         }
 
         const runtimeAvailability = getCustomPlaybackRuntimeAvailability();
@@ -584,7 +601,7 @@ export default class WebGPUPlayer {
             this.lastCustomDecodeCapabilities = null;
             this.lastCustomDeviceProfileTelemetry = null;
             this.lastNativeMediaAudioCapabilities = null;
-            return profile;
+            return playbackProfile;
         }
 
         const [ capabilities, nativeMediaAudioCapabilities ] = await Promise.all([
@@ -593,7 +610,7 @@ export default class WebGPUPlayer {
         ]);
         const HDRDeviceProfileOptions = await this.getHDRDeviceProfileOptions(item, isRetry);
         const profileResult = augmentDeviceProfileForCustomDecode(
-            profile as DeviceProfile,
+            playbackProfile as DeviceProfile,
             capabilities,
             {
                 ...HDRDeviceProfileOptions,
@@ -3022,7 +3039,9 @@ export default class WebGPUPlayer {
         const authorizedExternalHDRRouteKeys = HDRToneMappingEnabled && staticHDRProbed ?
             this.presenter.getAuthorizedExternalHDRRouteKeys() :
             [];
-        const authorizedRawHDRRouteKeys = HDRToneMappingEnabled && staticHDRProbed ?
+        const authorizedRawHDRRouteKeys = HDRToneMappingEnabled
+            && staticHDRProbed
+            && authorizedExternalHDRRouteKeys.length === 0 ?
             this.presenter.getAuthorizedRawHDRRouteKeys() :
             [];
         const allowDolbyVisionProfile7 = HDRToneMappingEnabled

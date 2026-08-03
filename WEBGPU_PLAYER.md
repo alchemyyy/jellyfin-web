@@ -26,6 +26,24 @@ Failure during capability probing, demux, decode, audio output, WebGPU setup,
 presentation, or device recovery falls back to the owned HTML player. The
 custom path does not recursively request another player.
 
+## Bitrate-independent WebGPU negotiation
+
+Source, container, audio, and video bitrate are telemetry only for the WebGPU
+player. They never select DirectPlay versus DirectStream/transcode, native
+versus bundled decode, an HDR presentation route, or a decoded output format.
+The augmented device profile removes Jellyfin's global bitrate fields and every
+`AudioBitrate`/`VideoBitrate` codec, apply, and container condition. Local
+eligibility and same-session native fallback ignore source bitrate as well.
+
+The first WebGPU PlaybackInfo request also omits the saved or automatically
+detected network bitrate. It selects the play method from codec/profile/level,
+decoded format and geometry, frame rate, measured throughput, container/audio
+support, and presentation authorization. If that bitrate-free request has
+already fixed an unsupported source to transcode, one bounded second request
+may carry the saved bandwidth value solely to size the encoded output. This
+separation prevents bitrate from causing transcoding without producing a
+zero-bitrate fallback encode.
+
 All TypeScript worker entry artifacts use content-addressed filenames. The
 application therefore constructs the custom decoder and exact HEVC capability
 workers from the hash emitted by the same build instead of a stable URL that a
@@ -137,7 +155,11 @@ Eligibility remains narrower than the decoder's theoretical support:
   `hvc1.2.4.L153.B0` 3840x2160 route. It decodes one warm-up frame, measures
   seven exact outputs, and quantizes measured throughput to 24, 30, or 60 fps
   only with the same 1.25x headroom. Eligibility is bounded to progressive
-  Main10, Level 153, 3840x2160, 40 Mbps, and the qualified frame-rate tier.
+  Main10, Level 153, 3840x2160, and the qualified frame-rate tier. Source
+  bitrate is not a capability bound. The actual High Tier Level 153
+  `The Dark Knight` stream has passed this native route on the development
+  machine; a compact deterministic High Tier fixture remains portable
+  regression hardening rather than a bitrate threshold.
   Jellyfin metadata must explicitly provide transfer, primaries, and matrix.
   `ColorRange` may be absent because some Jellyfin scans omit it, but the
   neutralizer then requires the source SPS itself to prove limited range,

@@ -67,11 +67,9 @@ export const CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS =
 export const CUSTOM_NATIVE_VIDEO_BIT_DEPTH = 8;
 export const CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT = 1_080;
 export const CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH = 1_920;
-export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_BITRATE = 40_000_000;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_HEIGHT = 2_160;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_WIDTH = 3_840;
 export const CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_LEVEL = 153;
-export const CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_BITRATE = 40_000_000;
 export const CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_HEIGHT = 2_160;
 export const CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_WIDTH = 3_840;
 export const CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_LEVEL = 153;
@@ -173,7 +171,6 @@ export type CustomNativeUltraHDVideoCodecCapability =
 export type CustomNativeDolbyVisionHEVCCapability =
     CustomDecodeCodecCapability<'hevc'> & {
         bitDepth: 10
-        maximumBitrate: number
         maximumCodedHeight: number
         maximumCodedWidth: number
         maximumFramesPerSecond: CustomHDRVideoMaximumFramesPerSecond | 0
@@ -185,7 +182,6 @@ export type CustomNativeDolbyVisionHEVCCapability =
 export type CustomNativeHDRHEVCCapability =
     CustomDecodeCodecCapability<'hevc'> & {
         bitDepth: 10
-        maximumBitrate: number
         maximumCodedHeight: number
         maximumCodedWidth: number
         maximumFramesPerSecond: CustomHDRVideoMaximumFramesPerSecond | 0
@@ -1972,7 +1968,6 @@ async function probeNativeDolbyVisionHEVC(
         codec: NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.codec,
         codecString: NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.config.codec,
         bitDepth: 10 as const,
-        maximumBitrate: CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_BITRATE,
         maximumCodedHeight: CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_HEIGHT,
         maximumCodedWidth: CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_WIDTH,
         maximumLevel: CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_LEVEL,
@@ -1997,7 +1992,6 @@ async function probeNativeHDRHEVC(
         codec: NATIVE_HDR_HEVC_PROBE_DEFINITION.codec,
         codecString: NATIVE_HDR_HEVC_PROBE_DEFINITION.config.codec,
         bitDepth: 10 as const,
-        maximumBitrate: CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_BITRATE,
         maximumCodedHeight: CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_HEIGHT,
         maximumCodedWidth: CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_WIDTH,
         maximumLevel: CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_LEVEL,

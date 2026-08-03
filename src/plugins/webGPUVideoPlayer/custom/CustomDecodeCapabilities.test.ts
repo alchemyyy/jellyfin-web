@@ -88,7 +88,6 @@ function createBundledHEVCTier(
         decodeMilliseconds: supported ? 100 : null,
         format: main10 ? 'I420P10' : 'I420',
         framesPerSecond: supported ? 40 : null,
-        maximumBitrate: ultraHD ? 40_000_000 : 12_000_000,
         maximumCodedHeight: ultraHD ? 2_160 : 1_080,
         maximumCodedWidth: ultraHD ? 3_840 : 1_920,
         maximumLevel: ultraHD ? 153 : 120,
@@ -296,7 +295,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
             bitDepth: 10,
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 0,
@@ -309,7 +307,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.nativeHDRHEVC).toMatchObject({
             bitDepth: 10,
             codecString: 'hvc1.2.4.L153.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 0,
@@ -1135,7 +1132,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.nativeHDRHEVC).toMatchObject({
             bitDepth: 10,
             codecString: 'hvc1.2.4.L153.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 60,

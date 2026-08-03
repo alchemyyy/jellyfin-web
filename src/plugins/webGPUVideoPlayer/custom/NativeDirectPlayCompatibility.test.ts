@@ -166,6 +166,25 @@ describe('NativeDirectPlayCompatibility', () => {
         )).toBe(true);
     });
 
+    it('ignores native profile bitrate conditions during fallback selection', () => {
+        const profile = createProfile();
+        profile.CodecProfiles?.[0].Conditions?.push({
+            Condition: 'LessThanEqual',
+            Property: 'VideoBitrate',
+            Value: '1'
+        });
+        profile.CodecProfiles?.[1].Conditions?.push({
+            Condition: 'LessThanEqual',
+            Property: 'AudioBitrate',
+            Value: '1'
+        });
+
+        expect(isSameSessionNativePlaybackCompatible(
+            createOptions(),
+            profile
+        )).toBe(true);
+    });
+
     it.each([
         [ { AudioCodec: 'flac', Container: 'mp4', Type: 'Video', VideoCodec: 'h264' } ],
         [ { AudioCodec: 'aac', Container: 'webm', Type: 'Video', VideoCodec: 'h264' } ],

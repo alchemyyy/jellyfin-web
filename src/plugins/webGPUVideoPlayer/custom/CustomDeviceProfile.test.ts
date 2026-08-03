@@ -20,7 +20,10 @@ import {
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
-import { augmentDeviceProfileForCustomDecode } from './CustomDeviceProfile';
+import {
+    augmentDeviceProfileForCustomDecode,
+    createBitrateIndependentDeviceProfile
+} from './CustomDeviceProfile';
 import {
     H264_JELLYFIN_PROFILE_NAMES,
     H264_PROFILE_PROBE_CODED_HEIGHT,
@@ -86,7 +89,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 20,
                 format: 'I420',
                 framesPerSecond: 40,
-                maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
@@ -102,7 +104,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 25,
                 format: 'I420P10',
                 framesPerSecond: 40,
-                maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
@@ -118,7 +119,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 30,
                 format: 'I420P10',
                 framesPerSecond: 40,
-                maximumBitrate: 40_000_000,
                 maximumCodedHeight: 2_160,
                 maximumCodedWidth: 3_840,
                 maximumLevel: 153,
@@ -277,7 +277,6 @@ function createCapabilities(
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hev1.2.4.H150.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 24,
@@ -409,6 +408,34 @@ function createBaseProfile(): DeviceProfile {
 }
 
 describe('augmentDeviceProfileForCustomDecode', () => {
+    it('sanitizes a non-custom WebGPU selection profile without mutation', () => {
+        const original = createBaseProfile();
+        original.MaxStreamingBitrate = 20_000_000;
+        original.MaxStaticBitrate = 40_000_000;
+
+        const result = createBitrateIndependentDeviceProfile(original);
+
+        expect(result).not.toBe(original);
+        expect(result.MaxStreamingBitrate).toBeNull();
+        expect(result.MaxStaticBitrate).toBeNull();
+        expect(original.MaxStreamingBitrate).toBe(20_000_000);
+        expect(original.MaxStaticBitrate).toBe(40_000_000);
+    });
+
+    it('sanitizes an initial profile even when no custom codec is supported', () => {
+        const original = createBaseProfile();
+        original.MaxStreamingBitrate = 20_000_000;
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([], [])
+        );
+
+        expect(result.telemetry.reason).toBe('no-supported-codecs');
+        expect(result.profile.MaxStreamingBitrate).toBeNull();
+        expect(original.MaxStreamingBitrate).toBe(20_000_000);
+    });
+
     it('advertises exact bundled HEVC Main when native HEVC is unavailable', () => {
         const capabilities = createCapabilities([], [ 'aac' ]);
         capabilities.bundledHEVC = createBundledHEVCCapabilities();
@@ -421,10 +448,72 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Conditions: expect.arrayContaining([
                 expect.objectContaining({ Property: 'VideoProfile', Value: 'main' }),
                 expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-                expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
-                expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' })
+                expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
             ])
         }));
+    });
+
+    it('removes all bitrate inputs from WebGPU playback negotiation', () => {
+        const original = createBaseProfile();
+        original.MaxStreamingBitrate = 20_000_000;
+        original.MaxStaticBitrate = 40_000_000;
+        original.MaxStaticMusicBitrate = 8_000_000;
+        original.CodecProfiles?.[0].Conditions?.push({
+            Condition: 'LessThanEqual',
+            IsRequired: true,
+            Property: 'VideoBitrate',
+            Value: '12000000'
+        });
+        if (original.CodecProfiles?.[0]) {
+            original.CodecProfiles[0].ApplyConditions = [ {
+                Condition: 'LessThanEqual',
+                IsRequired: true,
+                Property: 'VideoBitrate',
+                Value: '12000000'
+            } ];
+        }
+        original.CodecProfiles?.push({
+            Codec: 'aac',
+            Conditions: [ {
+                Condition: 'LessThanEqual',
+                IsRequired: true,
+                Property: 'AudioBitrate',
+                Value: '384000'
+            } ],
+            Type: 'VideoAudio'
+        });
+        original.ContainerProfiles?.[0].Conditions?.push({
+            Condition: 'LessThanEqual',
+            IsRequired: true,
+            Property: 'VideoBitrate',
+            Value: '12000000'
+        });
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac' ])
+        );
+
+        expect(result.profile.MaxStreamingBitrate).toBeNull();
+        expect(result.profile.MaxStaticBitrate).toBeNull();
+        expect(result.profile.MaxStaticMusicBitrate).toBeNull();
+        expect(result.profile.CodecProfiles?.some(profile => (
+            [ ...(profile.ApplyConditions ?? []), ...(profile.Conditions ?? []) ]
+                .some(condition => (
+                    condition.Property === 'AudioBitrate'
+                    || condition.Property === 'VideoBitrate'
+                ))
+        ))).toBe(false);
+        expect(result.profile.ContainerProfiles?.some(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Property === 'AudioBitrate'
+                || condition.Property === 'VideoBitrate'
+            ))
+        ))).toBe(false);
+        expect(original.MaxStreamingBitrate).toBe(20_000_000);
+        expect(original.CodecProfiles?.[0].Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'VideoBitrate' })
+        ]));
     });
 
     it('advertises only H264 profiles with verified decoder output', () => {
@@ -1083,12 +1172,35 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             } ],
             Type: 'Video'
         } ];
-        const capabilities = createCapabilities([], [ 'flac' ]);
+        const capabilities = createCapabilities([], [ 'flac' ], [ 'hevc' ]);
+        capabilities.rawHDRVideo = {
+            ...capabilities.rawHDRVideo,
+            hevc: {
+                ...capabilities.rawHDRVideo.hevc,
+                maximumCodedHeight: 1_080,
+                maximumCodedWidth: 1_920,
+                maximumFramesPerSecond: 24
+            }
+        };
+        const bundledHEVC = capabilities.bundledHEVC as NonNullable<
+            CustomDecodeCapabilities['bundledHEVC']
+        >;
+        capabilities.bundledHEVC = {
+            ...bundledHEVC,
+            tiers: {
+                ...bundledHEVC.tiers,
+                'main10-4k': {
+                    ...bundledHEVC.tiers['main10-4k'],
+                    maximumCodedHeight: 1_080,
+                    maximumCodedWidth: 1_920,
+                    maximumLevel: 120
+                }
+            }
+        };
         capabilities.nativeHDRHEVC = {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 30,
@@ -1133,7 +1245,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(nativeHDRProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
             expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-            expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
             expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' }),
             expect.objectContaining({ Property: 'Width', Value: '3840' }),
@@ -1182,7 +1293,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 ...bundledHEVC.tiers,
                 'main10-4k': {
                     ...bundledHEVC.tiers['main10-4k'],
-                    maximumBitrate: 12_000_000,
                     maximumCodedHeight: 1_080,
                     maximumCodedWidth: 1_920,
                     maximumLevel: 120
@@ -1193,7 +1303,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 60,
@@ -1234,14 +1343,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
 
         expect(sharedProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-            expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
             expect.objectContaining({ Property: 'Width', Value: '1920' }),
             expect.objectContaining({ Property: 'Height', Value: '1080' })
         ]));
         expect(nativeHLGProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoFramerate', Value: '60' }),
-            expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
             expect.objectContaining({ Property: 'Width', Value: '3840' }),
             expect.objectContaining({ Property: 'Height', Value: '2160' })
@@ -1394,11 +1501,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 }),
                 expect.objectContaining({
                     Condition: 'LessThanEqual',
-                    Property: 'VideoBitrate',
-                    Value: '40000000'
-                }),
-                expect.objectContaining({
-                    Condition: 'LessThanEqual',
                     Property: 'VideoLevel',
                     Value: '153'
                 }),
@@ -1505,14 +1607,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             expect.objectContaining({ Property: 'Width', Value: '3840' }),
             expect.objectContaining({ Property: 'Height', Value: '2160' }),
             expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-            expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '153' })
         ]));
         expect(rawProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'Width', Value: '1920' }),
             expect.objectContaining({ Property: 'Height', Value: '1080' }),
             expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-            expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
         ]));
     });
@@ -1651,6 +1751,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
 
     it('never widens a retry profile', () => {
         const original = createBaseProfile();
+        original.MaxStreamingBitrate = 20_000_000;
         const result = augmentDeviceProfileForCustomDecode(
             original,
             createCapabilities(CUSTOM_VIDEO_CODECS, CUSTOM_AUDIO_CODECS),
@@ -1658,6 +1759,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         );
 
         expect(result.profile).toEqual(original);
+        expect(result.profile.MaxStreamingBitrate).toBe(20_000_000);
         expect(result.profile).not.toBe(original);
         expect(result.profile.DirectPlayProfiles).not.toBe(original.DirectPlayProfiles);
         expect(result.telemetry).toMatchObject({
@@ -1821,7 +1923,13 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         };
         const result = augmentDeviceProfileForCustomDecode(original, capabilities);
 
-        expect(result.profile).toEqual(original);
+        expect(result.profile).toMatchObject({
+            ...original,
+            MaxStaticBitrate: null,
+            MaxStaticMusicBitrate: null,
+            MaxStreamingBitrate: null
+        });
+        expect(result.profile).not.toBe(original);
         expect(result.telemetry).toMatchObject({
             addedProfileCount: 0,
             reason: 'no-supported-codecs'
@@ -1857,7 +1965,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
                 expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-                expect.objectContaining({ Property: 'VideoBitrate', Value: '40000000' }),
                 expect.objectContaining({ Property: 'Width', Value: '3840' }),
                 expect.objectContaining({ Property: 'Height', Value: '2160' }),
                 expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
@@ -1903,7 +2010,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 expect.objectContaining({ Property: 'VideoRangeType', Value: 'HDR10|HLG' }),
                 expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
-                expect.objectContaining({ Property: 'VideoBitrate', Value: '12000000' }),
                 expect.objectContaining({ Property: 'Width', Value: '1920' }),
                 expect.objectContaining({ Property: 'Height', Value: '1080' })
             ])

@@ -51,7 +51,6 @@ const VIDEO_NUMBER_PROPERTIES = new Set<ProfileConditionValue>([
     'PacketLength',
     'RefFrames',
     'VideoBitDepth',
-    'VideoBitrate',
     'VideoFramerate',
     'VideoLevel',
     'VideoRotation',
@@ -67,9 +66,12 @@ const AUDIO_BOOLEAN_PROPERTIES = new Set<ProfileConditionValue>([
 ]);
 const AUDIO_NUMBER_PROPERTIES = new Set<ProfileConditionValue>([
     'AudioBitDepth',
-    'AudioBitrate',
     'AudioChannels',
     'AudioSampleRate'
+]);
+const IGNORED_BITRATE_PROPERTIES = new Set<ProfileConditionValue>([
+    'AudioBitrate',
+    'VideoBitrate'
 ]);
 const AUDIO_STRING_PROPERTIES = new Set<ProfileConditionValue>([
     'AudioProfile'
@@ -271,7 +273,6 @@ function getVideoNumericValue(
         case 'PacketLength': return getSafeInteger(stream.PacketLength);
         case 'RefFrames': return getSafeInteger(stream.RefFrames);
         case 'VideoBitDepth': return getSafeInteger(stream.BitDepth);
-        case 'VideoBitrate': return getSafeInteger(stream.BitRate);
         case 'VideoFramerate': return getReferenceFrameRate(stream);
         case 'VideoLevel': return getFiniteNumber(stream.Level);
         case 'VideoRotation': return getSafeInteger(stream.Rotation, true);
@@ -352,9 +353,6 @@ function getAudioConditionValue(
     switch (property) {
         case 'AudioBitDepth':
             mediaValue = stream.BitDepth;
-            break;
-        case 'AudioBitrate':
-            mediaValue = stream.BitRate;
             break;
         case 'AudioChannels':
             mediaValue = stream.Channels;
@@ -494,6 +492,9 @@ function evaluateCondition(
         return 'unknown';
     }
     const property = condition.Property as ProfileConditionValue;
+    if (IGNORED_BITRATE_PROPERTIES.has(property)) {
+        return 'matched';
+    }
     const value = profileType === 'Video' ?
         getVideoConditionValue(property, source) :
         getAudioConditionValue(property, source);

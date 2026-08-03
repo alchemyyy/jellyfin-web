@@ -99,7 +99,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 20,
                 format: 'I420',
                 framesPerSecond: 40,
-                maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
@@ -115,7 +114,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 25,
                 format: 'I420P10',
                 framesPerSecond: 40,
-                maximumBitrate: 12_000_000,
                 maximumCodedHeight: 1_080,
                 maximumCodedWidth: 1_920,
                 maximumLevel: 120,
@@ -131,7 +129,6 @@ function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['
                 decodeMilliseconds: 30,
                 format: 'I420P10',
                 framesPerSecond: 40,
-                maximumBitrate: 40_000_000,
                 maximumCodedHeight: 2_160,
                 maximumCodedWidth: 3_840,
                 maximumLevel: 153,
@@ -175,7 +172,6 @@ function createCapabilities(): CustomDecodeCapabilities {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hev1.2.4.H150.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 24,
@@ -189,7 +185,6 @@ function createCapabilities(): CustomDecodeCapabilities {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumBitrate: 40_000_000,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
             maximumFramesPerSecond: 60,
@@ -366,7 +361,10 @@ function createOptions(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 describe('CustomPlaybackEligibility', () => {
-    it('uses the exact bundled HEVC Main tier when native HEVC is unavailable', () => {
+    it.each([
+        [ 'missing', undefined ],
+        [ 'arbitrarily high', 1_500_000_000 ]
+    ])('uses the exact bundled HEVC Main tier with %s source bitrate', (_label, bitrate) => {
         const baseCapabilities = createCapabilities();
         const capabilities: CustomDecodeCapabilities = {
             ...baseCapabilities,
@@ -382,7 +380,7 @@ describe('CustomPlaybackEligibility', () => {
         mediaSource.MediaStreams[0] = {
             AverageFrameRate: 24,
             BitDepth: 8,
-            BitRate: 12_000_000,
+            BitRate: bitrate,
             Codec: 'hevc',
             Height: 1_080,
             Index: 0,
@@ -410,9 +408,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'non-finite frame rate', { AverageFrameRate: Number.NaN } ],
         [ 'excessive frame rate', { AverageFrameRate: 25 } ],
         [ 'missing level', { Level: undefined } ],
-        [ 'excessive level', { Level: 121 } ],
-        [ 'missing bitrate', { BitRate: undefined } ],
-        [ 'excessive bitrate', { BitRate: 12_000_001 } ]
+        [ 'excessive level', { Level: 121 } ]
     ])('rejects bundled HEVC Main with %s', (_label, metadataOverride) => {
         const baseCapabilities = createCapabilities();
         const capabilities: CustomDecodeCapabilities = {
@@ -656,6 +652,26 @@ describe('CustomPlaybackEligibility', () => {
         const nativeHDRMediaSource = hdrOptions.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
         };
+        for (const bitrate of [ undefined, 1_500_000_000 ]) {
+            nativeHDRMediaSource.MediaStreams[0].BitRate = bitrate;
+            expect(getCustomPlaybackEligibility(
+                hdrOptions,
+                createCapabilities(),
+                {
+                    allowNativeHDR: true,
+                    allowRawHDR: false,
+                    authorizedExternalHDRRouteKeys: [
+                        'external-hevc-main10-bt709-limited:pq-v1'
+                    ],
+                    runtimeAvailability: AVAILABLE_RUNTIME
+                }
+            )).toMatchObject({
+                eligible: true,
+                nativeHDRTransfer: 'pq',
+                videoDecoderBackend: 'native'
+            });
+        }
+        nativeHDRMediaSource.MediaStreams[0].BitRate = 40_000_000;
         delete nativeHDRMediaSource.MediaStreams[0].ColorRange;
         expect(getCustomPlaybackEligibility(
             hdrOptions,
@@ -706,7 +722,6 @@ describe('CustomPlaybackEligibility', () => {
         { field: 'Level', label: 'level', value: 154 },
         { field: 'Width', label: 'width', value: 3_841 },
         { field: 'Height', label: 'height', value: 2_161 },
-        { field: 'BitRate', label: 'bitrate', value: 40_000_001 },
         { field: 'RealFrameRate', label: 'frame rate', value: 60.01 },
         { field: 'ColorTransfer', label: 'transfer authorization', value: 'arib-std-b67' }
     ] as const)(

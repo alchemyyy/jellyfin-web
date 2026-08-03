@@ -190,6 +190,7 @@ const CUSTOM_VIDEO_CONTAINER_SET = new Set<string>(CUSTOM_VIDEO_CONTAINERS);
 const CUSTOM_VIDEO_CONTAINER_VALUE = CUSTOM_VIDEO_CONTAINERS.join(',');
 const NON_CUSTOM_VIDEO_CONTAINER_VALUE = `-${CUSTOM_VIDEO_CONTAINER_VALUE}`;
 const VIDEO_CODEC_PROFILE_TYPE = 'Video';
+const AUDIO_BITRATE_PROPERTY = 'AudioBitrate';
 const VIDEO_RANGE_TYPE_PROPERTY = 'VideoRangeType';
 const VIDEO_BIT_DEPTH_PROPERTY = 'VideoBitDepth';
 const VIDEO_BITRATE_PROPERTY = 'VideoBitrate';
@@ -209,6 +210,10 @@ const DOLBY_VISION_VIDEO_RANGE_TYPES = [
     'DOVIWithHDR10',
     'DOVIWithHLG'
 ] as const;
+const BITRATE_CONDITION_PROPERTIES = new Set<string>([
+    AUDIO_BITRATE_PROPERTY,
+    VIDEO_BITRATE_PROPERTY
+]);
 
 function getDolbyVisionVideoRangeTypes(
     capabilities: CustomDecodeCapabilities,
@@ -287,7 +292,6 @@ function getAuthorizedExternalHDRVideoRangeTypes(
 type MeasuredVideoRoute = {
     bitDepth: number
     codec: CustomVideoCodec
-    maximumBitrate: number | null
     maximumFrameRate: number | null
     maximumHeight: number
     maximumLevel: number | null
@@ -391,6 +395,48 @@ function cloneDeviceProfile(profile: DeviceProfile): DeviceProfile {
             ...subtitleProfile
         }));
     }
+    return clonedProfile;
+}
+
+function removeBitrateConditions(
+    conditions: NonNullable<CodecProfile['Conditions']>
+): NonNullable<CodecProfile['Conditions']> {
+    return conditions.filter(condition => (
+        !condition.Property || !BITRATE_CONDITION_PROPERTIES.has(condition.Property)
+    ));
+}
+
+/** Removes every client bitrate input that Jellyfin can use for playback selection. */
+function removeBitratePlaybackConstraints(profile: DeviceProfile): void {
+    profile.MaxStreamingBitrate = null;
+    profile.MaxStaticBitrate = null;
+    profile.MaxStaticMusicBitrate = null;
+
+    for (const codecProfile of profile.CodecProfiles ?? []) {
+        if (codecProfile.ApplyConditions) {
+            codecProfile.ApplyConditions = removeBitrateConditions(
+                codecProfile.ApplyConditions
+            );
+        }
+        if (codecProfile.Conditions) {
+            codecProfile.Conditions = removeBitrateConditions(codecProfile.Conditions);
+        }
+    }
+    for (const containerProfile of profile.ContainerProfiles ?? []) {
+        if (containerProfile.Conditions) {
+            containerProfile.Conditions = removeBitrateConditions(
+                containerProfile.Conditions
+            );
+        }
+    }
+}
+
+/** Clones a device profile and removes bitrate from playback selection. */
+export function createBitrateIndependentDeviceProfile(
+    profile: DeviceProfile
+): DeviceProfile {
+    const clonedProfile = cloneDeviceProfile(profile);
+    removeBitratePlaybackConstraints(clonedProfile);
     return clonedProfile;
 }
 
@@ -649,7 +695,6 @@ function numericConditionCapsAt(
 }
 
 type RawHDRCapabilityLimits = {
-    maximumBitrate: number | null
     maximumCodedHeight: number
     maximumCodedWidth: number
     maximumFramesPerSecond: number
@@ -723,19 +768,6 @@ function createRawHDRConditions(
             Value: String(maximumLevel)
         });
     }
-    const maximumBitrate = limits.maximumBitrate;
-    if (maximumBitrate !== null && !conditions.some(condition => numericConditionCapsAt(
-        condition,
-        VIDEO_BITRATE_PROPERTY,
-        maximumBitrate
-    ))) {
-        widenedConditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_BITRATE_PROPERTY,
-            Value: String(maximumBitrate)
-        });
-    }
     if (!conditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_WIDTH_PROPERTY,
@@ -784,7 +816,6 @@ function getRawHDRCapabilityLimits(
     rawHDRCodecs: readonly string[],
     capabilities: CustomDecodeCapabilities
 ): RawHDRCapabilityLimits | null {
-    let maximumBitrate: number | null = null;
     let maximumCodedHeight = Number.MAX_SAFE_INTEGER;
     let maximumCodedWidth = Number.MAX_SAFE_INTEGER;
     let maximumFramesPerSecond = Number.MAX_SAFE_INTEGER;
@@ -818,16 +849,12 @@ function getRawHDRCapabilityLimits(
         if (!bundledTier) {
             return null;
         }
-        maximumBitrate = maximumBitrate === null ?
-            bundledTier.maximumBitrate :
-            Math.min(maximumBitrate, bundledTier.maximumBitrate);
         maximumLevel = maximumLevel === null ?
             bundledTier.maximumLevel :
             Math.min(maximumLevel, bundledTier.maximumLevel);
     }
 
     return {
-        maximumBitrate,
         maximumCodedHeight,
         maximumCodedWidth,
         maximumFramesPerSecond,
@@ -850,7 +877,6 @@ function getNativeDolbyVisionCapabilityLimits(
         return null;
     }
     return {
-        maximumBitrate: capability.maximumBitrate,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
         maximumFramesPerSecond: capability.maximumFramesPerSecond,
@@ -874,7 +900,6 @@ function getNativeHDRCapabilityLimits(
         return null;
     }
     return {
-        maximumBitrate: capability.maximumBitrate,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
         maximumFramesPerSecond: capability.maximumFramesPerSecond,
@@ -897,10 +922,6 @@ function intersectCapabilityLimits(
     second: RawHDRCapabilityLimits
 ): RawHDRCapabilityLimits {
     return {
-        maximumBitrate: intersectOptionalMaximum(
-            first.maximumBitrate,
-            second.maximumBitrate
-        ),
         maximumCodedHeight: Math.min(
             first.maximumCodedHeight,
             second.maximumCodedHeight
@@ -1126,14 +1147,6 @@ function createMeasuredRouteConditions(
             Value: String(route.maximumLevel)
         });
     }
-    if (route.maximumBitrate !== null) {
-        conditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_BITRATE_PROPERTY,
-            Value: String(route.maximumBitrate)
-        });
-    }
     conditions.push({
         Condition: 'Equals',
         IsRequired: true,
@@ -1205,7 +1218,6 @@ function createNativeMeasuredVideoRoute(
     return {
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec,
-        maximumBitrate: bundledMain?.maximumBitrate ?? null,
         maximumFrameRate: bundledMain ?
             CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND :
             null,
@@ -1243,7 +1255,6 @@ function createRawHDRMeasuredVideoRoute(
     return {
         bitDepth: rawCapability.bitDepth,
         codec,
-        maximumBitrate: bundledTier?.maximumBitrate ?? null,
         maximumFrameRate: rawCapability.maximumFramesPerSecond,
         maximumHeight: rawCapability.maximumCodedHeight,
         maximumLevel: bundledTier?.maximumLevel ?? null,
@@ -1274,7 +1285,6 @@ function createDolbyVisionMeasuredVideoRoute(
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumBitrate: capability.maximumBitrate,
         maximumFrameRate: capability.maximumFramesPerSecond,
         maximumHeight: capability.maximumCodedHeight,
         maximumLevel: capability.maximumLevel,
@@ -1305,7 +1315,6 @@ function createNativeHDRMeasuredVideoRoute(
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumBitrate: capability.maximumBitrate,
         maximumFrameRate: capability.maximumFramesPerSecond,
         maximumHeight: capability.maximumCodedHeight,
         maximumLevel: capability.maximumLevel,
@@ -1475,7 +1484,10 @@ function createAuthorizedHEVCProfilePlan(
     const dedicatedRouteRequired = nativeDolbyVisionLimits !== null
         || nativeHDRLimits !== null
         || authorizedRoutes.allowRawDolbyVision;
+    const rawRouteAuthorized = authorizedRoutes.rawHDRVideoRangeTypes.length > 0
+        || authorizedRoutes.allowRawDolbyVision;
     const rawHEVCLimits = dedicatedRouteRequired
+        && rawRouteAuthorized
         && supportedRawHDRVideoCodecs.includes('hevc') ?
         getRawHDRCapabilityLimits([ 'hevc' ], capabilities) :
         null;
@@ -1934,6 +1946,8 @@ export function augmentDeviceProfileForCustomDecode(
             )
         };
     }
+
+    removeBitratePlaybackConstraints(clonedProfile);
 
     if (supportedVideoCodecs.length === 0 && supportedAudioCodecs.length === 0) {
         return {

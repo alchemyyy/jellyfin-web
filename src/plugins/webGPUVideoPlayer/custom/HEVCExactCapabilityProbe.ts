@@ -36,7 +36,6 @@ export type BundledHEVCExactTierCapability = Readonly<{
     decodedFrameCount?: number | null
     format: HEVCExactCapabilityTierDefinition['format']
     framesPerSecond?: number | null
-    maximumBitrate: number
     maximumCodedHeight: number
     maximumCodedWidth: number
     maximumLevel: number
@@ -148,7 +147,6 @@ function createTierCapability(
         decodedFrameCount: result?.decodedFrameCount ?? null,
         format: definition.format,
         framesPerSecond: result?.framesPerSecond ?? null,
-        maximumBitrate: definition.maximumBitrate,
         maximumCodedHeight: definition.codedHeight,
         maximumCodedWidth: definition.codedWidth,
         maximumLevel: definition.levelIDC,

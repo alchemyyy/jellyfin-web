@@ -613,8 +613,6 @@ function matchesBundledHEVCTier(
         && frameRate <= maximumFramesPerSecond
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= tier.maximumLevel
-        && isPositiveSafeInteger(stream.BitRate)
-        && stream.BitRate <= tier.maximumBitrate
         && isPositiveSafeInteger(stream.Width)
         && stream.Width <= tier.maximumCodedWidth
         && isPositiveSafeInteger(stream.Height)
@@ -836,8 +834,6 @@ function supportsNativeDolbyVisionProfile5(
         && frameRate <= capability.maximumFramesPerSecond
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= capability.maximumLevel
-        && isPositiveSafeInteger(stream.BitRate)
-        && stream.BitRate <= capability.maximumBitrate
         && isPositiveSafeInteger(stream.Width)
         && stream.Width <= capability.maximumCodedWidth
         && isPositiveSafeInteger(stream.Height)
@@ -861,8 +857,6 @@ function supportsNativeHDRHEVC(
         && frameRate <= capability.maximumFramesPerSecond
         && isPositiveSafeInteger(stream.Level)
         && stream.Level <= capability.maximumLevel
-        && isPositiveSafeInteger(stream.BitRate)
-        && stream.BitRate <= capability.maximumBitrate
         && isPositiveSafeInteger(stream.Width)
         && stream.Width <= capability.maximumCodedWidth
         && isPositiveSafeInteger(stream.Height)

@@ -3,11 +3,11 @@
 - Status: active implementation plan
 - Recorded: 2026-08-02
 - Branch: `webgpu-player`
-- Committed baseline: `5fe22cb1a99d36708c847889d153202c6a9586f8`
-- Current state: the native HEVC Main10 external-texture HDR and ordinary-build
-  Mediabunny AC-3/E-AC-3 checkpoints are pushed. The current worktree adds
-  Mediabunny PCM/G.711 decoding plus shared channel normalization and streaming
-  resampling; its development build is live-qualified on port 8096.
+- Committed baseline: `9d0dfe9dac76d282f6069067b3d81d5c73717736`
+- Current state: the native HEVC Main10 external-texture HDR, ordinary-build
+  Mediabunny AC-3/E-AC-3, and Mediabunny PCM/G.711 normalization checkpoints
+  are pushed. The no-bitrate WebGPU negotiation checkpoint is verified against
+  the authoritative Jellyfin-served build on port 8096 and is ready to commit.
 
 ## 1. Product target
 
@@ -38,6 +38,14 @@ The finished player must:
 6. Keep all internal media time in signed integer microseconds.
 7. Ship with reproducible capability, conformance, integration, performance,
    fault-injection, and soak validation.
+
+For WebGPU playback, source, container, audio, and video bitrate are telemetry
+only. They must never select DirectPlay versus DirectStream/transcode, native
+versus bundled decode, HDR presentation route, or decoded output format.
+Capability gating uses explicit codec/profile/tier/level, decoded geometry and
+format, measured decode throughput, memory bounds, and exact presentation
+authorization. A saved network bitrate may size an encoded output only after a
+bitrate-free request has already fixed the session to transcode.
 
 This is not yet a finished product. It is an advanced, working prototype with
 substantial codec, HDR, audio, lifecycle, and validation infrastructure. Local
@@ -77,7 +85,7 @@ that a source used the owned custom decode route.
 - Documentation of the unresolved intermittent Mediabunny `VideoSample`
   ownership warning.
 
-### 2.2 Implemented in the current worktree, not checkpointed
+### 2.2 Latest committed PCM normalization checkpoint
 
 - Mediabunny built-in decode for signed/unsigned integer PCM, float PCM, mu-law,
   and A-law across each exact container mapping exposed by Mediabunny.
@@ -94,10 +102,10 @@ that a source used the owned custom decode route.
   and `AudioSampleSink` for all fourteen supported PCM/G.711 codec identifiers.
 - A deterministic AAC-to-PCM switch fixture and clean port-8096 lifecycle run.
 
-The checkpoint still needs the final production build/artifact gate, final diff
-review, documentation reconciliation, commit, and push. DVD/BD LPCM framing,
+The checkpoint passed its production build/artifact gate, final diff review,
+documentation reconciliation, commit, and push. DVD/BD LPCM framing,
 7.1/arbitrary layouts, and non-PCM codecs at non-48-kHz source rates remain
-separate follow-up work rather than hidden claims in this checkpoint.
+separate follow-up work rather than hidden claims in that checkpoint.
 
 ### 2.3 Last observed local evidence
 
@@ -116,6 +124,12 @@ planning but are not portable capability claims:
 - Manual playback quality was reported as excellent.
 - Earlier Wolfwalkers PlaybackInfo screenshots still showed HLS transcoding,
   so those screenshots validate presentation quality, not owned DirectPlay.
+- The local `The Dark Knight` UHD remux is a progressive HEVC Main10 High Tier
+  Level 153 HDR10 stream at 3840x2160 and 23.976025 fps with selected stereo
+  48 kHz 24-bit FLAC. Its source bitrate is recorded only as telemetry. The
+  port-8096 acceptance smoke now selects the original custom DirectPlay route,
+  native `VideoFrame` decode, external PQ presentation, and decoded FLAC with no
+  fallback or runtime error.
 - The current development bundle is served by Jellyfin itself on port 8096;
   the separate 8080 development frontend is not used for authoritative tests.
 
@@ -174,8 +188,9 @@ they provide the required container, decoder, sample format, and lifecycle:
 2. Use Mediabunny's ordinary sample sinks for native WebCodecs decode when their
    output and ownership contract satisfies the route.
 3. Prefer an official Mediabunny custom decoder extension over a project-local
-   decoder adapter. Use `@mediabunny/ac3` in ordinary builds and use
-   `@mediabunny/prores` for future ProRes support.
+   decoder adapter. Use `@mediabunny/ac3` in ordinary builds. ProRes is
+   explicitly skipped by current product direction; do not add
+   `@mediabunny/prores` or schedule ProRes work without a new user decision.
 4. Use Mediabunny's built-in PCM decoders for its supported integer, float,
    mu-law, and A-law variants; add only the player-side resample/layout stage.
 5. Keep exact output, profile, throughput, presentation, lifecycle, and resource
@@ -187,6 +202,59 @@ they provide the required container, decoder, sample format, and lifecycle:
 This policy replaces any backlog wording that implies reimplementing a
 Mediabunny-supported demuxer or decoder. Integrate and qualify first; write new
 codec/container code only for a demonstrated gap.
+
+### 2.7 P0 acceptance target: `The Dark Knight` direct playback
+
+The first named real-title gate is the local UHD remux of `The Dark Knight`
+(2008), Jellyfin item `9297460e0d7bdf82d97fc5f9efa95d27`. Its relevant source
+contract is:
+
+| Field | Required value |
+| --- | --- |
+| Container/source | MKV VOD, 69,007,285,982 bytes, HTTP byte-range input |
+| Video | HEVC Main10, High Tier (`general_tier_flag=1`), Level 153 |
+| Geometry/rate | 3840x2160 progressive, 23.976025 fps |
+| Video bitrate | 60,451,462 bit/s; 73,683,537 bit/s total source bitrate |
+| Pixel/color | 10-bit 4:2:0, limited BT.2020 non-constant, PQ, HDR10 |
+| Initial audio | FLAC, stereo, 48 kHz, 24-bit, 1,372,791 bit/s |
+| Deferred tracks | DTS-HD MA alternatives and PGS subtitles are not required for the first video/FLAC gate |
+
+The bitstream is explicitly High Tier Level 5.1 because its SPS reports
+`general_tier_flag=1`; this is not inferred from bitrate. Source bitrate is not
+a decoder capability dimension and is not present in custom eligibility or the
+augmented Jellyfin profile. The player strips Jellyfin global, container, video,
+and audio bitrate constraints, and the first PlaybackInfo request omits the
+saved network limit. The exact real-title stream itself now provides runtime
+evidence that the current Chrome/device route accepts this configuration. A
+small deterministic High Tier fixture remains useful for portable regression,
+but it cannot authorize support by comparing source bitrate with a threshold.
+
+The final negotiation failure was unrelated to decoder speed: Jellyfin combines
+conditions from every applicable codec profile. Advertising the narrower raw
+HDR route beside the valid native external-HDR route therefore contaminated the
+native 4K result with raw-route 1080p limits. Item-scoped negotiation now prefers
+the authorized external route and exposes raw HDR only when that route is
+unavailable.
+
+Acceptance requires all of the following on `http://localhost:8096`:
+
+1. PlaybackInfo reports `WebGPU Video Player (Direct Play)` and no HLS target,
+   FFmpeg transcode, or level/resolution/bitrate transcode reason.
+2. Network evidence shows range reads from the original MKV source rather than
+   generated HLS playlists or fragments.
+3. Telemetry identifies the source's explicit HEVC High Tier/Level fields, the
+   runtime-qualified native decoder, authorized external PQ presentation, and
+   owned FLAC decode/audio output.
+4. Start, pause/resume, representative seeks, a three-seek storm, fullscreen,
+   resize/DPR, explicit stop, replay, and natural EOF preserve one session and
+   bounded queues with no fallback or duplicate events.
+5. Representative IMAX and 2.39:1 geometry changes preserve crop/aspect and do
+   not resize the decoded surface incorrectly.
+6. Console, runtime exception, worker retirement, frame ownership, dropped or
+   corrupt frame, A/V drift, and retained-resource checks remain clean.
+7. Bundled HEVC, SDR, Wolfwalkers, and generated PQ/HLG routes retain their
+   explicit format, geometry, level, frame-rate, throughput, and presentation
+   constraints and pass regression tests.
 
 ## 3. Capability terminology
 
@@ -208,9 +276,9 @@ decode that codec. The server profile is widened only from measured evidence.
 | Codec/profile | Decode and presentation route | Current qualified envelope | Status and remaining limits |
 | --- | --- | --- | --- |
 | H.264/AVC Constrained Baseline, Baseline, Main, High, 8-bit 4:2:0 | Exact-profile native WebCodecs decode -> owned `VideoFrame` -> WebGPU | Each profile is independently output-probed at 1920x1080. | Implemented and runtime-gated. No 4K tier, High 10, 4:2:2, 4:4:4, interlaced-output, or unusual profile claim. |
-| HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p plus a separate exact 3840x2160 tier. Bundled Main tier is 1920x1080, Level 120, up to 12 Mbps, and must pass its throughput/fingerprint probe. | Implemented and runtime-gated. Bundled distribution still requires HEVC patent/jurisdiction review. |
-| HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Raw capability is probed at 3840x2160 and assigned only a measured 24/30/60 fps tier with 1.25x headroom. Bundled tiers are 1080p Level 120/12 Mbps and 4K Level 153/40 Mbps. | Implemented and runtime-gated. A slow bundled 4K decoder is correctly rejected. |
-| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, up to 40 Mbps, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented, live-qualified on generated PQ and HLG lifecycle fixtures, and through final local checkpoint verification. |
+| HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p plus a separate exact 3840x2160 tier. Bundled Main is constrained to 1920x1080, Level 120, qualified frame rate, and a passing throughput/fingerprint probe. | Implemented and runtime-gated. Source bitrate is not a route constraint. Bundled distribution still requires HEVC patent/jurisdiction review. |
+| HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Raw capability is probed at 3840x2160 and assigned only a measured 24/30/60 fps tier with 1.25x headroom. Bundled tiers retain independent geometry, level, output-fingerprint, and throughput bounds. | Implemented and runtime-gated. A slow bundled 4K decoder is correctly rejected without consulting source bitrate. |
+| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and the actual High Tier `The Dark Knight` stream. |
 | Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. Broader real-title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
 | Dolby Vision Profile 7 MEL | HEVC base-layer decode + RPU reconstruction on the HDR10-compatible BL | Raw I420P10 route with exact device authorization. | Implemented. Must expand end-to-end disc/container and fallback coverage. |
 | Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
@@ -221,7 +289,42 @@ decode that codec. The server profile is widened only from measured evidence.
 | AV1 Main, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact 1080p output plus independent 3840x2160 output qualification. | Implemented and runtime-gated. |
 | AV1 Main, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Exact 3840x2160 raw-output probe and measured 24/30/60 fps tier. | Implemented and runtime-gated. High/Professional, 12-bit, 4:2:2, and 4:4:4 are not supported. |
 
-### 4.2 Unsupported video codecs and implementation procedures
+### 4.2 Decoded video output-format roadmap
+
+Consumer Blu-ray, UHD Blu-ray, and HDR web delivery are overwhelmingly 4:2:0.
+The existing renderer accepts `I420`, `NV12`, `I420P10`, and `I420P12`, while
+the custom worker/session negotiation currently exposes only `I420P10` and
+`I420P12`, and the production HDR capability model qualifies only `I420P10`.
+The immediate consumer gaps are therefore route negotiation and codecs, not a
+missing UHD/HDR pixel layout.
+
+| Format family | Typical sources | Current state | Priority and procedure |
+| --- | --- | --- | --- |
+| `I420`, 8-bit planar 4:2:0 | Blu-ray AVC/MPEG-2/VC-1, DVD, legacy web | Copy, layout validation, buffer pooling, and GPU rendering exist; ordinary software-decoder worker negotiation does not expose it as a general route. | **P0.** Add `I420` to the worker/session raw-output contract, protocol validation, telemetry, reusable-pool sizing, capability fingerprints, and SDR GPU readback. Make it the common output for MPEG-2, VC-1, and other 8-bit software decoders. |
+| `NV12`, 8-bit semiplanar 4:2:0 | Native browser/OS decoder surfaces | Copy and rendering exist, but it is not a negotiated custom decode output. | **P1 optimization.** Add only when a backend can supply it without an extra conversion and measurements show lower copy/upload cost than I420 or external texture. |
+| `I420P10`, 10-bit planar 4:2:0 | UHD Blu-ray HEVC Main10, HDR10/HDR10+, Dolby Vision layers, HDR VP9/AV1 | Implemented and production-qualified for exact native/bundled HDR routes. | **P0 hardening.** The actual High Tier Level 153 `The Dark Knight` route passes without a bitrate cap. Add a compact deterministic High Tier fixture, then expand real-title, peak-throughput, crop, ownership, and soak evidence without changing the format. |
+| `I420P12`, 12-bit planar 4:2:0 | Rare VP9 Profile 2, HEVC Main12, AV1 Professional | Layout/copy/render plumbing exists, but no production codec capability authorizes it. | **P1.** Add exact native or bundled 12-bit fixtures, fingerprints, shader readback, throughput tiers, and profile constraints before advertising it. |
+| `I422`, `I422P10`, `I422P12` | H.264 High 4:2:2, HEVC 4:2:2, cameras and mezzanine/archive media | Not implemented. Not required for ordinary Blu-ray or HDR streaming. | **P1 shared expansion.** Add structured plane geometry, odd-dimension rules, aligned buffer sizing, transfer validation, two-axis chroma reconstruction, chroma siting, GPU upload, fingerprints, and SDR/HDR readback once for every codec. |
+| `I444`, `I444P10`, `I444P12` | VP9 Profiles 1/3, AV1 High/Professional, H.264/HEVC 4:4:4, screen/archive media | Not implemented. Not required for ordinary Blu-ray or HDR streaming. | **P1 after 4:2:2.** Reuse the generalized chroma path with full-resolution U/V planes, exact range/matrix handling, memory ceilings, fingerprints, and per-codec qualification. |
+| `P010`-style 10-bit semiplanar 4:2:0 | Native Windows/GPU decode surfaces | Not represented by the raw-frame protocol; current WebCodecs paths can request I420P10 or keep an external `VideoFrame`. | **P1 optimization, not a coverage gate.** Add only for a backend that exposes stable P010 semantics and only if avoiding planar conversion materially improves 4K throughput or power. Define bit packing explicitly and never infer it from a null `VideoFrame.format`. |
+| `I420A`/`I422A`/`I444A` and 10/12-bit alpha variants | Transparent professional/graphics media | Not implemented. | **P2.** Add a separately pooled alpha plane, straight-versus-premultiplied policy, blend pipeline, exact compositing references, and memory limits only after a supported codec requires it. |
+| Packed YUV (`YUY2`, `UYVY`, `v210`) | Capture, broadcast, and professional archives | Not implemented. | **P2 adapter formats.** Prefer one bounded conversion into the canonical planar contract. Add direct GPU sampling only if profiling proves the conversion is a bottleneck. |
+| RGB/RGBA/BGRA and float RGB | RGB codecs, lossless graphics, intermediate processing | External `VideoFrame` presentation may handle browser-owned RGB, but no raw custom route exists. | **P2.** Keep decoded YUV canonical for consumer media. Add explicit RGB routes only for a decoder that cannot provide YUV; distinguish decoded input from the existing `rgba16float` internal render target. |
+
+Implementation order is fixed to minimize duplicated code:
+
+1. Keep `I420P10` as the consumer UHD/HDR route and retain the completed High
+   Tier title acceptance in section 2.7 as a regression gate.
+2. Expose general raw `I420` end to end, including one exact SDR authorization
+   and reusable-pool route, before integrating MPEG-2 or VC-1.
+3. Implement interlaced field metadata and deinterlacing on top of I420; an
+   interlaced decoder must not invent progressive timestamps or frames.
+4. Generalize subsampling once for I422/P10/P12, then reuse that work for
+   I444/P10/P12.
+5. Add P010, alpha, packed YUV, or RGB only when a selected decoder supplies a
+   concrete zero-copy or coverage benefit. Do not add speculative formats.
+
+### 4.3 Unsupported video codecs and implementation procedures
 
 Priority indicates implementation order, not a claim that every niche format is
 required for the first release.
@@ -229,7 +332,7 @@ required for the first release.
 | Unsupported codec/profile | Priority | Procedure |
 | --- | --- | --- |
 | MPEG-2 Video | P0 legacy library coverage | First test future native WebCodecs with an exact decoded-output fixture. If unavailable, integrate a legally reviewed WASM decoder behind the common adapter. Add MPEG-TS and, if demux support is added, MPEG-PS packet/extradata mapping. Implement field order and an explicit deinterlace stage before advertising interlaced sources. Add Main Profile fixtures at SD/720p/1080i, cadence and seek tests, throughput tiers, and device-profile limits. |
-| MPEG-4 Part 2, including DivX/Xvid | P0 legacy library coverage | Add a bundled decoder adapter unless exact native output becomes available. Validate VOL/extradata, packed B-frames, decode-vs-presentation timestamp reordering, quarter-pixel/global-motion variants, and MP4/MKV carriage. Add AVI only after the demux layer has a bounded, tested AVI path. Qualify profile, resolution, bitrate, and throughput before profile widening. |
+| MPEG-4 Part 2, including DivX/Xvid | P0 legacy library coverage | Add a bundled decoder adapter unless exact native output becomes available. Validate VOL/extradata, packed B-frames, decode-vs-presentation timestamp reordering, quarter-pixel/global-motion variants, and MP4/MKV carriage. Add AVI only after the demux layer has a bounded, tested AVI path. Qualify profile, decoded geometry/format, throughput, and memory bounds before profile widening. |
 | VC-1 and WMV3 | P0 legacy disc/library coverage | Select and license-review a WASM decoder, add VC-1 sequence-header mapping for MKV and MPEG-TS/M2TS, then add ASF only through a separate demux task. Implement interlace/field handling, B-frame timestamp tests, 8-bit I420 output, exact fingerprints, and hardware/reference comparisons. Never infer support from the HTML media element. |
 | H.264 High 10, High 4:2:2, High 4:4:4 | P1 advanced AVC | Add exact WebCodecs probes per profile/chroma/bit depth. If Chrome does not expose output, add a bundled decoder. Extend the raw-frame protocol, buffer pool, and shader from I420/I420P10 to required 10-bit 4:2:2 and 4:4:4 plane formats. Add chroma siting, range/matrix, crop, and throughput fixtures before advertising any profile. |
 | HEVC Main12, Main 4:2:2 10/12, Main 4:4:4 8/10/12 | P1 advanced HEVC | Extend or replace the bundled HEVC backend only after decoder and patent review. Add I420P12 plus explicit 4:2:2/4:4:4 raw formats, row-stride validation, texture upload formats, chroma reconstruction shaders, exact output fingerprints, and per-profile tier probes. Add native probes independently; do not let Main10 evidence authorize these formats. |
@@ -237,13 +340,13 @@ required for the first release.
 | AV1 High/Professional, 12-bit, 4:2:2, 4:4:4 | P1 advanced AV1 | Follow the VP9 procedure with exact AV1 sequence-header/profile fixtures. Add raw formats and shader sampling once for all codecs, then bind AV1 to that shared implementation. Qualify film-grain behavior, crop, high-resolution memory pressure, and throughput. |
 | Motion JPEG and JPEG 2000 video | P1 cameras/archives | Add exact native probes first. Otherwise adapt a JPEG/JPEG 2000 decoder to the common frame contract. Implement full/limited range and common YUV/RGB sampling, orientation/crop, high-resolution intraframe throughput, and bounded allocation tests. `MJ2` being an accepted container token does not currently mean MJPEG/JPEG 2000 video is supported. |
 | Theora | P1 open legacy media | Add Ogg demux/track mapping if Mediabunny cannot already supply exact packets, then add a reviewed software decoder adapter. Produce I420 frames, validate granule-position timestamp/seek behavior, add Ogg fixtures, and gate profile widening on output fingerprints and throughput. |
-| ProRes | P1 professional media | Integrate the official `@mediabunny/prores` decoder through Mediabunny's ordinary sample path. Add 10/12-bit 4:2:2/4:4:4 and alpha-capable raw formats only where its returned sample formats require them, plus a high-bandwidth upload path. Validate cross-origin-isolation and fallback performance, color metadata, clean aperture, rotation, alpha policy, memory ceilings, and sustained 4K throughput. |
-| DNxHD/DNxHR | P1 professional media | Reuse the ProRes raw-format/upload work. Add codec-specific extradata, profile/bit-depth mapping, MOV/MXF/MKV demux support as available, deterministic reference frames, and resolution/bitrate/memory tiers. |
+| ProRes | Skipped | Explicitly excluded by current product direction. Do not add `@mediabunny/prores`, raw-format work solely for ProRes, fixtures, or capability claims unless the user reverses this decision. |
+| DNxHD/DNxHR | P2 professional media | Reuse the shared I422/I444 raw-format and upload work if later library demand justifies it. Add codec-specific extradata, profile/bit-depth mapping, MOV/MXF/MKV demux support as available, deterministic reference frames, and decoded-resolution/throughput/memory tiers. Do not use DNx as a reason to revive ProRes work. |
 | VVC/H.266 | P2 emerging | Prefer a future exact native WebCodecs route. Otherwise select a SIMD/threaded WASM decoder only after license/patent review. Add VVC configuration-record and Annex B transforms, 10/12-bit and chroma formats, conformance streams, capability timeouts, and realistic 4K throughput gates. |
 | AVS, AVS2, AVS3 | P2 regional/emerging | Add demux identifiers and extradata parsing, a reviewed decoder backend, exact profile/level fixtures, raw-format support, and measured tiers. Keep each generation independent because their bitstreams and licensing differ. |
 | MPEG-1 Video, VP6, RealVideo | P2 long-tail legacy | Implement only from measured library demand. Each requires demux support, a reviewed software decoder, timestamp/seek conformance, exact output fingerprints, a bounded tier, and negative malformed-stream tests. Do not enlarge the central capability model until a complete route exists. |
 
-### 4.3 Shared video-codec implementation procedure
+### 4.4 Shared video-codec implementation procedure
 
 Every new video codec must follow this sequence. Codec-specific work above is a
 delta on this procedure, not a separate architecture.
@@ -301,7 +404,7 @@ delta on this procedure, not a separate architecture.
 | Vorbis | Native WebCodecs -> PCM -> AudioWorklet | Stereo and exact-qualified six-channel input at 48 kHz, output as stereo 48 kHz. | Implemented and runtime-gated. |
 | AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The official software decoder is part of every ordinary build and lazy-loads only for a selected AC-3/E-AC-3 track. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Native availability still varies. |
 | E-AC-3 | Preferred exact-qualified native-media MSE bridge, otherwise Mediabunny `@mediabunny/ac3` software decode -> PCM | Native bridge probes 2/6 channels at 48 kHz. The ordinary software route shares the same pinned official decoder and owned PCM output. | Standard route is automated, artifact, production-build, and port-8096 live qualified for stereo 48 kHz. Dolby Atmos object rendering/passthrough remains unimplemented. |
-| PCM/G.711 | Mediabunny built-in PCM decoder -> explicit channel map -> streaming sinc resampler -> AudioWorklet | `pcm-s16`, `pcm-s16be`, `pcm-s24`, `pcm-s24be`, `pcm-s32`, `pcm-s32be`, `pcm-f32`, `pcm-f32be`, `pcm-f64`, `pcm-f64be`, `pcm-u8`, `pcm-s8`, `ulaw`, and `alaw`; mono/stereo/5.1-side; exact 8-192 kHz rate list; stereo 48 kHz output. | Implemented in the current worktree and port-8096 live-qualified with mono 44.1 kHz signed 24-bit PCM. Container claims are deliberately narrower than the decoder list. DVD/BD LPCM and 7.1 remain unsupported. |
+| PCM/G.711 | Mediabunny built-in PCM decoder -> explicit channel map -> streaming sinc resampler -> AudioWorklet | `pcm-s16`, `pcm-s16be`, `pcm-s24`, `pcm-s24be`, `pcm-s32`, `pcm-s32be`, `pcm-f32`, `pcm-f32be`, `pcm-f64`, `pcm-f64be`, `pcm-u8`, `pcm-s8`, `ulaw`, and `alaw`; mono/stereo/5.1-side; exact 8-192 kHz rate list; stereo 48 kHz output. | Implemented, pushed, and port-8096 live-qualified with mono 44.1 kHz signed 24-bit PCM. Container claims are deliberately narrower than the decoder list. DVD/BD LPCM and 7.1 remain unsupported. |
 
 ### 5.2 Unsupported audio codecs and implementation procedures
 
@@ -331,7 +434,7 @@ delta on this procedure, not a separate architecture.
 | ASF | None | None | Not implemented. Required before WMA/WMV coverage. |
 | Ogg | Mediabunny container support exists; no currently supported Ogg video codec | Opus and Vorbis are available after eligibility/profile integration | Not enabled in custom eligibility. Reuse Mediabunny's Ogg reader and qualify range/seek/timestamp behavior; do not implement another Ogg demuxer. Theora still needs a decoder. |
 | MPEG-PS/VOB | None | None | Not implemented. Required for broad MPEG-2/DVD coverage. |
-| MXF | None | None | Not implemented. Consider only with ProRes/DNx demand. |
+| MXF | None | None | Not implemented. Consider only if later DNx or other professional-media demand justifies it; ProRes remains skipped. |
 | HLS | Mediabunny HLS input exists but is not connected to custom playback | Same | Integrate Mediabunny only after VOD segment, discontinuity, cancellation, credential, buffering, and live-clock policy are defined. Do not write another HLS parser. HTML/server playback remains the fallback meanwhile. |
 | DASH/live manifests | No owned custom route | No owned custom route | DASH remains unsupported. Live playback requires a clock/buffering policy even when the container parser exists. HTML/server playback remains the fallback. |
 | DRM/encrypted media | None | None | Explicitly unsupported by custom decode. Use the existing browser/HTML EME path as a whole-session fallback. |
@@ -491,16 +594,22 @@ own its modules, fixtures, and tests end to end, then hand a measured route
 record to the integration owner instead of independently changing shared
 Jellyfin capability files.
 
-### Group A: Finish the native external HDR checkpoint
+### Group A: No-bitrate negotiation and High Tier direct-play gate
 
-**Owns:** HEVC color neutralizer, native HDR capability, external HDR fixture and
-authorization, shader, presenter, protocol, eligibility, profile integration.
+**Owns:** the rule that bitrate never selects a WebGPU playback route, exact
+HEVC Main10 tier/level evidence, native-versus-raw HDR route isolation,
+device-profile constraints, PlaybackInfo evidence, and port-8096 title
+acceptance.
 
-**Deliverable:** a committed, pushed, port-8096-qualified HEVC Main10 PQ/HLG
-native external-texture route with exact fallback.
+**Deliverable:** complete for the current checkpoint. The exact section 2.7
+MKV/HEVC High Tier/HDR10/FLAC source uses the original file through the owned
+custom route. Source bitrate remains telemetry, saved network limits are absent
+from selection, raw/native capability envelopes do not contaminate each other,
+and a genuine codec incompatibility can still receive a bounded transcode output
+after the play method is already fixed.
 
-**Do not combine with:** new codecs, audio resampling, or validation-framework
-refactoring before this checkpoint is closed.
+**Do not combine with:** new codecs, ProRes, broad raw-format expansion, or
+validation-framework refactoring before this real-title gate is closed.
 
 ### Group B: Unified validation framework
 
@@ -520,12 +629,15 @@ reporting are shared by every codec and should be implemented once.
 raw plane formats, buffer pools, worker protocol, generic exact-output and
 throughput probes.
 
-**Deliverable:** adding a codec requires a small adapter, fixtures, and route
+**Deliverable:** first expose raw 8-bit I420 through the complete worker/session/
+presenter/capability contract, then generalize subsampling once for I422 and
+I444 families. Adding a codec must require a small adapter, fixtures, and route
 descriptor rather than copying HEVC-specific lifecycle logic.
 
-**First consumers:** official Mediabunny decoders and sample paths, then MPEG-2,
-MPEG-4 Part 2, VC-1, high-bit-depth/chroma variants, and codecs Mediabunny does
-not provide.
+**First consumers:** MPEG-2 and VC-1 through canonical I420, then MPEG-4 Part 2
+and only demand-backed high-bit-depth/chroma codecs. P010 is an optimization;
+alpha, packed YUV, and RGB remain deferred until a selected backend requires
+them. ProRes is excluded.
 
 **Boundary:** color reconstruction remains in Group E; negotiation changes are
 applied by Group F only after Group B evidence passes.
@@ -567,6 +679,13 @@ and exact transcode-reason tests.
 
 **Deliverable:** Jellyfin never transcodes a passing route for a false capability
 reason and never DirectPlays a route without complete evidence.
+
+**Immediate case:** preserve the completed `The Dark Knight` regression: remove
+all global and per-profile bitrate inputs, make the first PlaybackInfo request
+bitrate-free, prefer the exact native external-HDR route over narrower raw
+fallback routes, and keep a separate post-selection transcode-output request.
+Async capability/profile refresh must not race the first request or create a
+negotiation loop.
 
 **Boundary:** this group does not implement decoders. It consumes passing route
 records from Groups C/D/E and validation evidence from Group B.
@@ -638,15 +757,18 @@ fallback policy remains in Group G.
 ## 9. Dependency and parallel execution plan
 
 ```text
-Group A: current native HDR checkpoint
-  -> stable checkpoint
+Group A: no-bitrate negotiation / Dark Knight gate
+  -> exact tier/level and decoded-output evidence
+  -> profile isolation and bitrate-free selection
+  -> port-8096 real-title regression
 
 Group B: validation schema/framework ------------------------------+
 Group I: legal/package audits -------------------------------------+-- parallel
 Group J: container contracts --------------------------------------+
 Group K: source transport/buffering -------------------------------+
                                                                     |
-Group C: shared video formats/adapters <- B + J + K where required -+
+Group C: I420 route -> deinterlace contract -> I422/I444 expansion  -+
+         shared adapters <- B + J + K where required                |
 Group D: audio normalization/codecs <- B + I + K -------------------+
 Group E: HDR/DV qualification <- B + stable A ----------------------+
                                                                     |
@@ -686,9 +808,25 @@ Rules that prevent duplicated work:
 - [x] VP8, VP9 Profile 0/2, and AV1 Main 8/10 route infrastructure.
 - [x] AAC, Opus, FLAC, MP3, Vorbis, and standard AC-3/E-AC-3 routes.
 - [x] Finish and qualify native HEVC external HDR.
-- [ ] Add shared video decoder adapter/raw-format expansion.
+- [x] Direct-play the exact `The Dark Knight` High Tier Level 153 HDR10/FLAC
+  source on port 8096 with no false level/resolution/bitrate transcode reason.
+- [x] Remove source bitrate from custom capability, eligibility, native fallback,
+  device-profile, and first-request playback selection. Retain exact decoded
+  format, dimensions, level, frame rate, measured throughput, and route evidence.
+- [ ] Add a compact deterministic native HEVC Main10 High Tier fixture so the
+  actual-title evidence has a portable regression counterpart; never infer tier
+  or support from source bitrate.
+- [ ] Expose raw 8-bit `I420` through worker negotiation, capability,
+  presentation authorization, telemetry, and reusable buffer pools.
+- [ ] Add interlaced field metadata and a qualified deinterlace stage before
+  advertising interlaced Blu-ray/DVD sources.
+- [ ] Add shared I422/I422P10/I422P12, then I444/I444P10/I444P12 formats only
+  once and reuse them across codecs.
+- [ ] Add P010 only for a demonstrated zero-copy/performance benefit; defer
+  alpha, packed YUV, and raw RGB until a selected decoder requires them.
+- [ ] Add the shared video decoder adapter around those canonical formats.
 - [ ] Add MPEG-2, MPEG-4 Part 2, and VC-1 priority routes.
-- [ ] Decide and implement the required P1/P2 codec subset from sections 4.2
+- [ ] Decide and implement the required P1/P2 codec subset from sections 4.3
   and 5.2 using actual library inventory and legal review.
 - [x] Add shared streaming audio resampling and explicit mono/stereo/5.1-side
   channel layouts; 7.1/arbitrary layout expansion remains separate.
@@ -696,7 +834,8 @@ Rules that prevent duplicated work:
   validation-only build policy while retaining exact runtime qualification.
 - [x] Integrate Mediabunny's built-in PCM/G.711 decoders for exact supported
   codec/container/rate/layout combinations.
-- [ ] Add `@mediabunny/prores` through the shared video route.
+- [x] Skip ProRes and keep `@mediabunny/prores` absent unless product direction
+  explicitly changes.
 - [ ] Add DTS family, TrueHD/MLP, and ALAC priority routes.
 - [ ] Enable and qualify Mediabunny Ogg and applicable HLS paths.
 - [ ] Add only missing MPEG-PS, AVI, and ASF containers as their codecs require.
@@ -742,6 +881,12 @@ Rules that prevent duplicated work:
 ### Jellyfin behavior
 
 - [x] Stable wrapper identity, HTML fallback, and generation invalidation.
+- [x] Regression-test the augmented device profile and exact route isolation for
+  `The Dark Knight`; no bitrate capability cap was added or raised.
+- [x] Make WebGPU DirectPlay/DirectStream/transcode selection independent of
+  saved network, source, container, audio, and video bitrate.
+- [ ] Add a focused PlaybackManager API test for the two-request fallback rule:
+  bitrate-free play-method selection followed by transcode-output sizing only.
 - [ ] Prove DirectPlay negotiation for every advertised route on port 8096.
 - [ ] Audit all PlaybackInfo player/decoder/stream labels and transcode reasons.
 - [ ] Constrain audio profile claims to the exact probed variants, especially
@@ -784,15 +929,110 @@ Rules that prevent duplicated work:
 - [ ] Define staged browser/GPU rollout, telemetry privacy, rollback, and support
   documentation.
 
-## 11. Checklist before the next commit
+## 11. Checklist for the no-bitrate DirectPlay checkpoint
 
-The next commit should contain only the current native HEVC Main10 external-HDR
-checkpoint plus the required HTML startup, validation-harness, tests, and
-documentation changes. The approved Mediabunny AC-3/E-AC-3 standard-build
-change is the immediately following audio checkpoint; keeping it separate
-preserves review and live-validation isolation.
+This checkpoint removes bitrate from WebGPU route selection; it does not raise a
+cap. Codec/profile/tier/level, decoded format and geometry, measured throughput,
+and presentation authorization remain mandatory. Raw I420 and new codec work
+follow separately so this negotiation fix cannot hide decoder or renderer work.
 
-### 11.1 Already completed in the worktree
+### 11.1 Failure evidence and invariant
+
+- [x] Record the source: MKV, progressive HEVC Main10 High Tier Level 153,
+  3840x2160 at 23.976025 fps, HDR10 BT.2020/PQ, and stereo 48 kHz 24-bit FLAC.
+- [x] Confirm the SPS reports `general_profile_idc=2`, `general_tier_flag=1`,
+  `general_level_idc=153`, 10-bit luma/chroma, and 4:2:0. Tier is explicit and is
+  never inferred from source bitrate.
+- [x] Reproduce the initial HLS result and isolate its reasons. Removing bitrate
+  inputs eliminated the bitrate reason; the remaining level/resolution reasons
+  came from cumulative native/raw codec-profile constraints.
+- [x] Establish the invariant that source/container/audio/video bitrate is
+  telemetry only for WebGPU playback selection.
+- [x] Keep network bitrate available only to size a transcode after a first,
+  bitrate-free request has already fixed the play method to transcode.
+
+### 11.2 Capability, eligibility, and profile integration
+
+- [x] Remove maximum-bitrate fields and literals from native HDR/Dolby Vision and
+  bundled HEVC capability records and protocol data.
+- [x] Remove source bitrate checks and required bitrate metadata from custom
+  eligibility for bundled HEVC, native HDR HEVC, and native Dolby Vision.
+- [x] Ignore audio/video bitrate conditions in same-session native compatibility
+  so bitrate cannot select native fallback versus custom decode.
+- [x] Null `MaxStreamingBitrate`, `MaxStaticBitrate`, and
+  `MaxStaticMusicBitrate` and remove `AudioBitrate`/`VideoBitrate` conditions from
+  every augmented codec and container profile without mutating the HTML profile.
+- [x] Prevent saved/automatically detected network bitrate from entering the
+  first WebGPU PlaybackInfo request.
+- [x] Split true transcode fallback into selection and output-sizing requests so
+  unsupported sources do not receive a zero-bitrate encode.
+- [x] Prefer an authorized native external-HDR route for the exact static HDR
+  item; expose the narrower raw route only if native authorization is absent.
+- [x] Prevent non-authorized raw HEVC limits from intersecting the native route.
+- [x] Preserve profile/level, bit depth, chroma, progressive, dimensions, frame
+  rate, decoded-output, throughput, container, audio-route, and presentation
+  checks.
+
+### 11.3 Automated regression coverage
+
+- [x] Accept missing and arbitrarily high source bitrate for otherwise identical
+  bundled and native HDR routes.
+- [x] Assert all global, codec, apply, audio, video, and container bitrate
+  constraints are absent from an augmented profile and the source profile is
+  unchanged.
+- [x] Assert native compatibility ignores deliberately failing audio/video
+  bitrate conditions.
+- [x] Assert exact external HDR wins when both external and raw route records are
+  available.
+- [x] Assert a native 4K external-HDR profile is not reduced by a present but
+  unauthorized 1080p raw/bundled envelope.
+- [x] Assert the player returns no bitrate for selection and returns the saved
+  value only for explicit transcode-output sizing.
+- [x] Add focused playback bitrate-policy tests for the two-request fallback
+  sequence and every gate that must prevent the second request.
+- [ ] Add a compact deterministic native High Tier access-unit fixture and exact
+  output fingerprint as portable hardening. The actual title already supplies
+  runtime evidence, so this is not permission to restore a bitrate threshold.
+
+### 11.4 Port-8096 acceptance
+
+- [x] Run the exact Jellyfin item `9297460e0d7bdf82d97fc5f9efa95d27`
+  with FLAC stream 1 through the current Jellyfin-served build.
+- [x] Require custom eligibility, native `video-frame` decode, external PQ input,
+  HDR-to-SDR WebGPU presentation, decoded FLAC PCM, and no HTML fallback.
+- [x] Pass start, pause/resume, fullscreen, resize/DPR, frame presentation, and
+  controlled stop with no terminal/runtime/browser error or ownership warning.
+- [x] Re-run with a three-seek storm and capture the concurrent Jellyfin session
+  as explicit `DirectPlay` evidence. `TranscodingInfo` was null and no FFmpeg
+  process remained.
+- [ ] Retain IMAX/2.39:1 crop transitions, natural EOF, replay, subtitle/OSD
+  stacking, visual HDR comparison, Wolfwalkers, and generated PQ/HLG as broader
+  validation-matrix work rather than expanding this negotiation diff.
+
+### 11.5 Final checkpoint gate
+
+- [x] Pass TypeScript and 362 tests across all ten affected Vitest files.
+- [x] Pass the complete WebGPU plugin suite: 83 files and 1219 tests; pass all
+  111 WebGPU Node tests and ordinary codec artifact verification.
+- [x] Pass ESLint on every changed source/test file with zero errors and one
+  pre-existing `FIXME` warning; pass `git diff --check`.
+- [x] Build the final development bundle, restore only ignored local feature
+  flags in `dist/config.json`, and rerun the exact port-8096 acceptance.
+- [x] Confirm source flags remain disabled and no generated media, reports,
+  credentials, machine-local paths, or ignored `dist` files are staged.
+- [x] Reconcile this plan and relevant player documentation with the final
+  implementation and evidence.
+- [x] Review the complete diff and prepare the focused `Remove bitrate from
+  WebGPU playback negotiation` commit for `webgpu-player`.
+
+## 12. Historical native external HDR checkpoint checklist
+
+This historical checkpoint contained only the native HEVC Main10 external-HDR
+route plus its required HTML startup, validation-harness, tests, and
+documentation changes. The Mediabunny AC-3/E-AC-3 standard-build work followed
+as a separate checkpoint to preserve review and live-validation isolation.
+
+### 12.1 Already completed in the worktree
 
 - [x] Add a separate native Main10 4K HEVC output/throughput capability.
 - [x] Assign only measured 24/30/60 fps tiers with 1.25x headroom.
@@ -813,14 +1053,14 @@ preserves review and live-validation isolation.
 - [x] Record the known `VideoSample` ownership warning as unresolved rather than
   blocking unrelated feature work.
 
-### 11.2 Code review and missing automated coverage
+### 12.2 Code review and missing automated coverage
 
 - [x] Review every tracked and untracked diff for stale experiments, duplicate
   branches, inconsistent route names, and accidental source flag changes.
 - [x] Confirm every switch over decoder backend, video output mode, HDR route,
   fallback reason, and telemetry handles the new route exhaustively.
 - [x] Add or confirm negative tests for unsupported profile/bit depth/level,
-  over-limit dimensions/bitrate/frame rate, missing metadata, and unqualified
+  over-limit decoded dimensions/frame rate, missing metadata, and unqualified
   transfer.
 - [x] Add or confirm authorization tests for pixel mismatch, decoder config
   rejection, decoder error, timeout, target-format rejection, device change,
@@ -839,7 +1079,7 @@ preserves review and live-validation isolation.
 - [ ] Update `WEBGPU_DOLBY_VISION.md` only if the shared HEVC changes alter a
   documented DV route or limitation.
 
-### 11.3 Required local command gates
+### 12.3 Required local command gates
 
 - [x] Run `npm run build:check` again from the final diff.
 - [x] Run all affected WebGPU Vitest files, not only the newly added tests.
@@ -856,21 +1096,21 @@ preserves review and live-validation isolation.
   checkpoint.
 - [x] Run `git diff --check`.
 
-### 11.4 Port-8096 browser qualification
+### 12.4 Port-8096 browser qualification
 
 - [x] Install/serve the current development build through the existing Jellyfin
   server on `http://localhost:8096`; do not substitute a separate 8080 frontend
   for the authoritative manual check.
 - [x] Enable feature flags only in the locally served ignored `dist/config.json`.
 - [x] Confirm the exact native Main10 capability reports decoded output,
-  measured fps, selected tier, 4K/Level 153/40 Mbps bounds, and no bundled route
-  substitution.
+  measured fps, selected tier, 4K/Level 153 bounds, and no bundled route
+  substitution. Source bitrate is not a capability bound.
 - [x] Confirm the exact external PQ authorization passes and telemetry records
   device, target format, route key, transfer, and accepted readback.
 - [x] Confirm the exact external HLG authorization independently passes.
-- [ ] Play the Dark Knight Main10/FLAC case and require Jellyfin `DirectPlay`,
+- [x] Play the Dark Knight Main10/FLAC case and require Jellyfin `DirectPlay`,
   not HLS transcoding or a false "codec/level/resolution/bitrate/range" reason.
-- [ ] Confirm PlaybackInfo identifies `WebGPU Video Player` and the telemetry
+- [x] Confirm PlaybackInfo identifies `WebGPU Video Player` and the telemetry
   identifies native video-frame/external-HDR plus owned FLAC audio.
 - [ ] Visually compare representative dark, bright, saturated, skin-tone, and
   gradient scenes against the raw-HDR/reference path; capture screenshots and
@@ -897,7 +1137,7 @@ preserves review and live-validation isolation.
   dropped/corrupt frames, queue bounds, A/V drift, and fallback count for both
   generated PQ/HLG runs. Both completed without unexpected output.
 
-### 11.5 Resource and regression gates
+### 12.5 Resource and regression gates
 
 - [ ] Run at least three consecutive native external-HDR sessions and verify
   stable workers, listeners, GPU resources, frames, and AudioWorklet state.
@@ -912,7 +1152,7 @@ preserves review and live-validation isolation.
   failure is presentation-only and does not duplicate Jellyfin reporting.
 - [ ] Verify ordinary HTML playback with all WebGPU flags disabled is unchanged.
 
-### 11.6 Final checkpoint hygiene
+### 12.6 Final checkpoint hygiene
 
 - [x] Re-run TypeScript, focused/full plugin tests, lint, development build, and
   artifact verification after the last fix.
@@ -928,7 +1168,7 @@ preserves review and live-validation isolation.
 - [x] Prepare the checkpoint for a focused imperative commit and push on
   `webgpu-player`.
 
-### 11.7 Native external HDR checkpoint evidence
+### 12.7 Native external HDR checkpoint evidence
 
 - Runtime: Chrome `151.0.7922.72`, NVIDIA GeForce RTX 4080 SUPER, driver
   `596.60`, WebGPU adapter vendor `nvidia` and architecture `lovelace`.
@@ -959,7 +1199,7 @@ preserves review and live-validation isolation.
   (`109` tests); changed-file ESLint; `npm run build:development`; ordinary
   artifact verification with AC-3 disabled; and `git diff --check`.
 
-## 12. Checklist before the Mediabunny AC-3/E-AC-3 commit
+## 13. Historical Mediabunny AC-3/E-AC-3 checkpoint checklist
 
 ### Standard-build integration
 
@@ -1054,7 +1294,7 @@ preserves review and live-validation isolation.
   changed-file ESLint; development and production Webpack builds; artifact
   verification for both bundles; and `git diff --check`.
 
-## 13. Checklist before the Mediabunny PCM normalization commit
+## 14. Historical Mediabunny PCM normalization checkpoint checklist
 
 ### Decoder and normalization implementation
 
@@ -1120,13 +1360,13 @@ preserves review and live-validation isolation.
   The complete controlled lifecycle reported zero fallback, stale frames,
   decoded-audio underflow/overflow/drop, terminal errors, browser errors, and
   observed `VideoSample` ownership warnings.
-- Current automated gates: complete WebGPU Vitest `83` files / `1217` tests;
+- Current automated gates: complete WebGPU Vitest `83` files / `1219` tests;
   all WebGPU Node tests `111`; TypeScript and changed-file ESLint clean;
   development and production Webpack builds plus ordinary codec artifact
   verification passed. PCM uses the already-pinned Mediabunny core asset and
   adds no duplicate decoder package.
 
-## 14. Definition of final completion
+## 15. Definition of final completion
 
 The project is complete only when all claimed codec/profile/container/audio
 routes have passing manifest cases and Jellyfin negotiation evidence; HDR/DV

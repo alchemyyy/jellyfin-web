@@ -198,7 +198,8 @@ vi.mock('./custom/CustomDeviceProfile', () => ({
                 widenedHDRCodecProfileCount: 0
             }
         };
-    })
+    }),
+    createBitrateIndependentDeviceProfile: vi.fn((profile: object) => ({ ...profile }))
 }));
 
 vi.mock('./custom/CustomPlaybackRuntime', () => ({
@@ -1131,6 +1132,11 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.id).toBe('webgpuvideoplayer');
         expect(player.syncPlayWrapAs).toBe('htmlvideoplayer');
         expect(player.priority).toBe(0);
+        expect(player.getMaxStreamingBitrate()).toBeNull();
+        expect(player.getMaxStreamingBitrate({
+            fallbackBitrate: 25_000_000,
+            purpose: 'transcode-output'
+        })).toBe(25_000_000);
     });
 
     it('keeps player selection synchronous and safe when called unbound', () => {
@@ -1159,7 +1165,9 @@ describe('WebGPUPlayer HTML delegation', () => {
             mediaSource: { Id: 'source' }
         };
 
-        await expect(player.getDeviceProfile(item, profileOptions)).resolves.toBe(backend.profile);
+        const playbackProfile = await player.getDeviceProfile(item, profileOptions);
+        expect(playbackProfile).toEqual(backend.profile);
+        expect(playbackProfile).not.toBe(backend.profile);
         await expect(player.play(playOptions)).resolves.toBe(playOptions);
         expect(backend.getDeviceProfile).toHaveBeenCalledWith(item, profileOptions);
         expect(backend.play).toHaveBeenCalledWith(playOptions);
@@ -1276,6 +1284,9 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         presenterMockState.authorizedExternalHDRRouteKeys = [
             'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        presenterMockState.authorizedRawHDRRouteKeys = [
+            'I420P10:bt2020-ncl:bt2020:limited:pq'
         ];
 
         await player.getDeviceProfile({ Id: 'native-hdr-item' }, { isRetry: false });
@@ -1502,7 +1513,9 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.customDecodeEnabled = true;
         customProfileMockState.runtimeAvailable = false;
 
-        await expect(player.getDeviceProfile({}, {})).resolves.toBe(backend.profile);
+        const playbackProfile = await player.getDeviceProfile({}, {});
+        expect(playbackProfile).toEqual(backend.profile);
+        expect(playbackProfile).not.toBe(backend.profile);
         expect(customProfileMockState.augmentationCalls).toHaveLength(0);
         expect(player.getCustomPlaybackRuntimeAvailability()).toMatchObject({
             available: false,

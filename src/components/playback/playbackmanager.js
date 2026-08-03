@@ -37,6 +37,12 @@ import { getMediaError } from 'utils/mediaError';
 import { getTranscodingOffsetTicks } from 'utils/mediaSource';
 import { bindSkipSegment } from './skipsegment.ts';
 import { PlaybackChangeTracker } from './PlaybackChangeTracker';
+import {
+    getPlayerMaxStreamingBitrate,
+    PLAYBACK_SELECTION_BITRATE_PURPOSE,
+    shouldUsePostSelectionTranscodeBitrate,
+    TRANSCODE_OUTPUT_BITRATE_PURPOSE
+} from './PlaybackBitratePolicy';
 import { PlaybackRequestGate } from './PlaybackRequestGate';
 import * as bitrateTest from 'utils/bitrateTest';
 import {
@@ -595,6 +601,12 @@ function getLiveStream(player, apiClient, item, playSessionId, deviceProfile, me
     }
     if (options.subtitleStreamIndex != null) {
         query.SubtitleStreamIndex = options.subtitleStreamIndex;
+    }
+    if (options.enableDirectPlay != null) {
+        query.EnableDirectPlay = options.enableDirectPlay;
+    }
+    if (options.enableDirectStream != null) {
+        query.EnableDirectStream = options.enableDirectStream;
     }
 
     // lastly, enforce player overrides for special situations
@@ -1919,7 +1931,26 @@ export class PlaybackManager {
                     ticks = parseInt(ticks, 10);
                 }
 
-                const maxBitrate = params.MaxStreamingBitrate || self.getMaxStreamingBitrate(player);
+                const playerData = getPlayerData(player);
+                const currentPlayMethod = self.playMethod(player);
+                const transcodeOutputRequest = (
+                    params.EnableDirectPlay === false
+                    && params.EnableDirectStream === false
+                ) || currentPlayMethod === 'Transcode';
+                if (currentPlayMethod === 'Transcode') {
+                    params.EnableDirectPlay = false;
+                    params.EnableDirectStream = false;
+                }
+                const fallbackBitrate = params.MaxStreamingBitrate
+                    || playerData.maxStreamingBitrate
+                    || self.getMaxStreamingBitrate(player);
+                const maxBitrate = getPlayerMaxStreamingBitrate(
+                    player,
+                    fallbackBitrate,
+                    transcodeOutputRequest ?
+                        TRANSCODE_OUTPUT_BITRATE_PURPOSE :
+                        PLAYBACK_SELECTION_BITRATE_PURPOSE
+                );
 
                 const currentPlayOptions = currentItem.playOptions || getDefaultPlayOptions();
 
@@ -1988,7 +2019,7 @@ export class PlaybackManager {
                     getPlayerData(player).subtitleStreamIndex = subtitleStreamIndex;
                     getPlayerData(player).secondarySubtitleStreamIndex = secondarySubtitleStreamIndex;
                     getPlayerData(player).audioStreamIndex = audioStreamIndex;
-                    getPlayerData(player).maxStreamingBitrate = maxBitrate;
+                    getPlayerData(player).maxStreamingBitrate = fallbackBitrate;
 
                     changeStreamToUrl(
                         apiClient,
@@ -3103,6 +3134,12 @@ export class PlaybackManager {
                 });
             }
 
+            const playbackMaxBitrate = getPlayerMaxStreamingBitrate(player, maxBitrate);
+            const transcodingMaxBitrate = getPlayerMaxStreamingBitrate(
+                player,
+                maxBitrate,
+                TRANSCODE_OUTPUT_BITRATE_PURPOSE
+            );
             let mediaSourceId = playOptions.mediaSourceId;
 
             const apiClient = ServerConnections.getApiClient(item.ServerId);
@@ -3125,7 +3162,8 @@ export class PlaybackManager {
                 const subtitleStreamIndex = playOptions.subtitleStreamIndex;
                 const options = {
                     aspectRatio: playOptions.aspectRatio,
-                    maxBitrate,
+                    maxBitrate: playbackMaxBitrate,
+                    transcodingBitrate: transcodingMaxBitrate,
                     startPosition,
                     isPlayback: null,
                     audioStreamIndex,
@@ -3210,7 +3248,7 @@ export class PlaybackManager {
                     const playerData = getPlayerData(player);
 
                     playerData.isChangingStream = false;
-                    playerData.maxStreamingBitrate = maxBitrate;
+                    playerData.maxStreamingBitrate = transcodingMaxBitrate;
                     playerData.streamInfo = streamInfo;
 
                     return player.play(streamInfo).then(function (playResult) {
@@ -3256,11 +3294,21 @@ export class PlaybackManager {
 
             // Call this just to ensure the value is recorded, it is needed with getSavedMaxStreamingBitrate
             return apiClient.getEndpointInfo().then(function () {
-                const maxBitrate = getSavedMaxStreamingBitrate(ServerConnections.getApiClient(item.ServerId), mediaType);
+                const savedMaxBitrate = getSavedMaxStreamingBitrate(
+                    ServerConnections.getApiClient(item.ServerId),
+                    mediaType
+                );
+                const maxBitrate = getPlayerMaxStreamingBitrate(player, savedMaxBitrate);
+                const transcodingBitrate = getPlayerMaxStreamingBitrate(
+                    player,
+                    savedMaxBitrate,
+                    TRANSCODE_OUTPUT_BITRATE_PURPOSE
+                );
 
                 return player.getDeviceProfile(item).then(function (deviceProfile) {
                     const mediaOptions = {
                         maxBitrate,
+                        transcodingBitrate,
                         startPosition,
                         isPlayback: null,
                         audioStreamIndex: options.audioStreamIndex,
@@ -3289,7 +3337,11 @@ export class PlaybackManager {
 
             // Call this just to ensure the value is recorded, it is needed with getSavedMaxStreamingBitrate
             return apiClient.getEndpointInfo().then(function () {
-                const maxBitrate = getSavedMaxStreamingBitrate(ServerConnections.getApiClient(item.ServerId), mediaType);
+                const savedMaxBitrate = getSavedMaxStreamingBitrate(
+                    ServerConnections.getApiClient(item.ServerId),
+                    mediaType
+                );
+                const maxBitrate = getPlayerMaxStreamingBitrate(player, savedMaxBitrate);
 
                 return player.getDeviceProfile(item).then(function (deviceProfile) {
                     const mediaOptions = {
@@ -3447,75 +3499,106 @@ export class PlaybackManager {
             return tracks;
         }
 
-        function getPlaybackMediaSource(player, apiClient, deviceProfile, item, mediaSourceId, options) {
+        async function getPlaybackMediaSource(player, apiClient, deviceProfile, item, mediaSourceId, options) {
             options.isPlayback = true;
 
-            function resolvePlaybackMediaSource(playbackInfoResult, allowClientHDRToneMappingRetry) {
-                return getOptimalMediaSource(apiClient, item, playbackInfoResult.MediaSources).then(function (mediaSource) {
-                    if (!mediaSource) {
-                        showPlaybackInfoErrorMessage(self, `PlaybackError.${MediaError.NO_MEDIA_ERROR}`);
-                        return Promise.reject();
-                    }
-
-                    if (
-                        allowClientHDRToneMappingRetry
-                        && configureClientHDRToneMappingPlayback(
-                            player,
-                            options,
-                            mediaSource,
-                            deviceProfile
-                        )
-                    ) {
-                        return getPlaybackInfo(
-                            player,
-                            apiClient,
-                            item,
-                            deviceProfile,
-                            mediaSource.Id,
-                            null,
-                            options
-                        ).then(function (clientHDRPlaybackInfoResult) {
-                            if (!validatePlaybackInfoResult(self, clientHDRPlaybackInfoResult)) {
-                                return Promise.reject();
-                            }
-
-                            return resolvePlaybackMediaSource(
-                                clientHDRPlaybackInfoResult,
-                                false
-                            );
-                        });
-                    }
-
-                    if (mediaSource.RequiresOpening && !mediaSource.LiveStreamId) {
-                        options.audioStreamIndex = null;
-                        options.subtitleStreamIndex = null;
-
-                        return getLiveStream(player, apiClient, item, playbackInfoResult.PlaySessionId, deviceProfile, mediaSource, options).then(function (openLiveStreamResult) {
-                            return supportsDirectPlay(apiClient, item, openLiveStreamResult.MediaSource).then(function (result) {
-                                openLiveStreamResult.MediaSource.enableDirectPlay = result;
-                                return openLiveStreamResult.MediaSource;
-                            });
-                        });
-                    }
-
-                    if (item.AlbumId != null) {
-                        return apiClient.getItem(apiClient.getCurrentUserId(), item.AlbumId).then(function(result) {
-                            mediaSource.albumNormalizationGain = result.NormalizationGain;
-                            return mediaSource;
-                        });
-                    }
-
-                    return mediaSource;
-                });
+            let playbackInfoResult = await getPlaybackInfo(
+                player,
+                apiClient,
+                item,
+                deviceProfile,
+                mediaSourceId,
+                null,
+                options
+            );
+            if (!validatePlaybackInfoResult(self, playbackInfoResult)) {
+                return Promise.reject();
             }
 
-            return getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSourceId, null, options).then(function (playbackInfoResult) {
+            let mediaSource = await getOptimalMediaSource(
+                apiClient,
+                item,
+                playbackInfoResult.MediaSources
+            );
+            if (!mediaSource) {
+                showPlaybackInfoErrorMessage(self, `PlaybackError.${MediaError.NO_MEDIA_ERROR}`);
+                return Promise.reject();
+            }
+
+            const transcodingBitrate = options.transcodingBitrate;
+            const needsTranscodeOutputBitrate =
+                shouldUsePostSelectionTranscodeBitrate(
+                    options.maxBitrate,
+                    transcodingBitrate,
+                    mediaSource
+                );
+            if (needsTranscodeOutputBitrate && !mediaSource.RequiresOpening) {
+                // The first request selects the play method without bitrate. Once
+                // transcoding is fixed, the second request only sizes its output.
+                const transcodingOptions = {
+                    ...options,
+                    enableDirectPlay: false,
+                    enableDirectStream: false,
+                    maxBitrate: transcodingBitrate
+                };
+                playbackInfoResult = await getPlaybackInfo(
+                    player,
+                    apiClient,
+                    item,
+                    deviceProfile,
+                    mediaSource.Id,
+                    null,
+                    transcodingOptions
+                );
                 if (!validatePlaybackInfoResult(self, playbackInfoResult)) {
                     return Promise.reject();
                 }
+                mediaSource = await getOptimalMediaSource(
+                    apiClient,
+                    item,
+                    playbackInfoResult.MediaSources
+                );
+                if (!mediaSource) {
+                    showPlaybackInfoErrorMessage(self, `PlaybackError.${MediaError.NO_MEDIA_ERROR}`);
+                    return Promise.reject();
+                }
+            }
 
-                return resolvePlaybackMediaSource(playbackInfoResult, true);
-            });
+            if (mediaSource.RequiresOpening && !mediaSource.LiveStreamId) {
+                options.audioStreamIndex = null;
+                options.subtitleStreamIndex = null;
+                const liveStreamOptions = needsTranscodeOutputBitrate ? {
+                    ...options,
+                    enableDirectPlay: false,
+                    enableDirectStream: false,
+                    maxBitrate: transcodingBitrate
+                } : options;
+
+                const openLiveStreamResult = await getLiveStream(
+                    player,
+                    apiClient,
+                    item,
+                    playbackInfoResult.PlaySessionId,
+                    deviceProfile,
+                    mediaSource,
+                    liveStreamOptions
+                );
+                openLiveStreamResult.MediaSource.enableDirectPlay = await supportsDirectPlay(
+                    apiClient,
+                    item,
+                    openLiveStreamResult.MediaSource
+                );
+                return openLiveStreamResult.MediaSource;
+            }
+
+            if (item.AlbumId != null) {
+                const album = await apiClient.getItem(
+                    apiClient.getCurrentUserId(),
+                    item.AlbumId
+                );
+                mediaSource.albumNormalizationGain = album.NormalizationGain;
+            }
+            return mediaSource;
         }
 
         function getPlayer(item, playOptions, forceLocalPlayers) {
