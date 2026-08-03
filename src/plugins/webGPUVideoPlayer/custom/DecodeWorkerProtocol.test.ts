@@ -706,6 +706,39 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
+    it('validates bounded optional static HDR metadata', () => {
+        const readyResponse = {
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 2_160,
+            codedWidth: 3_840,
+            displayHeight: 2_160,
+            displayWidth: 3_840,
+            generation: 1,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
+            type: 'ready'
+        };
+        expect(isDecodeWorkerResponse(readyResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...readyResponse,
+            staticHDRMetadata: {
+                ...readyResponse.staticHDRMetadata,
+                masteringDisplayMaximumLuminanceNits: 10_001
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...readyResponse,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000
+            }
+        })).toBe(false);
+    });
+
     it('validates bounded planar PCM and independent audio credits', () => {
         expect(isDecodeWorkerRequest({
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,

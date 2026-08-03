@@ -17,6 +17,10 @@ import {
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
 } from './RawVideoFrameCopy';
+import {
+    isStaticHDRMetadata,
+    type StaticHDRMetadata
+} from './StaticHDRMetadata';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
 export const MAX_DECODED_RAW_FRAME_CREDITS = 2;
@@ -145,6 +149,7 @@ export type DecodeWorkerReadyResponse = {
     displayHeight: number
     displayWidth: number
     generation: number
+    staticHDRMetadata?: StaticHDRMetadata
     type: 'ready'
 };
 
@@ -731,7 +736,9 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && isPositiveInteger(value.displayWidth)
                 && Number(value.displayHeight) <= MAXIMUM_RAW_VIDEO_CODED_HEIGHT
                 && Number(value.displayWidth) <= MAXIMUM_RAW_VIDEO_CODED_WIDTH
-                && (value.audio === null || isAudioConfiguration(value.audio));
+                && (value.audio === null || isAudioConfiguration(value.audio))
+                && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadata')
+                    || isStaticHDRMetadata(value.staticHDRMetadata));
         case 'frame':
             return isDecodeWorkerFrameResponse(value);
         case 'audio': {

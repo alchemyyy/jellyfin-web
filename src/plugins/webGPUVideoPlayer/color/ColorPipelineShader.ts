@@ -233,28 +233,31 @@ fn evaluateSmoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
 }
 
 fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
+    let inputMinimum = encodePerceptualPQ(0.000001);
     let inputMaximum = encodePerceptualPQ(renderSettings.inputPeakNits);
+    let outputMinimum = encodePerceptualPQ(renderSettings.outputPeakNits / 1000.0);
     let outputMaximum = encodePerceptualPQ(renderSettings.outputPeakNits);
-    let sourcePivot = inputMaximum * 0.4;
-    let sourceTarget = sourcePivot / inputMaximum;
-    let adaptedPivot = outputMaximum * sourceTarget;
+    let sourcePivot = mix(inputMinimum, inputMaximum, 0.4);
+    let sourceTarget = (sourcePivot - inputMinimum) / (inputMaximum - inputMinimum);
+    let adaptedPivot = mix(outputMinimum, outputMaximum, sourceTarget);
     let tuning = 1.0
         - evaluateSmoothstep(0.8, 0.4, sourceTarget)
         * evaluateSmoothstep(0.1, 0.4, sourceTarget);
     let adaptation = mix(0.4, 1.0, tuning);
     let destinationPivot = clamp(
         mix(sourcePivot, adaptedPivot, adaptation),
-        outputMaximum * 0.1,
-        outputMaximum * 0.8
+        mix(outputMinimum, outputMaximum, 0.1),
+        mix(outputMinimum, outputMaximum, 0.8)
     );
-    let linearSlope = destinationPivot / sourcePivot;
+    let linearSlope = (destinationPivot - outputMinimum)
+        / (sourcePivot - inputMinimum);
     let peakRatio = inputMaximum / outputMaximum - 1.0;
     let slopeRatio = clamp(1.5 * peakRatio, 0.2, 1.2);
     let pivotSlope = pow(linearSlope, 0.5 * slopeRatio);
 
-    let inputMinimumOffset = -sourcePivot;
+    let inputMinimumOffset = inputMinimum - sourcePivot;
     let inputMaximumOffset = inputMaximum - sourcePivot;
-    let outputMinimumOffset = -destinationPivot;
+    let outputMinimumOffset = outputMinimum - destinationPivot;
     let outputMaximumOffset = outputMaximum - destinationPivot;
     let lowerQuadratic = (outputMinimumOffset - pivotSlope * inputMinimumOffset)
         / (inputMinimumOffset * inputMinimumOffset);
@@ -264,7 +267,7 @@ fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
     let upperQuadratic = -3.0 * (pivotSlope * inputMaximumOffset - outputMaximumOffset)
         / upperDenominator;
 
-    let inputOffset = clamp(inputIntensityPQ, 0.0, inputMaximum) - sourcePivot;
+    let inputOffset = clamp(inputIntensityPQ, inputMinimum, inputMaximum) - sourcePivot;
     var mappedOffset: f32;
     if (inputOffset > 0.0) {
         mappedOffset = ((upperCubic * inputOffset + upperQuadratic)
@@ -272,7 +275,7 @@ fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
     } else {
         mappedOffset = (lowerQuadratic * inputOffset + pivotSlope) * inputOffset;
     }
-    return clamp(mappedOffset + destinationPivot, 0.0, outputMaximum);
+    return clamp(mappedOffset + destinationPivot, outputMinimum, outputMaximum);
 }
 
 fn calculateIPTChromaHull(intensity: f32) -> f32 {
@@ -353,8 +356,14 @@ fn encodeSRGB(linearValue: f32) -> f32 {
 }
 
 fn encodeOutputComponent(componentNits: f32) -> f32 {
+    let outputMinimumNits = select(
+        0.0,
+        renderSettings.outputPeakNits / 1000.0,
+        renderSettings.toneMapOperator == 2u
+    );
     let linearValue = clamp(
-        componentNits / renderSettings.outputPeakNits,
+        (componentNits - outputMinimumNits)
+            / (renderSettings.outputPeakNits - outputMinimumNits),
         0.0,
         1.0
     );

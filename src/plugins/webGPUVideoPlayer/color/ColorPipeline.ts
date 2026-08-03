@@ -30,6 +30,8 @@ const PQ_C3 = 2392 / 128;
 const PQ_M1 = 2610 / 16384;
 const PQ_M2 = 2523 / 32;
 const PQ_PEAK_NITS = 10_000;
+const HDR_BLACK_NITS = 0.000_001;
+const SDR_CONTRAST = 1_000;
 const SPLINE_KNEE_ADAPTATION = 0.4;
 const SPLINE_KNEE_DEFAULT = 0.4;
 const SPLINE_KNEE_MAXIMUM = 0.8;
@@ -276,11 +278,15 @@ export function evaluateSplineToneMapPQ(
         throw new RangeError('Spline tone-map values must be positive and finite');
     }
 
+    // Match libplacebo's nominal PQ and SDR black points before constructing
+    // the spline. These offsets are significant because the curve is in PQ.
+    const inputMinimum = applyPQOETF(HDR_BLACK_NITS);
     const inputMaximum = applyPQOETF(inputPeakNits);
+    const outputMinimum = applyPQOETF(outputPeakNits / SDR_CONTRAST);
     const outputMaximum = applyPQOETF(outputPeakNits);
-    const sourcePivot = inputMaximum * SPLINE_KNEE_DEFAULT;
-    const sourceTarget = sourcePivot / inputMaximum;
-    const adaptedPivot = outputMaximum * sourceTarget;
+    const sourcePivot = mix(inputMinimum, inputMaximum, SPLINE_KNEE_DEFAULT);
+    const sourceTarget = (sourcePivot - inputMinimum) / (inputMaximum - inputMinimum);
+    const adaptedPivot = mix(outputMinimum, outputMaximum, sourceTarget);
     const tuning = 1 - (
         smoothstep(SPLINE_KNEE_MAXIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
         * smoothstep(SPLINE_KNEE_MINIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
@@ -288,10 +294,11 @@ export function evaluateSplineToneMapPQ(
     const adaptation = mix(SPLINE_KNEE_ADAPTATION, 1, tuning);
     const destinationPivot = clamp(
         mix(sourcePivot, adaptedPivot, adaptation),
-        outputMaximum * SPLINE_KNEE_MINIMUM,
-        outputMaximum * SPLINE_KNEE_MAXIMUM
+        mix(outputMinimum, outputMaximum, SPLINE_KNEE_MINIMUM),
+        mix(outputMinimum, outputMaximum, SPLINE_KNEE_MAXIMUM)
     );
-    const linearSlope = destinationPivot / sourcePivot;
+    const linearSlope = (destinationPivot - outputMinimum)
+        / (sourcePivot - inputMinimum);
     const peakRatio = (inputMaximum / outputMaximum) - 1;
     const slopeRatio = clamp(
         SPLINE_SLOPE_TUNING * peakRatio,
@@ -300,9 +307,9 @@ export function evaluateSplineToneMapPQ(
     );
     const pivotSlope = linearSlope ** ((1 - SPLINE_CONTRAST) * slopeRatio);
 
-    const inputMinimumOffset = -sourcePivot;
+    const inputMinimumOffset = inputMinimum - sourcePivot;
     const inputMaximumOffset = inputMaximum - sourcePivot;
-    const outputMinimumOffset = -destinationPivot;
+    const outputMinimumOffset = outputMinimum - destinationPivot;
     const outputMaximumOffset = outputMaximum - destinationPivot;
     const lowerQuadratic = (
         outputMinimumOffset - (pivotSlope * inputMinimumOffset)
@@ -315,12 +322,12 @@ export function evaluateSplineToneMapPQ(
         (pivotSlope * inputMaximumOffset) - outputMaximumOffset
     ) / upperDenominator;
 
-    const inputOffset = clamp(inputIntensityPQ, 0, inputMaximum) - sourcePivot;
+    const inputOffset = clamp(inputIntensityPQ, inputMinimum, inputMaximum) - sourcePivot;
     const mappedOffset = inputOffset > 0 ?
         (((upperCubic * inputOffset) + upperQuadratic) * inputOffset + pivotSlope)
             * inputOffset :
         ((lowerQuadratic * inputOffset) + pivotSlope) * inputOffset;
-    return clamp(mappedOffset + destinationPivot, 0, outputMaximum);
+    return clamp(mappedOffset + destinationPivot, outputMinimum, outputMaximum);
 }
 
 /** Applies the BT.2100 HLG display transform for an achromatic signal. */
@@ -597,14 +604,23 @@ function applyDisplayControls(
 export function encodeSDROutput(
     linearRGBNits: ColorTriplet,
     outputPeakNits: number,
-    transfer: ReferenceSDROutputTransfer
+    transfer: ReferenceSDROutputTransfer,
+    outputMinimumNits = 0
 ): ColorTriplet {
-    if (!Number.isFinite(outputPeakNits) || outputPeakNits <= 0) {
-        throw new RangeError('Output peak luminance must be positive and finite');
+    if (!Number.isFinite(outputPeakNits)
+        || !Number.isFinite(outputMinimumNits)
+        || outputPeakNits <= 0
+        || outputMinimumNits < 0
+        || outputMinimumNits >= outputPeakNits) {
+        throw new RangeError('Output luminance range must be positive and finite');
     }
 
     return mapTriplet(linearRGBNits, (component: number): number => {
-        const linearValue = clamp(component / outputPeakNits, 0, 1);
+        const linearValue = clamp(
+            (component - outputMinimumNits) / (outputPeakNits - outputMinimumNits),
+            0,
+            1
+        );
         switch (transfer) {
             case 'bt709':
                 return linearValue < 0.018 ?
@@ -644,7 +660,10 @@ export function processEncodedRGB(
     const encodedOutputRGB = encodeSDROutput(
         toneMappedRGB,
         settings.toneMapping.outputPeakNits,
-        settings.outputTransfer
+        settings.outputTransfer,
+        settings.toneMapping.operator === 'spline' ?
+            settings.toneMapping.outputPeakNits / SDR_CONTRAST :
+            0
     );
     return applyDisplayControls(encodedOutputRGB, settings.display);
 }

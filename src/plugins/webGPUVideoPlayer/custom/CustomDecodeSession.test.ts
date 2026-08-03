@@ -444,6 +444,12 @@ describe('CustomDecodeSession', () => {
             displayHeight: 1080,
             displayWidth: 1920,
             generation: 7,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
             type: 'ready'
         });
         expect(session.getTelemetry().state).toBe('configured');
@@ -451,6 +457,12 @@ describe('CustomDecodeSession', () => {
             audio: null,
             codec: 'avc1.640028',
             generation: 7,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
             type: 'configured'
         } ]);
 
@@ -460,6 +472,12 @@ describe('CustomDecodeSession', () => {
             audio: null,
             codec: 'avc1.640028',
             generation: 7,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
             type: 'ready'
         });
         const selectedFrame = emitFrame(worker, 7, 1_200_000);
@@ -486,6 +504,12 @@ describe('CustomDecodeSession', () => {
             audio: null,
             codec: 'avc1.640028',
             generation: 7,
+            staticHDRMetadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
             type: 'ready'
         });
 

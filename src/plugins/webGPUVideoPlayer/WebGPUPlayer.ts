@@ -68,6 +68,10 @@ import {
     type NativeMediaAudioCapabilities
 } from './custom/NativeMediaAudioCapabilities';
 import {
+    getStaticHDRToneMappingPeakNits,
+    type StaticHDRMetadata
+} from './custom/StaticHDRMetadata';
+import {
     augmentDeviceProfileForCustomDecode,
     createBitrateIndependentDeviceProfile,
     type CustomDeviceProfileOptions,
@@ -1607,6 +1611,35 @@ export default class WebGPUPlayer {
         }, generation);
     }
 
+    private applyStaticHDRMetadata(metadata: StaticHDRMetadata): void {
+        if (this.currentDolbyVisionPresentationDescriptor
+            || this.currentPresentationColorMetadata?.transfer !== 'pq') {
+            return;
+        }
+
+        const inputPeakNits = getStaticHDRToneMappingPeakNits(metadata);
+        const currentSettings = this.presenter.getRenderSettings();
+        if (inputPeakNits === null
+            || currentSettings.mode !== 'hdr-to-sdr'
+            || currentSettings.toneMapping.inputPeakNits === inputPeakNits) {
+            return;
+        }
+        const updatedSettings = createHDRToSDRRenderSettings({
+            display: currentSettings.display,
+            outputTransfer: currentSettings.outputTransfer,
+            toneMapping: {
+                ...currentSettings.toneMapping,
+                inputPeakNits
+            }
+        });
+        if (!this.presenter.updateRenderSettings(
+            updatedSettings,
+            this.presentationGeneration
+        )) {
+            console.warn('WebGPU could not apply static HDR luminance metadata');
+        }
+    }
+
     private startCustomPlaybackAudioPrewarm(options: unknown, backendGeneration: number): void {
         if (!isWebGPUCustomDecodeEnabled()) {
             return;
@@ -2181,6 +2214,9 @@ export default class WebGPUPlayer {
 
         const htmlBackend = this.getHTMLCustomPlaybackBackend();
         switch (event.type) {
+            case 'static-hdr-metadata':
+                this.applyStaticHDRMetadata(event.metadata);
+                break;
             case 'statechange':
                 if (event.state === 'paused') {
                     this.cancelCustomPlaybackFrameCallback();

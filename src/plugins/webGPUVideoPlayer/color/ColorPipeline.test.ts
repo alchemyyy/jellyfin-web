@@ -86,9 +86,10 @@ describe('ColorPipeline', () => {
             evaluateSplineToneMapPQ(applyPQOETF(luminanceNits), 1_000, 100)
         ));
 
-        expect(mappedIntensities[0]).toBeLessThan(0.000001);
-        expect(mappedIntensities[2]).toBeCloseTo(0.4099250914, 9);
-        expect(mappedIntensities[3]).toBeCloseTo(0.4442964008, 9);
+        expect(mappedIntensities[0]).toBeCloseTo(applyPQOETF(0.1), 12);
+        expect(mappedIntensities[1]).toBeCloseTo(0.2757586086, 9);
+        expect(mappedIntensities[2]).toBeCloseTo(0.4151905695, 9);
+        expect(mappedIntensities[3]).toBeCloseTo(0.4475811788, 9);
         expect(mappedIntensities.at(-1)).toBeCloseTo(applyPQOETF(100), 12);
         for (let intensityIndex = 1; intensityIndex < mappedIntensities.length; intensityIndex++) {
             expect(mappedIntensities[intensityIndex]).toBeGreaterThan(
@@ -121,6 +122,12 @@ describe('ColorPipeline', () => {
     it('supports both SDR output encodings', () => {
         const sRGBOutput = encodeSDROutput([ 0, 50, 100 ], 100, 'srgb');
         const bt709Output = encodeSDROutput([ 0, 50, 100 ], 100, 'bt709');
+        const blackPointCompensatedOutput = encodeSDROutput(
+            [ 0.1, 50.05, 100 ],
+            100,
+            'srgb',
+            0.1
+        );
 
         expect(sRGBOutput[0]).toBe(0);
         expect(sRGBOutput[1]).toBeCloseTo(0.735356983, 8);
@@ -128,6 +135,9 @@ describe('ColorPipeline', () => {
         expect(bt709Output[0]).toBe(0);
         expect(bt709Output[1]).toBeCloseTo(0.70551509, 8);
         expect(bt709Output[2]).toBeCloseTo(1, 12);
+        expect(blackPointCompensatedOutput[0]).toBe(0);
+        expect(blackPointCompensatedOutput[1]).toBeCloseTo(0.735356983, 8);
+        expect(blackPointCompensatedOutput[2]).toBeCloseTo(1, 12);
     });
 
     it('leaves identity RGB untouched and bounds HDR-to-SDR output', () => {
@@ -174,7 +184,7 @@ describe('ColorPipeline', () => {
             expect.any(Number),
             expect.any(Number)
         ]));
-        expect(mappedRed[0]).toBeCloseTo(0.79467454, 7);
+        expect(mappedRed[0]).toBeCloseTo(0.84929848, 7);
         expect(mappedRed[0]).toBeGreaterThan(mappedRed[1]);
         expect(mappedRed[0]).toBeGreaterThan(mappedRed[2]);
         expect(mappedGreen[1]).toBeGreaterThan(mappedGreen[0]);

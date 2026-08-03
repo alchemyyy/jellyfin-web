@@ -39,6 +39,7 @@ import {
     MAXIMUM_RAW_VIDEO_CODED_WIDTH,
     type RawVideoFrameGeometry
 } from './RawVideoFrameCopy';
+import type { StaticHDRMetadata } from './StaticHDRMetadata';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 
@@ -65,12 +66,14 @@ export type CustomDecodeSessionEvent =
         audio: DecodeWorkerReadyAudioConfiguration | null
         codec: string
         generation: number
+        staticHDRMetadata?: StaticHDRMetadata
         type: 'configured'
     }
     | {
         audio: DecodeWorkerReadyAudioConfiguration | null
         codec: string
         generation: number
+        staticHDRMetadata?: StaticHDRMetadata
         type: 'ready'
     }
     | {
@@ -154,6 +157,7 @@ type WorkerRecord = {
     videoCodec: string | null
     videoMediaReady: boolean
     videoOutputMode: CustomDecodeVideoOutputMode
+    staticHDRMetadata: StaticHDRMetadata | null
     worker: Worker
 };
 
@@ -649,6 +653,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             videoGeometry: null,
             videoMediaReady: false,
             videoOutputMode: options.videoOutputMode,
+            staticHDRMetadata: null,
             worker
         };
 
@@ -785,12 +790,16 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         }
 
         workerRecord.videoCodec = videoCodec;
+        workerRecord.staticHDRMetadata = message.staticHDRMetadata ?? null;
         workerRecord.audioMediaReady = audioConfiguration === null;
         this.telemetry.state = 'configured';
         this.emitEvent({
             audio: audioConfiguration,
             codec: videoCodec,
             generation: workerRecord.generation,
+            ...(workerRecord.staticHDRMetadata ? {
+                staticHDRMetadata: workerRecord.staticHDRMetadata
+            } : {}),
             type: 'configured'
         });
 
@@ -1002,6 +1011,9 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             audio: workerRecord.audioConfiguration,
             codec: videoCodec,
             generation: workerRecord.generation,
+            ...(workerRecord.staticHDRMetadata ? {
+                staticHDRMetadata: workerRecord.staticHDRMetadata
+            } : {}),
             type: 'ready'
         });
     }

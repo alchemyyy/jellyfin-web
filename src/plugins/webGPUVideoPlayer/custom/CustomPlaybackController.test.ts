@@ -1708,6 +1708,48 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.playbackState).toBe('fallback');
     });
 
+    it('forwards static HDR metadata before playback becomes ready', async () => {
+        const harness = createControllerHarness(false);
+        const startPromise = harness.controller.play(createPlayOptions());
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0]?.generation;
+        if (!generation) {
+            throw new Error('Video decode did not start');
+        }
+        const staticHDRMetadata = {
+            masteringDisplayMaximumLuminanceNits: 4_000,
+            masteringDisplayMinimumLuminanceNits: 0.005,
+            maximumContentLightLevelNits: 500,
+            maximumFrameAverageLightLevelNits: 200
+        };
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            staticHDRMetadata,
+            type: 'configured'
+        });
+        expect(harness.events.filter(event => event.type === 'static-hdr-metadata'))
+            .toEqual([ {
+                generation,
+                metadata: staticHDRMetadata,
+                type: 'static-hdr-metadata'
+            } ]);
+        expect(harness.events.some(event => event.type === 'ready')).toBe(false);
+
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            staticHDRMetadata,
+            type: 'ready'
+        });
+        await expect(startPromise).resolves.toMatchObject({
+            generation,
+            status: 'started'
+        });
+    });
+
     it('keeps configured-without-media startup bounded and latches one fallback request', async () => {
         vi.useFakeTimers();
         try {

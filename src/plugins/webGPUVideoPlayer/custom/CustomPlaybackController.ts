@@ -999,6 +999,13 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
 
         this.audioPath = event.audio ? 'pending' : 'disabled';
+        if (event.staticHDRMetadata) {
+            this.emitEvent({
+                generation: event.generation,
+                metadata: event.staticHDRMetadata,
+                type: 'static-hdr-metadata'
+            });
+        }
     }
 
     private handleVideoReady(

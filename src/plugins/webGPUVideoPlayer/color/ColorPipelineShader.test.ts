@@ -42,6 +42,8 @@ describe('createColorPipelineWGSL', () => {
         expect(shader).toContain('renderSettings.toneMapOperator == 0u');
         expect(shader).toContain('renderSettings.toneMapOperator == 2u');
         expect(shader).toContain('fn evaluateSplineToneMapPQ');
+        expect(shader).toContain('renderSettings.outputPeakNits / 1000.0');
+        expect(shader).toContain('componentNits - outputMinimumNits');
         expect(shader).toContain('fn perceptuallyMapIPTPQToBT709');
         expect(shader).not.toContain('fn encodeBT709');
         expect(processFunction.indexOf('decodeInputTransfer')).toBeLessThan(

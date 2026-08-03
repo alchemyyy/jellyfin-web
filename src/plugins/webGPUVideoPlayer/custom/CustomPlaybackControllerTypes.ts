@@ -26,6 +26,7 @@ import type {
     DecodeWorkerAudioConfiguration
 } from './DecodeWorkerProtocol';
 import type { MediaClockSnapshot, MonotonicTimeSource } from './MediaClock';
+import type { StaticHDRMetadata } from './StaticHDRMetadata';
 
 export type CustomPlaybackState =
     | 'ended'
@@ -161,6 +162,11 @@ export type CustomPlaybackTelemetry = {
 };
 
 export type CustomPlaybackControllerEvent =
+    | {
+        generation: number
+        metadata: StaticHDRMetadata
+        type: 'static-hdr-metadata'
+    }
     | {
         generation: number
         previousState: CustomPlaybackState

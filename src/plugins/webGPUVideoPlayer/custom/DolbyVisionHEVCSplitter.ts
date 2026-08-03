@@ -27,7 +27,7 @@ export type DolbyVisionHEVCSplitResult = {
     rpuNALUnits: readonly Uint8Array[]
 };
 
-type HEVCNALUnit = {
+export type HEVCNALUnit = {
     data: Uint8Array
     type: number
 };
@@ -142,7 +142,11 @@ function parseAnnexBNALUnits(data: Uint8Array): HEVCNALUnit[] {
     return nalUnits;
 }
 
-function parseNALUnits(data: Uint8Array, format: HEVCNALFormat): HEVCNALUnit[] {
+/** Parses one bounded HEVC access unit without copying its NAL payloads. */
+export function parseHEVCNALUnits(
+    data: Uint8Array,
+    format: HEVCNALFormat
+): HEVCNALUnit[] {
     switch (format.kind) {
         case 'annex-b':
             return parseAnnexBNALUnits(data);
@@ -225,7 +229,7 @@ export function splitDolbyVisionHEVCAccessUnit(
     enhancementOutputFormat: HEVCNALFormat = inputFormat
 ): DolbyVisionHEVCSplitResult {
     requireAccessUnit(data);
-    const nalUnits = parseNALUnits(data, inputFormat);
+    const nalUnits = parseHEVCNALUnits(data, inputFormat);
     const baseLayerNALUnits: Uint8Array[] = [];
     const enhancementLayerNALUnits: Uint8Array[] = [];
     const enhancementLayerParameterSetTypes = new Set<number>();
@@ -281,7 +285,7 @@ export function hasHEVCRASLPicture(
     format: HEVCNALFormat
 ): boolean {
     requireAccessUnit(data);
-    return parseNALUnits(data, format).some((nalUnit: HEVCNALUnit): boolean => (
+    return parseHEVCNALUnits(data, format).some((nalUnit: HEVCNALUnit): boolean => (
         nalUnit.type === HEVC_RASL_N_NAL_UNIT_TYPE
         || nalUnit.type === HEVC_RASL_R_NAL_UNIT_TYPE
     ));
@@ -394,7 +398,7 @@ export function sanitizeHEVCAccessUnitForChromium(
     format: HEVCNALFormat
 ): Uint8Array | null {
     requireAccessUnit(data);
-    const nalUnits = parseNALUnits(data, format);
+    const nalUnits = parseHEVCNALUnits(data, format);
     const retainedNALUnits: Uint8Array[] = [];
     let orderState = ChromiumHEVCNALOrderState.AUDAllowed;
     let removedNALUnit = false;
@@ -421,7 +425,7 @@ export function rewriteHEVCAccessUnitColorDescriptionToBT709(
     expectedHDRTransfer?: HEVCHDRTransfer
 ): Uint8Array | null {
     requireAccessUnit(data);
-    const nalUnits = parseNALUnits(data, format);
+    const nalUnits = parseHEVCNALUnits(data, format);
     const rewrittenNALUnits: Uint8Array[] = [];
     let rewritten = false;
     for (const nalUnit of nalUnits) {

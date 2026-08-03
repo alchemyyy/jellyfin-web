@@ -86,6 +86,7 @@ import {
     waitForHEVCSoftwareVideoDecoderShutdown
 } from './HEVCSoftwareVideoDecoder';
 import { parseHEVCSPS } from './HEVCSPSParser';
+import { parseHEVCStaticHDRMetadata } from './HEVCStaticHDRMetadata';
 import {
     requireValidByteRangeResponse,
     UnsupportedRangeResponseError
@@ -125,6 +126,7 @@ import TrueHDSoftwareAudioDecoder, {
     type TrueHDDecoderCodec
 } from './TrueHDSoftwareAudioDecoder';
 import LegacySoftwareVideoDecoder from './LegacySoftwareVideoDecoder';
+import type { StaticHDRMetadata } from './StaticHDRMetadata';
 
 const URL_SOURCE_CACHE_BYTES = 32 * 1024 * 1024;
 const URL_SOURCE_PARALLELISM = 2;
@@ -181,6 +183,7 @@ type PreparedVideoTrack = {
     containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
+    staticHDRMetadata?: StaticHDRMetadata
     videoTrack: InputVideoTrack
 };
 
@@ -538,6 +541,33 @@ async function prepareFocusedSoftwareVideoTrack(
     };
 }
 
+async function readHEVCStaticHDRMetadata(
+    videoTrack: InputVideoTrack,
+    decoderConfig: VideoDecoderConfig,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>
+): Promise<StaticHDRMetadata | null> {
+    if (request.nativeHDRTransfer !== 'pq') {
+        return null;
+    }
+
+    const packetSink = new EncodedPacketSink(videoTrack);
+    const firstPacket = await packetSink.getFirstPacket(OWNED_HEVC_PACKET_OPTIONS);
+    if (!firstPacket) {
+        return null;
+    }
+    try {
+        return parseHEVCStaticHDRMetadata(
+            firstPacket.data,
+            getHEVCNALFormat(decoderConfig)
+        );
+    } catch (error) {
+        if (error instanceof TypeError) {
+            return null;
+        }
+        throw error;
+    }
+}
+
 async function prepareVideoTrack(
     input: Input,
     run: DecodeRun,
@@ -628,12 +658,20 @@ async function prepareVideoTrack(
         );
     }
 
+    const staticHDRMetadata = codec === 'hevc' ?
+        await readHEVCStaticHDRMetadata(videoTrack, decoderConfig, request) :
+        null;
+    if (run.cancelled) {
+        throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
+    }
+
     return {
         availableVideoTracks: videoTracks,
         codec,
         containerTrackNumber: videoTrack.id,
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
+        ...(staticHDRMetadata ? { staticHDRMetadata } : {}),
         videoTrack
     };
 }
@@ -1089,6 +1127,9 @@ function postReadyResponse(
         displayHeight: geometry.displayHeight,
         displayWidth: geometry.displayWidth,
         generation: run.generation,
+        ...(preparedVideoTrack.staticHDRMetadata ? {
+            staticHDRMetadata: preparedVideoTrack.staticHDRMetadata
+        } : {}),
         type: 'ready'
     });
 }

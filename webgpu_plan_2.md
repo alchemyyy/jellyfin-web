@@ -3,7 +3,7 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `a12dcbd26db4d5ba3c4216f1726bdf3f538a31a5`
+- Parent checkpoint: `8e2784c90a95ea37871fa2669005d6fe8240ca6e`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, and unified validation-foundation
   checkpoints and reviewed-baseline support are committed and pushed.
@@ -78,10 +78,14 @@ that a source used the owned custom decode route.
 - Owned native-media MSE bridge for exactly qualified AC-3/E-AC-3 routes.
 - Official Mediabunny AC-3/E-AC-3 software decode in ordinary builds.
 - SDR identity, BT.2020 PQ, and BT.2020 HLG color paths.
-- Version 5 libplacebo-derived static spline tone mapping in IPTPQc4, shared by
-  external HDR, raw HDR, and Dolby Vision routes, with bounded analytic
-  perceptual BT.709 chroma compression. This does not claim exact equivalence
-  to libplacebo's generated 3D gamut LUT.
+- Version 6 libplacebo-derived static spline tone mapping in IPTPQc4, shared by
+  external HDR, raw HDR, and Dolby Vision routes, with libplacebo-compatible PQ
+  and SDR black points plus bounded analytic perceptual BT.709 chroma
+  compression. This does not claim exact equivalence to libplacebo's generated
+  3D gamut LUT.
+- HEVC mastering-display and content-light SEI extraction from the first packet,
+  validated propagation through the custom worker/session/controller boundary,
+  and source-peak application before the first ordinary PQ frame.
 - Exact-device raw HDR authorization and separate Dolby Vision route
   authorizations.
 - Dolby Vision Profile 5 and 8 reconstruction, Profile 7 MEL reconstruction,
@@ -203,7 +207,7 @@ They qualify only the exact route stated and are not portable capability claims:
   8096; the separate 8080 development frontend is not used for authoritative
   tests.
 - Chrome 151 exposed that external-texture quantization can be amplified by the
-  version 5 Profile 5 tone/gamut path. Authorization fixture version 2 now first
+  version 6 Profile 5 tone/gamut path. Authorization fixture version 2 now first
   requires the recovered 10-bit base signal to remain within 8/1023 per channel,
   then drives the CPU output reference from that measured signal without widening
   the existing 8/255 output tolerance. The exact route authorized with maximum
@@ -842,12 +846,18 @@ FEL dual-decoder performance, HLG and HDR metadata conflicts, display controls,
 golden thresholds, and device/display changes.
 
 **Current evidence:** all seven generated HDR/Dolby Vision WGSL variants compile
-and create render pipelines in Chrome 151. A five-frame private HDR10 A/B against
-mpv's static spline improved mean SSIM from 0.9617516 to 0.9886684 and mean PSNR
-from 29.199 dB to 38.116 dB. Dynamic-reference mean SSIM is 0.989167. These are
-descriptive display-code deltas, not universal perceptual pass thresholds. The
-run used native HEVC `VideoFrame`, authorized external PQ presentation, decoded
-FLAC PCM, settings version 5, and produced no browser error or ownership warning.
+and create render pipelines in Chrome 151. The exact five-frame private HDR10
+A/B against mpv's static spline records mean/minimum SSIM of
+0.9938272/0.990991 and mean/minimum PSNR of 39.421/37.965 dB. Dynamic-reference
+mean/minimum SSIM is 0.992474/0.989412. These are descriptive display-code
+deltas, not universal perceptual pass thresholds. The run parsed and used the
+source's 4000-nit mastering maximum with native HEVC `VideoFrame`, authorized
+external PQ presentation, decoded FLAC PCM, settings version 6, and no browser
+error or ownership warning. Ten-second pacing presented 238 changed frames with
+42 ms media median/p95/max and 41.7/41.8 ms wall median/p95; browser-minus-mpv
+PCM RMS differed by 0.00032 dB with identical peaks. Residual visual difference
+is concentrated in chroma/gamut behavior because the current analytic gamut
+compression is not libplacebo's generated 3D perceptual LUT.
 
 ### Group F: Negotiation and capability safety
 
@@ -1035,8 +1045,12 @@ Rules that prevent duplicated work:
 ### HDR and Dolby Vision
 
 - [x] Raw PQ/HLG WebGPU reconstruction and tone mapping.
-- [x] Add the version 5 static spline and shared IPTPQc4 perceptual gamut stage
-  to every external/raw HDR and Dolby Vision shader route.
+- [x] Add the version 6 static spline, libplacebo-compatible PQ/SDR black-point
+  handling, and shared IPTPQc4 perceptual gamut stage to every external/raw HDR
+  and Dolby Vision shader route.
+- [x] Parse HEVC mastering-display/content-light SEI, propagate validated static
+  metadata through the custom pipeline, and select the mastering maximum or
+  MaxCLL before presenting the first ordinary PQ frame.
 - [x] Compile all seven generated HDR/Dolby Vision shaders in real Chrome WebGPU
   and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.

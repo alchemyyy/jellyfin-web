@@ -4,17 +4,18 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `277e304763411d9d01ddd3010d37a2c058c99fb4`
+Parent checkpoint: `8e2784c90a95ea37871fa2669005d6fe8240ca6e`
 
-Checkpoint state: generated private live-case catalog, bounded Jellyfin
-playback-decision evidence, and server-log evidence are committed and pushed;
-route-aware startup and the complete primary HDR10 browser matrix are validated
-in the current worktree
+Checkpoint state: the generated private live-case catalog, bounded Jellyfin
+playback-decision evidence, server-log evidence, route-aware startup, and the
+complete primary HDR10 browser matrix are committed and pushed. HEVC static HDR
+metadata propagation and libplacebo-compatible spline black-point handling are
+implemented and validated in the current worktree.
 
 ## Current objective
 
-Migrate live HDR/lifecycle/startup/soak/mpv evidence into the unified matrix
-without duplicating route, fixture, or exercise definitions per private title.
+Close the static HDR10 metadata and tone-mapping parity slice without weakening
+the existing exact-route, resource-ownership, or DirectPlay gates.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -193,15 +194,31 @@ channel bed.
 - Portable mpv/browser A/B tooling. Example manifests contain placeholders;
   local media IDs and credentials belong in environment variables or private
   manifests only.
-- Version 5 HDR settings use a libplacebo-derived static spline in IPTPQc4 and
+- Version 6 HDR settings use a libplacebo-derived static spline in IPTPQc4 and
   bounded perceptual BT.709 chroma compression across external, raw, and Dolby
-  Vision shaders. The gamut stage is analytic; it is not claimed to reproduce
-  libplacebo's generated 3D perceptual LUT exactly.
+  Vision shaders. The spline now uses libplacebo's nominal PQ black point of
+  0.000001 nit and its 1000:1 SDR output contrast before black-point
+  compensation. The gamut stage remains analytic; it is not claimed to
+  reproduce libplacebo's generated 3D perceptual LUT exactly.
+- The custom HEVC worker parses mastering-display and content-light SEI payloads
+  from the first encoded packet, forwards validated static metadata through the
+  session/controller protocol, and applies the mastering-display maximum, or
+  MaxCLL when no mastering maximum exists, before the first non-Dolby-Vision PQ
+  frame. Missing or malformed optional metadata retains the bounded 1000-nit
+  default without interrupting decode.
 - All seven HDR/Dolby Vision shader variants compile and create pipelines in
   Chrome 151 WebGPU. A five-frame private HDR10 comparison against mpv spline
-  improved static-reference mean SSIM from 0.9617516 to 0.9886684 and mean
-  PSNR from 29.199 dB to 38.116 dB. The same run had zero browser errors,
-  zero ownership warnings, and decoded PCM matching the mpv analysis window.
+  now records static-reference mean/minimum SSIM of 0.9938272/0.990991 and
+  mean/minimum PSNR of 39.421/37.965 dB. Dynamic-reference mean/minimum SSIM is
+  0.992474/0.989412. The exact source supplied a 4000-nit mastering maximum;
+  the run used that peak, DirectPlay, native HEVC `VideoFrame`, external PQ,
+  settings version 6, and decoded FLAC with zero browser errors or ownership
+  warnings.
+- The same ten-second capture presented 238 changed frames. Media intervals
+  were 42 ms at median, p95, and maximum; wall intervals were 41.7 ms median,
+  41.8 ms p95, and 97.2 ms maximum. Browser-minus-mpv PCM RMS was 0.00032 dB,
+  the peaks were identical within floating-point precision, and neither output
+  contained clipping or non-finite samples.
 - External Profile 5 authorization fixture version 2 now bounds browser-recovered
   10-bit base signals separately from output shader parity. Chrome 151 authorized
   the exact route with maximum normalized input error 0.00497875 and maximum
@@ -218,6 +235,12 @@ channel bed.
 
 ## Completed checkpoint gates
 
+- The static-HDR-metadata checkpoint passed the canonical matrix: all 15
+  fixture hashes, 15 exact cases, and 10 required checks, including TypeScript,
+  focused Vitest codec contracts, 143 standalone Node tests, 57 Python tests,
+  downmix references, artifact/fixture freshness, runtime-toolchain readiness,
+  and a development build. The private mpv selector also passed its fixture,
+  toolchain, and A/B checks through the unified matrix.
 - The playback-decision follow-up passed the canonical checkpoint matrix: all
   15 fixture hashes, 15 cases, and 10 checks; 57 Python tests, 138 standalone
   Node tests, 383 focused Vitest tests, TypeScript, runtime-toolchain readiness,
@@ -280,5 +303,5 @@ channel bed.
 - `scripts/webgpu/validation/README.md`: shared matrices, schemas, selectors,
   reports, and private live-case overlays
 
-No validation command is running. The final local production bundle remains
+No validation command is running. The current local production bundle remains
 available through the Jellyfin 12 nightly server on port 8096.

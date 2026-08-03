@@ -5,6 +5,10 @@ import { MediaError } from 'types/mediaError';
 import Events from 'utils/events';
 
 import { microsecondsToMilliseconds, secondsToMicroseconds } from './MediaTime';
+import {
+    RENDER_SETTINGS_VERSION,
+    type HDRToSDRRenderSettings
+} from './RenderSettings';
 import type {
     NativeMediaAudioCapabilities,
     NativeMediaAudioChannelCount,
@@ -471,7 +475,10 @@ vi.mock('./WebGPUPresenter', () => {
             sessionStartedMicroseconds: 0,
             state: 'idle'
         }));
-        getRenderSettings = vi.fn(() => ({ mode: 'identity-sdr', version: 5 }));
+        getRenderSettings = vi.fn(() => ({
+            mode: 'identity-sdr',
+            version: RENDER_SETTINGS_VERSION
+        }));
         updateRenderSettings = vi.fn(() => true);
         acquireValidationDevice = vi.fn(() => Promise.resolve(this.validationDevice));
         isValidationDevice = vi.fn((device: GPUDevice | null) => (
@@ -562,7 +569,7 @@ vi.mock('./WebGPUPresenter', () => {
             fixtureVersion: 2,
             maximumChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
             maximumInputChannelError: presenterMockState.dolbyVisionAuthorized ? 0 : 1,
-            renderSettingsVersion: 5,
+            renderSettingsVersion: RENDER_SETTINGS_VERSION,
             routeKey: 'external-I420P10-bt709-limited:dovi-p5-rpu-v1',
             sampleCount: 9,
             status: presenterMockState.dolbyVisionAuthorized ? 'authorized' : 'rejected',
@@ -1848,6 +1855,62 @@ describe('WebGPUPlayer HTML delegation', () => {
         );
     });
 
+    it('applies HEVC mastering peak metadata before HDR frame presentation', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.authorizedExternalHDRRouteKeys = [
+            'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.hdr = true;
+        customDecodeMockState.nativeHDRTransfer = 'pq';
+        customDecodeMockState.neutralizeHDRColorMetadata = true;
+        customDecodeMockState.videoDecoderBackend = 'native';
+        customDecodeMockState.videoOutputMode = 'video-frame';
+        presenter.getRenderSettings.mockReturnValue({
+            display: { brightness: 0, contrast: 1, saturation: 1 },
+            mode: 'hdr-to-sdr',
+            outputTransfer: 'srgb',
+            toneMapping: {
+                desaturationStrength: 0.25,
+                exposure: 0,
+                inputPeakNits: 1_000,
+                operator: 'spline',
+                outputPeakNits: 100,
+                paperWhiteNits: 203
+            },
+            version: RENDER_SETTINGS_VERSION
+        });
+
+        await player.play(createKnownHDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        customPlaybackController.eventHandler({
+            generation: 1,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: 4_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 500,
+                maximumFrameAverageLightLevelNits: 200
+            },
+            type: 'static-hdr-metadata'
+        });
+
+        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(
+            expect.objectContaining({
+                mode: 'hdr-to-sdr',
+                toneMapping: expect.objectContaining({ inputPeakNits: 4_000 })
+            }),
+            1
+        );
+    });
+
     it('selects the per-frame Dolby Vision reconstruction pipeline', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -2712,7 +2775,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         const stats = await player.getStats() as {
             categories: Array<{ stats: Array<{ label: string, value: string }> }>
         };
-        const settings = {
+        const settings: HDRToSDRRenderSettings = {
             display: { brightness: 0, contrast: 1, saturation: 1 },
             mode: 'hdr-to-sdr' as const,
             outputTransfer: 'srgb' as const,
@@ -2724,7 +2787,7 @@ describe('WebGPUPlayer HTML delegation', () => {
                 outputPeakNits: 100,
                 paperWhiteNits: 203
             },
-            version: 5 as const
+            version: RENDER_SETTINGS_VERSION
         };
 
         expect(stats.categories[0].stats).toContainEqual({
@@ -2734,7 +2797,10 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.getStats).not.toHaveBeenCalled();
         expect(player.updateRenderSettings(settings)).toBe(true);
         expect(presenter.updateRenderSettings).toHaveBeenCalledWith(settings, 1);
-        expect(player.getRenderSettings()).toEqual({ mode: 'identity-sdr', version: 5 });
+        expect(player.getRenderSettings()).toEqual({
+            mode: 'identity-sdr',
+            version: RENDER_SETTINGS_VERSION
+        });
     });
 
     it('preserves a custom audio switch when later falling back to native playback', async () => {
