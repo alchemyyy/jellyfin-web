@@ -4,18 +4,18 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `2631f7c6db131c52843eb0d06100009dfd3dbc47`
+Parent checkpoint: `64671c6813850ad149d1a31612f67dd4d654ada8`
 
-Checkpoint state: real-title Profile 5 DirectPlay negotiation and lifecycle
-hardening are committed and pushed. A bounded multi-access-unit HEVC static HDR
-metadata scan, explicit absent/malformed/conflicting telemetry, and retained
-browser evidence are implemented and live-validated in the current worktree.
+Checkpoint state: real-title Profile 5 negotiation and the bounded
+multi-access-unit HEVC static-HDR scan are committed and pushed. Exact generated
+live assertions for scan state and tone-mapping peak are implemented and
+live-validated in the current worktree.
 
 ## Current objective
 
-Finish the bounded static-HDR-metadata checkpoint, then expand the HDR/Dolby
-Vision golden and live-title matrix without weakening the existing exact-route,
-resource-ownership, or DirectPlay gates.
+Expand the HDR/Dolby Vision golden and live-title matrix, starting with live
+missing, malformed, and conflicting static-metadata sources, without weakening
+the existing exact-route, resource-ownership, or DirectPlay gates.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -267,9 +267,22 @@ channel bed.
   startup gate also passed: custom first-visible median/p95 regression versus
   HTML was -81.9/7.1 ms and first-audio regression was 9.9/97.2 ms, within the
   fixed 250/500 ms gates.
+- Generated ordinary-PQ live specifications can now require the exact static
+  metadata status and tone-mapping peak. Lifecycle checks validate the bounded
+  scan count and first matching access unit, and every custom startup sample
+  repeats the same assertions while retaining the values as evidence. The live
+  High Tier HDR10 lifecycle and paired startup selectors passed with `valid`,
+  access unit 0 of 16, and 4000 nits.
 
 ## Completed checkpoint gates
 
+- The static-HDR live-contract worktree passed all 15 canonical fixture hashes
+  and cases plus all 10 checks: 384 focused codec-contract Vitest tests, 144
+  standalone Node tests, 60 Python tests, TypeScript, runtime-toolchain
+  readiness, artifact/fixture freshness, and a development build. Focused
+  changed-file ESLint and generator tests passed. Independent generated live
+  lifecycle and paired-startup selectors also passed on Jellyfin 12 nightly and
+  Chrome 151 with exact DirectPlay and server-log evidence.
 - The bounded static-HDR-prefix checkpoint passed all 15 canonical fixture
   hashes and cases plus all 10 required checks: 384 codec-contract Vitest tests
   across 19 files, 143 standalone Node tests, 57 Python tests, TypeScript,

@@ -17,6 +17,7 @@ from generate_validation_live_overlay import (
     load_live_catalog,
     load_live_spec,
     persist_validated_overlay,
+    validate_static_HDR_metadata,
     validate_worker_configuration,
 )
 from validation_matrix import REPOSITORY_ROOT, command_for_check, load_manifest
@@ -71,6 +72,37 @@ class LiveOverlayGeneratorTests(unittest.TestCase):
             source["MPV"] = {
                 "planEnvironment": "WEBGPU_VALIDATION_TEST_MPV_PLAN"
             }
+        return source
+
+    def create_HDR_source(self) -> dict[str, object]:
+        """Returns an HDR10 source with an exact static metadata expectation."""
+
+        source = self.create_source()
+        source["id"] = "private-hdr-test"
+        source["title"] = "Private HDR test"
+        source["routeId"] = "hdr10-native-external"
+        source["media"] = {
+            "container": "hevc",
+            "packetization": "annex-b",
+            "video": {
+                "codec": "hevc",
+                "profile": "main-10-level-5.1",
+                "width": 3840,
+                "height": 2160,
+                "frameRate": 30,
+                "bitDepth": 10,
+                "chroma": "4:2:0",
+                "range": "limited",
+                "primaries": "bt2020",
+                "transfer": "pq",
+                "matrix": "bt2020-ncl",
+                "progressive": True,
+            },
+        }
+        source["staticHDRMetadata"] = {
+            "status": "valid",
+            "toneMappingPeakNits": 4000,
+        }
         return source
 
     def write_MPV_plan(
@@ -170,6 +202,87 @@ class LiveOverlayGeneratorTests(unittest.TestCase):
                 fixture["uri"], "env://WEBGPU_VALIDATION_TEST_MEDIA"
             )
             self.assertEqual(len(fixture["sha256"]), 64)
+
+    def test_generates_exact_static_HDR_browser_expectations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            plan_path = temporary_path / "capture-plan.json"
+            self.write_MPV_plan(plan_path)
+            spec_path = temporary_path / "spec.json"
+            spec_path.write_text(
+                json.dumps(
+                    {"schemaVersion": 1, "sources": [self.create_HDR_source()]}
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                self.private_environment(plan_path),
+                clear=False,
+            ):
+                sources = load_live_spec(
+                    spec_path,
+                    routes=self.routes,
+                    exercises=self.exercises,
+                )
+                overlay = create_overlay(
+                    sources,
+                    routes=self.routes,
+                    exercises=self.exercises,
+                )
+            browser_check = next(
+                check
+                for check in overlay["checks"]
+                if check["id"] == "private-hdr-test-lifecycle-check"
+            )
+            arguments = browser_check["arguments"]
+            status_index = arguments.index("--expected-static-hdr-metadata-status")
+            peak_index = arguments.index("--expected-static-hdr-peak-nits")
+            self.assertEqual(arguments[status_index + 1], "valid")
+            self.assertEqual(arguments[peak_index + 1], "4000")
+
+    def test_rejects_static_HDR_expectation_on_SDR_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            plan_path = temporary_path / "capture-plan.json"
+            self.write_MPV_plan(plan_path)
+            source = self.create_source()
+            source["staticHDRMetadata"] = {
+                "status": "valid",
+                "toneMappingPeakNits": 4000,
+            }
+            spec_path = temporary_path / "spec.json"
+            spec_path.write_text(
+                json.dumps({"schemaVersion": 1, "sources": [source]}),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                self.private_environment(plan_path),
+                clear=False,
+            ):
+                with self.assertRaisesRegex(HarnessError, "ordinary PQ HDR"):
+                    load_live_spec(
+                        spec_path,
+                        routes=self.routes,
+                        exercises=self.exercises,
+                    )
+
+    def test_rejects_invalid_static_HDR_expectation_values(self) -> None:
+        invalid_configurations = (
+            {"status": "dynamic", "toneMappingPeakNits": 4000},
+            {"status": "valid", "toneMappingPeakNits": True},
+            {"status": "valid", "toneMappingPeakNits": float("inf")},
+            {"status": "valid", "toneMappingPeakNits": 10001},
+        )
+        for configuration in invalid_configurations:
+            with self.subTest(configuration=configuration):
+                with self.assertRaises(HarnessError):
+                    validate_static_HDR_metadata(
+                        configuration,
+                        route=self.routes["hdr10-native-external"],
+                        label="staticHDRMetadata",
+                    )
 
     def test_rejects_audio_switch_in_startup_exercise(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

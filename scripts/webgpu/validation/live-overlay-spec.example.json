@@ -57,6 +57,10 @@
         "source": "Private validation source record"
       },
       "routeId": "hdr10-native-external",
+      "staticHDRMetadata": {
+        "status": "valid",
+        "toneMappingPeakNits": 4000
+      },
       "title": "Private High Tier HDR10 reference"
     }
   ]

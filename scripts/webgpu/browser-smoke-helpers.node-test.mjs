@@ -41,6 +41,7 @@ import {
     validateResumeSnapshot,
     validateSeekStormSnapshot,
     validateSeekSnapshot,
+    validateStaticHDRMetadataSnapshot,
     validateStopSnapshot
 } from './browser-smoke-helpers.mjs';
 
@@ -170,6 +171,8 @@ test('parses CLI values before environment values', () => {
         '--expected-audio', 'ready',
         '--expected-frame-evidence', 'testsrc2-motion',
         '--expected-presentation-route', 'raw-hdr-pq',
+        '--expected-static-hdr-metadata-status', 'valid',
+        '--expected-static-hdr-peak-nits', '4000',
         '--expected-play-method', 'DirectPlay',
         '--username', 'cli-user',
         '--password', 'cli-password',
@@ -197,6 +200,8 @@ test('parses CLI values before environment values', () => {
         expectedFrameEvidence: 'testsrc2-motion',
         expectedPlayMethod: 'DirectPlay',
         expectedPresentationRoute: 'raw-hdr-pq',
+        expectedStaticHDRMetadataStatus: 'valid',
+        expectedStaticHDRPeakNits: 4_000,
         expectedVideoDecoderBackend: 'bundled-hevc',
         expectedVideoOutputMode: 'raw-planes',
         failureInjection: 'presentation',
@@ -228,6 +233,11 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--expected-presentation-route <route>/u);
     assert.match(
         SMOKE_USAGE,
+        /--expected-static-hdr-metadata-status <absent\|conflicting\|malformed\|valid>/u
+    );
+    assert.match(SMOKE_USAGE, /--expected-static-hdr-peak-nits <number>/u);
+    assert.match(
+        SMOKE_USAGE,
         /--expected-play-method <DirectPlay\|DirectStream\|Transcode>/u
     );
     assert.match(SMOKE_USAGE, /--completion-mode <controlled-stop\|natural-end>/u);
@@ -244,6 +254,8 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_STATIC_HDR_METADATA_STATUS/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_STATIC_HDR_PEAK_NITS/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PLAY_METHOD/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_AUDIO_STREAM_INDEX/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC/u);
@@ -284,6 +296,8 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.expectedAudioPath, 'disabled');
     assert.equal(configuration.expectedFrameEvidence, 'none');
     assert.equal(configuration.expectedPlayMethod, null);
+    assert.equal(configuration.expectedStaticHDRMetadataStatus, null);
+    assert.equal(configuration.expectedStaticHDRPeakNits, null);
     assert.equal(configuration.expectedVideoDecoderBackend, null);
     assert.equal(configuration.expectedVideoOutputMode, 'video-frame');
     assert.throws(
@@ -692,6 +706,35 @@ test('requires valid independent video and audio expectations', () => {
             WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
         }),
         /--expected-play-method/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--expected-static-hdr-peak-nits', '4000' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /requires --expected-static-hdr-metadata-status/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--expected-static-hdr-metadata-status', 'dynamic'
+        ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /--expected-static-hdr-metadata-status/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([
+            '--expected-static-hdr-metadata-status', 'valid',
+            '--expected-static-hdr-peak-nits', '10001'
+        ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /static HDR peak/u
     );
     assert.throws(
         () => parseSmokeConfiguration([ '--repeat-sessions', '0' ], {
@@ -1745,6 +1788,61 @@ test('accepts advancing source-less custom playback', () => {
     );
     assert.ok(expectationFailures.includes('unexpected-video-output-mode'));
     assert.ok(expectationFailures.includes('unexpected-audio-path'));
+});
+
+test('validates bounded static HDR metadata status and tone-mapping peak', () => {
+    const validSnapshot = createActiveSnapshot({
+        customPlayback: {
+            ...createActiveSnapshot().customPlayback,
+            videoDecode: {
+                ...createActiveSnapshot().customPlayback.videoDecode,
+                staticHDRMetadataFirstAccessUnitIndex: 0,
+                staticHDRMetadataScanAccessUnitCount: 16,
+                staticHDRMetadataStatus: 'valid'
+            }
+        },
+        renderSettings: {
+            toneMapping: { inputPeakNits: 4_000 }
+        }
+    });
+    assert.deepEqual(
+        validateStaticHDRMetadataSnapshot(validSnapshot, 'valid', 4_000),
+        []
+    );
+
+    const absentSnapshot = {
+        ...validSnapshot,
+        customPlayback: {
+            ...validSnapshot.customPlayback,
+            videoDecode: {
+                ...validSnapshot.customPlayback.videoDecode,
+                staticHDRMetadataFirstAccessUnitIndex: null,
+                staticHDRMetadataStatus: 'absent'
+            }
+        },
+        renderSettings: {
+            toneMapping: { inputPeakNits: 1_000 }
+        }
+    };
+    assert.deepEqual(
+        validateStaticHDRMetadataSnapshot(absentSnapshot, 'absent', 1_000),
+        []
+    );
+
+    const failures = validateStaticHDRMetadataSnapshot(validSnapshot, 'malformed', 1_000);
+    assert.ok(failures.includes('static-hdr-metadata-status-mismatch'));
+    assert.ok(failures.includes('static-hdr-metadata-first-index-invalid'));
+    assert.ok(failures.includes('static-hdr-tone-mapping-peak-mismatch'));
+    assert.ok(validateStaticHDRMetadataSnapshot({
+        ...validSnapshot,
+        customPlayback: {
+            ...validSnapshot.customPlayback,
+            videoDecode: {
+                ...validSnapshot.customPlayback.videoDecode,
+                staticHDRMetadataScanAccessUnitCount: 17
+            }
+        }
+    }, 'valid', 4_000).includes('static-hdr-metadata-scan-bound-invalid'));
 });
 
 test('accepts advancing custom playback with owned native media audio', () => {

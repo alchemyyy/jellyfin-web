@@ -168,6 +168,11 @@ record is accepted only for the FEL route. Optional mpv A/B records use an
 environment-backed capture plan and source. Every generated browser check also
 requires exact Jellyfin `DirectPlay`; an active server transcode or nonempty
 transcode-reason list fails the case instead of relying on the case metadata.
+Ordinary PQ HDR sources may also declare `staticHDRMetadata` with an exact
+bounded scan status and tone-mapping peak. Generated lifecycle and startup
+checks then assert both values, retain the first matching access-unit index and
+bounded scan count as evidence, and reject a route that silently falls back to
+the 1000-nit default.
 The startup exercise is route-aware: SDR identity runs HTML, presentation-only,
 and custom modes, while HDR/Dolby Vision runs HTML and custom modes because the
 player intentionally leaves native HDR media on the browser-managed surface.
@@ -329,6 +334,13 @@ match booleans, transcode-state booleans, and transcode-reason names. DirectPlay
 fails if either side selects another method, the server exposes active
 transcoding, or any transcode reason remains. Private item/media-source/device
 identifiers and stream URLs are never written.
+
+When a generated PQ HDR source declares `staticHDRMetadata`, the browser
+adapter passes fixed `--expected-static-hdr-metadata-status` and
+`--expected-static-hdr-peak-nits` arguments. These values are source contract
+data, not machine environment input. Each custom startup sample also records
+and validates the scan status, scan bound, first matching access unit, and
+active tone-mapping peak.
 
 Generated browser cases also require bounded Jellyfin log evidence. The
 adapter snapshots all retained primary-log and FFmpeg-transcode-log byte sizes,

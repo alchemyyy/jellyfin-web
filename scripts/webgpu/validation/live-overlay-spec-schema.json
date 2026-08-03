@@ -62,6 +62,29 @@
       ],
       "type": "object"
     },
+    "staticHDRMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "absent",
+            "conflicting",
+            "malformed",
+            "valid"
+          ]
+        },
+        "toneMappingPeakNits": {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "number"
+        }
+      },
+      "required": [
+        "status",
+        "toneMappingPeakNits"
+      ],
+      "type": "object"
+    },
     "source": {
       "additionalProperties": false,
       "properties": {
@@ -110,6 +133,9 @@
         },
         "routeId": {
           "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+        },
+        "staticHDRMetadata": {
+          "$ref": "#/$defs/staticHDRMetadata"
         },
         "title": {
           "minLength": 1,

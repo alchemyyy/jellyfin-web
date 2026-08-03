@@ -38,6 +38,7 @@ import {
     validateResumeSnapshot,
     validateSeekStormSnapshot,
     validateSeekSnapshot,
+    validateStaticHDRMetadataSnapshot,
     validateStopSnapshot
 } from './browser-smoke-helpers.mjs';
 import { collectCDPRetentionSnapshot } from './cdp-retention-snapshot.mjs';
@@ -2022,6 +2023,18 @@ function appendFailures(target, phase, failures) {
     }
 }
 
+function createActivePlaybackExpectations(configuration) {
+    return {
+        expectedAudioPath: configuration.expectedAudioPath,
+        expectedPlayMethod: configuration.expectedPlayMethod,
+        expectedPresentationRoute: configuration.expectedPresentationRoute,
+        expectedStaticHDRMetadataStatus: configuration.expectedStaticHDRMetadataStatus,
+        expectedStaticHDRPeakNits: configuration.expectedStaticHDRPeakNits,
+        expectedVideoDecoderBackend: configuration.expectedVideoDecoderBackend,
+        expectedVideoOutputMode: configuration.expectedVideoOutputMode
+    };
+}
+
 function appendBrowserErrorFailures(target, counts) {
     const failureDefinitions = [
         [ 'runtimeExceptions', 'browser:runtime-exception' ],
@@ -3012,7 +3025,19 @@ function summarizeStartupSample(
                 snapshot.customPlaybackEligibility?.videoOutputMode ?? 'native-html',
             playMethod: snapshot.playbackDecision?.playMethod ?? null,
             playerID: snapshot.playerID,
-            presentationSource: snapshot.presentation?.presentationSource ?? 'native-video'
+            presentationSource: snapshot.presentation?.presentationSource ?? 'native-video',
+            staticHDRMetadata: mode === 'custom' ? {
+                firstAccessUnitIndex:
+                    snapshot.customPlayback?.videoDecode
+                        ?.staticHDRMetadataFirstAccessUnitIndex ?? null,
+                scanAccessUnitCount:
+                    snapshot.customPlayback?.videoDecode
+                        ?.staticHDRMetadataScanAccessUnitCount ?? null,
+                status:
+                    snapshot.customPlayback?.videoDecode?.staticHDRMetadataStatus ?? null,
+                toneMappingPeakNits:
+                    snapshot.renderSettings?.toneMapping?.inputPeakNits ?? null
+            } : null
         },
         sampleNumber
     };
@@ -3279,6 +3304,20 @@ async function runStartupModeSample(options) {
                 `The ${options.mode} startup sample selected an unexpected playback method`,
                 { failures: playbackDecisionFailures, playbackDecision }
             );
+        }
+        if (options.mode === 'custom') {
+            const staticHDRMetadataFailures = validateStaticHDRMetadataSnapshot(
+                activeSnapshot,
+                options.configuration.expectedStaticHDRMetadataStatus,
+                options.configuration.expectedStaticHDRPeakNits
+            );
+            if (staticHDRMetadataFailures.length > 0) {
+                throw new SmokeHarnessError(
+                    'startup-static-hdr-metadata-mismatch',
+                    'The custom startup sample did not match its static HDR metadata contract',
+                    { failures: staticHDRMetadataFailures }
+                );
+            }
         }
         const sample = summarizeStartupSample(
             activeSnapshot,
@@ -3824,15 +3863,11 @@ async function runRetentionSoak(options) {
         appendFailures(
             failures,
             `soak-${sessionNumber}-playback`,
-            validateActivePlaybackSnapshot(activeInitial, activeLater, {
-                expectedAudioPath: options.configuration.expectedAudioPath,
-                expectedPlayMethod: options.configuration.expectedPlayMethod,
-                expectedPresentationRoute:
-                    options.configuration.expectedPresentationRoute,
-                expectedVideoDecoderBackend:
-                    options.configuration.expectedVideoDecoderBackend,
-                expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
-            })
+            validateActivePlaybackSnapshot(
+                activeInitial,
+                activeLater,
+                createActivePlaybackExpectations(options.configuration)
+            )
         );
         appendFailures(
             failures,
@@ -3941,15 +3976,11 @@ async function finishNaturalEndExercise(options) {
     appendFailures(
         failures,
         'playback',
-        validateActivePlaybackSnapshot(options.activeInitial, options.activeLater, {
-            expectedAudioPath: options.configuration.expectedAudioPath,
-            expectedPlayMethod: options.configuration.expectedPlayMethod,
-            expectedPresentationRoute:
-                options.configuration.expectedPresentationRoute,
-            expectedVideoDecoderBackend:
-                options.configuration.expectedVideoDecoderBackend,
-            expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
-        })
+        validateActivePlaybackSnapshot(
+            options.activeInitial,
+            options.activeLater,
+            createActivePlaybackExpectations(options.configuration)
+        )
     );
     appendFailures(
         failures,
@@ -4053,15 +4084,11 @@ async function runRepeatedPlaybackSessions(options) {
         appendFailures(
             options.failures,
             `repeat-${sessionNumber}`,
-            validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, {
-                expectedAudioPath: options.configuration.expectedAudioPath,
-                expectedPlayMethod: options.configuration.expectedPlayMethod,
-                expectedPresentationRoute:
-                    options.configuration.expectedPresentationRoute,
-                expectedVideoDecoderBackend:
-                    options.configuration.expectedVideoDecoderBackend,
-                expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
-            })
+            validateActivePlaybackSnapshot(
+                initialSnapshot,
+                laterSnapshot,
+                createActivePlaybackExpectations(options.configuration)
+            )
         );
         appendFailures(
             options.failures,
@@ -4658,13 +4685,11 @@ async function runPlaybackExercise(
         appendFailures(
             failures,
             'playback',
-            validateActivePlaybackSnapshot(activeInitial, activeLater, {
-                expectedAudioPath: configuration.expectedAudioPath,
-                expectedPlayMethod: configuration.expectedPlayMethod,
-                expectedPresentationRoute: configuration.expectedPresentationRoute,
-                expectedVideoDecoderBackend: configuration.expectedVideoDecoderBackend,
-                expectedVideoOutputMode: configuration.expectedVideoOutputMode
-            })
+            validateActivePlaybackSnapshot(
+                activeInitial,
+                activeLater,
+                createActivePlaybackExpectations(configuration)
+            )
         );
         appendFailures(
             failures,
@@ -4947,6 +4972,8 @@ async function runSmoke(configuration) {
                 failureInjection: configuration.failureInjection,
                 playMethod: configuration.expectedPlayMethod,
                 presentationRoute: configuration.expectedPresentationRoute,
+                staticHDRMetadataStatus: configuration.expectedStaticHDRMetadataStatus,
+                staticHDRPeakNits: configuration.expectedStaticHDRPeakNits,
                 repeatSessionCount: configuration.repeatSessionCount,
                 seekStormCount: configuration.seekStormCount,
                 serverLogEvidence: configuration.serverLogDirectory !== null,

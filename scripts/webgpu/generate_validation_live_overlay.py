@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -59,6 +60,13 @@ ROUTE_PRESENTATION_ROUTES = frozenset(
         "raw-hdr-pq",
     }
 )
+STATIC_HDR_METADATA_PRESENTATION_ROUTES = frozenset(
+    {"external-hdr-pq", "raw-hdr-pq"}
+)
+STATIC_HDR_METADATA_STATUSES = frozenset(
+    {"absent", "conflicting", "malformed", "valid"}
+)
+MAXIMUM_STATIC_HDR_PEAK_NITS = 10_000
 AUDIO_ROUTE_BY_PATH = {
     "disabled": "disabled",
     "native-media": "native-media",
@@ -387,6 +395,44 @@ def validate_route_media_contract(
             )
 
 
+def validate_static_HDR_metadata(
+    value: object,
+    *,
+    route: Mapping[str, object],
+    label: str,
+) -> dict[str, object]:
+    """Validates one exact bounded static HDR scan expectation."""
+
+    configuration = require_mapping(value, label)
+    require_exact_keys(
+        configuration,
+        required=frozenset({"status", "toneMappingPeakNits"}),
+        optional=frozenset(),
+        label=label,
+    )
+    presentation_route = cast(str, route["presentationRoute"])
+    if presentation_route not in STATIC_HDR_METADATA_PRESENTATION_ROUTES:
+        raise HarnessError(
+            f"{label} is supported only for ordinary PQ HDR presentation routes"
+        )
+    status = require_string(configuration["status"], f"{label}.status")
+    if status not in STATIC_HDR_METADATA_STATUSES:
+        raise HarnessError(f"{label}.status is unsupported")
+    peak_nits = configuration["toneMappingPeakNits"]
+    if (
+        isinstance(peak_nits, bool)
+        or not isinstance(peak_nits, (int, float))
+        or not math.isfinite(peak_nits)
+        or peak_nits < 1
+        or peak_nits > MAXIMUM_STATIC_HDR_PEAK_NITS
+    ):
+        raise HarnessError(
+            f"{label}.toneMappingPeakNits must be between 1 and "
+            f"{MAXIMUM_STATIC_HDR_PEAK_NITS}"
+        )
+    return {"status": status, "toneMappingPeakNits": peak_nits}
+
+
 def load_live_spec(
     spec_path: Path,
     *,
@@ -427,7 +473,9 @@ def load_live_spec(
                     "media",
                 }
             ),
-            optional=frozenset({"audioSelection", "MPV", "worker"}),
+            optional=frozenset(
+                {"audioSelection", "MPV", "staticHDRMetadata", "worker"}
+            ),
             label=label,
         )
         source_identifier = require_identifier(source["id"], f"{label}.id")
@@ -472,6 +520,12 @@ def load_live_spec(
             raise HarnessError(f"{label}.audioPath requires exact audio metadata")
 
         normalized_source = dict(source)
+        if "staticHDRMetadata" in source:
+            normalized_source["staticHDRMetadata"] = validate_static_HDR_metadata(
+                source["staticHDRMetadata"],
+                route=route,
+                label=f"{label}.staticHDRMetadata",
+            )
         if "audioSelection" in source:
             normalized_source["audioSelection"] = validate_audio_selection(
                 source["audioSelection"],
@@ -577,6 +631,17 @@ def create_browser_records(
         "--expected-audio",
         cast(str, source["audioPath"]),
     ]
+    static_HDR_metadata = source.get("staticHDRMetadata")
+    if static_HDR_metadata is not None:
+        static_HDR_configuration = cast(Mapping[str, object], static_HDR_metadata)
+        arguments.extend(
+            [
+                "--expected-static-hdr-metadata-status",
+                cast(str, static_HDR_configuration["status"]),
+                "--expected-static-hdr-peak-nits",
+                str(static_HDR_configuration["toneMappingPeakNits"]),
+            ]
+        )
     arguments.extend(cast(list[str], exercise["arguments"]))
     selection = source.get("audioSelection")
     arguments.extend(

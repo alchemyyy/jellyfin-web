@@ -7,7 +7,9 @@ const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
 const MAXIMUM_AUDIO_UNDERFLOW_RATIO = 0.02;
 const MAXIMUM_EXPECTED_AUDIO_CHANNEL_COUNT = 32;
 const MAXIMUM_EXPECTED_AUDIO_SAMPLE_RATE = 192_000;
+const MAXIMUM_EXPECTED_STATIC_HDR_PEAK_NITS = 10_000;
 const MAXIMUM_RAW_OUTSTANDING_FRAMES = 2;
+const MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT = 16;
 const MAXIMUM_VIDEO_FRAME_PENDING_FRAMES = 4;
 const MINIMUM_AUDIO_OUTPUT_FRAMES_FOR_UNDERFLOW_RATIO = 4_800;
 const MAXIMUM_REPEAT_SESSION_COUNT = 5;
@@ -68,6 +70,14 @@ const OPTION_DEFINITIONS = Object.freeze({
     '--expected-presentation-route': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE',
         name: 'expectedPresentationRoute'
+    },
+    '--expected-static-hdr-metadata-status': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_STATIC_HDR_METADATA_STATUS',
+        name: 'expectedStaticHDRMetadataStatus'
+    },
+    '--expected-static-hdr-peak-nits': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_STATIC_HDR_PEAK_NITS',
+        name: 'expectedStaticHDRPeakNits'
     },
     '--expected-play-method': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_PLAY_METHOD',
@@ -171,6 +181,10 @@ Options:
                          Optional canvas evidence for generated smoke media
   --expected-presentation-route <route>
                          Optional exact SDR, HDR, or Dolby Vision presentation route
+  --expected-static-hdr-metadata-status <absent|conflicting|malformed|valid>
+                         Optional exact bounded HEVC static metadata scan state
+  --expected-static-hdr-peak-nits <number>
+                         Optional exact tone-mapping peak for that scan state
   --expected-play-method <DirectPlay|DirectStream|Transcode>
                          Optional exact Jellyfin playback method
   --completion-mode <controlled-stop|natural-end>
@@ -198,6 +212,8 @@ Environment equivalents:
   WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
   WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
   WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE, WEBGPU_SMOKE_EXPECTED_PLAY_METHOD,
+  WEBGPU_SMOKE_EXPECTED_STATIC_HDR_METADATA_STATUS,
+  WEBGPU_SMOKE_EXPECTED_STATIC_HDR_PEAK_NITS,
   WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE,
@@ -356,6 +372,39 @@ function parseExpectedAudioSampleRate(value, optionName) {
         );
     }
     return parsedValue;
+}
+
+function parseExpectedStaticHDRPeakNits(value) {
+    const parsedValue = Number(value);
+    if (!Number.isFinite(parsedValue)
+        || parsedValue < 1
+        || parsedValue > MAXIMUM_EXPECTED_STATIC_HDR_PEAK_NITS) {
+        throw new RangeError(
+            'Browser smoke static HDR peak must be from 1 through 10000 nits'
+        );
+    }
+    return parsedValue;
+}
+
+function parseExpectedStaticHDRConfiguration(configuredValue) {
+    const configuredStatus = configuredValue('expectedStaticHDRMetadataStatus');
+    const status = configuredStatus === undefined ?
+        null :
+        parseExpectedValue(
+            configuredStatus,
+            '--expected-static-hdr-metadata-status',
+            [ 'absent', 'conflicting', 'malformed', 'valid' ]
+        );
+    const configuredPeakNits = configuredValue('expectedStaticHDRPeakNits');
+    const peakNits = configuredPeakNits === undefined ?
+        null :
+        parseExpectedStaticHDRPeakNits(configuredPeakNits);
+    if (peakNits !== null && status === null) {
+        throw new TypeError(
+            'Browser smoke static HDR peak requires --expected-static-hdr-metadata-status'
+        );
+    }
+    return { peakNits, status };
 }
 
 function parseExpectedAudioConfiguration(values) {
@@ -642,6 +691,8 @@ export function parseSmokeConfiguration(argumentList, environment) {
             '--expected-play-method',
             [ 'DirectPlay', 'DirectStream', 'Transcode' ]
         );
+    const expectedStaticHDRConfiguration =
+        parseExpectedStaticHDRConfiguration(configuredValue);
     const configuredVideoDecoderBackend = configuredValue('expectedVideoDecoderBackend');
     const expectedVideoDecoderBackend = configuredVideoDecoderBackend === undefined ?
         null :
@@ -709,6 +760,8 @@ export function parseSmokeConfiguration(argumentList, environment) {
         expectedFrameEvidence,
         expectedPlayMethod,
         expectedPresentationRoute,
+        expectedStaticHDRMetadataStatus: expectedStaticHDRConfiguration.status,
+        expectedStaticHDRPeakNits: expectedStaticHDRConfiguration.peakNits,
         expectedVideoDecoderBackend,
         expectedVideoOutputMode,
         itemID: requireNonEmptyString(configuredValue('itemID'), '--item-id'),
@@ -1720,6 +1773,11 @@ export function validateActivePlaybackSnapshot(
     validateRawHDRAuthorizationSnapshot(failures, laterSnapshot);
     validateExternalDolbyVisionAuthorizationSnapshot(failures, laterSnapshot);
     validateExternalHDRAuthorizationSnapshot(failures, laterSnapshot);
+    failures.push(...validateStaticHDRMetadataSnapshot(
+        laterSnapshot,
+        expectations.expectedStaticHDRMetadataStatus ?? null,
+        expectations.expectedStaticHDRPeakNits ?? null
+    ));
     validateExpectedAudioSnapshot(
         failures,
         initialSnapshot,
@@ -1755,6 +1813,57 @@ export function validateActivePlaybackSnapshot(
     addFailure(failures, laterSnapshot.dom.sourceLessVideoCount > 0, 'source-less-video-missing');
     addFailure(failures, laterSnapshot.dom.sourcedVideoCount === 0, 'native-video-source-active');
     addFailure(failures, laterSnapshot.dom.visibleCanvasCount > 0, 'webgpu-canvas-not-visible');
+    return failures;
+}
+
+/** Returns stable failures for an exact bounded static HDR metadata expectation. */
+export function validateStaticHDRMetadataSnapshot(
+    snapshot,
+    expectedStatus,
+    expectedPeakNits
+) {
+    if (expectedStatus === null && expectedPeakNits === null) {
+        return [];
+    }
+
+    const failures = [];
+    const decodeTelemetry = snapshot?.customPlayback?.videoDecode;
+    const accessUnitCount = decodeTelemetry?.staticHDRMetadataScanAccessUnitCount;
+    const firstAccessUnitIndex = decodeTelemetry?.staticHDRMetadataFirstAccessUnitIndex;
+    addFailure(
+        failures,
+        decodeTelemetry?.staticHDRMetadataStatus === expectedStatus,
+        'static-hdr-metadata-status-mismatch'
+    );
+    addFailure(
+        failures,
+        Number.isSafeInteger(accessUnitCount)
+            && accessUnitCount >= 0
+            && accessUnitCount <= MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
+        'static-hdr-metadata-scan-bound-invalid'
+    );
+    if (expectedStatus === 'valid') {
+        addFailure(
+            failures,
+            Number.isSafeInteger(firstAccessUnitIndex)
+                && firstAccessUnitIndex >= 0
+                && firstAccessUnitIndex < accessUnitCount,
+            'static-hdr-metadata-first-index-invalid'
+        );
+    } else {
+        addFailure(
+            failures,
+            firstAccessUnitIndex === null,
+            'static-hdr-metadata-first-index-invalid'
+        );
+    }
+    if (expectedPeakNits !== null) {
+        addFailure(
+            failures,
+            snapshot?.renderSettings?.toneMapping?.inputPeakNits === expectedPeakNits,
+            'static-hdr-tone-mapping-peak-mismatch'
+        );
+    }
     return failures;
 }
 

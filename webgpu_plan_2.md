@@ -3,15 +3,16 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `2631f7c6db131c52843eb0d06100009dfd3dbc47`
+- Parent checkpoint: `64671c6813850ad149d1a31612f67dd4d654ada8`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, Profile 5 negotiation, and unified
   validation-foundation checkpoints and reviewed-baseline support are committed
-  and pushed. The bounded static-HDR-prefix checkpoint passes its focused,
-  canonical, live lifecycle, and startup gates in the current worktree.
-  Generator-owned fixture-registry integration is active. Per-tuple real-media
-  qualification and long-run resource validation remain before a general
-  rollout.
+  and pushed. The bounded static-HDR-prefix checkpoint is committed and passed
+  its focused, canonical, live lifecycle, and startup gates. The current
+  worktree adds source-bound live assertions for the exact scan status and
+  tone-mapping peak. Generator-owned fixture-registry integration is active.
+  Per-tuple real-media qualification and long-run resource validation remain
+  before a general rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
@@ -888,6 +889,13 @@ mastering peak with zero fallback. Its paired ten-round startup gate passed with
 first-visible median/p95 regression of -81.9/7.1 ms and first-audio regression
 of 9.9/97.2 ms versus direct HTML.
 
+Generated ordinary-PQ live sources can now bind that state to an exact expected
+scan status and tone-mapping peak. Lifecycle validation rejects status, scan
+bound, first-index, or peak mismatches. Every custom startup sample applies the
+same contract and retains the bounded scan evidence. The current High Tier HDR10
+source passed both generated lifecycle and paired-startup selectors with
+`valid`, first access unit 0 of 16, and 4000 nits.
+
 ### Group F: Negotiation and capability safety
 
 **Owns:** structured codec/container route descriptors, capability aggregation,
@@ -1083,6 +1091,9 @@ Rules that prevent duplicated work:
 - [x] Scan a bounded startup prefix, merge consistent late fields, reject
   malformed/conflicting values, retain explicit scan telemetry, and preserve the
   1000-nit default for every non-valid state.
+- [x] Bind generated ordinary-PQ live cases to an exact static scan state and
+  tone-mapping peak, including per-sample startup assertions and bounded scan
+  evidence.
 - [x] Compile all seven generated HDR/Dolby Vision shaders in real Chrome WebGPU
   and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.
@@ -1185,6 +1196,8 @@ Rules that prevent duplicated work:
 - [x] Add a single-sourced private live-case generator covering exact HDR/Dolby
   Vision route selection, lifecycle, failure recovery, startup, retention,
   worker, and mpv A/B adapter records.
+- [x] Add source-bound static-HDR status and peak contracts to generated
+  ordinary-PQ lifecycle and startup checks.
 - [x] Capture browser, GPU/driver, display HDR, server, and active feature-flag
   evidence from successful live browser adapters.
 - [ ] Migrate existing color, worker, browser, startup, artifact, and soak tools
