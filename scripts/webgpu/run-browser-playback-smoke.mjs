@@ -30,6 +30,7 @@ import {
     validateNaturalEndSnapshots,
     validatePausedDeviceRecoverySnapshots,
     validatePauseSnapshot,
+    validatePlaybackDecisionEvidence,
     validatePresentedFrameEvidence,
     validateResizedPresentationSnapshot,
     validateResumeSnapshot,
@@ -1227,6 +1228,8 @@ function createPlayerSnapshotExpression(accessKey) {
         const fetchingValue = typeof player.isFetching === 'function'
             ? player.isFetching()
             : player.isFetching;
+        const playbackStreamInfo = player.streamInfo ?? null;
+        const playbackMediaSource = playbackStreamInfo?.mediaSource ?? null;
         return {
             captured: true,
             customPlayback: custom ? {
@@ -1425,6 +1428,20 @@ function createPlayerSnapshotExpression(accessKey) {
             milestones: { ...(capture.milestones ?? {}) },
             nativeMediaAudioCapabilities,
             performanceNowMilliseconds: performance.now(),
+            playbackDecision: {
+                hasMediaSourceIdentifier:
+                    typeof playbackMediaSource?.Id === 'string'
+                    && playbackMediaSource.Id.length > 0,
+                hasTranscodingURL:
+                    typeof playbackMediaSource?.TranscodingUrl === 'string'
+                    && playbackMediaSource.TranscodingUrl.length > 0,
+                playMethod: typeof playbackStreamInfo?.playMethod === 'string'
+                    ? playbackStreamInfo.playMethod
+                    : null,
+                supportsDirectPlay: playbackMediaSource?.SupportsDirectPlay === true,
+                supportsDirectStream: playbackMediaSource?.SupportsDirectStream === true,
+                supportsTranscoding: playbackMediaSource?.SupportsTranscoding === true
+            },
             playerID: String(player.id || ''),
             presentationInputColorMetadata: activeRawColorMetadata ? {
                 matrix: activeRawColorMetadata.matrix,
@@ -1527,6 +1544,122 @@ function createPlayerOperationExpression(accessKey, operation) {
 
 async function getPlayerSnapshot(client, accessKey) {
     return evaluateValue(client, createPlayerSnapshotExpression(accessKey));
+}
+
+function createPlaybackDecisionExpression(accessKey, expectedItemID) {
+    return `(async () => {
+        const capture = window[${JSON.stringify(accessKey)}]?.();
+        const player = capture?.player;
+        const streamInfo = player?.streamInfo ?? null;
+        const mediaSource = streamInfo?.mediaSource ?? null;
+        const item = streamInfo?.item ?? null;
+        const clientMediaSourceID = typeof mediaSource?.Id === 'string'
+            ? mediaSource.Id
+            : null;
+        const expectedItemID = ${JSON.stringify(expectedItemID)};
+        const client = {
+            hasMediaSourceIdentifier: clientMediaSourceID !== null
+                && clientMediaSourceID.length > 0,
+            hasTranscodingURL: typeof mediaSource?.TranscodingUrl === 'string'
+                && mediaSource.TranscodingUrl.length > 0,
+            itemMatched: item?.Id === expectedItemID,
+            playMethod: typeof streamInfo?.playMethod === 'string'
+                ? streamInfo.playMethod
+                : null,
+            supportsDirectPlay: mediaSource?.SupportsDirectPlay === true,
+            supportsDirectStream: mediaSource?.SupportsDirectStream === true,
+            supportsTranscoding: mediaSource?.SupportsTranscoding === true
+        };
+        if (!player
+            || typeof ApiClient !== 'object'
+            || typeof ApiClient.getSessions !== 'function'
+            || typeof ApiClient.deviceId !== 'function') {
+            return {
+                client,
+                server: {
+                    itemMatched: false,
+                    mediaSourceMatched: false,
+                    playMethod: null,
+                    requestSucceeded: false,
+                    sessionMatched: false,
+                    transcodeReasons: [],
+                    transcodingActive: false
+                }
+            };
+        }
+
+        let sessions;
+        try {
+            sessions = await ApiClient.getSessions({
+                deviceId: ApiClient.deviceId()
+            });
+        } catch {
+            return {
+                client,
+                server: {
+                    itemMatched: false,
+                    mediaSourceMatched: false,
+                    playMethod: null,
+                    requestSucceeded: false,
+                    sessionMatched: false,
+                    transcodeReasons: [],
+                    transcodingActive: false
+                }
+            };
+        }
+        const sessionList = Array.isArray(sessions) ? sessions : [];
+        const itemSessions = sessionList.filter(session => (
+            session?.NowPlayingItem?.Id === expectedItemID
+        ));
+        const session = itemSessions.find(candidate => (
+            clientMediaSourceID !== null
+            && candidate?.PlayState?.MediaSourceId === clientMediaSourceID
+        )) ?? itemSessions[0] ?? null;
+        const transcodingInfo = session?.TranscodingInfo ?? null;
+        const transcodeReasons = Array.isArray(transcodingInfo?.TranscodeReasons)
+            ? Array.from(new Set(transcodingInfo.TranscodeReasons.filter(reason => (
+                typeof reason === 'string' && reason.length > 0
+            )))).sort()
+            : [];
+        return {
+            client,
+            server: {
+                isAudioDirect: typeof transcodingInfo?.IsAudioDirect === 'boolean'
+                    ? transcodingInfo.IsAudioDirect
+                    : null,
+                isVideoDirect: typeof transcodingInfo?.IsVideoDirect === 'boolean'
+                    ? transcodingInfo.IsVideoDirect
+                    : null,
+                itemMatched: session?.NowPlayingItem?.Id === expectedItemID,
+                mediaSourceMatched: clientMediaSourceID !== null
+                    && session?.PlayState?.MediaSourceId === clientMediaSourceID,
+                playMethod: typeof session?.PlayState?.PlayMethod === 'string'
+                    ? session.PlayState.PlayMethod
+                    : null,
+                requestSucceeded: true,
+                sessionMatched: session !== null,
+                transcodeReasons,
+                transcodingActive: transcodingInfo !== null
+            }
+        };
+    })()`;
+}
+
+async function collectPlaybackDecisionEvidence(client, accessKey, configuration) {
+    return waitForValue({
+        accept: evidence => evidence?.client?.itemMatched === true
+            && typeof evidence.client.playMethod === 'string'
+            && evidence.server?.requestSucceeded === true
+            && evidence.server.sessionMatched === true
+            && typeof evidence.server.playMethod === 'string',
+        description: 'the bounded Jellyfin playback decision evidence',
+        errorCode: 'playback-decision-timeout',
+        read: () => evaluateValue(
+            client,
+            createPlaybackDecisionExpression(accessKey, configuration.itemID)
+        ),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
 }
 
 async function capturePresentedFrameEvidence(client) {
@@ -2526,6 +2659,8 @@ async function stopCapturedPlayback(
 function isExpectedStartupModeActive(snapshot, mode, configuration) {
     const commonActive = snapshot?.captured === true
         && snapshot.terminalErrorCount === 0
+        && (configuration.expectedPlayMethod === null
+            || snapshot.playbackDecision?.playMethod === configuration.expectedPlayMethod)
         && Number.isFinite(snapshot.milestones?.playInvokedAtMilliseconds)
         && Number.isFinite(snapshot.milestones?.playbackStartAtMilliseconds)
         && Number.isFinite(snapshot.milestones?.playerPlayingAtMilliseconds);
@@ -2692,6 +2827,7 @@ function summarizeStartupSample(
                 snapshot.customPlaybackEligibility?.videoDecoderBackend ?? 'native-html',
             outputMode:
                 snapshot.customPlaybackEligibility?.videoOutputMode ?? 'native-html',
+            playMethod: snapshot.playbackDecision?.playMethod ?? null,
             playerID: snapshot.playerID,
             presentationSource: snapshot.presentation?.presentationSource ?? 'native-video'
         },
@@ -2945,6 +3081,22 @@ async function runStartupModeSample(options) {
             },
             timeoutMilliseconds: options.configuration.timeoutMilliseconds
         });
+        const playbackDecision = await collectPlaybackDecisionEvidence(
+            options.client,
+            accessKey,
+            options.configuration
+        );
+        const playbackDecisionFailures = validatePlaybackDecisionEvidence(
+            playbackDecision,
+            options.configuration.expectedPlayMethod
+        );
+        if (playbackDecisionFailures.length > 0) {
+            throw new SmokeHarnessError(
+                'startup-playback-decision-mismatch',
+                `The ${options.mode} startup sample selected an unexpected playback method`,
+                { failures: playbackDecisionFailures, playbackDecision }
+            );
+        }
         const sample = summarizeStartupSample(
             activeSnapshot,
             options.mode,
@@ -2953,6 +3105,7 @@ async function runStartupModeSample(options) {
             options.measured,
             options.configuration.expectedAudioPath !== 'disabled'
         );
+        sample.playbackDecision = playbackDecision;
         await stopStartupSample(options.client, accessKey, options.configuration);
         playbackStarted = false;
         return sample;
@@ -3451,17 +3604,31 @@ async function runRetentionSoak(options) {
         });
         await sleep(PLAYBACK_OBSERVATION_MILLISECONDS);
         const activeLater = await getPlayerSnapshot(options.client, options.accessKey);
+        const playbackDecision = await collectPlaybackDecisionEvidence(
+            options.client,
+            options.accessKey,
+            options.configuration
+        );
         appendFailures(
             failures,
             `soak-${sessionNumber}-playback`,
             validateActivePlaybackSnapshot(activeInitial, activeLater, {
                 expectedAudioPath: options.configuration.expectedAudioPath,
+                expectedPlayMethod: options.configuration.expectedPlayMethod,
                 expectedPresentationRoute:
                     options.configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend:
                     options.configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
             })
+        );
+        appendFailures(
+            failures,
+            `soak-${sessionNumber}-playback-decision`,
+            validatePlaybackDecisionEvidence(
+                playbackDecision,
+                options.configuration.expectedPlayMethod
+            )
         );
 
         const stopStartedAtNanoseconds = process.hrtime.bigint();
@@ -3501,6 +3668,7 @@ async function runRetentionSoak(options) {
 
         sessionObservations.push({
             playback: summarizeSoakPlaybackSnapshot(activeLater),
+            playbackDecision,
             retention: retentionSnapshot,
             sessionNumber,
             stop: summarizeSoakStopSnapshot(stopSnapshot),
@@ -3563,12 +3731,21 @@ async function finishNaturalEndExercise(options) {
         'playback',
         validateActivePlaybackSnapshot(options.activeInitial, options.activeLater, {
             expectedAudioPath: options.configuration.expectedAudioPath,
+            expectedPlayMethod: options.configuration.expectedPlayMethod,
             expectedPresentationRoute:
                 options.configuration.expectedPresentationRoute,
             expectedVideoDecoderBackend:
                 options.configuration.expectedVideoDecoderBackend,
             expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
         })
+    );
+    appendFailures(
+        failures,
+        'playback-decision',
+        validatePlaybackDecisionEvidence(
+            options.playbackDecision,
+            options.configuration.expectedPlayMethod
+        )
     );
     appendFailures(
         failures,
@@ -3618,6 +3795,7 @@ async function finishNaturalEndExercise(options) {
                 stable: stableEndedSnapshot
             },
             playback: options.activeLater,
+            playbackDecision: options.playbackDecision,
             stop: stopSnapshot
         }
     };
@@ -3655,17 +3833,31 @@ async function runRepeatedPlaybackSessions(options) {
         });
         await sleep(PLAYBACK_OBSERVATION_MILLISECONDS);
         const laterSnapshot = await getPlayerSnapshot(options.client, options.accessKey);
+        const playbackDecision = await collectPlaybackDecisionEvidence(
+            options.client,
+            options.accessKey,
+            options.configuration
+        );
         appendFailures(
             options.failures,
             `repeat-${sessionNumber}`,
             validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, {
                 expectedAudioPath: options.configuration.expectedAudioPath,
+                expectedPlayMethod: options.configuration.expectedPlayMethod,
                 expectedPresentationRoute:
                     options.configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend:
                     options.configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
             })
+        );
+        appendFailures(
+            options.failures,
+            `repeat-${sessionNumber}-playback-decision`,
+            validatePlaybackDecisionEvidence(
+                playbackDecision,
+                options.configuration.expectedPlayMethod
+            )
         );
         if (laterSnapshot.customPlayback?.staleEventCount !== 0) {
             options.failures.push(`repeat-${sessionNumber}:stale-session-event`);
@@ -3690,6 +3882,7 @@ async function runRepeatedPlaybackSessions(options) {
         latestStopSnapshot = stopSnapshot;
         observations.push({
             playback: laterSnapshot,
+            playbackDecision,
             sessionNumber,
             stop: stopSnapshot
         });
@@ -4106,6 +4299,11 @@ async function runPlaybackExercise(
         );
         await sleep(PLAYBACK_OBSERVATION_MILLISECONDS);
         const activeLater = await getPlayerSnapshot(client, accessKey);
+        const playbackDecision = await collectPlaybackDecisionEvidence(
+            client,
+            accessKey,
+            configuration
+        );
         const laterFrameEvidence = await captureExpectedPresentedFrameEvidence(
             client,
             configuration.expectedFrameEvidence
@@ -4120,7 +4318,8 @@ async function runPlaybackExercise(
                 client,
                 configuration,
                 initialFrameEvidence,
-                laterFrameEvidence
+                laterFrameEvidence,
+                playbackDecision
             });
             return naturalEndResult;
         }
@@ -4241,10 +4440,19 @@ async function runPlaybackExercise(
             'playback',
             validateActivePlaybackSnapshot(activeInitial, activeLater, {
                 expectedAudioPath: configuration.expectedAudioPath,
+                expectedPlayMethod: configuration.expectedPlayMethod,
                 expectedPresentationRoute: configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend: configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: configuration.expectedVideoOutputMode
             })
+        );
+        appendFailures(
+            failures,
+            'playback-decision',
+            validatePlaybackDecisionEvidence(
+                playbackDecision,
+                configuration.expectedPlayMethod
+            )
         );
         appendFailures(
             failures,
@@ -4338,6 +4546,7 @@ async function runPlaybackExercise(
                         - pauseInitial.presentation.presentedFrameCount
                 },
                 playback: activeLater,
+                playbackDecision,
                 failureInjection: failureInjectionObservation,
                 frameEvidence: {
                     initial: initialFrameEvidence,
@@ -4471,6 +4680,7 @@ async function runSmoke(configuration) {
                 expectedAudioConfiguration: configuration.expectedAudioConfiguration,
                 audioPath: configuration.expectedAudioPath,
                 failureInjection: configuration.failureInjection,
+                playMethod: configuration.expectedPlayMethod,
                 presentationRoute: configuration.expectedPresentationRoute,
                 repeatSessionCount: configuration.repeatSessionCount,
                 seekStormCount: configuration.seekStormCount,
@@ -4514,8 +4724,10 @@ function createFailureReport(error) {
 
 export {
     clearFrontendRuntimeCaches,
+    collectPlaybackDecisionEvidence,
     connectToConfiguredServer,
     createBrowserErrorMonitor,
+    createPlaybackDecisionExpression,
     createPlayerCaptureHookExpression,
     createPlayerOperationExpression,
     createPlayerSnapshotExpression,
@@ -4553,6 +4765,7 @@ export async function runSmokeCLI(
         const sanitizedReport = sanitizeReport(report, [
             configuration.debugURL,
             configuration.frontendURL,
+            configuration.itemID,
             configuration.password,
             configuration.serverURL,
             configuration.username
@@ -4565,6 +4778,7 @@ export async function runSmokeCLI(
         const secrets = configuration?.help === true || !configuration ? [] : [
             configuration.debugURL,
             configuration.frontendURL,
+            configuration.itemID,
             configuration.password,
             configuration.serverURL,
             configuration.username

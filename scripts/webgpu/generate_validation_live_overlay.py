@@ -572,6 +572,8 @@ def create_browser_records(
         cast(str, route["decoderBackend"]),
         "--expected-presentation-route",
         cast(str, route["presentationRoute"]),
+        "--expected-play-method",
+        "DirectPlay",
         "--expected-audio",
         cast(str, source["audioPath"]),
     ]

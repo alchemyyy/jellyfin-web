@@ -33,6 +33,7 @@ import {
     validateNaturalEndSnapshots,
     validatePausedDeviceRecoverySnapshots,
     validatePauseSnapshot,
+    validatePlaybackDecisionEvidence,
     validatePresentedFrameEvidence,
     validateResizedPresentationSnapshot,
     validateResumeSnapshot,
@@ -43,11 +44,13 @@ import {
 
 const SDR_EXPECTATIONS = Object.freeze({
     expectedAudioPath: 'disabled',
+    expectedPlayMethod: 'DirectPlay',
     expectedVideoDecoderBackend: 'native',
     expectedVideoOutputMode: 'video-frame'
 });
 const HDR_AUDIO_EXPECTATIONS = Object.freeze({
     expectedAudioPath: 'ready',
+    expectedPlayMethod: 'DirectPlay',
     expectedVideoDecoderBackend: 'bundled-hevc',
     expectedVideoOutputMode: 'raw-planes'
 });
@@ -125,6 +128,14 @@ function createActiveSnapshot(overrides = {}) {
         eventSequence: [ 'waiting', 'playing', 'playbackstart' ],
         hasCurrentSource: false,
         isFetching: false,
+        playbackDecision: {
+            hasMediaSourceIdentifier: true,
+            hasTranscodingURL: true,
+            playMethod: 'DirectPlay',
+            supportsDirectPlay: true,
+            supportsDirectStream: true,
+            supportsTranscoding: true
+        },
         playerID: 'webgpuvideoplayer',
         presentation: {
             decodedFrameCount: 10,
@@ -156,6 +167,7 @@ test('parses CLI values before environment values', () => {
         '--expected-audio', 'ready',
         '--expected-frame-evidence', 'testsrc2-motion',
         '--expected-presentation-route', 'raw-hdr-pq',
+        '--expected-play-method', 'DirectPlay',
         '--username', 'cli-user',
         '--password', 'cli-password',
         '--repeat-sessions', '3',
@@ -180,6 +192,7 @@ test('parses CLI values before environment values', () => {
         frontendURL: 'http://localhost:8181',
         expectedAudioPath: 'ready',
         expectedFrameEvidence: 'testsrc2-motion',
+        expectedPlayMethod: 'DirectPlay',
         expectedPresentationRoute: 'raw-hdr-pq',
         expectedVideoDecoderBackend: 'bundled-hevc',
         expectedVideoOutputMode: 'raw-planes',
@@ -208,6 +221,10 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--expected-audio-output-rate <number>/u);
     assert.match(SMOKE_USAGE, /--expected-frame-evidence <none\|testsrc2-motion>/u);
     assert.match(SMOKE_USAGE, /--expected-presentation-route <route>/u);
+    assert.match(
+        SMOKE_USAGE,
+        /--expected-play-method <DirectPlay\|DirectStream\|Transcode>/u
+    );
     assert.match(SMOKE_USAGE, /--completion-mode <controlled-stop\|natural-end>/u);
     assert.match(SMOKE_USAGE, /--repeat-sessions <1-5>/u);
     assert.match(
@@ -221,6 +238,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PLAY_METHOD/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_AUDIO_STREAM_INDEX/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS/u);
@@ -244,7 +262,7 @@ test('uses local URL defaults without inventing credentials', () => {
     });
 
     assert.equal(configuration.debugURL, 'http://localhost:9224');
-    assert.equal(configuration.frontendURL, 'http://localhost:8096');
+    assert.equal(configuration.frontendURL, 'http://localhost:8096/web');
     assert.equal(configuration.serverURL, 'http://localhost:8096');
     assert.equal(configuration.timeoutMilliseconds, 30_000);
     assert.equal(configuration.completionMode, 'controlled-stop');
@@ -258,6 +276,7 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.expectedAudioConfiguration, null);
     assert.equal(configuration.expectedAudioPath, 'disabled');
     assert.equal(configuration.expectedFrameEvidence, 'none');
+    assert.equal(configuration.expectedPlayMethod, null);
     assert.equal(configuration.expectedVideoDecoderBackend, null);
     assert.equal(configuration.expectedVideoOutputMode, 'video-frame');
     assert.throws(
@@ -615,6 +634,14 @@ test('requires valid independent video and audio expectations', () => {
             WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'external-texture'
         }),
         /--expected-video-output/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--expected-play-method', 'direct' ], {
+            ...baseEnvironment,
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
+        }),
+        /--expected-play-method/u
     );
     assert.throws(
         () => parseSmokeConfiguration([ '--repeat-sessions', '0' ], {
@@ -1578,6 +1605,58 @@ test('validates one paused repaint generation after device recovery', () => {
     ).includes('paused-recovery-waiting-event'));
 });
 
+test('accepts matching bounded client and server DirectPlay evidence', () => {
+    const evidence = {
+        client: {
+            hasMediaSourceIdentifier: true,
+            hasTranscodingURL: true,
+            itemMatched: true,
+            playMethod: 'DirectPlay',
+            supportsDirectPlay: true,
+            supportsDirectStream: true,
+            supportsTranscoding: true
+        },
+        server: {
+            isAudioDirect: null,
+            isVideoDirect: null,
+            itemMatched: true,
+            mediaSourceMatched: true,
+            playMethod: 'DirectPlay',
+            requestSucceeded: true,
+            sessionMatched: true,
+            transcodeReasons: [],
+            transcodingActive: false
+        }
+    };
+
+    assert.deepEqual(validatePlaybackDecisionEvidence(evidence, 'DirectPlay'), []);
+    assert.deepEqual(validatePlaybackDecisionEvidence(null, null), []);
+});
+
+test('rejects playback method disagreement and DirectPlay transcoding state', () => {
+    const failures = validatePlaybackDecisionEvidence({
+        client: {
+            itemMatched: true,
+            playMethod: 'DirectPlay',
+            supportsDirectPlay: true
+        },
+        server: {
+            itemMatched: true,
+            mediaSourceMatched: false,
+            playMethod: 'Transcode',
+            sessionMatched: true,
+            transcodeReasons: [ 'VideoCodecNotSupported' ],
+            transcodingActive: true
+        }
+    }, 'DirectPlay');
+
+    assert.ok(failures.includes('playback-decision-server-media-source-mismatch'));
+    assert.ok(failures.includes('playback-decision-server-method-mismatch'));
+    assert.ok(failures.includes('playback-decision-method-disagreement'));
+    assert.ok(failures.includes('playback-decision-direct-play-transcoding-active'));
+    assert.ok(failures.includes('playback-decision-direct-play-transcode-reasons-present'));
+});
+
 test('accepts advancing source-less custom playback', () => {
     const initialSnapshot = createActiveSnapshot({
         customPlayback: {
@@ -1602,6 +1681,13 @@ test('accepts advancing source-less custom playback', () => {
             sourcedVideoCount: 1
         }
     }, SDR_EXPECTATIONS).includes('native-video-source-active'));
+    assert.ok(validateActivePlaybackSnapshot(initialSnapshot, {
+        ...laterSnapshot,
+        playbackDecision: {
+            ...laterSnapshot.playbackDecision,
+            playMethod: 'Transcode'
+        }
+    }, SDR_EXPECTATIONS).includes('unexpected-play-method'));
     const expectationFailures = validateActivePlaybackSnapshot(
         initialSnapshot,
         laterSnapshot,

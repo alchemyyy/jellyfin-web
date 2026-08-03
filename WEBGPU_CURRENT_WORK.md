@@ -4,10 +4,11 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `b3233d2cba5637e3d805400ec0449bd20123b49a`
+Parent checkpoint: `6622bf91448b5aeb3347d39c14f7f9a1669b8184`
 
-Checkpoint state: reviewed baselines and generated fixture registries committed
-and pushed; live HDR/lifecycle matrix integration is in progress
+Checkpoint state: generated private live-case catalog committed and pushed;
+bounded Jellyfin playback-decision evidence is implemented and under final
+checkpoint validation
 
 ## Current objective
 
@@ -87,12 +88,26 @@ run populated the NVIDIA adapter/driver, SDR display state, server version, and
 active feature flags instead of `not-recorded` placeholders. This is one local
 route execution, not the complete private-live matrix.
 
+The browser adapter now accepts an exact expected Jellyfin play method. It
+records the player-selected method and capability booleans, queries the active
+Jellyfin device/item/media-source session, and reports only match booleans,
+method, transcode state, and reason names. A DirectPlay assertion rejects active
+`TranscodingInfo` or any reason. The current Dark Knight High Tier HDR10/FLAC
+port-8096 smoke passed with client and server `DirectPlay`, a matching media
+source, no active transcode, and no reasons. No item ID, media-source ID, device
+ID, or stream URL is retained. The harness now defaults to Jellyfin's normal
+`http://localhost:8096/web` frontend instead of the nonexistent port-root
+`config.json` path. Regenerating the browser-only private catalog and selecting
+its lifecycle case passed one fixture, one case, and both the runtime and
+browser checks; the resulting six evidence files passed a private-value scan.
+
 Remaining Group B work:
 
 1. Populate the generated private catalog with exact local color/HDR, browser
    lifecycle, worker, startup, retention/soak, and mpv A/B source records, then
    execute and approve those matrices.
-2. Unify failure injection by case ID and add sanitized server API/log capture.
+2. Unify failure injection by case ID and add sanitized server-log capture. The
+   bounded active-session API evidence is complete.
 3. Add manual-observation ingestion and pairwise/boundary matrix generation.
 4. Execute the same environment contract on Edge plus AMD and Intel systems;
    retain explicit `not-recorded` values only for matrices with no live adapter.
@@ -171,6 +186,12 @@ channel bed.
 
 ## Completed checkpoint gates
 
+- The playback-decision follow-up passed the canonical checkpoint matrix: all
+  15 fixture hashes, 15 cases, and 10 checks; 57 Python tests, 138 standalone
+  Node tests, 383 focused Vitest tests, TypeScript, runtime-toolchain readiness,
+  and a development build. Focused JavaScript lint, generator tests, whitespace,
+  disabled source flags, a live 8096 DirectPlay session, and a private-value
+  scan also passed.
 - The live-catalog checkpoint passed 15 canonical fixture hashes/cases and all
   10 required checks: 57 Python tests, 136 standalone Node tests, 383 focused
   Vitest tests, TypeScript, runtime-toolchain readiness, and the development

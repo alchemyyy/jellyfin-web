@@ -159,6 +159,8 @@ class LiveOverlayGeneratorTests(unittest.TestCase):
             self.assertIn("private-live", manifest.matrices)
             self.assertIn("--item-id", command.arguments)
             self.assertIn("private-item-sentinel", command.arguments)
+            self.assertIn("--expected-play-method", command.arguments)
+            self.assertIn("DirectPlay", command.arguments)
             fixture = overlay["fixtures"][0]
             self.assertEqual(
                 fixture["uri"], "env://WEBGPU_VALIDATION_TEST_MEDIA"

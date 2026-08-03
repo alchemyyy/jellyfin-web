@@ -1,7 +1,7 @@
 /* eslint-disable compat/compat -- This local harness targets Node 24 and a current Chromium browser */
 
 const DEFAULT_DEBUG_URL = 'http://localhost:9224';
-const DEFAULT_FRONTEND_URL = 'http://localhost:8096';
+const DEFAULT_FRONTEND_URL = 'http://localhost:8096/web';
 const DEFAULT_SERVER_URL = 'http://localhost:8096';
 const DEFAULT_TIMEOUT_MILLISECONDS = 30_000;
 const MAXIMUM_AUDIO_UNDERFLOW_RATIO = 0.02;
@@ -68,6 +68,10 @@ const OPTION_DEFINITIONS = Object.freeze({
     '--expected-presentation-route': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE',
         name: 'expectedPresentationRoute'
+    },
+    '--expected-play-method': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_PLAY_METHOD',
+        name: 'expectedPlayMethod'
     },
     '--expected-video-output': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT',
@@ -161,6 +165,8 @@ Options:
                          Optional canvas evidence for generated smoke media
   --expected-presentation-route <route>
                          Optional exact SDR, HDR, or Dolby Vision presentation route
+  --expected-play-method <DirectPlay|DirectStream|Transcode>
+                         Optional exact Jellyfin playback method
   --completion-mode <controlled-stop|natural-end>
                          Lifecycle exercise; defaults to controlled-stop
   --repeat-sessions <1-5>
@@ -184,7 +190,7 @@ Environment equivalents:
   WEBGPU_SMOKE_SERVER_URL, WEBGPU_SMOKE_ITEM_ID,
   WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
   WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
-  WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE,
+  WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE, WEBGPU_SMOKE_EXPECTED_PLAY_METHOD,
   WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE,
@@ -617,6 +623,14 @@ export function parseSmokeConfiguration(argumentList, environment) {
                 'raw-hdr-pq'
             ]
         );
+    const configuredPlayMethod = configuredValue('expectedPlayMethod');
+    const expectedPlayMethod = configuredPlayMethod === undefined ?
+        null :
+        parseExpectedValue(
+            configuredPlayMethod,
+            '--expected-play-method',
+            [ 'DirectPlay', 'DirectStream', 'Transcode' ]
+        );
     const configuredVideoDecoderBackend = configuredValue('expectedVideoDecoderBackend');
     const expectedVideoDecoderBackend = configuredVideoDecoderBackend === undefined ?
         null :
@@ -682,6 +696,7 @@ export function parseSmokeConfiguration(argumentList, environment) {
         expectedAudioConfiguration,
         expectedAudioPath,
         expectedFrameEvidence,
+        expectedPlayMethod,
         expectedPresentationRoute,
         expectedVideoDecoderBackend,
         expectedVideoOutputMode,
@@ -1488,6 +1503,67 @@ function validateExpectedAudioSnapshot(
     }
 }
 
+/** Returns stable failure codes for the bounded client/server playback decision evidence. */
+export function validatePlaybackDecisionEvidence(evidence, expectedPlayMethod) {
+    const failures = [];
+    if (expectedPlayMethod === null || expectedPlayMethod === undefined) {
+        return failures;
+    }
+
+    const clientDecision = evidence?.client;
+    const serverDecision = evidence?.server;
+    addFailure(failures, clientDecision !== null && clientDecision !== undefined,
+        'playback-decision-client-missing');
+    addFailure(failures, clientDecision?.itemMatched === true,
+        'playback-decision-client-item-mismatch');
+    addFailure(failures, clientDecision?.hasMediaSourceIdentifier === true,
+        'playback-decision-client-media-source-missing');
+    addFailure(failures, clientDecision?.playMethod === expectedPlayMethod,
+        'playback-decision-client-method-mismatch');
+    addFailure(failures, serverDecision?.requestSucceeded === true,
+        'playback-decision-server-request-failed');
+    addFailure(failures, serverDecision?.sessionMatched === true,
+        'playback-decision-server-session-missing');
+    addFailure(failures, serverDecision?.itemMatched === true,
+        'playback-decision-server-item-mismatch');
+    addFailure(failures, serverDecision?.mediaSourceMatched === true,
+        'playback-decision-server-media-source-mismatch');
+    addFailure(failures, serverDecision?.playMethod === expectedPlayMethod,
+        'playback-decision-server-method-mismatch');
+    addFailure(
+        failures,
+        clientDecision?.playMethod === serverDecision?.playMethod,
+        'playback-decision-method-disagreement'
+    );
+    addFailure(
+        failures,
+        Array.isArray(serverDecision?.transcodeReasons),
+        'playback-decision-transcode-reasons-missing'
+    );
+
+    switch (expectedPlayMethod) {
+        case 'DirectPlay':
+            addFailure(failures, clientDecision?.supportsDirectPlay === true,
+                'playback-decision-direct-play-unsupported');
+            addFailure(failures, serverDecision?.transcodingActive === false,
+                'playback-decision-direct-play-transcoding-active');
+            addFailure(failures, serverDecision?.transcodeReasons?.length === 0,
+                'playback-decision-direct-play-transcode-reasons-present');
+            break;
+        case 'DirectStream':
+            addFailure(failures, clientDecision?.supportsDirectStream === true,
+                'playback-decision-direct-stream-unsupported');
+            break;
+        case 'Transcode':
+            addFailure(failures, clientDecision?.supportsTranscoding === true,
+                'playback-decision-transcode-unsupported');
+            addFailure(failures, serverDecision?.transcodingActive === true,
+                'playback-decision-transcode-session-missing');
+            break;
+    }
+    return failures;
+}
+
 /** Returns stable failure codes for an active custom-decoded playback sample pair. */
 export function validateActivePlaybackSnapshot(
     initialSnapshot,
@@ -1522,6 +1598,7 @@ export function validateActivePlaybackSnapshot(
     const expectedOutputMode = expectations.expectedVideoOutputMode;
     const expectedVideoDecoderBackend = expectations.expectedVideoDecoderBackend;
     const expectedAudioPath = expectations.expectedAudioPath;
+    const expectedPlayMethod = expectations.expectedPlayMethod ?? null;
     const expectedPresentationRoute = expectations.expectedPresentationRoute ?? null;
     addFailure(
         failures,
@@ -1536,6 +1613,13 @@ export function validateActivePlaybackSnapshot(
             failures,
             eligibility?.videoDecoderBackend === expectedVideoDecoderBackend,
             'unexpected-video-decoder-backend'
+        );
+    }
+    if (expectedPlayMethod !== null) {
+        addFailure(
+            failures,
+            laterSnapshot.playbackDecision?.playMethod === expectedPlayMethod,
+            'unexpected-play-method'
         );
     }
     const expectedControllerAudioPath = expectedAudioPath === 'native-media' ?

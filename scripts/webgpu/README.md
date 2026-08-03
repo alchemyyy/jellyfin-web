@@ -381,12 +381,13 @@ variables:
 
 ```powershell
 $env:WEBGPU_SMOKE_DEBUG_URL = 'http://localhost:9224'
-$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096'
+$env:WEBGPU_SMOKE_FRONTEND_URL = 'http://localhost:8096/web'
 $env:WEBGPU_SMOKE_SERVER_URL = 'http://localhost:8096'
 $env:WEBGPU_SMOKE_ITEM_ID = '<video-item-id>'
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT = 'video-frame' # or raw-planes
 $env:WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER = 'native' # or bundled-hevc
 $env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'disabled' # ready or native-media
+$env:WEBGPU_SMOKE_EXPECTED_PLAY_METHOD = 'DirectPlay' # DirectStream or Transcode
 $env:WEBGPU_SMOKE_COMPLETION_MODE = 'controlled-stop' # or natural-end
 $env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '3' # optional Jellyfin stream index
 $env:WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC = 'ac-3' # required with stream index
@@ -412,6 +413,16 @@ pipeline rather than inferring intent from the observed telemetry. Use
 `video-frame` with `disabled` for a video-only SDR item, or `raw-planes` with
 `ready` for an HDR item with custom-decoded PCM, or `native-media` for an exact
 owned native-audio route that passed the runtime fixture probe.
+
+Set `WEBGPU_SMOKE_EXPECTED_PLAY_METHOD=DirectPlay` for custom decode acceptance.
+The harness captures the selected method and bounded media-source capability
+booleans from the player, then queries the matching Jellyfin device/item/media
+source session while playback is active. It requires the client and server
+methods to agree. A DirectPlay result additionally requires no active
+`TranscodingInfo` and an empty transcode-reason list. Reports retain no item,
+media-source, device, or stream URL identifiers. The default frontend is the
+normal Jellyfin-served `http://localhost:8096/web` surface; the API remains
+`http://localhost:8096`.
 
 A `raw-planes` result is accepted only when
 `getRawHDRAuthorizationTelemetry()` reports `status: 'authorized'` on the
@@ -689,6 +700,9 @@ The checks require:
 - advancing custom decode and WebGPU presentation telemetry;
 - the explicitly expected `video-frame` or `raw-planes` video path;
 - the explicitly expected `disabled` or `ready` audio path;
+- the explicitly expected Jellyfin play method when configured, with matching
+  bounded client/server session evidence and no transcode state or reasons for
+  DirectPlay;
 - the selected audio decoder generation and codec when an audio stream index is
   supplied;
 - no more than 2 percent audio underflow over an observation window containing

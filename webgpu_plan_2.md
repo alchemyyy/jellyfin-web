@@ -673,7 +673,11 @@ driven by `scripts/webgpu/validation_matrix.py`:
   private overlay without copying paths, item IDs, URLs, or credentials;
 - exact browser-smoke route assertions and live environment evidence for the
   browser, WebGPU adapter, CDP GPU/driver, display HDR state, Jellyfin version,
-  and request-intercepted feature flags.
+  and request-intercepted feature flags;
+- exact browser-smoke Jellyfin play-method assertions backed by both the
+  player-selected stream record and the matching active server session. The
+  bounded evidence includes no private identifiers or URLs, and DirectPlay
+  rejects active transcoding or any transcode reason.
 
 The generated-registry checkpoint matrix passed all 15 fixture hashes and cases,
 50 Python tests, 135 standalone Node tests, 383 focused Vitest tests, and
@@ -691,8 +695,10 @@ runtime-toolchain readiness, and a development build.
 
 Remaining Group B work is populating and executing the generated private
 HDR/color/startup/soak/mpv records, one case-ID failure-injection vocabulary
-across the smoke tools, sanitized server API/log evidence, manual-observation
-ingestion, and pairwise/boundary matrix generation.
+across the smoke tools, sanitized server-log evidence, manual-observation
+ingestion, and pairwise/boundary matrix generation. Bounded active-session API
+evidence is complete; full PlaybackInfo/network and server-log capture remains
+separate because it must redact request profiles, signed URLs, and identifiers.
 
 ### 7.6 Minimum gates
 
@@ -1083,6 +1089,9 @@ Rules that prevent duplicated work:
   saved network, source, container, audio, and video bitrate.
 - [ ] Add a focused PlaybackManager API test for the two-request fallback rule:
   bitrate-free play-method selection followed by transcode-output sizing only.
+- [x] Make every generated live browser case assert the exact player and server
+  play method; DirectPlay fails on active transcoding or any transcode reason,
+  and the report retains no private item/media-source/device identifier or URL.
 - [ ] Prove DirectPlay negotiation for every advertised route on port 8096.
 - [ ] Audit all PlaybackInfo player/decoder/stream labels and transcode reasons.
 - [ ] Constrain audio profile claims to the exact probed variants, especially

@@ -165,7 +165,9 @@ HDR boolean. The catalog distinguishes external PQ/HLG, raw PQ/HLG, external
 Profile 5, raw Profile 5/8, and Profile 7 MEL/FEL/base-fallback dispositions,
 with native and bundled decoder variants where they exist. A Profile 7 worker
 record is accepted only for the FEL route. Optional mpv A/B records use an
-environment-backed capture plan and source.
+environment-backed capture plan and source. Every generated browser check also
+requires exact Jellyfin `DirectPlay`; an active server transcode or nonempty
+transcode-reason list fails the case instead of relying on the case metadata.
 
 Run one generated source matrix or the aggregate matrix with:
 
@@ -243,6 +245,8 @@ file.
         "video-frame",
         "--expected-video-decoder",
         "native",
+        "--expected-play-method",
+        "DirectPlay",
         "--expected-audio",
         "ready"
       ],
@@ -310,6 +314,14 @@ run in one matrix without copying or exposing their IDs. `worker-smoke`,
 `toolchain-probe`, and `mpv-ab` may map declared environment variables to a
 small adapter-specific option whitelist through `environmentArguments`.
 Arbitrary option names are rejected.
+
+Generated browser cases pass the case's `jellyfinPlayMethod` as an exact
+`--expected-play-method` assertion. The adapter records only bounded player and
+matching server-session fields: method, capability booleans, item/media-source
+match booleans, transcode-state booleans, and transcode-reason names. DirectPlay
+fails if either side selects another method, the server exposes active
+transcoding, or any transcode reason remains. Private item/media-source/device
+identifiers and stream URLs are never written.
 
 A successful browser adapter contributes bounded browser product/protocol,
 WebGPU adapter/limit/canvas data, CDP GPU device and driver records, display HDR
