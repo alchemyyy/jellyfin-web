@@ -294,6 +294,18 @@ node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://local
 
 Use a `localhost` target so the page is a secure context.
 
+To inspect the active user's normalization mode and catalog metadata coverage
+through an already authenticated CDP page, run:
+
+```powershell
+node scripts/webgpu/probe-audio-normalization-runtime.mjs
+```
+
+The probe reports only bounded counts and gain extrema grouped as audio, video,
+or other media. It does not return tokens, user/item IDs, names, paths, or URLs.
+This distinguishes a real non-unity normalization case from the ordinary unity
+fallback when Jellyfin provides no gain metadata for a video item.
+
 ## Static HDR metadata state matrix
 
 `generate_static_HDR_validation_fixtures.py` creates four 12-second PQ Main10
@@ -329,6 +341,24 @@ DirectPlay lifecycle cases to report the exact scan state, bounded access-unit
 count, first metadata index, tone-mapping peak, and sanitized server-log
 evidence. `--selector case:<id>` narrows browser execution without weakening
 the four-fixture production-parser preflight.
+
+## Native HEVC Main10 High Tier playback fixture
+
+Generate a compact 12-second 4K24 PQ Main10 High Tier Level 5.1 Matroska/FLAC
+source with exact SPS tier verification and valid 4000-nit static metadata:
+
+```powershell
+python scripts/webgpu/generate_native_HEVC_High_Tier_validation_fixture.py `
+  --overwrite
+python scripts/webgpu/run_native_HEVC_High_Tier_live_validation.py
+```
+
+The generator rejects Main Tier signaling even when FFprobe reports the same
+Level 153. Its path-free live record contains no bitrate field. The wrapper
+matches the generated item only by exact local path, runs the production
+Mediabunny/static-HDR probe, requires native external-HDR DirectPlay plus
+decoded FLAC, captures bounded server logs, and scans result artifacts for
+private values.
 
 ## Owned native AC-3 and E-AC-3 audio
 

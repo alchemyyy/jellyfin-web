@@ -2,3 +2,5 @@
 !.gitignore
 static-HDR-validation-manifest.json
 static-HDR-live-spec.json
+native-HEVC-High-Tier-validation-manifest.json
+native-HEVC-High-Tier-live-spec.json

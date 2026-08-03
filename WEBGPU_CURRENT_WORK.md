@@ -4,18 +4,18 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `792165926cf2edc18cb615375a390cebaa543136`
+Parent checkpoint: `4fc371595a51ec4dc1ada3bc1fad9d978f36ce94`
 
-Checkpoint state: exact generated live assertions for static-HDR scan state and
-tone-mapping peak are committed and pushed. The current worktree adds the
-four-state generated static-HDR matrix, fixes ES5 worker conflict
-classification, and repairs custom audio volume plus user normalization.
+Checkpoint state: the four-state static-HDR matrix, ES5 worker conflict fix,
+custom audio volume repair, and metadata-driven normalization path are committed
+and pushed. The current worktree makes live normalization coverage explicit
+before continuing the broader portable HDR matrix.
 
 ## Current objective
 
-Complete and checkpoint the generated static-HDR negative matrix and custom
-audio control repair without weakening exact-route, resource-ownership, or
-DirectPlay gates, then continue the broader HDR/Dolby Vision matrix.
+Distinguish real non-unity normalization evidence from the unity fallback,
+then add the compact native HEVC Main10 High Tier playback regression required
+by the product checklist without reintroducing bitrate-based selection.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -288,9 +288,27 @@ channel bed.
   native-media audio caps at one because the media element cannot amplify.
   Every custom-audio lifecycle now verifies string volume, cubic gain, mute,
   invariant normalization, and restoration.
+- A sanitized CDP runtime probe now reports the active normalization mode and
+  bounded catalog metadata coverage without retaining account or media
+  identities. The current authenticated video catalog supplies no track or
+  album gain metadata, so those movie sessions correctly use unity. Jellyfin's
+  stock LUFS task covers audio-library items rather than ordinary videos; this
+  path is metadata-driven and is not a movie loudness analyzer.
+- A compact generated 12-second 4K24 PQ Main10 High Tier Level 5.1
+  Matroska/FLAC fixture now verifies the actual SPS high-tier bit, Main10
+  profile, Level 153, progressive signaling, valid 4000-nit static metadata,
+  and a bitrate-free live route record. Its dedicated wrapper resolves the
+  Jellyfin item by exact path and performs the production metadata preflight,
+  private overlay, browser lifecycle, server-log, and privacy checks.
 
 ## Completed checkpoint gates
 
+- The generated native High Tier fixture passed one live lifecycle case and
+  both required checks on Jellyfin 12 nightly and Chrome 151: client/server
+  DirectPlay, native HEVC `VideoFrame`, external HDR, decoded FLAC, valid static
+  metadata at access unit 0 of 16, slider/mute restoration, no transcode log,
+  and no browser failure. Its production Mediabunny/parser preflight also
+  passed before browser execution.
 - The combined static-HDR/audio checkpoint matrix passed all 15 fixture hashes,
   all 15 cases, and all 10 checks: 384 focused codec-contract Vitest tests,
   144 standalone Node tests, 73 Python tests, TypeScript, runtime-toolchain
@@ -375,9 +393,10 @@ channel bed.
    sustain real time.
 4. Compare decoded PCM and representative video frames against FFmpeg/mpv
    references, including long-run A/V drift and queue telemetry.
-5. Run live non-unity TrackGain and AlbumGain cases against HtmlAudioPlayer and
-   mpv. The generated live matrix proves the control path and unity fallback,
-   while focused tests prove metadata precedence and positive gain.
+5. Run non-unity TrackGain and AlbumGain against HtmlAudioPlayer on a generated
+   audio-library fixture. Before claiming the same for WebGPU movie playback,
+   define a legitimate server or client source of video loudness metadata; the
+   stock Jellyfin task does not populate it for ordinary videos.
 6. Keep the intermittent Mediabunny `VideoSample` ownership warning as a
    documented deferred defect. The final checkpoint runs observed zero
    warnings, but that does not prove leak-free soak behavior; do not suppress

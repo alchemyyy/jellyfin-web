@@ -3,7 +3,7 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `792165926cf2edc18cb615375a390cebaa543136`
+- Parent checkpoint: `4fc371595a51ec4dc1ada3bc1fad9d978f36ce94`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, Profile 5 negotiation, and unified
   validation-foundation checkpoints and reviewed-baseline support are committed
@@ -138,6 +138,16 @@ separate follow-up work rather than hidden claims in that checkpoint.
 - Every custom-audio browser lifecycle now changes volume using a slider-shaped
   string, verifies the cubic value and invariant normalization gain, toggles
   mute, and restores the original state.
+- Normalization remains metadata driven. Jellyfin's stock LUFS task populates
+  audio-library items, not ordinary movie/video items; a sanitized live catalog
+  probe confirmed that the current video items expose no track or album gain.
+  Those sessions intentionally use unity and are not evidence of normalized
+  movie loudness.
+- The portable High Tier regression now has a generated 12-second 4K24 PQ
+  Main10 Level 5.1 Matroska/FLAC source. Generation verifies the SPS high-tier
+  bit directly, injects valid 4000-nit static metadata, and emits a path-free,
+  bitrate-free live record. Its Jellyfin 12/Chrome 151 lifecycle passed native
+  external-HDR DirectPlay, decoded FLAC, server-log, volume, and privacy gates.
 
 ### 2.3 Current JPEG 2000 and MPEG-2 slice
 
@@ -1068,9 +1078,9 @@ Rules that prevent duplicated work:
 - [x] Remove source bitrate from custom capability, eligibility, native fallback,
   device-profile, and first-request playback selection. Retain exact decoded
   format, dimensions, level, frame rate, measured throughput, and route evidence.
-- [ ] Add a compact deterministic native HEVC Main10 High Tier fixture so the
-  actual-title evidence has a portable regression counterpart; never infer tier
-  or support from source bitrate.
+- [x] Add a compact generated native HEVC Main10 High Tier fixture so the
+  actual-title evidence has a portable regression counterpart. Verify the SPS
+  tier bit directly and never infer tier or support from source bitrate.
 - [ ] Expose raw 8-bit `I420` through worker negotiation, capability,
   presentation authorization, telemetry, and reusable buffer pools.
 - [x] Keep MPEG-2 interlacing and deinterlacing out of scope; reject interlaced
@@ -1166,8 +1176,10 @@ Rules that prevent duplicated work:
   LFE policy, and arbitrary decode/resampler chunk boundaries.
 - [ ] Add any remaining codec-specific layouts and extend the FFmpeg/mpv
   reference downmix/loudness corpus beyond the qualified DTS 7.1 route.
-- [ ] Run non-unity TrackGain and AlbumGain live-title A/B cases and quantify
-  clipping/loudness against HtmlAudioPlayer and mpv.
+- [ ] Run non-unity TrackGain and AlbumGain A/B cases against HtmlAudioPlayer on
+  a generated audio-library fixture. For WebGPU movie playback, first define a
+  legitimate video loudness-metadata or client-analysis policy; do not inject
+  fabricated gains and call that product coverage.
 - [x] Pin and reproduce the bounded LGPL libdcadec WebAssembly module with source,
   license, revision, exact-output fixtures, and runtime throughput probe.
 - [x] Wire MKV `A_DTS` packets through one owned decoder context, the shared

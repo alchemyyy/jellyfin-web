@@ -286,6 +286,12 @@ non-finite sample telemetry. The owned native-media AC-3/E-AC-3 route applies
 the same multiplier but caps the final value at one because
 `HTMLMediaElement.volume` cannot amplify above unity.
 
+This is metadata-driven normalization, not a client loudness analyzer.
+Jellyfin's stock normalization task populates LUFS/ReplayGain for audio-library
+items, not ordinary movie/video items. A video session whose playback options
+contain neither track nor album gain therefore uses unity regardless of the
+selected mode. Do not interpret that unity fallback as normalized movie audio.
+
 The browser lifecycle harness sets volume with a slider-shaped string, requires
 the exact cubic controller value, verifies mute, requires the normalization
 gain to remain unchanged throughout, and restores the original state. A
