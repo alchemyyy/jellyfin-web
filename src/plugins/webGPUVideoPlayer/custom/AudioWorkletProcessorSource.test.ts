@@ -235,9 +235,9 @@ describe('AudioWorkletProcessorSource', () => {
                 telemetryIntervalFrames: 2
             }
         } ]) as ProcessorHarness;
-        processor.port.deliver({ muted: false, type: 'gain', volume: 0.25 });
+        processor.port.deliver({ muted: false, type: 'gain', volume: 2 });
         processor.port.deliver({
-            channelData: [ new Float32Array([ 2, -2 ]) ],
+            channelData: [ new Float32Array([ 0.25, -0.25 ]) ],
             generation: 1,
             sequence: 1,
             timestampMicroseconds: 0,

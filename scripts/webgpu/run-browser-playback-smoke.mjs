@@ -79,6 +79,8 @@ const RETENTION_FINALIZER_DRAIN_MILLISECONDS = 100;
 const MAXIMUM_CLEAN_STOP_DURATION_MICROSECONDS = 900_000;
 const STARTUP_MILESTONE_POLL_MILLISECONDS = 10;
 const BROWSER_VISIBILITY_RESTORE_MILLISECONDS = 250;
+const VOLUME_EXERCISE_JELLYFIN_LEVEL = 37;
+const VOLUME_EXERCISE_TOLERANCE = 1e-9;
 const STARTUP_RESULT_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
 const RETENTION_PERFORMANCE_RESOURCE_METRICS = Object.freeze([
     Object.freeze({ code: 'array-buffer-contents', name: 'ArrayBufferContents' }),
@@ -1360,6 +1362,9 @@ function createPlayerSnapshotExpression(accessKey) {
                     underflowFrames: custom.audioOutput.underflowFrames
                 } : null,
                 audioPath: custom.audioPath,
+                jellyfinVolume: typeof player.getVolume === 'function'
+                    ? player.getVolume()
+                    : null,
                 jellyfinAudioStreamIndex:
                     player.getCustomPlaybackSelectedAudioStreamIndex?.() ?? null,
                 currentTimeMicroseconds: custom.currentTimeMicroseconds,
@@ -1368,8 +1373,11 @@ function createPlayerSnapshotExpression(accessKey) {
                 fallbackReason: custom.fallbackReason,
                 hasLastError: typeof custom.lastErrorMessage === 'string'
                     && custom.lastErrorMessage.length > 0,
+                muted: custom.muted,
+                normalizationGain: custom.normalizationGain,
                 staleEventCount: custom.staleEventCount,
                 state: custom.state,
+                volume: custom.volume,
                 videoDecode: custom.videoDecode ? {
                     abandonedRawFrameCount: custom.videoDecode.abandonedRawFrameCount,
                     activeGeneration: custom.videoDecode.activeGeneration,
@@ -1638,6 +1646,120 @@ function createPlayerOperationExpression(accessKey, operation) {
 
 async function getPlayerSnapshot(client, accessKey) {
     return evaluateValue(client, createPlayerSnapshotExpression(accessKey));
+}
+
+async function runVolumeExercise(client, accessKey, configuration, initialSnapshot) {
+    if (initialSnapshot?.customPlayback?.audioPath === 'disabled') {
+        return { status: 'not-applicable' };
+    }
+    const initialCustomPlayback = initialSnapshot?.customPlayback;
+    if (!Number.isFinite(initialCustomPlayback?.jellyfinVolume)
+        || !Number.isFinite(initialCustomPlayback?.volume)
+        || !Number.isFinite(initialCustomPlayback?.normalizationGain)
+        || typeof initialCustomPlayback?.muted !== 'boolean') {
+        throw new SmokeHarnessError(
+            'volume-state-missing',
+            'Custom audio volume telemetry was unavailable'
+        );
+    }
+
+    const targetLinearVolume = (VOLUME_EXERCISE_JELLYFIN_LEVEL / 100) ** 3;
+    const initialNormalizationGain = initialCustomPlayback.normalizationGain;
+    const volumeResult = await evaluateValue(
+        client,
+        createPlayerOperationExpression(
+            accessKey,
+            `player.setVolume(${JSON.stringify(String(VOLUME_EXERCISE_JELLYFIN_LEVEL))});`
+        )
+    );
+    if (!volumeResult) {
+        throw new SmokeHarnessError(
+            'volume-set-failed',
+            'Unable to set custom playback volume from a slider-shaped string'
+        );
+    }
+    const volumeSnapshot = await waitForPlayerSnapshot({
+        accept: snapshot => Number.isFinite(snapshot?.customPlayback?.volume)
+            && Math.abs(snapshot.customPlayback.volume - targetLinearVolume)
+                <= VOLUME_EXERCISE_TOLERANCE
+            && snapshot.customPlayback.jellyfinVolume === VOLUME_EXERCISE_JELLYFIN_LEVEL
+            && snapshot.customPlayback.normalizationGain === initialNormalizationGain,
+        accessKey,
+        client,
+        description: 'the custom audio slider volume update',
+        errorCode: 'volume-update-timeout',
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+
+    const muteResult = await evaluateValue(
+        client,
+        createPlayerOperationExpression(accessKey, 'player.setMute(true);')
+    );
+    if (!muteResult) {
+        throw new SmokeHarnessError('mute-set-failed', 'Unable to mute custom playback');
+    }
+    const mutedSnapshot = await waitForPlayerSnapshot({
+        accept: snapshot => snapshot?.customPlayback?.muted === true
+            && snapshot.customPlayback.normalizationGain === initialNormalizationGain,
+        accessKey,
+        client,
+        description: 'the custom audio muted state',
+        errorCode: 'mute-update-timeout',
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+
+    const restoreResult = await evaluateValue(
+        client,
+        createPlayerOperationExpression(
+            accessKey,
+            `player.setVolume(${JSON.stringify(String(initialCustomPlayback.jellyfinVolume))});
+            player.setMute(${JSON.stringify(initialCustomPlayback.muted)});`
+        )
+    );
+    if (!restoreResult) {
+        throw new SmokeHarnessError(
+            'volume-restore-failed',
+            'Unable to restore custom playback volume and mute state'
+        );
+    }
+    const restoredSnapshot = await waitForPlayerSnapshot({
+        accept: snapshot => Number.isFinite(snapshot?.customPlayback?.volume)
+            && Math.abs(snapshot.customPlayback.volume - initialCustomPlayback.volume)
+                <= VOLUME_EXERCISE_TOLERANCE
+            && snapshot.customPlayback.jellyfinVolume
+                === initialCustomPlayback.jellyfinVolume
+            && snapshot.customPlayback.muted === initialCustomPlayback.muted
+            && snapshot.customPlayback.normalizationGain === initialNormalizationGain,
+        accessKey,
+        client,
+        description: 'the restored custom audio volume state',
+        errorCode: 'volume-restore-timeout',
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+    return {
+        initial: {
+            jellyfinVolume: initialCustomPlayback.jellyfinVolume,
+            muted: initialCustomPlayback.muted,
+            normalizationGain: initialNormalizationGain,
+            volume: initialCustomPlayback.volume
+        },
+        muted: {
+            muted: mutedSnapshot.customPlayback.muted,
+            normalizationGain: mutedSnapshot.customPlayback.normalizationGain
+        },
+        restored: {
+            jellyfinVolume: restoredSnapshot.customPlayback.jellyfinVolume,
+            muted: restoredSnapshot.customPlayback.muted,
+            normalizationGain: restoredSnapshot.customPlayback.normalizationGain,
+            volume: restoredSnapshot.customPlayback.volume
+        },
+        status: 'passed',
+        target: {
+            jellyfinVolume: volumeSnapshot.customPlayback.jellyfinVolume,
+            normalizationGain: volumeSnapshot.customPlayback.normalizationGain,
+            volume: volumeSnapshot.customPlayback.volume
+        }
+    };
 }
 
 function createPlaybackDecisionExpression(accessKey, expectedItemID) {
@@ -4583,7 +4705,13 @@ async function runPlaybackExercise(
             configuration,
             failures
         }, audioSwitchSnapshot ?? activeLater);
-        const beforePauseSnapshot = surfaceObservation.latestSnapshot;
+        const volumeObservation = await runVolumeExercise(
+            client,
+            accessKey,
+            configuration,
+            surfaceObservation.latestSnapshot
+        );
+        const beforePauseSnapshot = await getPlayerSnapshot(client, accessKey);
 
         const pauseResult = await evaluateValue(
             client,
@@ -4812,7 +4940,8 @@ async function runPlaybackExercise(
                 },
                 seekStorm: seekStormResult.observation,
                 stop: latestStopSnapshot,
-                surface: surfaceObservation
+                surface: surfaceObservation,
+                volume: volumeObservation
             }
         };
     } finally {

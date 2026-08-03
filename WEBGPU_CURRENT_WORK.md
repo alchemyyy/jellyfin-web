@@ -4,18 +4,18 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `64671c6813850ad149d1a31612f67dd4d654ada8`
+Parent checkpoint: `792165926cf2edc18cb615375a390cebaa543136`
 
-Checkpoint state: real-title Profile 5 negotiation and the bounded
-multi-access-unit HEVC static-HDR scan are committed and pushed. Exact generated
-live assertions for scan state and tone-mapping peak are implemented and
-live-validated in the current worktree.
+Checkpoint state: exact generated live assertions for static-HDR scan state and
+tone-mapping peak are committed and pushed. The current worktree adds the
+four-state generated static-HDR matrix, fixes ES5 worker conflict
+classification, and repairs custom audio volume plus user normalization.
 
 ## Current objective
 
-Expand the HDR/Dolby Vision golden and live-title matrix, starting with live
-missing, malformed, and conflicting static-metadata sources, without weakening
-the existing exact-route, resource-ownership, or DirectPlay gates.
+Complete and checkpoint the generated static-HDR negative matrix and custom
+audio control repair without weakening exact-route, resource-ownership, or
+DirectPlay gates, then continue the broader HDR/Dolby Vision matrix.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -244,17 +244,18 @@ channel bed.
   contained clipping or non-finite samples.
 - External Profile 5 authorization fixture version 2 now bounds browser-recovered
   10-bit base signals separately from output shader parity. Chrome 151 authorized
-  the exact route with maximum normalized input error 0.00497875 and maximum
-  output error 0.00267303; the output tolerance remains 8/255.
+  the renderer-settings-version-6 route with maximum normalized input error
+  0.00497875 and maximum output error 0.00253959; the output tolerance remains
+  8/255.
 - The mpv A/B browser capture now reuses the shared runtime-config interceptor,
   so disabled source flags are enabled only in the capture request. Frontend
   asset resolution is stable with or without a trailing `/web/` separator.
 - Ordinary browser smoke now uses the same request-scoped interceptor instead
   of depending on locally enabled `dist/config.json` flags. A live high-tier
   HDR10 custom DirectPlay smoke on Chrome 151 passed with active external PQ
-  and the prewarmed Profile 5 fixture version 2. The Profile 5 maximum
-  normalized input and output errors were 0.00497875 and 0.00267303
-  respectively, with no fallback or browser error.
+  and the prewarmed Profile 5 fixture version 2, with no fallback or browser
+  error. The later four-state static-HDR live matrix retained the current
+  version-6 Profile 5 authorization values recorded above.
 - Failure diagnostics now retain only profile entries matching the active
   container and video/audio codecs plus bounded playback-decision fields. The
   Profile 5 negotiation fix keeps a non-blocking shared compatibility envelope
@@ -273,9 +274,35 @@ channel bed.
   repeats the same assertions while retaining the values as evidence. The live
   High Tier HDR10 lifecycle and paired startup selectors passed with `valid`,
   access unit 0 of 16, and 4000 nits.
+- A deterministic generator now creates 12-second PQ Main10/FLAC Matroska
+  fixtures for `absent`, `malformed`, `conflicting`, and valid 4000-nit static
+  metadata. The live wrapper verifies byte identities, exact Jellyfin paths,
+  the production Mediabunny/TypeScript parser, private-value sanitization, and
+  all browser/server DirectPlay contracts. TypeScript's ES5 transform initially
+  erased the conflict error prototype in the worker; explicitly restoring it
+  fixed the emitted bundle without weakening generic malformed detection.
+- `WebGPUPlayer` now accepts the slider's numeric string, validates and forwards
+  a numeric 0-100 value, and applies Jellyfin's cubic gain to custom output.
+  Track/album/off normalization follows `HtmlAudioPlayer` precedence and stays
+  independent from volume and mute. Decoded PCM permits gain above unity;
+  native-media audio caps at one because the media element cannot amplify.
+  Every custom-audio lifecycle now verifies string volume, cubic gain, mute,
+  invariant normalization, and restoration.
 
 ## Completed checkpoint gates
 
+- The combined static-HDR/audio checkpoint matrix passed all 15 fixture hashes,
+  all 15 cases, and all 10 checks: 384 focused codec-contract Vitest tests,
+  144 standalone Node tests, 73 Python tests, TypeScript, runtime-toolchain
+  readiness, DTS/downmix/registry freshness, and a development build. The full
+  WebGPU player suite independently passed 1,445 tests across 103 files;
+  changed-file ESLint and the codec artifact verifier also passed.
+- The combined four-state static-HDR and audio-control live run passed four
+  fixtures, four lifecycle cases, five checks, and four production-parser
+  preflights on Jellyfin 12 nightly and Chrome 151. Every case recorded exact
+  DirectPlay, static scan/peak state, a slider-string transition to level 37,
+  the corresponding cubic gain, mute, unity normalization for the generated
+  source, exact restoration, sanitized server logs, and no browser failure.
 - The static-HDR live-contract worktree passed all 15 canonical fixture hashes
   and cases plus all 10 checks: 384 focused codec-contract Vitest tests, 144
   standalone Node tests, 60 Python tests, TypeScript, runtime-toolchain
@@ -348,12 +375,15 @@ channel bed.
    sustain real time.
 4. Compare decoded PCM and representative video frames against FFmpeg/mpv
    references, including long-run A/V drift and queue telemetry.
-5. Keep the intermittent Mediabunny `VideoSample` ownership warning as a
+5. Run live non-unity TrackGain and AlbumGain cases against HtmlAudioPlayer and
+   mpv. The generated live matrix proves the control path and unity fallback,
+   while focused tests prove metadata precedence and positive gain.
+6. Keep the intermittent Mediabunny `VideoSample` ownership warning as a
    documented deferred defect. The final checkpoint runs observed zero
    warnings, but that does not prove leak-free soak behavior; do not suppress
    its console assertion or make a leak-free claim until the ownership boundary
    is fixed and retention evidence passes.
-6. Keep all WebGPU feature flags disabled in source until the supported browser,
+7. Keep all WebGPU feature flags disabled in source until the supported browser,
    GPU, output, and server matrix is complete.
 
 ## Navigation
@@ -367,5 +397,5 @@ channel bed.
 - `scripts/webgpu/validation/README.md`: shared matrices, schemas, selectors,
   reports, and private live-case overlays
 
-No validation command is running. The current local production bundle remains
+No validation command is running. The current local development bundle remains
 available through the Jellyfin 12 nightly server on port 8096.

@@ -153,6 +153,7 @@ export type CustomPlaybackTelemetry = {
     fallbackReason: CustomPlaybackFallbackReason | null
     lastErrorMessage: string | null
     muted: boolean
+    normalizationGain: number
     playCount: number
     staleEventCount: number
     startupDurationMicroseconds: Microseconds | null

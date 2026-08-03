@@ -204,7 +204,14 @@ describe('AudioWorkletController', () => {
             { muted: false, type: 'gain', volume: 0.25 },
             { muted: true, type: 'gain', volume: 0.25 }
         ]);
-        expect(() => controller.setVolume(1.1)).toThrow(RangeError);
+        controller.setVolume(2);
+        expect(harness.port.messages.at(-1)?.message).toEqual({
+            muted: true,
+            type: 'gain',
+            volume: 2
+        });
+        expect(() => controller.setVolume(-0.1)).toThrow(RangeError);
+        expect(() => controller.setVolume(Number.NaN)).toThrow(RangeError);
     });
 
     it('forwards trusted telemetry and supports deterministic unsubscribe', () => {

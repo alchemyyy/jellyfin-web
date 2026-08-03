@@ -358,6 +358,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private readonly monotonicTimeSource: () => Microseconds;
     private readonly maximumVideoDecodeLagMicroseconds: Microseconds;
     private muted = false;
+    private normalizationGain = 1;
     private readonly nativeAudioBridgeFactory: CustomDecodeNativeAudioBridgeFactory | null;
     private nativeAudioClockGeneration: number | null = null;
     private nativeAudioClockTimeMicroseconds: Microseconds | null = null;
@@ -578,8 +579,18 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         }
 
         this.volume = volume;
-        this.audioOutput?.setVolume(volume);
-        this.videoDecodeSession.setNativeAudioVolume?.(volume);
+        this.applyOutputGain();
+    }
+
+    /** Sets the session normalization multiplier independently of the user volume. */
+    public setNormalizationGain(normalizationGain: number): void {
+        this.requireUsable();
+        if (!Number.isFinite(normalizationGain) || normalizationGain < 0) {
+            throw new RangeError('Audio normalization gain must be finite and non-negative');
+        }
+
+        this.normalizationGain = normalizationGain;
+        this.applyOutputGain();
     }
 
     public setMuted(muted: boolean): void {
@@ -779,6 +790,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             fallbackReason: this.fallbackReason,
             lastErrorMessage: this.lastErrorMessage,
             muted: this.muted,
+            normalizationGain: this.normalizationGain,
             playCount: this.playCount,
             staleEventCount: this.staleEventCount,
             startupDurationMicroseconds: this.startupDurationMicroseconds,
@@ -1017,7 +1029,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
 
         this.audioPath = event.audio ? 'ready' : 'disabled';
         if (this.currentSource?.audioOutputMode === 'native-media') {
-            this.videoDecodeSession.setNativeAudioVolume?.(this.volume);
+            this.videoDecodeSession.setNativeAudioVolume?.(this.getNativeOutputGain());
             this.videoDecodeSession.setNativeAudioMuted?.(this.muted);
         }
         this.pendingStartup.mediaReady = true;
@@ -1546,7 +1558,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             await this.destroyAudioOutput(previousAudioOutput);
         }
         try {
-            binding.output.setVolume(this.volume);
+            binding.output.setVolume(this.getOutputGain());
             binding.output.setMuted(this.muted);
             await this.waitBounded(
                 Promise.resolve(binding.output.setPlaying(false)),
@@ -1625,6 +1637,19 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             }
         }
         return Promise.all(operations).then((): void => undefined);
+    }
+
+    private applyOutputGain(): void {
+        this.audioOutput?.setVolume(this.getOutputGain());
+        this.videoDecodeSession.setNativeAudioVolume?.(this.getNativeOutputGain());
+    }
+
+    private getOutputGain(): number {
+        return this.volume * this.normalizationGain;
+    }
+
+    private getNativeOutputGain(): number {
+        return Math.min(this.getOutputGain(), 1);
     }
 
     private handleActiveAudioTelemetry(

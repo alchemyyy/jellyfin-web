@@ -47,6 +47,7 @@ import {
     type CustomDecodeCapabilities,
     probeCustomDecodeCapabilities
 } from './custom/CustomDecodeCapabilities';
+import { getAudioNormalizationLinearGain } from './custom/AudioNormalization';
 import type CustomPlaybackController from './custom/CustomPlaybackController';
 import type {
     CustomAudioOutputFactory,
@@ -1085,12 +1086,13 @@ export default class WebGPUPlayer {
         this.htmlDelegate.player.setAudioStreamIndex(index);
     }
 
-    setVolume(value: number): void {
-        this.customPlaybackVolume = this.requireJellyfinVolume(value);
-        this.htmlDelegate.player.setVolume(value);
+    setVolume(value: number | string): void {
+        const jellyfinVolume = this.requireJellyfinVolume(value);
+        this.customPlaybackVolume = jellyfinVolume;
+        this.htmlDelegate.player.setVolume(jellyfinVolume);
         const customPlaybackController = this.getActiveCustomPlaybackController();
         if (customPlaybackController) {
-            customPlaybackController.setVolume(this.getLinearVolume(value));
+            customPlaybackController.setVolume(this.getLinearVolume(jellyfinVolume));
         }
     }
 
@@ -1868,7 +1870,12 @@ export default class WebGPUPlayer {
 
         let completedStartResult: CustomPlaybackStartResult | null = null;
         try {
-            const [ controllerModule, audioOutputModule, nativeAudioBridgeModule ] = await Promise.all([
+            const [
+                controllerModule,
+                audioOutputModule,
+                nativeAudioBridgeModule,
+                userSettingsModule
+            ] = await Promise.all([
                 import(
                     /* webpackChunkName: "webgpu-custom-playback" */
                     './custom/CustomPlaybackController'
@@ -1880,6 +1887,10 @@ export default class WebGPUPlayer {
                 import(
                     /* webpackChunkName: "webgpu-custom-playback" */
                     './custom/CustomDecodeNativeAudioBridge'
+                ),
+                import(
+                    /* webpackChunkName: "webgpu-custom-playback" */
+                    'scripts/settings/userSettings'
                 )
             ]);
             if (!this.isCustomPlaybackSetupCurrent(backendGeneration, setupRevision)) {
@@ -1944,7 +1955,11 @@ export default class WebGPUPlayer {
             this.customPlaybackBackendGeneration = backendGeneration;
             this.customPlaybackFrameGeneration = presentationGeneration;
             this.customPlaybackEmitUnpause = true;
-            this.initializeCustomPlaybackGain(customPlaybackController);
+            this.initializeCustomPlaybackGain(
+                customPlaybackController,
+                options,
+                userSettingsModule.selectAudioNormalization(undefined)
+            );
 
             const startResult = await customPlaybackController.play({
                 audioOutputMode: eligibility.audioOutputMode ?? undefined,
@@ -2175,7 +2190,9 @@ export default class WebGPUPlayer {
     }
 
     private initializeCustomPlaybackGain(
-        customPlaybackController: CustomPlaybackController
+        customPlaybackController: CustomPlaybackController,
+        playbackOptions: unknown,
+        audioNormalizationMode: unknown
     ): void {
         const backendVolume = this.htmlDelegate.player.getVolume();
         if (typeof backendVolume === 'number'
@@ -2185,6 +2202,12 @@ export default class WebGPUPlayer {
             this.customPlaybackVolume = backendVolume;
         }
         this.customPlaybackMuted = this.htmlDelegate.player.isMuted();
+        customPlaybackController.setNormalizationGain(
+            getAudioNormalizationLinearGain(
+                playbackOptions,
+                audioNormalizationMode
+            )
+        );
         customPlaybackController.setVolume(this.getLinearVolume(this.customPlaybackVolume));
         customPlaybackController.setMuted(this.customPlaybackMuted);
     }
@@ -2742,13 +2765,17 @@ export default class WebGPUPlayer {
         return this.htmlDelegate.player as unknown as HTMLCustomPlaybackContract;
     }
 
-    private requireJellyfinVolume(value: number): number {
-        if (!Number.isFinite(value)
-            || value < MIN_JELLYFIN_VOLUME
-            || value > MAX_JELLYFIN_VOLUME) {
+    private requireJellyfinVolume(value: unknown): number {
+        const numericValue = typeof value === 'string' && value.trim() !== '' ?
+            Number(value) :
+            value;
+        if (typeof numericValue !== 'number'
+            || !Number.isFinite(numericValue)
+            || numericValue < MIN_JELLYFIN_VOLUME
+            || numericValue > MAX_JELLYFIN_VOLUME) {
             throw new RangeError('Playback volume must be between zero and one hundred');
         }
-        return value;
+        return numericValue;
     }
 
     private getLinearVolume(value: number): number {

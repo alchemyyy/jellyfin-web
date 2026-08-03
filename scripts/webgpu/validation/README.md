@@ -179,6 +179,21 @@ player intentionally leaves native HDR media on the browser-managed surface.
 Every applicable mode still receives one warmup plus the configured measured
 sample count.
 
+For the generated ordinary-PQ negative matrix, use the specialized wrapper
+rather than manually resolving four item IDs:
+
+```powershell
+python scripts/webgpu/generate_static_HDR_validation_fixtures.py --overwrite
+python scripts/webgpu/run_static_HDR_live_validation.py
+```
+
+The wrapper verifies the ignored identity manifest, matches Jellyfin items by
+exact local path, executes the production Mediabunny/HEVC scanner against all
+four files, generates the private overlay, runs `private-live`, and scans every
+result artifact for retained credentials, identifiers, or machine paths. Its
+four expected states are `absent`, `malformed`, `conflicting`, and `valid`; only
+the valid state retains metadata and selects its declared 4000-nit peak.
+
 Run one generated source matrix or the aggregate matrix with:
 
 ```powershell

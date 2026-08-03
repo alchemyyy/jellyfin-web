@@ -48,6 +48,9 @@ const webSettingsMockState = vi.hoisted(() => ({
     customDecodeEnabledPromises: [] as Array<Promise<boolean>>,
     hdrToneMappingEnabled: false
 }));
+const userSettingsMockState = vi.hoisted(() => ({
+    audioNormalizationMode: 'TrackGain'
+}));
 const customDecodeMockState = vi.hoisted(() => ({
     audioEligibilityOverride: null as ((
         options: unknown,
@@ -111,6 +114,10 @@ vi.mock('scripts/settings/webSettings', () => ({
         webSettingsMockState.hdrToneMappingEnabled
     )),
     isWebGPUCustomDecodeEnabled: vi.fn(() => webSettingsMockState.customDecodeEnabled)
+}));
+
+vi.mock('scripts/settings/userSettings', () => ({
+    selectAudioNormalization: vi.fn(() => userSettingsMockState.audioNormalizationMode)
 }));
 
 vi.mock('./custom/CustomPlaybackEligibility', () => ({
@@ -366,6 +373,7 @@ vi.mock('./custom/CustomPlaybackController', () => {
         setVolume = vi.fn((volume: number) => {
             this.playbackVolume = volume;
         });
+        setNormalizationGain = vi.fn();
         setMuted = vi.fn((muted: boolean) => {
             this.isMuted = muted;
         });
@@ -784,6 +792,7 @@ type MockCustomPlaybackController = {
     canSetAudioStreamIndex: MockFunction
     setAudioStreamIndex: MockFunction
     setVolume: MockFunction
+    setNormalizationGain: MockFunction
     setMuted: MockFunction
     setPlaybackRate: MockFunction
     currentTimeMicroseconds: number
@@ -1090,6 +1099,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.customDecodeEnabled = false;
         webSettingsMockState.customDecodeEnabledPromises.length = 0;
         webSettingsMockState.hdrToneMappingEnabled = false;
+        userSettingsMockState.audioNormalizationMode = 'TrackGain';
         customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.dolbyVision = false;
@@ -2691,7 +2701,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         });
         player.pause();
         player.resume();
-        player.setVolume(80);
+        player.setVolume('80');
         player.setMute(true);
         customDecodeMockState.audioTrackIndex = 1;
         player.setAudioStreamIndex(3);
@@ -2712,7 +2722,9 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.resume).toHaveBeenCalledOnce();
         const lastVolume = customPlaybackController.setVolume.mock.calls.at(-1)?.[0];
         expect(lastVolume).toBeCloseTo(0.512);
+        expect(customPlaybackController.setNormalizationGain).toHaveBeenLastCalledWith(1);
         expect(customPlaybackController.setMuted).toHaveBeenLastCalledWith(true);
+        expect(backend.setVolume).toHaveBeenLastCalledWith(80);
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
             1,
             'decoded-pcm'
@@ -2720,6 +2732,40 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.notifyCustomPlaybackVolumeChange).not.toHaveBeenCalled();
         expect(player.getVolume()).toBe(80);
         expect(player.isMuted()).toBe(true);
+    });
+
+    it('rejects empty, nonnumeric, and out-of-range volume values', () => {
+        const player = new WebGPUPlayer();
+
+        expect(() => player.setVolume('')).toThrow(RangeError);
+        expect(() => player.setVolume('not-a-volume')).toThrow(RangeError);
+        expect(() => player.setVolume(-1)).toThrow(RangeError);
+        expect(() => player.setVolume(101)).toThrow(RangeError);
+    });
+
+    it('applies the selected Jellyfin normalization gain independently of slider volume', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        const options = createKnownSDRAudioPlayOptions();
+        const mediaSource = options.mediaSource as Record<string, unknown>;
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        options.item = { NormalizationGain: 20 * Math.log10(2) };
+        mediaSource.albumNormalizationGain = 20 * Math.log10(0.5);
+        userSettingsMockState.audioNormalizationMode = 'AlbumGain';
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+
+        await player.play(options);
+
+        const customPlaybackController = getCustomPlaybackController();
+        expect(customPlaybackController.setNormalizationGain).toHaveBeenCalledOnce();
+        expect(customPlaybackController.setNormalizationGain.mock.calls[0]?.[0])
+            .toBeCloseTo(0.5);
+        expect(customPlaybackController.setVolume).toHaveBeenCalledWith(0.125);
     });
 
     it('makes overlapping custom audio selections strictly last-write-wins', async () => {

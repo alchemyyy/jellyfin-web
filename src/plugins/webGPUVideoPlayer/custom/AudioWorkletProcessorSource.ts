@@ -159,7 +159,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 
     setGain(volume, muted) {
-        if (Number.isFinite(volume) && volume >= 0 && volume <= 1) {
+        if (Number.isFinite(volume) && volume >= 0) {
             this.volume = volume;
         }
         this.muted = muted === true;

@@ -581,10 +581,14 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.currentTimeMicroseconds).toBe(7_250_000);
 
         harness.controller.setVolume(0.25);
+        harness.controller.setNormalizationGain(2);
         harness.controller.setMuted(true);
         expect(harness.controller.setPlaybackRate(1)).toBe(true);
-        expect(harness.audioOutput?.setVolume).toHaveBeenLastCalledWith(0.25);
+        expect(harness.audioOutput?.setVolume).toHaveBeenLastCalledWith(0.5);
         expect(harness.audioOutput?.setMuted).toHaveBeenLastCalledWith(true);
+        expect(() => harness.controller.setNormalizationGain(-1)).toThrow(RangeError);
+        expect(() => harness.controller.setNormalizationGain(Number.POSITIVE_INFINITY))
+            .toThrow(RangeError);
         if (!harness.audioOutput) {
             throw new Error('Expected an audio output');
         }
@@ -594,6 +598,7 @@ describe('CustomPlaybackController', () => {
             currentTimeMicroseconds: 7_250_000,
             durationMicroseconds: 120_000_000,
             muted: true,
+            normalizationGain: 2,
             state: 'playing',
             volume: 0.25
         });
@@ -661,12 +666,17 @@ describe('CustomPlaybackController', () => {
         harness.setMonotonicTime(secondsToMicroseconds(10.5));
         expect(harness.controller.currentTimeMicroseconds).toBe(6_000_000);
 
+        harness.controller.setNormalizationGain(2);
         harness.controller.setVolume(0.4);
         harness.controller.setMuted(true);
         expect(harness.videoDecodeSession.setNativeAudioVolume)
-            .toHaveBeenLastCalledWith(0.4);
+            .toHaveBeenLastCalledWith(0.8);
         expect(harness.videoDecodeSession.setNativeAudioMuted)
             .toHaveBeenLastCalledWith(true);
+
+        harness.controller.setNormalizationGain(4);
+        expect(harness.videoDecodeSession.setNativeAudioVolume)
+            .toHaveBeenLastCalledWith(1);
 
         harness.controller.pause();
         expect(harness.videoDecodeSession.setNativeAudioPlaying)

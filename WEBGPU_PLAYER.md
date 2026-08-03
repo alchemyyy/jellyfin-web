@@ -270,6 +270,28 @@ selected HEVC BL PID to one exposed EL PID, including the fixed HDMV BL/EL PID
 pair. It must produce a PTS-matched EL frame and the exact FEL GPU route must be
 authorized. Otherwise the same BL session continues through the base route.
 
+## Custom audio volume and normalization
+
+The Jellyfin volume UI supplies its range value as a numeric string. The
+wrapper accepts either that runtime string or a number, validates the inclusive
+0 through 100 player range, forwards a number to the owned HTML backend, and
+applies Jellyfin's existing cubic slider curve to custom audio. Volume and mute
+remain session controls; neither changes the selected normalization multiplier.
+
+At custom-session startup, `TrackGain`, `AlbumGain`, and `Off` use the same
+metadata precedence as `HtmlAudioPlayer`. A finite decibel value becomes a
+linear gain. Decoded PCM applies the combined slider and normalization gain in
+the AudioWorklet, including values above unity, while retaining clipping and
+non-finite sample telemetry. The owned native-media AC-3/E-AC-3 route applies
+the same multiplier but caps the final value at one because
+`HTMLMediaElement.volume` cannot amplify above unity.
+
+The browser lifecycle harness sets volume with a slider-shaped string, requires
+the exact cubic controller value, verifies mute, requires the normalization
+gain to remain unchanged throughout, and restores the original state. A
+non-unity live-title track/album-gain A/B remains part of the broader audio
+release matrix.
+
 ## Bundled codec licensing and distribution
 
 ### HEVC

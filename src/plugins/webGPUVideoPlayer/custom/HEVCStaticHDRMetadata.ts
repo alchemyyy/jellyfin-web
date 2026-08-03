@@ -32,6 +32,8 @@ const STATIC_HDR_METADATA_PROPERTIES: readonly (keyof StaticHDRMetadata)[] = [
 class HEVCStaticHDRMetadataConflictError extends TypeError {
     public constructor() {
         super('The HEVC access units contain conflicting static HDR metadata');
+        // TypeScript's ES5 transform does not preserve built-in Error prototypes
+        Object.setPrototypeOf(this, HEVCStaticHDRMetadataConflictError.prototype);
         this.name = 'HEVCStaticHDRMetadataConflictError';
     }
 }

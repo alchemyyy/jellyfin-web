@@ -1,2 +1,4 @@
 *.mkv
 !.gitignore
+static-HDR-validation-manifest.json
+static-HDR-live-spec.json

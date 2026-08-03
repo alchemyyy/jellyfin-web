@@ -3,14 +3,15 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `64671c6813850ad149d1a31612f67dd4d654ada8`
+- Parent checkpoint: `792165926cf2edc18cb615375a390cebaa543136`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, Profile 5 negotiation, and unified
   validation-foundation checkpoints and reviewed-baseline support are committed
-  and pushed. The bounded static-HDR-prefix checkpoint is committed and passed
-  its focused, canonical, live lifecycle, and startup gates. The current
-  worktree adds source-bound live assertions for the exact scan status and
-  tone-mapping peak. Generator-owned fixture-registry integration is active.
+  and pushed. The exact static-HDR live-contract checkpoint is committed and
+  passed its focused, canonical, lifecycle, and startup gates. The current
+  worktree adds the generated four-state negative matrix, fixes ES5 conflict
+  classification, and repairs custom audio volume and normalization controls.
+  Generator-owned fixture-registry integration is active.
   Per-tuple real-media qualification and long-run resource validation remain
   before a general rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
@@ -124,6 +125,20 @@ documentation reconciliation, commit, and push. DVD/BD LPCM framing,
 7.1/arbitrary layouts, and non-PCM codecs at non-48-kHz source rates remain
 separate follow-up work rather than hidden claims in that checkpoint.
 
+### 2.2.1 Current volume and user-normalization slice
+
+- Jellyfin slider strings and numeric API values are normalized at the player
+  boundary, validated from 0 through 100, and sent numerically to the HTML
+  backend plus cubically to the active custom controller.
+- `TrackGain`, `AlbumGain`, and `Off` follow `HtmlAudioPlayer` metadata
+  precedence. Their linear multiplier remains independent from slider volume
+  and mute and is exposed in bounded telemetry.
+- Decoded PCM can apply gain above unity. Owned native-media AC-3/E-AC-3 caps
+  the combined value at one because `HTMLMediaElement.volume` cannot amplify.
+- Every custom-audio browser lifecycle now changes volume using a slider-shaped
+  string, verifies the cubic value and invariant normalization gain, toggles
+  mute, and restores the original state.
+
 ### 2.3 Current JPEG 2000 and MPEG-2 slice
 
 - Pinned OpenJPEG WASM decodes only exact Mediabunny `mjp2` packets from `MJ2`
@@ -215,7 +230,8 @@ They qualify only the exact route stated and are not portable capability claims:
   requires the recovered 10-bit base signal to remain within 8/1023 per channel,
   then drives the CPU output reference from that measured signal without widening
   the existing 8/255 output tolerance. The exact route authorized with maximum
-  normalized input/output errors of 0.00497875 and 0.00267303 respectively.
+  normalized input/output errors of 0.00497875 and 0.00253959 respectively in
+  the current renderer-settings-version-6 live matrix.
 - The ordinary CDP browser smoke now applies the same request-scoped WebGPU flag
   overlay as startup comparison and mpv A/B capture. A live Chrome 151 high-tier
   HDR10 custom DirectPlay run passed with the exact Profile 5 fixture-version-2
@@ -589,9 +605,9 @@ a reduced artifact, but they must not redefine the expected color or PCM data.
 | Frame rate | 23.976, 24, 25, 29.97, 30, 50, 59.94, 60, plus just-over-limit negative cases. |
 | Color | BT.709 limited/full SDR; BT.2020 limited PQ; BT.2020 limited HLG; metadata missing/conflicting; 8/10/12-bit negatives; chroma siting and crop. |
 | Dolby Vision | Profile 5; 7 MEL; 7 FEL; 8.1; 8.4; interleaved, Matroska dual-track, ISO BMFF dual-track, TS dual-PID, M2TS dependency; absent/corrupt/stale RPU; missing/mismatched EL. |
-| Audio | Every ordinary implemented codec at its exact qualified layout/rate; PCM/G.711 at every exact qualified rate from 8-192 kHz and mono/stereo/5.1-side; native-media vs decoded-PCM AC-3/E-AC-3; the seven exact DTS tuples listed in section 5.1 with DTS:X bed-only labels, MKV positives and TS/M2TS negatives; the four exact TrueHD/MLP tuples listed in section 5.1 with major-sync recovery, seek preroll, Atmos bed-only labels, MKV positives and 7.1/TS/M2TS negatives; nearby non-qualified rates/layouts; audio-free video. |
+| Audio | Every ordinary implemented codec at its exact qualified layout/rate; PCM/G.711 at every exact qualified rate from 8-192 kHz and mono/stereo/5.1-side; native-media vs decoded-PCM AC-3/E-AC-3; TrackGain/AlbumGain/Off, positive/negative/missing gain, numeric/string slider input, mute, and native-media amplification cap; the seven exact DTS tuples listed in section 5.1 with DTS:X bed-only labels, MKV positives and TS/M2TS negatives; the four exact TrueHD/MLP tuples listed in section 5.1 with major-sync recovery, seek preroll, Atmos bed-only labels, MKV positives and 7.1/TS/M2TS negatives; nearby non-qualified rates/layouts; audio-free video. |
 | Network/source | Correct ranges; server ignores range; truncated response; retry; slow/chunked transfer; authentication; expired URL; redirect; 404/416; source replacement. |
-| Lifecycle | Start, pause/resume, single seek, seek storm, next item, repeat sessions, natural EOF/audio-tail drain, audio switch, subtitle switch, stop(false), stop(true), destroy, background/foreground. |
+| Lifecycle | Start, volume/mute/restore, pause/resume, single seek, seek storm, next item, repeat sessions, natural EOF/audio-tail drain, audio switch, subtitle switch, stop(false), stop(true), destroy, background/foreground. |
 | Display | Window resize, DPR change, fullscreen enter/exit, crop/aspect, monitor/output change, canvas format change where observable. |
 | Failure | WebGPU/WebCodecs absent; adapter/device/pipeline/import/copy/readback failure; device loss while playing/paused; worker crash/timeout/protocol corruption; decoder error; audio worklet/MSE failure; authorization rejection. |
 | Performance | Time to first audio/frame, decode fps/headroom, dropped/corrupt frames, CPU/GPU time, upload bandwidth, A/V drift, queue depth, underflows, heap/backing storage, object/listener/worklet/worker retention, power where measurable. |
@@ -834,10 +850,12 @@ mono/stereo/5.1-side layout model -> Mediabunny PCM/G.711 -> explicit
 5.1-back/6.1/7.1 channel layouts -> bounded exact-probed libdcadec DTS family
 for the seven Matroska tuples -> bounded exact-probed FFmpeg TrueHD/MLP route
 for the four Matroska tuples -> pinned mpv/FFmpeg 7.1 downmix and loudness
-reference at 48/96 kHz.
+reference at 48/96 kHz -> player slider-string repair and user-selected
+track/album normalization gain.
 
-**Remaining order:** extend reference PCM/loudness evidence to the remaining
-layouts/codecs -> DTS live seek and long-run qualification -> bounded
+**Remaining order:** live non-unity track/album normalization A/B -> extend
+reference PCM/loudness evidence to the remaining layouts/codecs -> DTS live
+seek and long-run qualification -> bounded
 DTS/TrueHD TS/M2TS demux -> TrueHD 7.1 exact fixture -> non-48-kHz native
 compressed routes -> ALAC -> WMA. Separate legal review remains necessary only
 for non-Mediabunny decoder dependencies.
@@ -852,9 +870,8 @@ renderer controls.
 with exact-device authorization and documented graceful degradation.
 
 **Remaining concentration:** broader real-title Profile 5/7/8 and HLG matrices,
-BDMV behavior, FEL dual-decoder performance, live malformed/conflicting static
-metadata cases, dynamic HDR metadata policy, display controls, golden
-thresholds, and device/display changes.
+BDMV behavior, FEL dual-decoder performance, dynamic HDR metadata policy,
+display controls, golden thresholds, and device/display changes.
 
 **Current evidence:** all seven generated HDR/Dolby Vision WGSL variants compile
 and create render pipelines in Chrome 151. The exact five-frame private HDR10
@@ -895,6 +912,17 @@ bound, first-index, or peak mismatches. Every custom startup sample applies the
 same contract and retains the bounded scan evidence. The current High Tier HDR10
 source passed both generated lifecycle and paired-startup selectors with
 `valid`, first access unit 0 of 16, and 4000 nits.
+
+The generated negative matrix now constructs 12-second PQ Main10/FLAC
+Matroska fixtures for `absent`, structurally malformed, internally conflicting,
+and valid 4000-nit metadata. A mandatory Mediabunny plus production-parser
+preflight verifies all four exact states before browser execution. All four
+Jellyfin 12 nightly/Chrome 151 lifecycle cases passed exact client/server
+DirectPlay, scan-state, scan-bound, first-index, peak, and sanitized server-log
+contracts. The conflict case also exposed and fixed TypeScript's ES5 custom
+`Error` prototype loss in the emitted decode worker. This closes the generated
+negative-state gate on the current browser/GPU host; broader malformed real
+titles and cross-browser/GPU execution remain part of the release matrix.
 
 ### Group F: Negotiation and capability safety
 
@@ -1104,8 +1132,10 @@ Rules that prevent duplicated work:
 - [ ] Validate Profile 7 FEL for all claimed container topologies and sustained
   dual-decoder playback.
 - [ ] Complete BDMV/M2TS end-to-end qualification.
-- [ ] Run live-title/fixture cases for missing, malformed, and conflicting static
-  HDR metadata; focused parser/protocol/session coverage is complete.
+- [x] Run generated live fixture cases for absent, malformed, conflicting, and
+  valid static HDR metadata with exact DirectPlay, scan, peak, and server-log
+  assertions. Broader malformed real-title coverage remains in the release
+  matrix.
 - [ ] Validate corrupt/stale RPU, EL loss, metadata beyond the bounded startup
   prefix, and exact fallback/degradation behavior. Dynamic HDR metadata is not
   currently implemented.
@@ -1118,6 +1148,12 @@ Rules that prevent duplicated work:
 ### Audio
 
 - [x] Owned decoded-PCM AudioWorklet clock/output.
+- [x] Accept Jellyfin's slider-shaped numeric strings, preserve the 0-100 player
+  contract, and apply the existing cubic volume curve to custom output.
+- [x] Honor `TrackGain`, `AlbumGain`, and `Off` with HtmlAudioPlayer-compatible
+  fallback order, independent slider/mute state, and explicit telemetry.
+- [x] Add a live custom-audio lifecycle gate for string volume, cubic gain,
+  mute, invariant normalization gain, and exact state restoration.
 - [x] Stereo 48 kHz and qualified 5.1-to-stereo paths.
 - [x] Native-media AC-3/E-AC-3 bridge.
 - [x] Implement bounded streaming sinc resampling with deterministic latency
@@ -1130,6 +1166,8 @@ Rules that prevent duplicated work:
   LFE policy, and arbitrary decode/resampler chunk boundaries.
 - [ ] Add any remaining codec-specific layouts and extend the FFmpeg/mpv
   reference downmix/loudness corpus beyond the qualified DTS 7.1 route.
+- [ ] Run non-unity TrackGain and AlbumGain live-title A/B cases and quantify
+  clipping/loudness against HtmlAudioPlayer and mpv.
 - [x] Pin and reproduce the bounded LGPL libdcadec WebAssembly module with source,
   license, revision, exact-output fixtures, and runtime throughput probe.
 - [x] Wire MKV `A_DTS` packets through one owned decoder context, the shared

@@ -221,9 +221,9 @@ It therefore rejects black, static, or grossly misordered decoded output that
 would otherwise satisfy frame counters. Leave it at its default `none` for
 ordinary media whose pixels do not follow this generated pattern.
 
-For fullscreen, resize, pause/resume, seek, and stop in one run, generate a
-longer lifecycle set instead of weakening progress assertions around a
-six-second end of stream:
+For fullscreen, resize, slider-shaped volume, mute, pause/resume, seek, and stop
+in one run, generate a longer lifecycle set instead of weakening progress
+assertions around a six-second end of stream:
 
 ```powershell
 ./scripts/webgpu/generate-playback-smoke-media.ps1 `
@@ -293,6 +293,42 @@ node scripts/webgpu/probe-browser-runtime.mjs http://localhost:9224 http://local
 ```
 
 Use a `localhost` target so the page is a secure context.
+
+## Static HDR metadata state matrix
+
+`generate_static_HDR_validation_fixtures.py` creates four 12-second PQ Main10
+Matroska fixtures with stereo FLAC. They exercise exact `absent`, `malformed`,
+`conflicting`, and `valid` mastering-display/content-light states. The valid
+fixture declares a 4000-nit mastering peak; every rejected state must retain
+the renderer's bounded 1000-nit default. Generated media, its identity
+manifest, and its path-free live specification are ignored local artifacts.
+
+```powershell
+python scripts/webgpu/generate_static_HDR_validation_fixtures.py --overwrite
+python -m unittest discover -s scripts/webgpu -p '*static_HDR*_test.py'
+```
+
+Add the absolute `scripts/webgpu/playback-smoke-media` directory to a local
+Jellyfin validation library and scan it. With Jellyfin, the current frontend,
+and a CDP-enabled browser running, supply account and log-directory values only
+through arguments or environment variables and run:
+
+```powershell
+$env:WEBGPU_SMOKE_USERNAME = '<validation account>'
+$env:WEBGPU_SMOKE_PASSWORD = '<validation password>'
+$env:WEBGPU_SMOKE_SERVER_LOG_DIRECTORY = '<Jellyfin log directory>'
+
+python scripts/webgpu/run_static_HDR_live_validation.py
+```
+
+The runner verifies every fixture's byte length and SHA-256, resolves its
+Jellyfin item only by exact local path, and runs Mediabunny packetization plus
+the production TypeScript HEVC scanner before opening the browser. It then
+generates an ignored content-addressed overlay and requires all four custom
+DirectPlay lifecycle cases to report the exact scan state, bounded access-unit
+count, first metadata index, tone-mapping peak, and sanitized server-log
+evidence. `--selector case:<id>` narrows browser execution without weakening
+the four-fixture production-parser preflight.
 
 ## Owned native AC-3 and E-AC-3 audio
 

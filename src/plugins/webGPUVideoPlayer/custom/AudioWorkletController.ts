@@ -280,8 +280,8 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
 
     public setVolume(volume: number): void {
         this.requireActive();
-        if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
-            throw new RangeError('Audio volume must be between zero and one');
+        if (!Number.isFinite(volume) || volume < 0) {
+            throw new RangeError('Audio output gain must be finite and non-negative');
         }
         this.volume = volume;
         this.postGain();
@@ -515,8 +515,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
             && isNonNegativeSafeInteger(candidate.underflowFrames)
             && typeof candidate.volume === 'number'
             && Number.isFinite(candidate.volume)
-            && candidate.volume >= 0
-            && candidate.volume <= 1;
+            && candidate.volume >= 0;
     }
 
     private isSignalTelemetry(
