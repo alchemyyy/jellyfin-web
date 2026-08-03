@@ -1,0 +1,271 @@
+{
+  "$schema": "scripts/webgpu/validation/fixture-registry-fragment-schema.json",
+  "fixtures": [
+    {
+      "byteLength": 7368,
+      "id": "dts-core-5-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "core",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "95653e7d94307a9d467c28ae10883440dcc39f06ac79d7401b27eb422cd99009",
+      "uri": "repo://scripts/webgpu/dts/fixtures/core_51_24_48_768_0.dtshd"
+    },
+    {
+      "byteLength": 14284,
+      "id": "dts-96-24-5-1-96k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "96-24",
+          "sampleRate": 96000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "d4d4df6d83042799df124fe48d3465381c57f4f3b2483cb0fe8aa52ea403a9f5",
+      "uri": "repo://scripts/webgpu/dts/fixtures/x96_51_24_96_1509.dtshd"
+    },
+    {
+      "byteLength": 7368,
+      "id": "dts-es-6-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 7,
+          "channelLayout": "6.1",
+          "codec": "dts",
+          "profile": "es",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "db7c44e47b3c01c57829ac9947a0e77aa93798475773e1f2fd74f99a607c48b7",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xch_61_24_48_768.dtshd"
+    },
+    {
+      "byteLength": 36064,
+      "id": "dts-hd-hra-7-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-hra",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "b24e66db937a45b7ce522b773388d29492a88e83fc8680930be00c5987ac93a1",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xbr_xxch_71_24_48_3840.dtshd"
+    },
+    {
+      "byteLength": 32888,
+      "id": "dts-hd-ma-7-1-48k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 48000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "8d380d1323a6fff90a8885d65697217b1bbc4f2c027e30af870fa0dfa50f8eb3",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_71_24_48_768_0.dtshd"
+    },
+    {
+      "byteLength": 54184,
+      "id": "dts-hd-ma-7-1-96k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 8,
+          "channelLayout": "7.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 96000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "d2911b34183f7379359cf914ee93228796894e0b0f0055e6ee5baefa4fd6a923",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_71_24_96_768.dtshd"
+    },
+    {
+      "byteLength": 44608,
+      "id": "dts-hd-ma-5-1-192k",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 16,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "hd-ma",
+          "sampleRate": 192000
+        },
+        "container": "dts-hd",
+        "packetization": "dts-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_dts_capability_fixtures.py",
+          "--check"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a",
+        "source": "foo86/dcadec-samples"
+      },
+      "sha256": "34441a4f2df89e086f67a7b0f72aa871e1cbb3b04b301470a7727038bb91b618",
+      "uri": "repo://scripts/webgpu/dts/fixtures/xll_51_16_192_768_0.dtshd"
+    },
+    {
+      "byteLength": 6636,
+      "id": "dts-core-5-1-48k-matroska",
+      "license": {
+        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "expression": "LicenseRef-Public-Domain"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1",
+          "codec": "dts",
+          "profile": "core",
+          "sampleRate": 48000
+        },
+        "container": "matroska",
+        "packetization": "a-dts"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "ffmpeg",
+          "-fflags",
+          "+bitexact",
+          "-i",
+          "core_51_24_48_768_0.dtshd",
+          "-c:a",
+          "copy",
+          "-f",
+          "matroska",
+          "core_51_24_48_768_0.mka"
+        ],
+        "kind": "upstream",
+        "revision": "8665d5718888f2b9192516f86014cc3642ed653a-remux-v1",
+        "source": "foo86/dcadec-samples remuxed without metadata"
+      },
+      "sha256": "8a82706387b2609b1d6fce40fc65dea860cfd4e5a6f7f7021bb4480af09e8c6d",
+      "uri": "repo://scripts/webgpu/dts/fixtures/core_51_24_48_768_0.mka"
+    }
+  ],
+  "generator": "repo://scripts/webgpu/generate_dts_capability_fixtures.py",
+  "id": "dts",
+  "schemaVersion": 1
+}

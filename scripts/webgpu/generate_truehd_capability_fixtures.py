@@ -14,6 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ab_harness import HarnessError
+from validation_fixture_registry import (
+    DEFAULT_FRAGMENT_DIRECTORY,
+    FixtureRegistrySpecification,
+    create_fixture_registry_fragment,
+    write_or_check_fragment,
+)
+
 
 FIXTURE_DURATION_SECONDS = 0.05
 FIXTURE_PACKET_COUNT = 32
@@ -24,46 +32,72 @@ FNV1A_PRIME = 16_777_619
 @dataclass(frozen=True)
 class FixtureDefinition:
     name: str
+    fixture_id: str
     codec: str
     channel_count: int
     channel_layout: str
+    registry_channel_layout: str
     channel_mask: int
     sample_rate: int
+    expected_sha256: str
 
 
 FIXTURE_DEFINITIONS = (
     FixtureDefinition(
         name="truehd_stereo_24_48000",
+        fixture_id="truehd-stereo-48k",
         codec="truehd",
         channel_count=2,
         channel_layout="stereo",
+        registry_channel_layout="stereo",
         channel_mask=0x0003,
         sample_rate=48_000,
+        expected_sha256=(
+            "4ae1dd30bae837f377e094fbc180c9c642a6b874331220d0bb42a6afecd1fb32"
+        ),
     ),
     FixtureDefinition(
         name="truehd_51_side_24_96000",
+        fixture_id="truehd-5-1-side-96k",
         codec="truehd",
         channel_count=6,
         channel_layout="5.1(side)",
+        registry_channel_layout="5.1-side",
         channel_mask=0x060F,
         sample_rate=96_000,
+        expected_sha256=(
+            "0bbfcaa1910a92ef9a1434ec8ba3bc99f8f5e7309bde2305282d4d3c19d5953e"
+        ),
     ),
     FixtureDefinition(
         name="truehd_51_side_24_192000",
+        fixture_id="truehd-5-1-side-192k",
         codec="truehd",
         channel_count=6,
         channel_layout="5.1(side)",
+        registry_channel_layout="5.1-side",
         channel_mask=0x060F,
         sample_rate=192_000,
+        expected_sha256=(
+            "b6d447fd0d80c8fe1b624742cb64cd2161569eca3c1f0e32c292cc6404e369ce"
+        ),
     ),
     FixtureDefinition(
         name="mlp_stereo_24_48000",
+        fixture_id="mlp-stereo-48k",
         codec="mlp",
         channel_count=2,
         channel_layout="stereo",
+        registry_channel_layout="stereo",
         channel_mask=0x0003,
         sample_rate=48_000,
+        expected_sha256=(
+            "0a8ecef742d164ad74d99576b22e4688ef76e899ca36ce601666b2c8c71d1d72"
+        ),
     ),
+)
+MATROSKA_FIXTURE_SHA256 = (
+    "ddeafef97bd560b548ae93af4cc02f7aa43c7a69b231471d93922e7e36fbbf9e"
 )
 
 
@@ -192,6 +226,11 @@ def create_fixture_record(
     source: Path,
 ) -> dict[str, Any]:
     source_data = source.read_bytes()
+    source_sha256 = hashlib.sha256(source_data).hexdigest()
+    if source_sha256 != definition.expected_sha256:
+        raise RuntimeError(
+            f"TrueHD/MLP fixture hash mismatch for {source.name}: {source_sha256}"
+        )
     packets = probe_json(ffprobe, definition.codec, source, "packets")
     frames = probe_json(ffprobe, definition.codec, source, "frames")
     if len(packets) < FIXTURE_PACKET_COUNT or len(frames) < FIXTURE_PACKET_COUNT:
@@ -238,8 +277,101 @@ def create_fixture_record(
         "majorSyncRecoveryStartIndex": 1,
         "sampleRate": definition.sample_rate,
         "source": source.name,
-        "sourceSHA256": hashlib.sha256(source_data).hexdigest(),
+        "sourceSHA256": source_sha256,
     }
+
+
+def create_registry_fragment(repository_root: Path) -> dict[str, object]:
+    """Creates all exact TrueHD, MLP, and Matroska registry records."""
+
+    fixture_directory = repository_root / "scripts" / "webgpu" / "truehd" / "fixtures"
+    repository_fixture_directory = fixture_directory.relative_to(repository_root)
+    specifications: list[FixtureRegistrySpecification] = []
+    for definition in FIXTURE_DEFINITIONS:
+        specifications.append(
+            FixtureRegistrySpecification(
+                fixture_id=definition.fixture_id,
+                repository_path=(
+                    repository_fixture_directory
+                    / f"{definition.name}.{definition.codec}"
+                ).as_posix(),
+                expected_sha256=definition.expected_sha256,
+                license_expression="GPL-2.0-or-later",
+                license_evidence_uri="repo://LICENSE",
+                provenance={
+                    "generatorArguments": [
+                        "python",
+                        "scripts/webgpu/generate_truehd_capability_fixtures.py",
+                        "--regenerate-sources",
+                    ],
+                    "kind": "generated",
+                    "revision": "fixture-v1",
+                    "source": "Mathematically generated sine tones encoded by FFmpeg",
+                },
+                media={
+                    "audio": {
+                        "bitsPerSample": 24,
+                        "channelCount": definition.channel_count,
+                        "channelLayout": definition.registry_channel_layout,
+                        "codec": definition.codec,
+                        "profile": definition.codec,
+                        "sampleRate": definition.sample_rate,
+                    },
+                    "container": definition.codec,
+                    "packetization": f"{definition.codec}-access-units",
+                },
+            )
+        )
+    specifications.append(
+        FixtureRegistrySpecification(
+            fixture_id="truehd-5-1-side-96k-matroska",
+            repository_path=(
+                repository_fixture_directory / "truehd_51_side_24_96000.mka"
+            ).as_posix(),
+            expected_sha256=MATROSKA_FIXTURE_SHA256,
+            license_expression="GPL-2.0-or-later",
+            license_evidence_uri="repo://LICENSE",
+            provenance={
+                "generatorArguments": [
+                    "ffmpeg",
+                    "-fflags",
+                    "+bitexact",
+                    "-f",
+                    "truehd",
+                    "-i",
+                    "truehd_51_side_24_96000.truehd",
+                    "-c:a",
+                    "copy",
+                    "-f",
+                    "matroska",
+                    "truehd_51_side_24_96000.mka",
+                ],
+                "kind": "generated",
+                "revision": "fixture-v1-remux-v1",
+                "source": (
+                    "Mathematically generated sine tones remuxed without metadata"
+                ),
+            },
+            media={
+                "audio": {
+                    "bitsPerSample": 24,
+                    "channelCount": 6,
+                    "channelLayout": "5.1-side",
+                    "codec": "truehd",
+                    "profile": "truehd",
+                    "sampleRate": 96_000,
+                },
+                "container": "matroska",
+                "packetization": "a-truehd",
+            },
+        )
+    )
+    return create_fixture_registry_fragment(
+        registry_id="truehd",
+        generator_uri="repo://scripts/webgpu/generate_truehd_capability_fixtures.py",
+        specifications=specifications,
+        repository_root=repository_root,
+    )
 
 
 def format_typescript(fixtures: list[dict[str, Any]]) -> str:
@@ -355,11 +487,35 @@ export function createTrueHDExactCapabilityFixtures(): readonly TrueHDExactCapab
 
 
 def parse_arguments() -> argparse.Namespace:
+    repository_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--regenerate-sources",
         action="store_true",
         help="Regenerate the checked-in deterministic encoded source fixtures",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail if the TypeScript and registry outputs are stale",
+    )
+    parser.add_argument(
+        "--check-registry",
+        action="store_true",
+        help="Check only source hashes and the registry without FFmpeg",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=(
+            repository_root
+            / "src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityFixtures.ts"
+        ),
+    )
+    parser.add_argument(
+        "--registry-output",
+        type=Path,
+        default=DEFAULT_FRAGMENT_DIRECTORY / "truehd.json",
     )
     return parser.parse_args()
 
@@ -369,6 +525,22 @@ def main() -> int:
     repository_root = Path(__file__).resolve().parents[2]
     fixture_directory = repository_root / "scripts" / "webgpu" / "truehd" / "fixtures"
     fixture_directory.mkdir(parents=True, exist_ok=True)
+    registry_output_path = arguments.registry_output.resolve()
+    if arguments.check_registry:
+        if arguments.check or arguments.regenerate_sources:
+            raise HarnessError(
+                "--check-registry cannot be combined with --check or "
+                "--regenerate-sources"
+            )
+        write_or_check_fragment(
+            registry_output_path,
+            create_registry_fragment(repository_root),
+            check=True,
+        )
+        print(f"Verified {registry_output_path}")
+        return 0
+    if arguments.check and arguments.regenerate_sources:
+        raise HarnessError("--check and --regenerate-sources cannot be combined")
     ffmpeg = require_executable("ffmpeg")
     ffprobe = require_executable("ffprobe")
 
@@ -389,16 +561,33 @@ def main() -> int:
                 create_fixture_record(ffmpeg, ffprobe, definition, source)
             )
 
-    output_path = (
-        repository_root
-        / "src"
-        / "plugins"
-        / "webGPUVideoPlayer"
-        / "custom"
-        / "TrueHDExactCapabilityFixtures.ts"
+    output_path = arguments.output.resolve()
+    generated_typescript = format_typescript(fixture_records)
+    registry_fragment = create_registry_fragment(repository_root)
+    if arguments.check:
+        if not output_path.is_file() or output_path.read_text(
+            encoding="ascii"
+        ) != generated_typescript:
+            raise RuntimeError(
+                f"TrueHD capability fixture output is stale: {output_path}"
+            )
+        write_or_check_fragment(
+            registry_output_path,
+            registry_fragment,
+            check=True,
+        )
+        print(f"Verified {output_path} and {registry_output_path}")
+        return 0
+    output_path.write_text(generated_typescript, encoding="ascii")
+    write_or_check_fragment(
+        registry_output_path,
+        registry_fragment,
+        check=False,
     )
-    output_path.write_text(format_typescript(fixture_records), encoding="ascii")
-    print(f"Generated {len(fixture_records)} TrueHD/MLP exact capability fixtures")
+    print(
+        f"Generated {len(fixture_records)} TrueHD/MLP exact capability fixtures "
+        f"and {registry_output_path}"
+    )
     return 0
 
 

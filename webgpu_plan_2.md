@@ -3,12 +3,13 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `3a78936ee551e51198681d663f0d4dfec90ab369`
+- Parent checkpoint: `a12dcbd26db4d5ba3c4216f1726bdf3f538a31a5`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, and unified validation-foundation
-  checkpoints are committed and pushed. Reviewed-baseline integration is
-  active. Per-tuple real-media qualification and long-run resource validation
-  remain before a general rollout.
+  checkpoints and reviewed-baseline support are committed and pushed.
+  Generator-owned fixture-registry integration is active. Per-tuple real-media
+  qualification and long-run resource validation remain before a general
+  rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
@@ -662,17 +663,20 @@ driven by `scripts/webgpu/validation_matrix.py`:
 - separate reviewed baseline approval and read-only comparison. Approval
   requires a clean passing result, reviewer acknowledgement, and explicit
   timing tolerance; a normal run cannot create or update a baseline.
+- four generator-owned registry fragments containing the exact JPEG 2000,
+  progressive MPEG-2, DTS, and TrueHD/MLP fixture records. The effective
+  manifest digest covers their ordered hashes without duplicating records in
+  the hand-maintained manifest.
 
-The latest baseline-qualified static matrix passed all 15 fixture hashes and
-cases, 43 Python tests,
-135 standalone Node tests, 383 focused Vitest tests, and TypeScript. This is
-static exact-codec evidence, not a substitute for live DirectPlay cases.
+The generated-registry checkpoint matrix passed all 15 fixture hashes and cases,
+50 Python tests, 135 standalone Node tests, 383 focused Vitest tests, and
+TypeScript. This is static exact-codec evidence, not a substitute for live
+DirectPlay cases.
 
-Remaining Group B work is generator-emitted registry fragments, one case-ID
-failure-injection vocabulary across the smoke tools, server API/log evidence,
-manual-observation ingestion, pairwise matrix generation, and migration of
-HDR/color/startup/soak/live cases into canonical or private content-addressed
-records.
+Remaining Group B work is one case-ID failure-injection vocabulary across the
+smoke tools, server API/log evidence, manual-observation ingestion, pairwise
+matrix generation, and migration of HDR/color/startup/soak/live cases into
+canonical or private content-addressed records.
 
 ### 7.6 Minimum gates
 

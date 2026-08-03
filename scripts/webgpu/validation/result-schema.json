@@ -316,6 +316,26 @@
     "manifest": {
       "additionalProperties": false,
       "properties": {
+        "fixtureRegistries": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "sha256": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              "uri": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "uri",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "overlaySHA256": {
           "type": [
             "string",
@@ -329,6 +349,10 @@
           "pattern": "^[a-f0-9]{64}$",
           "type": "string"
         },
+        "sourceSHA256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
         "uri": {
           "type": "string"
         }
@@ -336,6 +360,8 @@
       "required": [
         "uri",
         "sha256",
+        "sourceSHA256",
+        "fixtureRegistries",
         "overlaySHA256",
         "schemaVersion"
       ],

@@ -550,11 +550,18 @@
     "failureVocabulary": {
       "$ref": "#/$defs/uri"
     },
+    "fixtureRegistryFragments": {
+      "items": {
+        "pattern": "^repo://[A-Za-z0-9_.\\-/]+\\.json$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
     "fixtures": {
       "items": {
         "$ref": "#/$defs/fixture"
       },
-      "minItems": 1,
       "type": "array"
     },
     "matrices": {
@@ -571,6 +578,7 @@
   "required": [
     "schemaVersion",
     "failureVocabulary",
+    "fixtureRegistryFragments",
     "fixtures",
     "checks",
     "cases",

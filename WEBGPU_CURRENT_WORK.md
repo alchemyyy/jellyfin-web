@@ -4,17 +4,16 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `3a78936ee551e51198681d663f0d4dfec90ab369`
+Parent checkpoint: `a12dcbd26db4d5ba3c4216f1726bdf3f538a31a5`
 
-Checkpoint state: unified validation foundation committed and pushed; reviewed
-baseline integration verified and ready for its checkpoint commit
+Checkpoint state: reviewed-baseline support committed and pushed; generated
+fixture-registry integration verified and ready for its checkpoint commit
 
 ## Current objective
 
-Land Group B reviewed-baseline support, then continue with checked registry
-fragments emitted by the fixture generators. Baseline approval is separate,
-explicit, clean-result-only, and non-destructive by default. A validation run
-may compare against a baseline but cannot update one as a side effect.
+Land generator-owned fixture registries without retaining a duplicate fixture
+table in the hand-maintained manifest, then continue with live HDR/lifecycle/
+startup/soak/mpv case migration.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -27,8 +26,9 @@ reports.
 
 Implemented after checkpoint `750a470817`:
 
-- `scripts/webgpu/validation/manifest.json` registers 15 current exact-codec
-  fixtures and 15 stable cases with expected routes and numeric thresholds.
+- `scripts/webgpu/validation/manifest.json` registers 15 stable cases with
+  expected routes and numeric thresholds. Four checked generator-owned
+  fragments expand to the 15 current exact-codec fixtures.
 - Manifest, private-overlay, failure-vocabulary, result, and reviewed-baseline
   JSON Schemas are checked in. The dependency-free Python validator also
   rejects unknown keys, duplicate IDs, traversal, dangling references, cycles,
@@ -54,22 +54,29 @@ integer timing thresholds. Approval rejects dirty or failing results and
 requires reviewer acknowledgement; replacement is explicit and validates the
 old baseline first. Comparison is read-only and makes the run fail on drift.
 
-The latest baseline-qualified static run passed 15 fixture hashes, 15 cases,
-43 Python tests, 135 standalone Node tests, 383 focused Vitest tests across 19
-files, and the TypeScript check. The checkpoint matrix then passed all 15
-fixtures and cases plus all 9 required checks, including a development build.
+Fixture generators now own complete registry records for JPEG 2000,
+progressive MPEG-2, DTS, and TrueHD/MLP. The registry-only generator derives
+size and SHA-256 from exact bytes, verifies all checked fragments, and keeps
+the main manifest free of duplicate fixture data. Result evidence distinguishes
+the source-manifest hash from an effective digest covering every ordered
+fragment, so a fragment revision invalidates a baseline.
+
+The baseline checkpoint's qualified static run passed 15 fixture hashes, 15
+cases, 43 Python tests, 135 standalone Node tests, 383 focused Vitest tests
+across 19 files, and the TypeScript check. The generated-registry checkpoint
+matrix passes the same fixtures and cases plus all 10 required checks,
+including 50 Python tests and a development build.
 Source feature flags remain false. Static success does not claim live Jellyfin
 DirectPlay; live cases must use exact private overlays or later canonical
 distributable fixtures.
 
 Remaining Group B work:
 
-1. Make fixture generators emit checked registry fragments.
-2. Move the color/HDR authorization, browser lifecycle, worker, startup,
+1. Move the color/HDR authorization, browser lifecycle, worker, startup,
    retention/soak, and mpv A/B cases into canonical or private records.
-3. Unify failure injection by case ID and add sanitized server API/log capture.
-4. Add manual-observation ingestion and pairwise/boundary matrix generation.
-5. Populate browser, GPU/driver, server version, display state, and active flags
+2. Unify failure injection by case ID and add sanitized server API/log capture.
+3. Add manual-observation ingestion and pairwise/boundary matrix generation.
+4. Populate browser, GPU/driver, server version, display state, and active flags
    from live adapter evidence rather than leaving explicit `not-recorded`
    records.
 

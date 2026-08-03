@@ -1,0 +1,177 @@
+{
+  "$schema": "scripts/webgpu/validation/fixture-registry-fragment-schema.json",
+  "fixtures": [
+    {
+      "byteLength": 5488,
+      "id": "truehd-stereo-48k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 2,
+          "channelLayout": "stereo",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 48000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "4ae1dd30bae837f377e094fbc180c9c642a6b874331220d0bb42a6afecd1fb32",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_stereo_24_48000.truehd"
+    },
+    {
+      "byteLength": 25302,
+      "id": "truehd-5-1-side-96k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 96000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "0bbfcaa1910a92ef9a1434ec8ba3bc99f8f5e7309bde2305282d4d3c19d5953e",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_96000.truehd"
+    },
+    {
+      "byteLength": 46634,
+      "id": "truehd-5-1-side-192k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 192000
+        },
+        "container": "truehd",
+        "packetization": "truehd-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "b6d447fd0d80c8fe1b624742cb64cd2161569eca3c1f0e32c292cc6404e369ce",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_192000.truehd"
+    },
+    {
+      "byteLength": 5488,
+      "id": "mlp-stereo-48k",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 2,
+          "channelLayout": "stereo",
+          "codec": "mlp",
+          "profile": "mlp",
+          "sampleRate": 48000
+        },
+        "container": "mlp",
+        "packetization": "mlp-access-units"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_truehd_capability_fixtures.py",
+          "--regenerate-sources"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "Mathematically generated sine tones encoded by FFmpeg"
+      },
+      "sha256": "0a8ecef742d164ad74d99576b22e4688ef76e899ca36ce601666b2c8c71d1d72",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/mlp_stereo_24_48000.mlp"
+    },
+    {
+      "byteLength": 26169,
+      "id": "truehd-5-1-side-96k-matroska",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 6,
+          "channelLayout": "5.1-side",
+          "codec": "truehd",
+          "profile": "truehd",
+          "sampleRate": 96000
+        },
+        "container": "matroska",
+        "packetization": "a-truehd"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "ffmpeg",
+          "-fflags",
+          "+bitexact",
+          "-f",
+          "truehd",
+          "-i",
+          "truehd_51_side_24_96000.truehd",
+          "-c:a",
+          "copy",
+          "-f",
+          "matroska",
+          "truehd_51_side_24_96000.mka"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1-remux-v1",
+        "source": "Mathematically generated sine tones remuxed without metadata"
+      },
+      "sha256": "ddeafef97bd560b548ae93af4cc02f7aa43c7a69b231471d93922e7e36fbbf9e",
+      "uri": "repo://scripts/webgpu/truehd/fixtures/truehd_51_side_24_96000.mka"
+    }
+  ],
+  "generator": "repo://scripts/webgpu/generate_truehd_capability_fixtures.py",
+  "id": "truehd",
+  "schemaVersion": 1
+}

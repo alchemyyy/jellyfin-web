@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -113,7 +114,9 @@ class ValidationManifest:
     checks: Mapping[str, dict[str, object]]
     failure_codes: Mapping[str, str]
     fixtures: Mapping[str, dict[str, object]]
+    fixture_registry_sha256: Mapping[str, str]
     manifest_path: Path
+    manifest_source_sha256: str
     manifest_sha256: str
     matrices: Mapping[str, dict[str, object]]
     overlay_sha256: str | None
@@ -310,6 +313,78 @@ def merge_overlay(
         overlay_records = require_array(overlay_value.get(registry_name, []), registry_name)
         merged_value[registry_name] = [*base_records, *overlay_records]
     return merged_value, calculate_sha256(overlay_path)
+
+
+def load_fixture_registry_fragments(
+    manifest_value: dict[str, object],
+) -> tuple[dict[str, object], dict[str, str]]:
+    """Loads checked generated fixture records before applying private overlays."""
+
+    fragment_uris = require_string_array(
+        manifest_value.get("fixtureRegistryFragments"),
+        "fixtureRegistryFragments",
+    )
+    if len(set(fragment_uris)) != len(fragment_uris):
+        raise HarnessError("fixtureRegistryFragments must not contain duplicates")
+    inline_fixtures = require_array(manifest_value.get("fixtures"), "fixtures")
+    fixtures: list[object] = list(inline_fixtures)
+    fragment_digests: dict[str, str] = {}
+    registry_ids: set[str] = set()
+    for fragment_index, fragment_uri in enumerate(fragment_uris):
+        label = f"fixtureRegistryFragments[{fragment_index}]"
+        if not fragment_uri.startswith("repo://"):
+            raise HarnessError(f"{label} must use repo://")
+        fragment_path = resolve_uri(fragment_uri, label)
+        if fragment_path is None or not fragment_path.is_file():
+            raise HarnessError(f"{label} does not exist: {fragment_uri}")
+        fragment = require_mapping(read_json(fragment_path), label)
+        require_exact_keys(
+            fragment,
+            required=frozenset({"schemaVersion", "id", "generator", "fixtures"}),
+            optional=frozenset({"$schema"}),
+            label=label,
+        )
+        if fragment["schemaVersion"] != SCHEMA_VERSION:
+            raise HarnessError(f"{label}.schemaVersion must be {SCHEMA_VERSION}")
+        registry_id = require_identifier(fragment["id"], f"{label}.id")
+        if registry_id in registry_ids:
+            raise HarnessError(f"Duplicate fixture registry ID: {registry_id}")
+        registry_ids.add(registry_id)
+        generator_uri = require_string(fragment["generator"], f"{label}.generator")
+        if not generator_uri.startswith("repo://") or not generator_uri.endswith(".py"):
+            raise HarnessError(f"{label}.generator must reference a repository Python file")
+        generator_path = resolve_uri(generator_uri, f"{label}.generator")
+        if generator_path is None or not generator_path.is_file():
+            raise HarnessError(f"{label}.generator does not exist: {generator_uri}")
+        fragment_fixtures = require_array(fragment["fixtures"], f"{label}.fixtures")
+        if not fragment_fixtures:
+            raise HarnessError(f"{label}.fixtures must not be empty")
+        fixtures.extend(fragment_fixtures)
+        fragment_digests[fragment_uri] = calculate_sha256(fragment_path)
+    expanded_manifest = dict(manifest_value)
+    expanded_manifest["fixtures"] = fixtures
+    return expanded_manifest, fragment_digests
+
+
+def calculate_effective_manifest_sha256(
+    manifest_source_sha256: str,
+    fixture_registry_sha256: Mapping[str, str],
+) -> str:
+    """Hashes the manifest source and its ordered generated registry inputs."""
+
+    digest_input = {
+        "manifestSourceSHA256": manifest_source_sha256,
+        "fixtureRegistries": [
+            {"uri": uri, "sha256": digest}
+            for uri, digest in fixture_registry_sha256.items()
+        ],
+    }
+    serialized_input = json.dumps(
+        digest_input,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(serialized_input).hexdigest()
 
 
 def validate_license(value: object, label: str) -> None:
@@ -815,14 +890,25 @@ def load_manifest(
     require_exact_keys(
         raw_manifest,
         required=frozenset(
-            {"schemaVersion", "failureVocabulary", "fixtures", "checks", "cases", "matrices"}
+            {
+                "schemaVersion",
+                "failureVocabulary",
+                "fixtureRegistryFragments",
+                "fixtures",
+                "checks",
+                "cases",
+                "matrices",
+            }
         ),
         optional=frozenset({"$schema"}),
         label="Validation manifest",
     )
     if raw_manifest["schemaVersion"] != SCHEMA_VERSION:
         raise HarnessError(f"Validation manifest schemaVersion must be {SCHEMA_VERSION}")
-    merged_manifest, overlay_sha256 = merge_overlay(raw_manifest, overlay_path)
+    expanded_manifest, fixture_registry_sha256 = load_fixture_registry_fragments(
+        raw_manifest
+    )
+    merged_manifest, overlay_sha256 = merge_overlay(expanded_manifest, overlay_path)
     fixtures = index_records(merged_manifest["fixtures"], "fixtures", validate_fixture)
     checks = index_records(merged_manifest["checks"], "checks", validate_check)
     cases = index_records(merged_manifest["cases"], "cases", validate_case)
@@ -833,13 +919,19 @@ def load_manifest(
         "failureVocabulary",
     )
     failure_codes = load_failure_codes(failure_vocabulary_uri)
+    manifest_source_sha256 = calculate_sha256(resolved_manifest_path)
     return ValidationManifest(
         cases=cases,
         checks=checks,
         failure_codes=failure_codes,
         fixtures=fixtures,
+        fixture_registry_sha256=fixture_registry_sha256,
         manifest_path=resolved_manifest_path,
-        manifest_sha256=calculate_sha256(resolved_manifest_path),
+        manifest_source_sha256=manifest_source_sha256,
+        manifest_sha256=calculate_effective_manifest_sha256(
+            manifest_source_sha256,
+            fixture_registry_sha256,
+        ),
         matrices=matrices,
         overlay_sha256=overlay_sha256,
     )
@@ -2023,6 +2115,11 @@ def execute_run(
     manifest_record: dict[str, object] = {
         "uri": path_to_repository_uri(manifest.manifest_path),
         "sha256": manifest.manifest_sha256,
+        "sourceSHA256": manifest.manifest_source_sha256,
+        "fixtureRegistries": [
+            {"uri": uri, "sha256": digest}
+            for uri, digest in manifest.fixture_registry_sha256.items()
+        ],
         "overlaySHA256": manifest.overlay_sha256,
         "schemaVersion": SCHEMA_VERSION,
     }

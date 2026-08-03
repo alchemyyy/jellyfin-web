@@ -10,8 +10,10 @@ result set.
 
 | File | Purpose |
 | --- | --- |
-| `manifest.json` | Canonical fixtures, checks, cases, and matrices. Stable IDs are append-only unless an intentional fixture revision is reviewed. |
+| `manifest.json` | Canonical checks, cases, matrices, and ordered generated-fixture references. Stable IDs are append-only unless an intentional revision is reviewed. |
 | `schema.json` | JSON Schema contract for the canonical manifest. |
+| `fixture-registry-fragment-schema.json` | Contract for generator-owned canonical fixture records. |
+| `generated/*.json` | Checked fixture records emitted from the exact bytes and generator-owned metadata. |
 | `overlay-schema.json` | Contract for ignored private records appended to the canonical registries. An overlay cannot replace a canonical ID. |
 | `failure-codes.json` | Sole cross-adapter failure vocabulary. Tool-specific diagnostics remain evidence, not new top-level failure codes. |
 | `result-schema.json` | Machine-readable result contract. |
@@ -58,6 +60,30 @@ The default output is ignored under
 Exit code zero means `passed`. `failed` and `incomplete` both return nonzero.
 `incomplete` is used when declared private inputs or required manual evidence
 are absent; absence never silently becomes a pass.
+
+## Generated fixture registries
+
+The hand-maintained manifest does not duplicate generated fixture size, hash,
+license, provenance, or media metadata. Each owning generator can emit its
+fragment, and the registry-only command updates or checks all four fragments
+without invoking a codec tool:
+
+```powershell
+python scripts/webgpu/generate_validation_fixture_registry.py
+python scripts/webgpu/generate_validation_fixture_registry.py --check
+```
+
+The current fragments are JPEG 2000, progressive MPEG-2, DTS, and TrueHD/MLP.
+Generation derives byte length and SHA-256 from the checked file and rejects a
+digest that differs from the generator's reviewed pin. The loader requires
+repository-local fragment and generator URIs, validates every expanded fixture
+record, and rejects duplicate registry or fixture IDs.
+
+`manifest.sha256` in a result is the effective digest of the source manifest
+and the ordered fragment digests. `manifest.sourceSHA256` records the source
+file separately, and `manifest.fixtureRegistries` records each fragment URI and
+digest. A fragment change therefore invalidates a reviewed baseline even when
+`manifest.json` itself did not change.
 
 ## Selectors
 
@@ -280,6 +306,5 @@ Live title, HDR/Dolby Vision, fault, startup, soak, and cross-browser/GPU cases
 must be added as content-addressed records or private overlays before their
 matrix can pass.
 
-Generator-emitted registry fragments, shared case-ID failure injection, server
-log capture, pairwise matrix generation, and manual-observation ingestion
-remain framework work.
+Shared case-ID failure injection, server log capture, pairwise matrix
+generation, and manual-observation ingestion remain framework work.

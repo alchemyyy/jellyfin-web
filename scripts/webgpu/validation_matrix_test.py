@@ -17,10 +17,12 @@ from validation_matrix import (
     ValidationManifest,
     ValidationSelection,
     assertion_matches,
+    calculate_effective_manifest_sha256,
     case_matches_selectors,
     classify_structured_failures,
     command_for_check,
     execute_run,
+    load_fixture_registry_fragments,
     load_manifest,
     merge_environment_evidence,
     repository_path,
@@ -45,6 +47,7 @@ class ManifestTests(unittest.TestCase):
             "baseline-schema.json",
             "failure-codes-schema.json",
             "failure-codes.json",
+            "fixture-registry-fragment-schema.json",
             "overlay-schema.json",
             "result-schema.json",
             "schema.json",
@@ -59,12 +62,54 @@ class ManifestTests(unittest.TestCase):
                 self.assertIn("$schema", value)
 
         self.assertEqual(len(self.manifest.fixtures), 15)
+        self.assertEqual(len(self.manifest.fixture_registry_sha256), 4)
+        self.assertNotEqual(
+            self.manifest.manifest_sha256,
+            self.manifest.manifest_source_sha256,
+        )
         self.assertEqual(len(self.manifest.cases), 15)
-        self.assertEqual(len(self.manifest.checks), 14)
+        self.assertEqual(len(self.manifest.checks), 15)
         self.assertEqual(set(self.manifest.matrices), {"checkpoint", "release", "static"})
         for fixture in self.manifest.fixtures.values():
             result = verify_fixture(fixture, self.manifest.failure_codes)
             self.assertEqual(result["status"], "passed", result)
+
+    def test_effective_manifest_digest_covers_registry_content(self) -> None:
+        source_sha256 = "1" * 64
+        original_digest = calculate_effective_manifest_sha256(
+            source_sha256,
+            {"repo://registry.json": "2" * 64},
+        )
+        changed_digest = calculate_effective_manifest_sha256(
+            source_sha256,
+            {"repo://registry.json": "3" * 64},
+        )
+        ordered_digest = calculate_effective_manifest_sha256(
+            source_sha256,
+            {
+                "repo://first.json": "4" * 64,
+                "repo://second.json": "5" * 64,
+            },
+        )
+        reversed_digest = calculate_effective_manifest_sha256(
+            source_sha256,
+            {
+                "repo://second.json": "5" * 64,
+                "repo://first.json": "4" * 64,
+            },
+        )
+
+        self.assertNotEqual(original_digest, changed_digest)
+        self.assertNotEqual(ordered_digest, reversed_digest)
+
+    def test_rejects_environment_backed_canonical_registry_fragment(self) -> None:
+        with self.assertRaisesRegex(HarnessError, "must use repo"):
+            load_fixture_registry_fragments(
+                {
+                    "fixtureRegistryFragments": ["env://PRIVATE_REGISTRY"],
+                    "fixtures": [],
+                }
+            )
 
     def test_selects_codec_cases_and_deduplicates_shared_checks(self) -> None:
         dts_selection = select_matrix(
@@ -381,7 +426,9 @@ class AdapterTests(unittest.TestCase):
             checks={check_id: self.manifest.checks[check_id]},
             failure_codes=self.manifest.failure_codes,
             fixtures={fixture_id: self.manifest.fixtures[fixture_id]},
+            fixture_registry_sha256=self.manifest.fixture_registry_sha256,
             manifest_path=self.manifest.manifest_path,
+            manifest_source_sha256=self.manifest.manifest_source_sha256,
             manifest_sha256=self.manifest.manifest_sha256,
             matrices={
                 "unit": {

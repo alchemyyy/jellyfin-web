@@ -1,0 +1,45 @@
+{
+  "$schema": "scripts/webgpu/validation/fixture-registry-fragment-schema.json",
+  "fixtures": [
+    {
+      "byteLength": 107107,
+      "id": "jpeg2000-srgb-960x540",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "container": "jp2",
+        "packetization": "jpeg2000-codestream",
+        "video": {
+          "bitDepth": 8,
+          "chroma": "4:4:4",
+          "codec": "jpeg2000",
+          "frameRate": 24,
+          "height": 540,
+          "matrix": "rgb",
+          "primaries": "srgb",
+          "profile": "part-1-reversible",
+          "progressive": true,
+          "range": "full",
+          "transfer": "srgb",
+          "width": 960
+        }
+      },
+      "provenance": {
+        "generatorArguments": [
+          "python",
+          "scripts/webgpu/generate_jpeg2000_capability_fixture.py"
+        ],
+        "kind": "generated",
+        "revision": "fixture-v1",
+        "source": "FFmpeg testsrc2 with the reversible JPEG 2000 encoder"
+      },
+      "sha256": "3d23398ce6857e4e7bc1851c4068d46aa1be1fd1506d7b8b3971e535e18acc94",
+      "uri": "repo://scripts/webgpu/jpeg2000-capability-fixtures/srgb-960x540.jp2"
+    }
+  ],
+  "generator": "repo://scripts/webgpu/generate_jpeg2000_capability_fixture.py",
+  "id": "jpeg2000",
+  "schemaVersion": 1
+}
