@@ -1,154 +1,80 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { VideoPlayerPreference } from 'components/playback/PreferredVideoPlayer';
+
 vi.mock('hooks/api/useDisplayPreferences', () => ({
     getDisplayPreferencesQuery: vi.fn()
 }));
+
 vi.mock('hooks/api/useUser', () => ({
     getUserQuery: vi.fn()
 }));
+
 vi.mock('hooks/useUsers', () => ({
-    ['QUERY_KEY']: 'User'
+    ['QUERY_KEY']: 'users'
 }));
+
 vi.mock('lib/jellyfin-apiclient', () => ({
     ServerConnections: {}
 }));
+
+vi.mock('utils/events', () => ({
+    default: {
+        trigger: vi.fn()
+    }
+}));
+
 vi.mock('utils/query/queryClient', () => ({
     queryClient: {}
 }));
 
+vi.mock('../browser', () => ({
+    default: {}
+}));
+
+vi.mock('./appSettings', () => ({
+    default: {
+        get: (name: string, userID?: string): string | null => localStorage.getItem(
+            userID ? `${userID}-${name}` : name
+        ),
+        set: (name: string, value: unknown, userID?: string): void => {
+            localStorage.setItem(
+                userID ? `${userID}-${name}` : name,
+                String(value)
+            );
+        }
+    }
+}));
+
 import { UserSettings } from './userSettings';
 
-describe('client-side HDR tone-mapping settings', () => {
+describe('UserSettings preferred video player', () => {
     beforeEach(() => {
-        window.localStorage.clear();
+        localStorage.clear();
     });
 
-    it('enables client-side HDR tone mapping by default', () => {
+    it('defaults to automatic selection', () => {
         const settings = new UserSettings();
 
-        expect(settings.enableClientHDRToneMapping(undefined)).toBe(true);
-
-        settings.enableClientHDRToneMapping(false);
-
-        expect(settings.enableClientHDRToneMapping(undefined)).toBe(false);
+        expect(settings.preferredVideoPlayer()).toBe(VideoPlayerPreference.Auto);
     });
 
-    it('uses BT.2390 as the default preset', () => {
+    it('persists the selection for the current user on this client', () => {
         const settings = new UserSettings();
+        settings.currentUserId = 'user-1';
 
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
+        settings.preferredVideoPlayer(VideoPlayerPreference.HTML);
+
+        expect(localStorage.getItem('user-1-preferredVideoPlayer'))
+            .toBe(VideoPlayerPreference.HTML);
+        expect(settings.preferredVideoPlayer()).toBe(VideoPlayerPreference.HTML);
     });
 
-    it('stores valid presets and rejects invalid presets', () => {
+    it('normalizes invalid persisted values to automatic selection', () => {
         const settings = new UserSettings();
+        settings.currentUserId = 'user-1';
+        localStorage.setItem('user-1-preferredVideoPlayer', 'unsupported');
 
-        settings.clientHDRToneMappingPreset('bright');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bright');
-
-        settings.clientHDRToneMappingPreset('bt2390');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
-
-        settings.clientHDRToneMappingPreset('invalid');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
-
-        window.localStorage.setItem('clientHDRToneMappingPreset', 'invalid');
-        expect(settings.clientHDRToneMappingPreset(undefined)).toBe('bt2390');
-    });
-
-    it('stores validated BT.2390 parameters locally', () => {
-        const settings = new UserSettings();
-
-        expect(
-            settings.clientHDRToneMappingBT2390SourcePeakNits(undefined)
-        ).toBe(1000);
-        expect(
-            settings.clientHDRToneMappingBT2390TargetPeakNits(undefined)
-        ).toBe(203);
-        expect(
-            settings.clientHDRToneMappingBT2390KneeOffset(undefined)
-        ).toBe(1);
-
-        settings.clientHDRToneMappingBT2390SourcePeakNits(3629);
-        settings.clientHDRToneMappingBT2390TargetPeakNits(180);
-        settings.clientHDRToneMappingBT2390KneeOffset(0.75);
-
-        expect(
-            window.localStorage.getItem(
-                'clientHDRToneMappingBT2390SourcePeakNits'
-            )
-        ).toBe('3629');
-        expect(
-            settings.clientHDRToneMappingBT2390SourcePeakNits(undefined)
-        ).toBe(3629);
-        expect(
-            settings.clientHDRToneMappingBT2390TargetPeakNits(undefined)
-        ).toBe(180);
-        expect(
-            settings.clientHDRToneMappingBT2390KneeOffset(undefined)
-        ).toBe(0.75);
-    });
-
-    it('stores unclamped finite BT.2390 parameters and replaces corrupt values', () => {
-        const settings = new UserSettings();
-
-        settings.clientHDRToneMappingBT2390SourcePeakNits(10000);
-        settings.clientHDRToneMappingBT2390TargetPeakNits(50);
-        settings.clientHDRToneMappingBT2390KneeOffset(3);
-
-        expect(
-            settings.clientHDRToneMappingBT2390SourcePeakNits(undefined)
-        ).toBe(10000);
-        expect(
-            settings.clientHDRToneMappingBT2390TargetPeakNits(undefined)
-        ).toBe(50);
-        expect(
-            settings.clientHDRToneMappingBT2390KneeOffset(undefined)
-        ).toBe(3);
-
-        window.localStorage.setItem(
-            'clientHDRToneMappingBT2390SourcePeakNits',
-            'invalid'
-        );
-        window.localStorage.setItem(
-            'clientHDRToneMappingBT2390TargetPeakNits',
-            ''
-        );
-        window.localStorage.setItem(
-            'clientHDRToneMappingBT2390KneeOffset',
-            'Infinity'
-        );
-
-        expect(
-            settings.clientHDRToneMappingBT2390SourcePeakNits(undefined)
-        ).toBe(1000);
-        expect(
-            settings.clientHDRToneMappingBT2390TargetPeakNits(undefined)
-        ).toBe(203);
-        expect(
-            settings.clientHDRToneMappingBT2390KneeOffset(undefined)
-        ).toBe(1);
-    });
-
-    it('stores the unclamped live CSS desaturation strength', () => {
-        const settings = new UserSettings();
-
-        expect(
-            settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(100);
-
-        settings.clientHDRToneMappingDesaturationStrength(45);
-        expect(
-            settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(45);
-
-        settings.clientHDRToneMappingDesaturationStrength(-20);
-        expect(
-            settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(-20);
-
-        settings.clientHDRToneMappingDesaturationStrength(150);
-        expect(
-            settings.clientHDRToneMappingDesaturationStrength(undefined)
-        ).toBe(150);
+        expect(settings.preferredVideoPlayer()).toBe(VideoPlayerPreference.Auto);
     });
 });

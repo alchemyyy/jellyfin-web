@@ -3,6 +3,10 @@ import { getUserQuery } from 'hooks/api/useUser';
 import { QUERY_KEY } from 'hooks/useUsers';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { StillWatchingOptions } from 'plugins/stillWatching/constants';
+import {
+    normalizeVideoPlayerPreference,
+    VideoPlayerPreference
+} from 'components/playback/PreferredVideoPlayer';
 import Events from 'utils/events';
 import { queryClient } from 'utils/query/queryClient';
 import { toBoolean } from 'utils/string';
@@ -390,6 +394,25 @@ export class UserSettings {
         }
 
         return this.get('selectAudioNormalization', false) || 'TrackGain';
+    }
+
+    /**
+     * Get or set the local video player used for new playback sessions.
+     * @param {'auto'|'html'|'webgpu'|undefined} [val] - Preferred video player.
+     * @return {'auto'|'html'|'webgpu'} Preferred video player.
+     */
+    preferredVideoPlayer(val) {
+        if (val !== undefined) {
+            return this.set(
+                'preferredVideoPlayer',
+                normalizeVideoPlayerPreference(val),
+                false
+            );
+        }
+
+        return normalizeVideoPlayerPreference(
+            this.get('preferredVideoPlayer', false) ?? VideoPlayerPreference.Auto
+        );
     }
 
     /**
@@ -905,6 +928,7 @@ export const clientHDRToneMappingDesaturationStrength = currentSettings.clientHD
 export const limitSegmentLength = currentSettings.limitSegmentLength.bind(currentSettings);
 export const enableCinemaMode = currentSettings.enableCinemaMode.bind(currentSettings);
 export const selectAudioNormalization = currentSettings.selectAudioNormalization.bind(currentSettings);
+export const preferredVideoPlayer = currentSettings.preferredVideoPlayer.bind(currentSettings);
 export const enableNextVideoInfoOverlay = currentSettings.enableNextVideoInfoOverlay.bind(currentSettings);
 export const enableVideoRemainingTime = currentSettings.enableVideoRemainingTime.bind(currentSettings);
 export const enableThemeSongs = currentSettings.enableThemeSongs.bind(currentSettings);

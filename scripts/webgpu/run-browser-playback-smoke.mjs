@@ -82,6 +82,7 @@ const BROWSER_VISIBILITY_RESTORE_MILLISECONDS = 250;
 const VOLUME_EXERCISE_JELLYFIN_LEVEL = 37;
 const VOLUME_EXERCISE_TOLERANCE = 1e-9;
 const STARTUP_RESULT_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
+const PREFERRED_VIDEO_PLAYER_SETTING_KEY = 'preferredVideoPlayer';
 const RETENTION_PERFORMANCE_RESOURCE_METRICS = Object.freeze([
     Object.freeze({ code: 'array-buffer-contents', name: 'ArrayBufferContents' }),
     Object.freeze({ code: 'audio-handlers', name: 'AudioHandlers' }),
@@ -634,6 +635,33 @@ async function evaluateValue(
         );
     }
     return evaluation.result?.value;
+}
+
+async function setPreferredVideoPlayerForCurrentUser(client, preference) {
+    if (preference !== 'html' && preference !== 'webgpu') {
+        throw new TypeError('Startup video player preference must be html or webgpu');
+    }
+    const applied = await evaluateValue(client, `(() => {
+        if (typeof ApiClient !== 'object'
+            || typeof ApiClient.getCurrentUserId !== 'function') {
+            return false;
+        }
+        const userID = ApiClient.getCurrentUserId();
+        if (typeof userID !== 'string' || userID.length === 0) {
+            return false;
+        }
+        localStorage.setItem(
+            userID + '-' + ${JSON.stringify(PREFERRED_VIDEO_PLAYER_SETTING_KEY)},
+            ${JSON.stringify(preference)}
+        );
+        return true;
+    })()`);
+    if (applied !== true) {
+        throw new SmokeHarnessError(
+            'startup-player-preference-unavailable',
+            'Unable to persist the isolated startup video player preference'
+        );
+    }
 }
 
 async function waitForValue(options) {
@@ -3347,6 +3375,10 @@ async function createStartupModeRuntime(browserClient, mode, configuration) {
             read: () => hasMatchingAuthenticatedServer(runtime.client, configuration),
             timeoutMilliseconds: configuration.timeoutMilliseconds
         });
+        await setPreferredVideoPlayerForCurrentUser(
+            runtime.client,
+            mode === 'html' ? 'html' : 'webgpu'
+        );
         return runtime;
     } catch (error) {
         await closeStartupModeRuntime(browserClient, runtime).catch(() => undefined);

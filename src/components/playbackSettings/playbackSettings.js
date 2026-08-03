@@ -300,7 +300,7 @@ function loadForm(context, user, userSettings, systemInfo, apiClient) {
     context.querySelector('.chkEnableHi10p').checked = appSettings.enableHi10p();
     context.querySelector('.chkEnableCinemaMode').checked = userSettings.enableCinemaMode();
     context.querySelector('#selectAudioNormalization').value = userSettings.selectAudioNormalization();
-    context.querySelector('.fldAudioNormalization').classList.toggle('hide', browser.iOS);
+    context.querySelector('#selectPreferredVideoPlayer').value = userSettings.preferredVideoPlayer();
     context.querySelector('.chkEnableNextVideoOverlay').checked = userSettings.enableNextVideoInfoOverlay();
     context.querySelector('.chkRememberAudioSelections').checked = user.Configuration.RememberAudioSelections || false;
     context.querySelector('.chkRememberSubtitleSelections').checked = user.Configuration.RememberSubtitleSelections || false;
@@ -403,6 +403,9 @@ function saveUser(context, user, userSettingsInstance, apiClient) {
     );
     userSettingsInstance.enableCinemaMode(context.querySelector('.chkEnableCinemaMode').checked);
     userSettingsInstance.selectAudioNormalization(context.querySelector('#selectAudioNormalization').value);
+    userSettingsInstance.preferredVideoPlayer(
+        context.querySelector('#selectPreferredVideoPlayer').value
+    );
     userSettingsInstance.enableNextVideoInfoOverlay(context.querySelector('.chkEnableNextVideoOverlay').checked);
     user.Configuration.RememberAudioSelections = context.querySelector('.chkRememberAudioSelections').checked;
     user.Configuration.RememberSubtitleSelections = context.querySelector('.chkRememberSubtitleSelections').checked;

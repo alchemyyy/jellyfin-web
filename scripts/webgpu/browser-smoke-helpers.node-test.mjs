@@ -553,7 +553,7 @@ test('defines isolated feature overlays for every startup mode', () => {
         enableWebGPUCustomDecode: false,
         enableWebGPUHDRToneMapping: false,
         enableWebGPUValidationHarness: false,
-        enableWebGPUVideoPlayer: false
+        enableWebGPUVideoPlayer: true
     });
     assert.deepEqual(getStartupModeFeatureFlags('presentation'), {
         enableWebGPUCustomDecode: false,

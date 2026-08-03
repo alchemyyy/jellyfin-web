@@ -20,18 +20,19 @@ function createConfigResponse(enableWebGPUVideoPlayer: boolean): Pick<Response, 
     };
 }
 
-describe('webSettings player feature flags', () => {
+describe('webSettings player registration', () => {
     beforeEach(() => {
         vi.resetModules();
         fetchLocalMock.mockReset();
     });
 
-    it('omits the WebGPU player by default', async () => {
+    it('keeps WebGPU available when a legacy config flag is false', async () => {
         fetchLocalMock.mockResolvedValue(createConfigResponse(false));
         const { getPlugins } = await import('./webSettings');
 
         await expect(getPlugins()).resolves.toEqual([
             'htmlAudioPlayer/plugin',
+            'webGPUVideoPlayer/plugin',
             'htmlVideoPlayer/plugin',
             'photoPlayer/plugin'
         ]);
@@ -49,7 +50,7 @@ describe('webSettings player feature flags', () => {
         ]);
     });
 
-    it('normalizes an explicitly listed WebGPU plugin through the feature flag', async () => {
+    it('normalizes an explicitly listed WebGPU plugin', async () => {
         fetchLocalMock.mockResolvedValue({
             json: () => Promise.resolve({
                 enableWebGPUVideoPlayer: false,
@@ -59,7 +60,10 @@ describe('webSettings player feature flags', () => {
         });
         const { getPlugins } = await import('./webSettings');
 
-        await expect(getPlugins()).resolves.toEqual(['htmlVideoPlayer/plugin']);
+        await expect(getPlugins()).resolves.toEqual([
+            'webGPUVideoPlayer/plugin',
+            'htmlVideoPlayer/plugin'
+        ]);
     });
 
     it('reads independent custom decode, HDR, and validation flags', async () => {
@@ -79,7 +83,7 @@ describe('webSettings player feature flags', () => {
             isWebGPUCustomDecodeEnabled
         } = await import('./webSettings');
 
-        expect(isWebGPUCustomDecodeEnabled()).toBe(false);
+        expect(isWebGPUCustomDecodeEnabled()).toBe(true);
         await expect(getWebGPUCustomDecodeEnabled()).resolves.toBe(true);
         expect(isWebGPUCustomDecodeEnabled()).toBe(true);
         await expect(getWebGPUHDRToneMappingEnabled()).resolves.toBe(true);

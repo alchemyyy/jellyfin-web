@@ -1,9 +1,9 @@
 {
   "includeCorsCredentials": false,
   "multiserver": false,
-  "enableWebGPUVideoPlayer": false,
-  "enableWebGPUCustomDecode": false,
-  "enableWebGPUHDRToneMapping": false,
+  "enableWebGPUVideoPlayer": true,
+  "enableWebGPUCustomDecode": true,
+  "enableWebGPUHDRToneMapping": true,
   "enableWebGPUValidationHarness": false,
   "themes": [
     {
@@ -39,6 +39,7 @@
     "playAccessValidation/plugin",
     "experimentalWarnings/plugin",
     "htmlAudioPlayer/plugin",
+    "webGPUVideoPlayer/plugin",
     "htmlVideoPlayer/plugin",
     "photoPlayer/plugin",
     "comicsPlayer/plugin",

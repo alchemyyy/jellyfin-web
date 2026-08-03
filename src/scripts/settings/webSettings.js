@@ -6,13 +6,8 @@ const WEBGPU_VIDEO_PLAYER_PLUGIN = 'webGPUVideoPlayer/plugin';
 
 let data;
 
-function applyPlayerFeatureFlags(config, configuredPlugins) {
+function ensureVideoPlayerPlugins(configuredPlugins) {
     const plugins = configuredPlugins.filter(plugin => plugin !== WEBGPU_VIDEO_PLAYER_PLUGIN);
-
-    if (!config.enableWebGPUVideoPlayer) {
-        return plugins;
-    }
-
     const htmlPlayerIndex = plugins.indexOf(HTML_VIDEO_PLAYER_PLUGIN);
     const insertionIndex = htmlPlayerIndex < 0 ? plugins.length : htmlPlayerIndex;
     plugins.splice(insertionIndex, 0, WEBGPU_VIDEO_PLAYER_PLUGIN);
@@ -127,10 +122,10 @@ export function getPlugins() {
         if (!config.plugins) {
             console.error('web config is invalid, missing plugins:', config);
         }
-        return applyPlayerFeatureFlags(config, config.plugins || DefaultConfig.plugins);
+        return ensureVideoPlayerPlugins(config.plugins || DefaultConfig.plugins);
     }).catch(error => {
         console.log('cannot get web config:', error);
-        return applyPlayerFeatureFlags(DefaultConfig, DefaultConfig.plugins);
+        return ensureVideoPlayerPlugins(DefaultConfig.plugins);
     });
 }
 

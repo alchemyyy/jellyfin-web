@@ -820,12 +820,6 @@ export function createStartupSampleModeOrder(sampleNumber) {
 export function getStartupModeFeatureFlags(mode) {
     switch (mode) {
         case 'html':
-            return {
-                enableWebGPUCustomDecode: false,
-                enableWebGPUHDRToneMapping: false,
-                enableWebGPUValidationHarness: false,
-                enableWebGPUVideoPlayer: false
-            };
         case 'presentation':
             return {
                 enableWebGPUCustomDecode: false,

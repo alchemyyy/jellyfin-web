@@ -7,15 +7,17 @@ adds two optional layers:
 - A client-owned Mediabunny demux, video decode, AudioWorklet output, clock,
   and WebGPU presentation path for qualified direct-play sources.
 
-The source feature flags in `src/config.json` are disabled by default. Local
-testing enables the required flags only in the served `dist/config.json` after
-building:
+The normal build always registers both the WebGPU and HTML video players.
+Playback settings expose a persistent per-user, per-client `Auto`, `WebGPU`, or
+`HTML` preference that is applied when a new video session starts. `Auto`
+preserves normal priority ordering. Selecting `WebGPU` keeps the wrapper's owned
+HTML backend as its same-session fallback; selecting `HTML` starts the ordinary
+HTML player directly. Mid-session outer-player switching is intentionally not
+implemented.
 
-- `enableWebGPUVideoPlayer`
-- `enableWebGPUCustomDecode`
-- `enableWebGPUHDRToneMapping` for qualified raw-plane or native external HDR
-  presentation
-- `enableWebGPUValidationHarness` for diagnostic color validation
+`src/config.json` enables WebGPU custom decode and HDR presentation by default.
+The validation harness remains separately gated for diagnostic use. The legacy
+`enableWebGPUVideoPlayer` value no longer controls plugin registration.
 
 Dolby Vision support, mpv/libplacebo parity targets, profile-specific fallback
 rules, and the required RPU/EL ownership changes are specified in

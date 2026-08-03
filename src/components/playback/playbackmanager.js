@@ -44,6 +44,7 @@ import {
     TRANSCODE_OUTPUT_BITRATE_PURPOSE
 } from './PlaybackBitratePolicy';
 import { PlaybackRequestGate } from './PlaybackRequestGate';
+import { orderVideoPlayersByPreference } from './PreferredVideoPlayer';
 import * as bitrateTest from 'utils/bitrateTest';
 import {
     configureClientHDRToneMappingPlaybackOptions,
@@ -3603,7 +3604,13 @@ export class PlaybackManager {
 
         function getPlayer(item, playOptions, forceLocalPlayers) {
             const serverItem = isServerItem(item);
-            return getAutomaticPlayers(self, forceLocalPlayers).filter(function (p) {
+            const automaticPlayers = getAutomaticPlayers(self, forceLocalPlayers);
+            const orderedPlayers = orderVideoPlayersByPreference(
+                automaticPlayers,
+                item.MediaType,
+                userSettings.preferredVideoPlayer()
+            );
+            return orderedPlayers.filter(function (p) {
                 if (p.canPlayMediaType(item.MediaType)) {
                     if (serverItem) {
                         if (p.canPlayItem) {

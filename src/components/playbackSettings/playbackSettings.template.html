@@ -170,6 +170,15 @@
             ${HeaderVideoAdvanced}
         </h2>
 
+        <div class="selectContainer">
+            <select is="emby-select" id="selectPreferredVideoPlayer" label="${LabelPreferredVideoPlayer}">
+                <option value="auto">${Auto}</option>
+                <option value="webgpu">WebGPU</option>
+                <option value="html">HTML</option>
+            </select>
+            <div class="fieldDescription">${PreferredVideoPlayerHelp}</div>
+        </div>
+
         <div class="checkboxContainer checkboxContainer-withDescription fldEnableDts">
             <label>
                 <input type="checkbox" is="emby-checkbox" class="chkEnableDts" />
