@@ -234,8 +234,20 @@ Dolby Vision has separate raw-plane and external-texture authorizations. The
 native Profile 5 route imports an owned decoded `VideoFrame`, executes the
 production external-texture RPU shader, and compares GPU readback samples. The
 raw route executes its distinct I420P10 plane shader. A successful result from
-one route cannot authorize the other, and their device-profile limits remain
-alternative route limits rather than being intersected.
+one route cannot authorize the other. Jellyfin evaluates every matching codec
+profile cumulatively, so the shared compatibility profile uses the largest
+authorized envelope only to avoid reimposing a weaker route's limit. Separate
+range-scoped measured profiles remain the hard gate for each route's exact
+resolution, level, frame-rate, bit-depth, and HEVC profile.
+
+The browser failure harness records the active client/server play method and
+transcode-reason names. When custom startup times out, it additionally records
+only direct-play and codec-profile entries matching the active container and
+video/audio codecs; identifiers, URLs, credentials, and unrelated profile data
+are excluded. This exposed and fixed a false 1080p/level-120 cap on an
+independently qualified 4K Profile 5 route. A private real-title matrix now
+passes DirectPlay lifecycle plus active and paused device-loss recovery with
+native Profile 5 video and decoded 5.1 E-AC-3 audio.
 
 Profile 7 has two raw-plane authorizations. The base route covers MEL
 reconstruction and explicit FEL HDR10-base degradation. The independent FEL

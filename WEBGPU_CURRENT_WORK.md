@@ -4,18 +4,20 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `8e2784c90a95ea37871fa2669005d6fe8240ca6e`
+Parent checkpoint: `cd82203771b4ceb44861266240fe5a86a9fee14a`
 
 Checkpoint state: the generated private live-case catalog, bounded Jellyfin
-playback-decision evidence, server-log evidence, route-aware startup, and the
-complete primary HDR10 browser matrix are committed and pushed. HEVC static HDR
-metadata propagation and libplacebo-compatible spline black-point handling are
+playback-decision evidence, server-log evidence, route-aware startup, complete
+primary HDR10 browser matrix, HEVC static HDR metadata propagation, and
+libplacebo-compatible spline black-point handling are committed and pushed.
+Real-title Profile 5 DirectPlay negotiation and lifecycle hardening are
 implemented and validated in the current worktree.
 
 ## Current objective
 
-Close the static HDR10 metadata and tone-mapping parity slice without weakening
-the existing exact-route, resource-ownership, or DirectPlay gates.
+Close the real-title Dolby Vision Profile 5 slice, then harden missing, late,
+and conflicting HDR metadata without weakening the existing exact-route,
+resource-ownership, or DirectPlay gates.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -134,11 +136,31 @@ one recovery without source restart. The retention run ended with no live GPU,
 `VideoFrame`, custom worker, or WASM objects; listener/node growth was zero,
 and all heap slopes/growth stayed inside the fixed gates.
 
+The first real-title Profile 5 run correctly passed the browser/GPU capability
+and external-texture authorization probes but Jellyfin selected transcoding for
+audio codec, video level, and resolution reasons. The failure report now
+captures a sanitized relevant slice of the generated device profile as well as
+the bounded client/server decision evidence. That evidence showed a shared HEVC
+compatibility profile had intersected the 1080p raw-Dolby-Vision limits with the
+independent 4K native Profile 5 limits. The shared profile now uses the largest
+authorized compatibility envelope so it cannot reimpose a weaker route's cap;
+the range-scoped measured profiles still enforce the exact resolution, level,
+frame-rate, bit-depth, and profile bounds for each route.
+
+The corrected private Profile 5 matrix passes lifecycle, active device loss,
+and paused device loss on Jellyfin 12 nightly and Chrome 151. Client and server
+both report DirectPlay with no transcode reasons. The native HEVC path delivered
+Profile 5 RPUs and frames to the external-texture shader, bundled E-AC-3 decoded
+the selected 5.1 track to bounded stereo PCM, and all three cases completed
+without fallback, browser errors, or observed ownership warnings. This is one
+private title on one browser/GPU system, not completion of the Profile 5 release
+matrix.
+
 Remaining Group B work:
 
-1. Expand the generated private catalog beyond the completed primary HDR10
-   browser matrix to the remaining color/HDR/Dolby Vision routes, worker cases,
-   and mpv A/B records, then execute and approve those matrices.
+1. Expand the generated private catalog beyond the completed primary HDR10 and
+   initial Profile 5 browser matrices to the remaining color/HDR/Dolby Vision
+   routes, worker cases, and mpv A/B records, then execute and approve them.
 2. Unify failure injection by case ID. Bounded active-session API and sanitized
    server-log evidence are complete.
 3. Add manual-observation ingestion and pairwise/boundary matrix generation.
@@ -232,9 +254,19 @@ channel bed.
   and the prewarmed Profile 5 fixture version 2. The Profile 5 maximum
   normalized input and output errors were 0.00497875 and 0.00267303
   respectively, with no fallback or browser error.
+- Failure diagnostics now retain only profile entries matching the active
+  container and video/audio codecs plus bounded playback-decision fields. The
+  Profile 5 negotiation fix keeps a non-blocking shared compatibility envelope
+  while route-scoped measured profiles retain exact independent caps.
 
 ## Completed checkpoint gates
 
+- The Profile 5 negotiation worktree checkpoint passed all 15 canonical
+  fixture hashes and cases plus all 10 checks: 384 focused Vitest tests across
+  19 files, 143 standalone Node tests, 57 Python tests, TypeScript,
+  runtime-toolchain readiness, downmix/artifact freshness, and a development
+  build. The independent HDR10 lifecycle regression and the three-case private
+  Profile 5 matrix also passed on Jellyfin 12 nightly.
 - The static-HDR-metadata checkpoint passed the canonical matrix: all 15
   fixture hashes, 15 exact cases, and 10 required checks, including TypeScript,
   focused Vitest codec contracts, 143 standalone Node tests, 57 Python tests,
@@ -269,6 +301,9 @@ channel bed.
 - Injected WebGPU device loss recovered exactly once without restarting or
   falling back. External PQ/HLG, Profile 5 fixture version 2, and Profile 7
   base/FEL authorizations remained valid.
+- The real-title Profile 5 private matrix passed lifecycle, active device loss,
+  and paused device loss through custom DirectPlay with decoded 5.1 E-AC-3,
+  external Profile 5 presentation, and no transcode reasons or fallback.
 
 ## Remaining product validation
 

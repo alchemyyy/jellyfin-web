@@ -739,6 +739,41 @@ function numericConditionCapsAt(
     }
 }
 
+function widenNumericMaximumCondition(
+    condition: ProfileCondition,
+    property: string,
+    maximumValue: number
+): ProfileCondition {
+    if (condition.Property !== property) {
+        return condition;
+    }
+
+    let conditionMaximum: number | null = null;
+    switch (condition.Condition) {
+        case 'Equals':
+        case LESS_THAN_EQUAL_CONDITION:
+            conditionMaximum = parseFiniteNumber(condition.Value);
+            break;
+        case EQUALS_ANY_CONDITION: {
+            const conditionValues = condition.Value?.split('|').map(parseFiniteNumber) ?? [];
+            if (conditionValues.length > 0 && conditionValues.every(value => value !== null)) {
+                conditionMaximum = Math.max(...conditionValues as number[]);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    if (conditionMaximum === null || conditionMaximum > maximumValue) {
+        return condition;
+    }
+    return {
+        ...condition,
+        Condition: LESS_THAN_EQUAL_CONDITION,
+        Value: String(maximumValue)
+    };
+}
+
 type RawHDRCapabilityLimits = {
     maximumCodedHeight: number
     maximumCodedWidth: number
@@ -762,13 +797,38 @@ function createRawHDRConditions(
         return null;
     }
 
-    const widenedConditions = conditions.map(condition => (
-        condition.Condition === EQUALS_ANY_CONDITION
-        && condition.Property === VIDEO_RANGE_TYPE_PROPERTY ? {
+    const widenedConditions = conditions.map(condition => {
+        if (condition.Condition === EQUALS_ANY_CONDITION
+            && condition.Property === VIDEO_RANGE_TYPE_PROPERTY) {
+            return {
                 ...condition,
                 Value: getRawHDRVideoRangeTypeValue(includeSDR, rawHDRVideoRangeTypes)
-            } : condition
-    ));
+            };
+        }
+
+        let widenedCondition = widenNumericMaximumCondition(
+            condition,
+            VIDEO_FRAMERATE_PROPERTY,
+            limits.maximumFramesPerSecond
+        );
+        if (limits.maximumLevel !== null) {
+            widenedCondition = widenNumericMaximumCondition(
+                widenedCondition,
+                VIDEO_LEVEL_PROPERTY,
+                limits.maximumLevel
+            );
+        }
+        widenedCondition = widenNumericMaximumCondition(
+            widenedCondition,
+            VIDEO_WIDTH_PROPERTY,
+            limits.maximumCodedWidth
+        );
+        return widenNumericMaximumCondition(
+            widenedCondition,
+            VIDEO_HEIGHT_PROPERTY,
+            limits.maximumCodedHeight
+        );
+    });
     const hasVideoRangeCondition = conditions.some(condition => (
         condition.Property === VIDEO_RANGE_TYPE_PROPERTY
     ));
@@ -788,7 +848,7 @@ function createRawHDRConditions(
             Value: String(MAXIMUM_RAW_HDR_VIDEO_BIT_DEPTH)
         });
     }
-    if (!conditions.some(condition => numericConditionCapsAt(
+    if (!widenedConditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_FRAMERATE_PROPERTY,
         limits.maximumFramesPerSecond
@@ -801,7 +861,7 @@ function createRawHDRConditions(
         });
     }
     const maximumLevel = limits.maximumLevel;
-    if (maximumLevel !== null && !conditions.some(condition => numericConditionCapsAt(
+    if (maximumLevel !== null && !widenedConditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_LEVEL_PROPERTY,
         maximumLevel
@@ -813,7 +873,7 @@ function createRawHDRConditions(
             Value: String(maximumLevel)
         });
     }
-    if (!conditions.some(condition => numericConditionCapsAt(
+    if (!widenedConditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_WIDTH_PROPERTY,
         limits.maximumCodedWidth
@@ -825,7 +885,7 @@ function createRawHDRConditions(
             Value: String(limits.maximumCodedWidth)
         });
     }
-    if (!conditions.some(condition => numericConditionCapsAt(
+    if (!widenedConditions.some(condition => numericConditionCapsAt(
         condition,
         VIDEO_HEIGHT_PROPERTY,
         limits.maximumCodedHeight
@@ -952,34 +1012,31 @@ function getNativeHDRCapabilityLimits(
     };
 }
 
-function intersectOptionalMaximum(first: number | null, second: number | null): number | null {
-    if (first === null) {
-        return second;
+function expandOptionalMaximum(first: number | null, second: number | null): number | null {
+    if (first === null || second === null) {
+        return null;
     }
-    if (second === null) {
-        return first;
-    }
-    return Math.min(first, second);
+    return Math.max(first, second);
 }
 
-function intersectCapabilityLimits(
+function createCapabilityEnvelope(
     first: RawHDRCapabilityLimits,
     second: RawHDRCapabilityLimits
 ): RawHDRCapabilityLimits {
     return {
-        maximumCodedHeight: Math.min(
+        maximumCodedHeight: Math.max(
             first.maximumCodedHeight,
             second.maximumCodedHeight
         ),
-        maximumCodedWidth: Math.min(
+        maximumCodedWidth: Math.max(
             first.maximumCodedWidth,
             second.maximumCodedWidth
         ),
-        maximumFramesPerSecond: Math.min(
+        maximumFramesPerSecond: Math.max(
             first.maximumFramesPerSecond,
             second.maximumFramesPerSecond
         ),
-        maximumLevel: intersectOptionalMaximum(
+        maximumLevel: expandOptionalMaximum(
             first.maximumLevel,
             second.maximumLevel
         )
@@ -1515,16 +1572,16 @@ function appendMeasuredVideoRouteProfiles(
     }
 }
 
-function combineCapabilityLimits(
+function createCompatibilityCapabilityEnvelope(
     candidates: readonly RawHDRCapabilityLimits[]
 ): RawHDRCapabilityLimits | null {
-    let combinedLimits: RawHDRCapabilityLimits | null = null;
+    let capabilityEnvelope: RawHDRCapabilityLimits | null = null;
     for (const limits of candidates) {
-        combinedLimits = combinedLimits ?
-            intersectCapabilityLimits(combinedLimits, limits) :
+        capabilityEnvelope = capabilityEnvelope ?
+            createCapabilityEnvelope(capabilityEnvelope, limits) :
             limits;
     }
-    return combinedLimits;
+    return capabilityEnvelope;
 }
 
 function getAuthorizedHEVCRangeTypes(
@@ -1584,7 +1641,9 @@ function createAuthorizedHEVCProfilePlan(
             limitCandidates.push(limits);
         }
     }
-    const combinedLimits = combineCapabilityLimits(limitCandidates);
+    // This shared profile must not reimpose a weaker route's limits. Exact
+    // measured profiles below retain the per-range capability boundaries.
+    const combinedLimits = createCompatibilityCapabilityEnvelope(limitCandidates);
     const rangeTypes = getAuthorizedHEVCRangeTypes(
         authorizedRoutes,
         rawHEVCLimits,

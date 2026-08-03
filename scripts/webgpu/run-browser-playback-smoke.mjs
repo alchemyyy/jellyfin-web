@@ -1750,6 +1750,96 @@ async function collectPlaybackDecisionEvidence(client, accessKey, configuration)
     });
 }
 
+function createDeviceProfileDiagnosticsExpression(accessKey) {
+    return `(async () => {
+        const capture = window[${JSON.stringify(accessKey)}]?.();
+        const player = capture?.player;
+        const item = player?.streamInfo?.item ?? null;
+        if (!player || !item || typeof player.getDeviceProfile !== 'function') {
+            return null;
+        }
+        const profile = await player.getDeviceProfile(item, { isRetry: false });
+        const mediaSource = player.streamInfo?.mediaSource ?? null;
+        const mediaStreams = Array.isArray(mediaSource?.MediaStreams)
+            ? mediaSource.MediaStreams
+            : [];
+        const hasToken = (value, token) => typeof value === 'string'
+            && value.toLowerCase().split(',').map(part => part.trim()).includes(token);
+        const container = typeof mediaSource?.Container === 'string'
+            ? mediaSource.Container.toLowerCase().split(',')[0].trim()
+            : null;
+        const videoCodec = mediaStreams.find(stream => (
+            String(stream?.Type).toLowerCase() === 'video'
+        ))?.Codec?.toLowerCase() ?? null;
+        const audioCodecs = Array.from(new Set(mediaStreams.filter(stream => (
+            String(stream?.Type).toLowerCase() === 'audio'
+            && typeof stream.Codec === 'string'
+        )).map(stream => stream.Codec.toLowerCase())));
+        const matchesContainer = value => {
+            if (!container || typeof value !== 'string' || !value.trim()) {
+                return true;
+            }
+            const normalizedValue = value.toLowerCase().trim();
+            const isNegative = normalizedValue.startsWith('-');
+            const tokens = (isNegative ? normalizedValue.slice(1) : normalizedValue)
+                .split(',')
+                .map(part => part.trim());
+            return isNegative ? !tokens.includes(container) : tokens.includes(container);
+        };
+        const matchesCodec = (value, codec) => !codec || !value || hasToken(value, codec);
+        return {
+            audioCodecProfiles: (profile?.CodecProfiles ?? []).filter(codecProfile => (
+                codecProfile?.Type === 'VideoAudio'
+                && matchesContainer(codecProfile.Container)
+                && (audioCodecs.length === 0 || audioCodecs.some(codec => (
+                    matchesCodec(codecProfile.Codec, codec)
+                )))
+            )),
+            directPlayProfiles: (profile?.DirectPlayProfiles ?? []).filter(directPlayProfile => (
+                directPlayProfile?.Type === 'Video'
+                && matchesContainer(directPlayProfile.Container)
+                && matchesCodec(directPlayProfile.VideoCodec, videoCodec)
+            )),
+            media: { audioCodecs, container, videoCodec },
+            videoCodecProfiles: (profile?.CodecProfiles ?? []).filter(codecProfile => (
+                codecProfile?.Type === 'Video'
+                && matchesContainer(codecProfile.Container)
+                && matchesCodec(codecProfile.Codec, videoCodec)
+            ))
+        };
+    })()`;
+}
+
+async function attachPlaybackDecisionFailureDiagnostics(
+    error,
+    client,
+    accessKey,
+    configuration
+) {
+    if (!(error instanceof SmokeHarnessError)) {
+        return;
+    }
+    try {
+        const [ playbackDecision, deviceProfile ] = await Promise.all([
+            evaluateValue(
+                client,
+                createPlaybackDecisionExpression(accessKey, configuration.itemID)
+            ),
+            evaluateValue(
+                client,
+                createDeviceProfileDiagnosticsExpression(accessKey)
+            ).catch(() => null)
+        ]);
+        error.diagnostics = {
+            deviceProfile,
+            playbackDecision,
+            snapshot: error.diagnostics
+        };
+    } catch {
+        // Preserve the primary failure when decision evidence is unavailable
+    }
+}
+
 async function capturePresentedFrameEvidence(client) {
     const captureRectangle = await evaluateValue(client, `(() => {
         const canvases = Array.from(document.querySelectorAll(
@@ -4409,6 +4499,14 @@ async function runPlaybackExercise(
             description: 'active custom-decoded WebGPU playback',
             errorCode: 'custom-playback-timeout',
             timeoutMilliseconds: configuration.timeoutMilliseconds
+        }).catch(async error => {
+            await attachPlaybackDecisionFailureDiagnostics(
+                error,
+                client,
+                accessKey,
+                configuration
+            );
+            throw error;
         });
         const initialFrameEvidence = await captureExpectedPresentedFrameEvidence(
             client,

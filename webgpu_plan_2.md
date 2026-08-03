@@ -369,7 +369,7 @@ decode that codec. The server profile is widened only from measured evidence.
 | HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p plus a separate exact 3840x2160 tier. Bundled Main is constrained to 1920x1080, Level 120, qualified frame rate, and a passing throughput/fingerprint probe. | Implemented and runtime-gated. Source bitrate is not a route constraint. Bundled distribution still requires HEVC patent/jurisdiction review. |
 | HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Raw capability is probed at 3840x2160 and assigned only a measured 24/30/60 fps tier with 1.25x headroom. Bundled tiers retain independent geometry, level, output-fingerprint, and throughput bounds. | Implemented and runtime-gated. A slow bundled 4K decoder is correctly rejected without consulting source bitrate. |
 | HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and a local High Tier HDR10 regression source. |
-| Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. Broader real-title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
+| Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. One private 4K real title passes DirectPlay lifecycle plus active/paused device-loss recovery with decoded 5.1 E-AC-3. Broader title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
 | Dolby Vision Profile 7 MEL | HEVC base-layer decode + RPU reconstruction on the HDR10-compatible BL | Raw I420P10 route with exact device authorization. | Implemented. Must expand end-to-end disc/container and fallback coverage. |
 | Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
 | Dolby Vision Profile 8.x | HEVC BL decode + RPU reconstruction; verified HDR10 or HLG-compatible base fallback where applicable | Raw I420P10 route under the applicable exact authorization. | Implemented for supported single-layer descriptors. Expand the Profile 8.1/8.4 and malformed-metadata matrix before release. |
@@ -710,6 +710,12 @@ The corresponding static checkpoint passed 15 canonical cases, 57 Python
 tests, 143 standalone Node tests, 383 focused Vitest tests, TypeScript,
 runtime-toolchain readiness, and a development build.
 
+The Profile 5 negotiation checkpoint passed the same 15 canonical fixtures and
+cases plus all 10 checks, with 384 focused Vitest tests, 143 standalone Node
+tests, 57 Python tests, TypeScript, runtime-toolchain readiness, and a
+development build. Separate private live runs passed the HDR10 lifecycle
+regression and Profile 5 lifecycle, active device loss, and paused device loss.
+
 Remaining Group B work is populating and executing the generated private
 HDR/color/startup/soak/mpv records, one case-ID failure-injection vocabulary
 across the smoke tools, manual-observation ingestion, and pairwise/boundary
@@ -858,6 +864,15 @@ error or ownership warning. Ten-second pacing presented 238 changed frames with
 PCM RMS differed by 0.00032 dB with identical peaks. Residual visual difference
 is concentrated in chroma/gamut behavior because the current analytic gamut
 compression is not libplacebo's generated 3D perceptual LUT.
+
+One private 4K Profile 5 title now passes lifecycle, active device loss, and
+paused device loss through native HEVC `VideoFrame` decode, matching RPU
+delivery, external-texture reconstruction, and decoded 5.1 E-AC-3. Both client
+and Jellyfin report DirectPlay with no transcode reasons. The negotiation fix
+uses a non-blocking shared authorized envelope because Jellyfin cumulatively
+evaluates matching profiles, while range-scoped measured profiles retain every
+exact per-route cap. This is initial real-title evidence, not the complete
+Profile 5 title/browser/GPU matrix.
 
 ### Group F: Negotiation and capability safety
 
@@ -1055,6 +1070,8 @@ Rules that prevent duplicated work:
   and complete an exact five-frame browser/mpv static-and-dynamic spline A/B.
 - [x] Dolby Vision Profile 5/8, Profile 7 MEL, and implemented FEL code paths.
 - [x] Complete native external PQ/HLG checkpoint.
+- [x] Pass one real-title Profile 5 DirectPlay lifecycle plus active and paused
+  device-loss recovery with decoded 5.1 E-AC-3 and no transcode reasons.
 - [ ] Build the complete HDR/DV golden and live-title matrix.
 - [ ] Validate Profile 7 FEL for all claimed container topologies and sustained
   dual-decoder playback.
@@ -1376,7 +1393,9 @@ as a separate checkpoint to preserve review and live-validation isolation.
 - [ ] Run an SDR H.264/HEVC/VP9/AV1 identity regression set.
 - [ ] Run private Dolby Vision regression cases for every route currently
   claimed by its source topology; distinguish actual custom DirectPlay from an
-  HTML-transcoded source in the evidence.
+  HTML-transcoded source in the evidence. One Profile 5 title now passes the
+  lifecycle and both device-loss cases; Profile 7/8 and broader Profile 5
+  coverage remain.
 - [ ] Exercise one native-media audio case and one decoded-PCM case to ensure the
   new video route did not change audio clocks or track selection.
 - [x] Inspect browser console, Jellyfin PlaybackInfo, worker retirement,
