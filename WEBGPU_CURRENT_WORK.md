@@ -4,11 +4,12 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `6e7dd11bd2870b9425868955385b1d81c7e3580b`
+Parent checkpoint: `277e304763411d9d01ddd3010d37a2c058c99fb4`
 
-Checkpoint state: generated private live-case catalog and bounded Jellyfin
-playback-decision evidence are committed and pushed; bounded server-log
-evidence is implemented and live-validated in the current worktree
+Checkpoint state: generated private live-case catalog, bounded Jellyfin
+playback-decision evidence, and server-log evidence are committed and pushed;
+route-aware startup and the complete primary HDR10 browser matrix are validated
+in the current worktree
 
 ## Current objective
 
@@ -115,11 +116,28 @@ required checks: 57 Python tests, 143 standalone Node tests, 383 focused Vitest
 tests, TypeScript, runtime-toolchain readiness, and a development build. Source
 feature flags remain disabled.
 
+The generated High Tier HDR startup gate now excludes the color-invalid
+presentation-only mode by exact route, while SDR identity retains all three
+modes. The passed rerun contains 10 matched HTML/custom rounds plus two warmups,
+22 exact server start/stop pairs, zero server errors, zero transcode-log
+activity, and no private-value leak. Custom median/p95 first-visible-frame
+regression versus HTML was -79.3/-11.9 ms; custom first-audio regression was
+-24.1/84.0 ms, inside the fixed release thresholds.
+
+The complete browser-only primary HDR10 matrix passes all six cases and seven
+checks across 62 controlled DirectPlay sessions: lifecycle, five-session reuse,
+active and paused device loss, startup, and 30-session retention. Every case
+recorded exact paired server starts/stops, zero server errors/warnings, zero
+transcode-log activity, and zero browser errors. Device-loss cases performed
+one recovery without source restart. The retention run ended with no live GPU,
+`VideoFrame`, custom worker, or WASM objects; listener/node growth was zero,
+and all heap slopes/growth stayed inside the fixed gates.
+
 Remaining Group B work:
 
-1. Populate the generated private catalog with exact local color/HDR, browser
-   lifecycle, worker, startup, retention/soak, and mpv A/B source records, then
-   execute and approve those matrices.
+1. Expand the generated private catalog beyond the completed primary HDR10
+   browser matrix to the remaining color/HDR/Dolby Vision routes, worker cases,
+   and mpv A/B records, then execute and approve those matrices.
 2. Unify failure injection by case ID. Bounded active-session API and sanitized
    server-log evidence are complete.
 3. Add manual-observation ingestion and pairwise/boundary matrix generation.

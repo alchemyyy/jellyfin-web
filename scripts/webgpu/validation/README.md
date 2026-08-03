@@ -168,6 +168,11 @@ record is accepted only for the FEL route. Optional mpv A/B records use an
 environment-backed capture plan and source. Every generated browser check also
 requires exact Jellyfin `DirectPlay`; an active server transcode or nonempty
 transcode-reason list fails the case instead of relying on the case metadata.
+The startup exercise is route-aware: SDR identity runs HTML, presentation-only,
+and custom modes, while HDR/Dolby Vision runs HTML and custom modes because the
+player intentionally leaves native HDR media on the browser-managed surface.
+Every applicable mode still receives one warmup plus the configured measured
+sample count.
 
 Run one generated source matrix or the aggregate matrix with:
 

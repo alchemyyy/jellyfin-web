@@ -766,27 +766,34 @@ advance decoded presentation, report no stale custom events, and clean up with
 exactly one additional stop event.
 
 Set `WEBGPU_SMOKE_STARTUP_SAMPLES=10` for the isolated release startup gate.
-The harness creates one isolated browser context with one temporary, long-lived
-page for each mode. Context isolation prevents Jellyfin's same-origin
-authentication and server-selection state from making the three modes replace
-or redirect one another. It runs one unmeasured warmup in each page, then
-measures the same item once per mode in every round without reloading those
-pages. Odd rounds use HTML, presentation, custom order; even rounds reverse
-native and custom around presentation. This balances run-order drift while
-keeping every round matched by sample number on the same browser, server,
-account, and item.
+For SDR identity input, the harness creates isolated long-lived pages for HTML,
+HTML-backed WebGPU presentation, and custom decode. For HDR and Dolby Vision it
+creates only HTML and custom-decode pages: the presentation-only player
+intentionally leaves native HDR on the browser-managed video surface because a
+native-media external texture is already browser color-converted. Treating that
+surface as raw PQ, HLG, or Dolby Vision would make the comparison invalid.
+Context isolation prevents Jellyfin's same-origin authentication and server
+selection from making modes replace or redirect one another. It runs one
+unmeasured warmup per applicable mode, then measures the same item once per mode
+in every round without reloading those pages. Odd rounds start with HTML and
+even rounds start with custom; the SDR presentation sample remains between
+them. This balances run-order drift while keeping every round matched by sample
+number on the same browser, server, account, and item.
 
 Each temporary page first loads through a CDP `Fetch` response overlay for
 `config.json` to establish authentication, then receives one synchronized
 measurement-document load before warmup and sampling. HTML disables the WebGPU
 plugin, presentation enables the wrapper but disables custom decode, and custom
 enables the player, custom decode, HDR tone mapping, and diagnostic
-authorization. The served `dist/config.json` is never edited. HTTP caching
-remains enabled so the warmup can populate normal bundle and artifact caches,
-while service workers remain bypassed. The interceptors are drained and
-disabled and all three temporary targets and browser contexts are destroyed
-before the command exits; the user's original page is not repurposed for a
-comparison mode.
+authorization. Presentation-only mode is created only for SDR identity input.
+The served `dist/config.json` is never edited. HTTP caching remains enabled so
+the warmup can populate normal bundle and artifact caches, while service
+workers remain bypassed. The interceptors are drained and disabled and every
+temporary target and browser context is destroyed before the command exits;
+the user's original page is not repurposed for a comparison mode. Server-log
+capture starts only after those temporary contexts are authenticated and
+prepared, so their expected unauthenticated socket probes remain outside the
+measured playback window.
 
 ```powershell
 $env:WEBGPU_SMOKE_STARTUP_SAMPLES = '10'
@@ -809,14 +816,16 @@ its positive bias also includes CDP scheduling and, for audio, the worklet
 telemetry cadence. The report retains warmup and measured samples, matched
 sample numbers, summaries, paired regressions, threshold excesses, and limits.
 
-For every matched round, presentation playing, first-audio when expected, and
+For every matched SDR round, presentation playing, first-audio when expected, and
 first-visible-frame regression is compared with the greater of 50 milliseconds
 or 10 percent of that round's HTML value for the median gate, and the greater
 of 100 milliseconds or 15 percent for the p95 gate. Its local
 canvas-attach-to-frame median must be at most 100 milliseconds and p95 at most
 250 milliseconds. Custom comparisons use the greater of 250 milliseconds or
 20 percent of paired HTML for the median gate and 500 milliseconds or 30
-percent for p95. A gate fails when the median or nearest-rank p95 of matched
+percent for p95. HDR and Dolby Vision report presentation validation as not
+applicable rather than sampling a color-invalid native-media texture. A gate
+fails when the median or nearest-rank p95 of matched
 threshold excess is positive. Native audio uses the media element's first
 `playing` boundary. Custom decoded PCM requires both submitted samples and a
 positive AudioWorklet consumed-frame count, so underflow silence cannot pass.

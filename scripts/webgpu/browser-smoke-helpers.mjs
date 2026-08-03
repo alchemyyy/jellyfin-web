@@ -732,10 +732,19 @@ export function parseSmokeConfiguration(argumentList, environment) {
     };
 }
 
+/** Returns only startup routes that can preserve the configured presentation input. */
+export function getStartupComparisonModes(expectedPresentationRoute) {
+    return expectedPresentationRoute === 'identity-sdr' ?
+        [ 'html', 'presentation', 'custom' ] :
+        [ 'html', 'custom' ];
+}
+
 /** Returns the exact Jellyfin start/stop pair count for one smoke invocation. */
 export function getExpectedServerLogSessionCount(configuration) {
     if (configuration.startupSampleCount > 0) {
-        return 3 * (configuration.startupSampleCount + 1);
+        return getStartupComparisonModes(
+            configuration.expectedPresentationRoute
+        ).length * (configuration.startupSampleCount + 1);
     }
     if (configuration.soakSessionCount > 0) {
         return configuration.soakSessionCount;

@@ -11,8 +11,9 @@ import {
     createStartupSampleModeOrder,
     createFrontendRouteURL,
     deriveRawHDRPlaybackRouteKey,
-    getStartupModeFeatureFlags,
     getExpectedServerLogSessionCount,
+    getStartupComparisonModes,
+    getStartupModeFeatureFlags,
     hasAuthorizedHDRPlaybackRoute,
     hasAuthorizedProfile7FELPlaybackRoute,
     hasAuthorizedRawHDRPlaybackRoute,
@@ -487,6 +488,14 @@ test('alternates native and custom startup order around presentation', () => {
         createStartupSampleModeOrder(2),
         [ 'custom', 'presentation', 'html' ]
     );
+    assert.deepEqual(
+        getStartupComparisonModes('identity-sdr'),
+        [ 'html', 'presentation', 'custom' ]
+    );
+    assert.deepEqual(
+        getStartupComparisonModes('external-hdr-pq'),
+        [ 'html', 'custom' ]
+    );
     assert.throws(() => createStartupSampleModeOrder(0), /positive safe integer/u);
 });
 
@@ -510,11 +519,19 @@ test('counts exact server playback sessions for every exercise shape', () => {
         startupSampleCount: 0
     }), 30);
     assert.equal(getExpectedServerLogSessionCount({
+        expectedPresentationRoute: 'identity-sdr',
         failureInjection: 'none',
         repeatSessionCount: 1,
         soakSessionCount: 0,
         startupSampleCount: 10
     }), 33);
+    assert.equal(getExpectedServerLogSessionCount({
+        expectedPresentationRoute: 'external-hdr-pq',
+        failureInjection: 'none',
+        repeatSessionCount: 1,
+        soakSessionCount: 0,
+        startupSampleCount: 10
+    }), 22);
 });
 
 test('defines isolated feature overlays for every startup mode', () => {

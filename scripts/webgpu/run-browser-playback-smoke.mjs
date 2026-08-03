@@ -11,6 +11,7 @@ import {
     createStartupSampleModeOrder,
     deriveRawHDRPlaybackRouteKey,
     getExpectedServerLogSessionCount,
+    getStartupComparisonModes,
     getStartupModeFeatureFlags,
     hasAuthorizedHDRPlaybackRoute,
     hasConsumedCustomAudio,
@@ -77,7 +78,7 @@ const RETENTION_FINALIZER_DRAIN_MILLISECONDS = 100;
 const MAXIMUM_CLEAN_STOP_DURATION_MICROSECONDS = 900_000;
 const STARTUP_MILESTONE_POLL_MILLISECONDS = 10;
 const BROWSER_VISIBILITY_RESTORE_MILLISECONDS = 250;
-const STARTUP_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
+const STARTUP_RESULT_MODES = Object.freeze([ 'html', 'presentation', 'custom' ]);
 const RETENTION_PERFORMANCE_RESOURCE_METRICS = Object.freeze([
     Object.freeze({ code: 'array-buffer-contents', name: 'ArrayBufferContents' }),
     Object.freeze({ code: 'audio-handlers', name: 'AudioHandlers' }),
@@ -3226,7 +3227,7 @@ async function runStartupModeSample(options) {
 }
 
 function createStartupValidationSamples(samples) {
-    const samplesByMode = Object.fromEntries(STARTUP_MODES.map(mode => [
+    const samplesByMode = Object.fromEntries(STARTUP_RESULT_MODES.map(mode => [
         mode,
         samples.filter(sample => sample.mode === mode)
     ]));
@@ -3268,7 +3269,30 @@ function createStartupValidationSamples(samples) {
     };
 }
 
-async function runStartupComparison(configuration) {
+function validateApplicableStartupPresentationSamples(
+    validationSamples,
+    startupModes,
+    configuration
+) {
+    if (!startupModes.includes('presentation')) {
+        return null;
+    }
+    return validateHTMLVersusPresentationStartupSamples(
+        validationSamples.presentation,
+        {
+            requiredSampleCount: configuration.startupSampleCount,
+            validateFirstAudio: configuration.expectedAudioPath !== 'disabled'
+        }
+    );
+}
+
+async function runStartupComparison(
+    configuration,
+    beginServerLogCaptureAfterPreparation
+) {
+    const startupModes = getStartupComparisonModes(
+        configuration.expectedPresentationRoute
+    );
     const browserWebSocketDebuggerURL = await getBrowserWebSocketDebuggerURL(configuration);
     const browserClient = await RawCDPClient.connect(
         browserWebSocketDebuggerURL,
@@ -3280,7 +3304,7 @@ async function runStartupComparison(configuration) {
     let comparisonFailure = null;
     let comparisonResult = null;
     try {
-        for (const mode of STARTUP_MODES) {
+        for (const mode of startupModes) {
             modeRuntimes.push(await createStartupModeRuntime(
                 browserClient,
                 mode,
@@ -3290,12 +3314,13 @@ async function runStartupComparison(configuration) {
         for (const runtime of modeRuntimes) {
             await prepareStartupModeRuntime(runtime, configuration);
         }
+        await beginServerLogCaptureAfterPreparation();
         const runtimeByMode = Object.fromEntries(modeRuntimes.map(runtime => [
             runtime.mode,
             runtime
         ]));
-        for (let modeIndex = 0; modeIndex < STARTUP_MODES.length; modeIndex++) {
-            const mode = STARTUP_MODES[modeIndex];
+        for (let modeIndex = 0; modeIndex < startupModes.length; modeIndex++) {
+            const mode = startupModes[modeIndex];
             const runtime = runtimeByMode[mode];
             warmupSamples.push(await runStartupModeSample({
                 client: runtime.client,
@@ -3311,7 +3336,9 @@ async function runStartupComparison(configuration) {
             sampleNumber <= configuration.startupSampleCount;
             sampleNumber++
         ) {
-            const modeOrder = createStartupSampleModeOrder(sampleNumber);
+            const modeOrder = createStartupSampleModeOrder(sampleNumber).filter(
+                mode => startupModes.includes(mode)
+            );
             for (let modeIndex = 0; modeIndex < modeOrder.length; modeIndex++) {
                 const mode = modeOrder[modeIndex];
                 const runtime = runtimeByMode[mode];
@@ -3326,12 +3353,10 @@ async function runStartupComparison(configuration) {
             }
         }
         const validationSamples = createStartupValidationSamples(measuredSamples);
-        const presentationValidation = validateHTMLVersusPresentationStartupSamples(
-            validationSamples.presentation,
-            {
-                requiredSampleCount: configuration.startupSampleCount,
-                validateFirstAudio: configuration.expectedAudioPath !== 'disabled'
-            }
+        const presentationValidation = validateApplicableStartupPresentationSamples(
+            validationSamples,
+            startupModes,
+            configuration
         );
         const customValidation = validateHTMLVersusCustomStartupSamples(
             validationSamples.custom,
@@ -3344,7 +3369,11 @@ async function runStartupComparison(configuration) {
         const browserDiagnostics = summarizeBrowserErrorMonitors(
             modeRuntimes.map(runtime => runtime.browserErrorMonitor)
         );
-        appendFailures(failures, 'startup-presentation', presentationValidation.failures);
+        appendFailures(
+            failures,
+            'startup-presentation',
+            presentationValidation?.failures ?? []
+        );
         appendFailures(failures, 'startup-custom', customValidation.failures);
         appendBrowserErrorFailures(failures, browserDiagnostics.counts);
         comparisonResult = {
@@ -3357,7 +3386,8 @@ async function runStartupComparison(configuration) {
                 startupComparison: {
                     customValidation: customValidation.metrics,
                     measuredSamples,
-                    presentationValidation: presentationValidation.metrics,
+                    modes: [ ...startupModes ],
+                    presentationValidation: presentationValidation?.metrics ?? null,
                     sampleCountPerMode: configuration.startupSampleCount,
                     warmupSamples
                 }
@@ -4689,6 +4719,40 @@ async function runPlaybackExercise(
     }
 }
 
+async function runConfiguredPlayback(
+    client,
+    configuration,
+    browserErrorMonitor,
+    workerTargetScope
+) {
+    let configuredServerLogCapture = null;
+    const beginConfiguredCapture = async () => {
+        configuredServerLogCapture = await beginConfiguredServerLogCapture(
+            client,
+            configuration
+        );
+    };
+    if (configuration.startupSampleCount > 0) {
+        return {
+            playbackResult: await runStartupComparison(
+                configuration,
+                beginConfiguredCapture
+            ),
+            serverLogCapture: configuredServerLogCapture
+        };
+    }
+    await beginConfiguredCapture();
+    return {
+        playbackResult: await runPlaybackExercise(
+            client,
+            configuration,
+            browserErrorMonitor,
+            workerTargetScope
+        ),
+        serverLogCapture: configuredServerLogCapture
+    };
+}
+
 async function runSmoke(configuration) {
     const pageTarget = await getBrowserPageTarget(configuration);
     const client = await RawCDPClient.connect(
@@ -4737,27 +4801,22 @@ async function runSmoke(configuration) {
         const loginPerformed = alreadyAuthenticated ?
             false :
             await signInIfRequired(client, configuration);
-        const configuredServerLogCapture = await beginConfiguredServerLogCapture(
-            client,
-            configuration
-        );
         const browserVersion = await client.send('Browser.getVersion');
-        let playbackResult;
+        let configuredPlayback;
         try {
-            playbackResult = configuration.startupSampleCount > 0 ?
-                await runStartupComparison(configuration) :
-                await runPlaybackExercise(
-                    client,
-                    configuration,
-                    browserErrorMonitor,
-                    workerTargetScope
-                );
+            configuredPlayback = await runConfiguredPlayback(
+                client,
+                configuration,
+                browserErrorMonitor,
+                workerTargetScope
+            );
         } catch (error) {
             attachBrowserDiagnostics(error, browserErrorMonitor);
             throw error;
         }
+        const playbackResult = configuredPlayback.playbackResult;
         const serverLogResult = await finishConfiguredServerLogCapture(
-            configuredServerLogCapture,
+            configuredPlayback.serverLogCapture,
             configuration
         );
         if (serverLogResult !== null) {

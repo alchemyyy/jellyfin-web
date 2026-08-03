@@ -683,17 +683,25 @@ driven by `scripts/webgpu/validation_matrix.py`:
   exercise, resolves private match values only in memory, and retains only the
   exact start/stop sequence, policy booleans, counts, and transcode activity.
   DirectPlay rejects any new or changed FFmpeg transcode log.
+- route-aware startup comparison. SDR identity measures HTML,
+  presentation-only WebGPU, and custom decode; HDR/Dolby Vision measures HTML
+  and custom decode because the native-media external texture is already
+  browser color-converted and is not a valid raw HDR presentation input.
 
 The generated-registry checkpoint matrix passed all 15 fixture hashes and cases,
 50 Python tests, 135 standalone Node tests, 383 focused Vitest tests, and
 TypeScript. This is static exact-codec evidence, not a substitute for live
 DirectPlay cases.
 
-The first generated private record passed the live High Tier HDR10 lifecycle
-on Jellyfin 12.0.0/port 8096 and Chrome 151. It selected the exact native
-external-PQ route, decoded PCM audio, emitted no case failures, populated the
-browser/GPU-driver/display/server/feature environment, and passed the report
-secret scan. This single local record does not close the broader route matrix.
+The first generated private record passed the complete live High Tier HDR10
+browser matrix on Jellyfin 12.0.0/port 8096 and Chrome 151. Its lifecycle,
+five-session reuse, active/paused device-loss, startup, and 30-session retention
+cases cover 62 exact DirectPlay sessions with paired server starts/stops, zero
+server/transcode/browser errors, and passing private-value scans. It selected
+the exact native external-PQ route and decoded PCM audio. The retention case
+ended with zero live GPU, `VideoFrame`, custom worker, or WASM objects and zero
+listener/node growth. This is still one source/route and does not close the
+broader route matrix.
 The corresponding static checkpoint passed 15 canonical cases, 57 Python
 tests, 143 standalone Node tests, 383 focused Vitest tests, TypeScript,
 runtime-toolchain readiness, and a development build.
@@ -1349,7 +1357,7 @@ as a separate checkpoint to preserve review and live-validation isolation.
   visual pass.
 - [ ] Inject presentation authorization rejection and require the intended
   bounded fallback without a playback negotiation loop.
-- [ ] Inject device loss while playing and paused; require one replacement
+- [x] Inject device loss while playing and paused; require one replacement
   device, reauthorization, correct exact-time repaint, and no source restart.
 - [ ] Run an SDR H.264/HEVC/VP9/AV1 identity regression set.
 - [ ] Run private Dolby Vision regression cases for every route currently
@@ -1363,11 +1371,15 @@ as a separate checkpoint to preserve review and live-validation isolation.
 
 ### 12.5 Resource and regression gates
 
-- [ ] Run at least three consecutive native external-HDR sessions and verify
+- [x] Run at least three consecutive native external-HDR sessions and verify
   stable workers, listeners, GPU resources, frames, and AudioWorklet state.
-- [ ] Run the checkpoint startup comparison against direct HTML, HTML+WebGPU,
-  and the existing raw custom route; investigate any threshold regression.
-- [ ] Run a short retention snapshot after clean stop.
+- [x] Run the High Tier HDR checkpoint startup comparison against direct HTML
+  and the exact custom external-HDR route. Ten matched rounds passed the fixed
+  custom startup thresholds with 22 exact DirectPlay server lifecycles.
+- [ ] Run the SDR checkpoint startup comparison against direct HTML,
+  HTML+WebGPU identity presentation, and the custom route.
+- [x] Run a 30-session retention snapshot after clean stop. Listener/node and
+  tracked GPU/media object growth were zero; all heap gates passed.
 - [x] Record whether the known Mediabunny `VideoSample` finalizer warning occurs.
   It did not occur in either controlled PQ/HLG lifecycle run. Its causal fix
   remains deferred, but new deterministic leaks or per-session growth block
