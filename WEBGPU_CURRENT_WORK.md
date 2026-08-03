@@ -4,16 +4,15 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `a12dcbd26db4d5ba3c4216f1726bdf3f538a31a5`
+Parent checkpoint: `b3233d2cba5637e3d805400ec0449bd20123b49a`
 
-Checkpoint state: reviewed-baseline support committed and pushed; generated
-fixture-registry integration verified and ready for its checkpoint commit
+Checkpoint state: reviewed baselines and generated fixture registries committed
+and pushed; live HDR/lifecycle matrix integration is in progress
 
 ## Current objective
 
-Land generator-owned fixture registries without retaining a duplicate fixture
-table in the hand-maintained manifest, then continue with live HDR/lifecycle/
-startup/soak/mpv case migration.
+Migrate live HDR/lifecycle/startup/soak/mpv evidence into the unified matrix
+without duplicating route, fixture, or exercise definitions per private title.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -70,15 +69,33 @@ Source feature flags remain false. Static success does not claim live Jellyfin
 DirectPlay; live cases must use exact private overlays or later canonical
 distributable fixtures.
 
+The live integration slice now adds a checked catalog of 18 exact SDR/HDR/
+Dolby Vision presentation routes and eight lifecycle/fault/startup/retention
+exercises. `generate_validation_live_overlay.py` expands ignored private source
+specifications into content-addressed overlays, computes media hashes, verifies
+private input presence, and validates the result through the production loader.
+Exact route assertions distinguish external PQ/HLG, raw PQ/HLG, Profile 5,
+Profile 7 MEL/FEL/base fallback, and Profile 8 instead of accepting any generic
+HDR route. Browser evidence now records browser, WebGPU/CDP GPU and driver,
+display HDR, Jellyfin version/platform, and the request-intercepted feature
+flags in the shared environment header.
+
+The generated private High Tier HDR10 lifecycle case passed end to end on the
+live Jellyfin 12.0.0 port-8096 session with Chrome 151, the exact native
+external-PQ route, decoded PCM audio, no failures, and sanitized evidence. The
+run populated the NVIDIA adapter/driver, SDR display state, server version, and
+active feature flags instead of `not-recorded` placeholders. This is one local
+route execution, not the complete private-live matrix.
+
 Remaining Group B work:
 
-1. Move the color/HDR authorization, browser lifecycle, worker, startup,
-   retention/soak, and mpv A/B cases into canonical or private records.
+1. Populate the generated private catalog with exact local color/HDR, browser
+   lifecycle, worker, startup, retention/soak, and mpv A/B source records, then
+   execute and approve those matrices.
 2. Unify failure injection by case ID and add sanitized server API/log capture.
 3. Add manual-observation ingestion and pairwise/boundary matrix generation.
-4. Populate browser, GPU/driver, server version, display state, and active flags
-   from live adapter evidence rather than leaving explicit `not-recorded`
-   records.
+4. Execute the same environment contract on Edge plus AMD and Intel systems;
+   retain explicit `not-recorded` values only for matrices with no live adapter.
 
 ## Exact codec checkpoint
 
@@ -154,6 +171,11 @@ channel bed.
 
 ## Completed checkpoint gates
 
+- The live-catalog checkpoint passed 15 canonical fixture hashes/cases and all
+  10 required checks: 57 Python tests, 136 standalone Node tests, 383 focused
+  Vitest tests, TypeScript, runtime-toolchain readiness, and the development
+  build. Changed JavaScript lint, both new JSON Schemas, whitespace checks, and
+  disabled source feature flags also passed.
 - TypeScript passed; Vitest passed 119 files and 1,620 tests; the standalone
   Node harness passed 135 tests; Python discovery passed 21 tests; full ESLint
   completed with zero errors and 97 pre-existing warnings; Stylelint passed.

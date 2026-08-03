@@ -85,7 +85,7 @@ ALLOWED_ADAPTERS = frozenset(
     }
 )
 ENVIRONMENT_ARGUMENT_OPTIONS: Mapping[str, frozenset[str]] = {
-    "browser-smoke": frozenset(),
+    "browser-smoke": frozenset({"--item-id"}),
     "mpv-ab": frozenset(
         {"--ffmpeg", "--manifest", "--mpv", "--node", "--output", "--source"}
     ),
@@ -1733,8 +1733,11 @@ def merge_environment_evidence(
     if not isinstance(structured_output, dict):
         return
     adapter = check["adapter"]
-    if adapter == "browser-smoke" and isinstance(structured_output.get("browser"), dict):
-        environment["browser"] = sanitize_value(structured_output["browser"], replacements)
+    if adapter == "browser-smoke":
+        for evidence_name in ("browser", "featureFlags", "gpu", "server"):
+            evidence = structured_output.get(evidence_name)
+            if isinstance(evidence, dict):
+                environment[evidence_name] = sanitize_value(evidence, replacements)
     if adapter == "toolchain-probe":
         runtime = structured_output.get("runtime")
         if isinstance(runtime, dict) and isinstance(runtime.get("chromium"), dict):

@@ -16,6 +16,7 @@ import {
     hasAuthorizedProfile7FELPlaybackRoute,
     hasAuthorizedRawHDRPlaybackRoute,
     hasConsumedCustomAudio,
+    hasExpectedPresentationRoute,
     hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
     isVideoSampleOwnershipWarning,
@@ -154,6 +155,7 @@ test('parses CLI values before environment values', () => {
         '--expected-video-output', 'raw-planes',
         '--expected-audio', 'ready',
         '--expected-frame-evidence', 'testsrc2-motion',
+        '--expected-presentation-route', 'raw-hdr-pq',
         '--username', 'cli-user',
         '--password', 'cli-password',
         '--repeat-sessions', '3',
@@ -178,6 +180,7 @@ test('parses CLI values before environment values', () => {
         frontendURL: 'http://localhost:8181',
         expectedAudioPath: 'ready',
         expectedFrameEvidence: 'testsrc2-motion',
+        expectedPresentationRoute: 'raw-hdr-pq',
         expectedVideoDecoderBackend: 'bundled-hevc',
         expectedVideoOutputMode: 'raw-planes',
         failureInjection: 'presentation',
@@ -204,6 +207,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--expected-audio-output-channels <number>/u);
     assert.match(SMOKE_USAGE, /--expected-audio-output-rate <number>/u);
     assert.match(SMOKE_USAGE, /--expected-frame-evidence <none\|testsrc2-motion>/u);
+    assert.match(SMOKE_USAGE, /--expected-presentation-route <route>/u);
     assert.match(SMOKE_USAGE, /--completion-mode <controlled-stop\|natural-end>/u);
     assert.match(SMOKE_USAGE, /--repeat-sessions <1-5>/u);
     assert.match(
@@ -216,6 +220,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_AUDIO_STREAM_INDEX/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS/u);
@@ -1091,6 +1096,67 @@ test('requires the exact native Main10 external HDR route authorization', () => 
             neutralizeHDRColorMetadata: false
         }
     }), false);
+});
+
+test('matches exact SDR, HDR, and Dolby Vision presentation routes', () => {
+    const SDRSnapshot = createActiveSnapshot({
+        presentationInputMode: 'external-texture'
+    });
+    assert.equal(hasExpectedPresentationRoute(SDRSnapshot, 'identity-sdr'), true);
+    assert.equal(hasExpectedPresentationRoute(SDRSnapshot, 'external-hdr-pq'), false);
+
+    const externalPQSnapshot = {
+        customPlaybackEligibility: {
+            eligible: true,
+            hdr: true,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        },
+        externalHDRValidation: {
+            authorizedRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' ],
+            fixtureVersion: 2,
+            renderSettingsVersion: 5,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentationInputMode: 'external-hdr'
+    };
+    assert.equal(hasExpectedPresentationRoute(externalPQSnapshot, 'external-hdr-pq'), true);
+    assert.equal(hasExpectedPresentationRoute(externalPQSnapshot, 'external-hdr-hlg'), false);
+
+    const rawProfile7Snapshot = {
+        dolbyVisionProfile: 7,
+        dolbyVisionValidation: {
+            fixtureVersion: 3,
+            renderSettingsVersion: 5,
+            routeKey: 'I420P10:dovi-profile7-base-v1',
+            sampleCount: 18,
+            status: 'authorized',
+            targetFormat: 'bgra8unorm'
+        },
+        presentation: {
+            dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
+            dolbyVisionProfile7FELPresentedFrameCount: 0,
+            dolbyVisionProfile7MELPresentedFrameCount: 4
+        },
+        presentationInputMode: 'raw-dolby-vision'
+    };
+    assert.equal(
+        hasExpectedPresentationRoute(
+            rawProfile7Snapshot,
+            'raw-dolby-vision-profile7-mel'
+        ),
+        true
+    );
+    assert.equal(
+        hasExpectedPresentationRoute(
+            rawProfile7Snapshot,
+            'raw-dolby-vision-profile7-fel'
+        ),
+        false
+    );
 });
 
 function createPresentedFrameEvidence(hash, overrides = {}) {

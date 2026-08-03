@@ -15,6 +15,10 @@ result set.
 | `fixture-registry-fragment-schema.json` | Contract for generator-owned canonical fixture records. |
 | `generated/*.json` | Checked fixture records emitted from the exact bytes and generator-owned metadata. |
 | `overlay-schema.json` | Contract for ignored private records appended to the canonical registries. An overlay cannot replace a canonical ID. |
+| `live-case-catalog.json` | Stable HDR/Dolby Vision routes and lifecycle, fault, startup, and soak exercises. |
+| `live-case-catalog-schema.json` | Contract for the stable live-case catalog. |
+| `live-overlay-spec-schema.json` | Contract for an ignored private source specification. |
+| `live-overlay-spec.example.json` | Path-free High Tier HDR10 example used to generate a private overlay. |
 | `failure-codes.json` | Sole cross-adapter failure vocabulary. Tool-specific diagnostics remain evidence, not new top-level failure codes. |
 | `result-schema.json` | Machine-readable result contract. |
 | `baseline-schema.json` | Immutable reviewed baseline, environment identity, fixture set, and timing-threshold contract. |
@@ -126,6 +130,58 @@ paths, or machine-specific executable paths to `manifest.json`. Add an ignored
 overlay and provide values through environment variables. An environment-backed
 fixture still requires its real byte length, SHA-256, provenance, generator,
 and redistribution license.
+
+Do not hand-copy lifecycle, device-loss, startup, retention, or exact HDR route
+checks for every title. The checked live catalog defines 18 production
+presentation routes and eight shared exercises. Generate an ignored overlay
+from one ignored source specification instead:
+
+```powershell
+python scripts/webgpu/generate_validation_live_overlay.py --list-catalog
+
+Copy-Item `
+    scripts/webgpu/validation/live-overlay-spec.example.json `
+    artifacts/webgpu-validation/private-live-spec.json
+
+$env:WEBGPU_VALIDATION_HDR10_MEDIA = '<private media path>'
+$env:WEBGPU_VALIDATION_HDR10_LICENSE = '<private license evidence path>'
+$env:WEBGPU_VALIDATION_HDR10_ITEM_ID = '<Jellyfin item ID>'
+$env:WEBGPU_VALIDATION_HDR10_MPV_PLAN = '<private mpv A/B plan path>'
+
+python scripts/webgpu/generate_validation_live_overlay.py `
+    --spec artifacts/webgpu-validation/private-live-spec.json `
+    --output artifacts/webgpu-validation/private-live-overlay.json
+```
+
+The generator computes byte length and SHA-256 from the environment-backed
+media, verifies the private media/license/plan inputs exist, expands only the
+selected exercises, and validates the overlay with the production manifest
+loader before atomically publishing it. It never writes a media path, license
+path, item ID, URL, or credential value. Use `--overwrite` for an intentional
+replacement.
+
+Each browser check asserts the exact presentation route, not merely a generic
+HDR boolean. The catalog distinguishes external PQ/HLG, raw PQ/HLG, external
+Profile 5, raw Profile 5/8, and Profile 7 MEL/FEL/base-fallback dispositions,
+with native and bundled decoder variants where they exist. A Profile 7 worker
+record is accepted only for the FEL route. Optional mpv A/B records use an
+environment-backed capture plan and source.
+
+Run one generated source matrix or the aggregate matrix with:
+
+```powershell
+$env:WEBGPU_SMOKE_USERNAME = '<validation account>'
+$env:WEBGPU_SMOKE_PASSWORD = '<validation password>'
+$env:WEBGPU_AB_USERNAME = $env:WEBGPU_SMOKE_USERNAME
+$env:WEBGPU_AB_PASSWORD = $env:WEBGPU_SMOKE_PASSWORD
+
+python scripts/webgpu/validation_matrix.py run `
+    --overlay artifacts/webgpu-validation/private-live-overlay.json `
+    --matrix private-live
+```
+
+The abbreviated structure below documents the low-level overlay contract.
+Prefer the generator so route and lifecycle logic remains single-sourced.
 
 The following abbreviated structure shows the required linkage. Replace the
 descriptive values in an ignored file with measured records; do not commit that
@@ -248,10 +304,20 @@ unittest, ESLint, Stylelint, development/production Webpack, generated-data
 checks, Vite Node, production artifact verification, browser lifecycle smoke,
 Dolby Vision worker smoke, runtime readiness, and mpv/browser A/B capture.
 
-`browser-smoke` reads its existing `WEBGPU_SMOKE_*` variables. `worker-smoke`,
+`browser-smoke` reads its existing `WEBGPU_SMOKE_*` variables and permits a
+per-check environment-backed `--item-id`. Several private titles can therefore
+run in one matrix without copying or exposing their IDs. `worker-smoke`,
 `toolchain-probe`, and `mpv-ab` may map declared environment variables to a
 small adapter-specific option whitelist through `environmentArguments`.
 Arbitrary option names are rejected.
+
+A successful browser adapter contributes bounded browser product/protocol,
+WebGPU adapter/limit/canvas data, CDP GPU device and driver records, display HDR
+state, Jellyfin version/platform, and request-intercepted feature flags to the
+run environment header. Private values are sanitized before evidence is
+written. A reviewed baseline therefore compares the actual browser, GPU,
+driver, display, server, and active feature configuration instead of
+`not-recorded` placeholders.
 
 ## Reviewed baselines
 
@@ -303,8 +369,9 @@ JPEG 2000, progressive MPEG-2 Matroska, seven DTS tuples plus representative
 Matroska demux, and four TrueHD/MLP tuples plus representative Matroska demux.
 It does not claim that static checks are live Jellyfin DirectPlay evidence.
 Live title, HDR/Dolby Vision, fault, startup, soak, and cross-browser/GPU cases
-must be added as content-addressed records or private overlays before their
-matrix can pass.
+still require exact private source records and real executions before their
+matrix can pass. Their route/exercise definitions and overlay generation are
+now shared rather than duplicated per title.
 
 Shared case-ID failure injection, server log capture, pairwise matrix
 generation, and manual-observation ingestion remain framework work.

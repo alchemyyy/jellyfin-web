@@ -667,16 +667,32 @@ driven by `scripts/webgpu/validation_matrix.py`:
   progressive MPEG-2, DTS, and TrueHD/MLP fixture records. The effective
   manifest digest covers their ordered hashes without duplicating records in
   the hand-maintained manifest.
+- one checked live-case catalog containing 18 exact SDR/HDR/Dolby Vision
+  presentation routes and eight shared lifecycle, fault, startup, and retention
+  exercises. An ignored source specification generates a content-addressed
+  private overlay without copying paths, item IDs, URLs, or credentials;
+- exact browser-smoke route assertions and live environment evidence for the
+  browser, WebGPU adapter, CDP GPU/driver, display HDR state, Jellyfin version,
+  and request-intercepted feature flags.
 
 The generated-registry checkpoint matrix passed all 15 fixture hashes and cases,
 50 Python tests, 135 standalone Node tests, 383 focused Vitest tests, and
 TypeScript. This is static exact-codec evidence, not a substitute for live
 DirectPlay cases.
 
-Remaining Group B work is one case-ID failure-injection vocabulary across the
-smoke tools, server API/log evidence, manual-observation ingestion, pairwise
-matrix generation, and migration of HDR/color/startup/soak/live cases into
-canonical or private content-addressed records.
+The first generated private record passed the live High Tier HDR10 lifecycle
+on Jellyfin 12.0.0/port 8096 and Chrome 151. It selected the exact native
+external-PQ route, decoded PCM audio, emitted no case failures, populated the
+browser/GPU-driver/display/server/feature environment, and passed the report
+secret scan. This single local record does not close the broader route matrix.
+The corresponding static checkpoint passed 15 canonical cases, 57 Python
+tests, 136 standalone Node tests, 383 focused Vitest tests, TypeScript,
+runtime-toolchain readiness, and a development build.
+
+Remaining Group B work is populating and executing the generated private
+HDR/color/startup/soak/mpv records, one case-ID failure-injection vocabulary
+across the smoke tools, sanitized server API/log evidence, manual-observation
+ingestion, and pairwise/boundary matrix generation.
 
 ### 7.6 Minimum gates
 
@@ -1090,8 +1106,14 @@ Rules that prevent duplicated work:
   time, independent of disabled source and built `config.json` values, for both
   root and `/web/` frontend URLs.
 - [x] Implement the unified validation manifest and result schema foundation.
+- [x] Add a single-sourced private live-case generator covering exact HDR/Dolby
+  Vision route selection, lifecycle, failure recovery, startup, retention,
+  worker, and mpv A/B adapter records.
+- [x] Capture browser, GPU/driver, display HDR, server, and active feature-flag
+  evidence from successful live browser adapters.
 - [ ] Migrate existing color, worker, browser, startup, artifact, and soak tools
-  into the shared framework.
+  into executed and reviewed shared-framework cases. Adapter/catalog migration
+  is complete; exact source records and cross-platform runs remain.
 - [x] Record deterministic fixtures, hashes, generators, provenance, and license
   for the current exact JPEG 2000, progressive MPEG-2, DTS, and TrueHD/MLP
   checkpoint. Add HDR/live/private records as those matrices migrate.

@@ -1,0 +1,380 @@
+{
+  "$schema": "live-case-catalog-schema.json",
+  "exercises": [
+    {
+      "arguments": [
+        "--completion-mode",
+        "controlled-stop",
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "3"
+      ],
+      "fallback": "none",
+      "id": "lifecycle",
+      "tags": [
+        "exercise:lifecycle"
+      ],
+      "thresholds": {},
+      "timeoutSeconds": 600,
+      "title": "full playback lifecycle"
+    },
+    {
+      "arguments": [
+        "--completion-mode",
+        "controlled-stop",
+        "--repeat-sessions",
+        "5",
+        "--seek-storm-count",
+        "0"
+      ],
+      "fallback": "none",
+      "id": "repeat-five",
+      "tags": [
+        "exercise:repeat"
+      ],
+      "thresholds": {
+        "sessionCount": 5
+      },
+      "timeoutSeconds": 1200,
+      "title": "five-session reuse"
+    },
+    {
+      "arguments": [
+        "--completion-mode",
+        "natural-end",
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0"
+      ],
+      "fallback": "none",
+      "id": "natural-end",
+      "tags": [
+        "exercise:eof"
+      ],
+      "thresholds": {},
+      "timeoutSeconds": 7200,
+      "title": "natural EOF and audio-tail drain"
+    },
+    {
+      "arguments": [
+        "--inject-failure",
+        "presentation",
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0"
+      ],
+      "fallback": "native-html-continuation",
+      "id": "presentation-failure",
+      "tags": [
+        "exercise:fault",
+        "fault:presentation"
+      ],
+      "thresholds": {},
+      "timeoutSeconds": 600,
+      "title": "presentation failure and native continuation"
+    },
+    {
+      "arguments": [
+        "--inject-failure",
+        "device-loss",
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0"
+      ],
+      "fallback": "none",
+      "id": "device-loss",
+      "tags": [
+        "exercise:fault",
+        "fault:device-loss"
+      ],
+      "thresholds": {
+        "maximumDeviceRecoveries": 1
+      },
+      "timeoutSeconds": 600,
+      "title": "active device-loss recovery"
+    },
+    {
+      "arguments": [
+        "--inject-failure",
+        "paused-device-loss",
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0"
+      ],
+      "fallback": "none",
+      "id": "paused-device-loss",
+      "tags": [
+        "exercise:fault",
+        "fault:paused-device-loss"
+      ],
+      "thresholds": {
+        "maximumDeviceRecoveries": 1
+      },
+      "timeoutSeconds": 600,
+      "title": "paused device-loss recovery"
+    },
+    {
+      "arguments": [
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0",
+        "--startup-samples",
+        "10"
+      ],
+      "fallback": "none",
+      "id": "startup-ten",
+      "tags": [
+        "exercise:startup"
+      ],
+      "thresholds": {
+        "sampleCountPerMode": 10
+      },
+      "timeoutSeconds": 3600,
+      "title": "ten-sample HTML, presentation, and custom startup comparison"
+    },
+    {
+      "arguments": [
+        "--repeat-sessions",
+        "1",
+        "--seek-storm-count",
+        "0",
+        "--soak-sessions",
+        "30"
+      ],
+      "fallback": "none",
+      "id": "retention-thirty",
+      "tags": [
+        "exercise:soak",
+        "soak:thirty"
+      ],
+      "thresholds": {
+        "sessionCount": 30
+      },
+      "timeoutSeconds": 7200,
+      "title": "thirty-session retention soak"
+    }
+  ],
+  "routes": [
+    {
+      "decoderBackend": "native",
+      "frameMode": "video-frame",
+      "id": "sdr-native",
+      "presentationRoute": "identity-sdr",
+      "tags": [
+        "route:identity-sdr"
+      ],
+      "title": "native SDR identity presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "video-frame",
+      "id": "hdr10-native-external",
+      "presentationRoute": "external-hdr-pq",
+      "tags": [
+        "codec:hevc",
+        "route:external-hdr",
+        "transfer:pq"
+      ],
+      "title": "native HEVC Main10 external HDR10 presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "video-frame",
+      "id": "hlg-native-external",
+      "presentationRoute": "external-hdr-hlg",
+      "tags": [
+        "codec:hevc",
+        "route:external-hdr",
+        "transfer:hlg"
+      ],
+      "title": "native HEVC Main10 external HLG presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "hdr10-native-raw",
+      "presentationRoute": "raw-hdr-pq",
+      "tags": [
+        "codec:hevc",
+        "route:raw-hdr",
+        "transfer:pq"
+      ],
+      "title": "native HEVC Main10 raw HDR10 presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "hdr10-bundled-raw",
+      "presentationRoute": "raw-hdr-pq",
+      "tags": [
+        "codec:hevc",
+        "route:raw-hdr",
+        "transfer:pq"
+      ],
+      "title": "bundled HEVC Main10 raw HDR10 presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "hlg-native-raw",
+      "presentationRoute": "raw-hdr-hlg",
+      "tags": [
+        "codec:hevc",
+        "route:raw-hdr",
+        "transfer:hlg"
+      ],
+      "title": "native HEVC Main10 raw HLG presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "hlg-bundled-raw",
+      "presentationRoute": "raw-hdr-hlg",
+      "tags": [
+        "codec:hevc",
+        "route:raw-hdr",
+        "transfer:hlg"
+      ],
+      "title": "bundled HEVC Main10 raw HLG presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "video-frame",
+      "id": "dovi5-native-external",
+      "presentationRoute": "external-dolby-vision-profile5",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p5",
+        "route:external-dovi"
+      ],
+      "title": "native Dolby Vision Profile 5 external presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "dovi5-native-raw",
+      "presentationRoute": "raw-dolby-vision-profile5",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p5",
+        "route:raw-dovi"
+      ],
+      "title": "native Dolby Vision Profile 5 raw presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "dovi5-bundled-raw",
+      "presentationRoute": "raw-dolby-vision-profile5",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p5",
+        "route:raw-dovi"
+      ],
+      "title": "bundled Dolby Vision Profile 5 raw presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "dovi7-mel-native-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-mel",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-mel",
+        "route:raw-dovi"
+      ],
+      "title": "native Dolby Vision Profile 7 MEL raw presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "dovi7-mel-bundled-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-mel",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-mel",
+        "route:raw-dovi"
+      ],
+      "title": "bundled Dolby Vision Profile 7 MEL raw presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "dovi7-fel-native-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-fel",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-fel",
+        "route:raw-dovi"
+      ],
+      "title": "native Dolby Vision Profile 7 FEL raw presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "dovi7-fel-bundled-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-fel",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-fel",
+        "route:raw-dovi"
+      ],
+      "title": "bundled Dolby Vision Profile 7 FEL raw presentation"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "dovi7-base-native-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-base-fallback",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-base",
+        "route:raw-dovi"
+      ],
+      "title": "native Dolby Vision Profile 7 base fallback"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "dovi7-base-bundled-raw",
+      "presentationRoute": "raw-dolby-vision-profile7-base-fallback",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p7-base",
+        "route:raw-dovi"
+      ],
+      "title": "bundled Dolby Vision Profile 7 base fallback"
+    },
+    {
+      "decoderBackend": "native",
+      "frameMode": "raw-planes",
+      "id": "dovi8-native-raw",
+      "presentationRoute": "raw-dolby-vision-profile8",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p8",
+        "route:raw-dovi"
+      ],
+      "title": "native Dolby Vision Profile 8 raw presentation"
+    },
+    {
+      "decoderBackend": "bundled-hevc",
+      "frameMode": "raw-planes",
+      "id": "dovi8-bundled-raw",
+      "presentationRoute": "raw-dolby-vision-profile8",
+      "tags": [
+        "codec:hevc",
+        "profile:dovi-p8",
+        "route:raw-dovi"
+      ],
+      "title": "bundled Dolby Vision Profile 8 raw presentation"
+    }
+  ],
+  "schemaVersion": 1
+}

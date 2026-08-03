@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-live-case-catalog-v1.json",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "exercises": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "items": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/safeArgument"
+            },
+            "type": "array"
+          },
+          "fallback": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+          },
+          "tags": {
+            "items": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/tag"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "timeoutSeconds": {
+            "maximum": 7200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "arguments",
+          "timeoutSeconds",
+          "fallback",
+          "tags",
+          "thresholds"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "decoderBackend": {
+            "enum": [
+              "bundled-hevc",
+              "native"
+            ]
+          },
+          "frameMode": {
+            "enum": [
+              "raw-planes",
+              "video-frame"
+            ]
+          },
+          "id": {
+            "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+          },
+          "presentationRoute": {
+            "enum": [
+              "external-dolby-vision-profile5",
+              "external-hdr-hlg",
+              "external-hdr-pq",
+              "identity-sdr",
+              "raw-dolby-vision-profile5",
+              "raw-dolby-vision-profile7-base-fallback",
+              "raw-dolby-vision-profile7-fel",
+              "raw-dolby-vision-profile7-mel",
+              "raw-dolby-vision-profile8",
+              "raw-hdr-hlg",
+              "raw-hdr-pq"
+            ]
+          },
+          "tags": {
+            "items": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/tag"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "decoderBackend",
+          "frameMode",
+          "presentationRoute",
+          "tags"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "routes",
+    "exercises"
+  ],
+  "type": "object"
+}

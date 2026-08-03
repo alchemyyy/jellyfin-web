@@ -13,6 +13,7 @@ import {
     getStartupModeFeatureFlags,
     hasAuthorizedHDRPlaybackRoute,
     hasConsumedCustomAudio,
+    hasExpectedPresentationRoute,
     hasReadyNativeMediaAudio,
     isFrontendInitializationReady,
     isVideoSampleOwnershipWarning,
@@ -221,6 +222,17 @@ function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+function copyDefinedProperties(source, propertyNames) {
+    const result = {};
+    for (const propertyName of propertyNames) {
+        const value = source?.[propertyName];
+        if (value !== undefined && value !== null) {
+            result[propertyName] = value;
+        }
+    }
+    return result;
+}
+
 async function readBrowserTargets(configuration) {
     let response;
     try {
@@ -340,6 +352,162 @@ async function getBrowserWebSocketDebuggerURL(configuration) {
         );
     }
     return browserVersion.webSocketDebuggerUrl;
+}
+
+async function collectCDPGPUEvidence(configuration) {
+    const browserWebSocketDebuggerURL = await getBrowserWebSocketDebuggerURL(configuration);
+    const browserClient = await RawCDPClient.connect(
+        browserWebSocketDebuggerURL,
+        configuration.timeoutMilliseconds
+    );
+    try {
+        const systemInformation = await browserClient.send('SystemInfo.getInfo');
+        const GPUInformation = systemInformation?.gpu;
+        if (!GPUInformation || !Array.isArray(GPUInformation.devices)) {
+            throw new SmokeHarnessError(
+                'gpu-environment-unavailable',
+                'Chromium did not expose bounded GPU system information'
+            );
+        }
+        return {
+            devices: GPUInformation.devices.map(device => copyDefinedProperties(device, [
+                'deviceId',
+                'deviceString',
+                'driverVendor',
+                'driverVersion',
+                'revision',
+                'subSysId',
+                'vendorId',
+                'vendorString'
+            ])),
+            driverBugWorkarounds: Array.isArray(GPUInformation.driverBugWorkarounds) ?
+                [ ...GPUInformation.driverBugWorkarounds ].sort() :
+                [],
+            featureStatus: GPUInformation.featureStatus
+                && typeof GPUInformation.featureStatus === 'object' ?
+                { ...GPUInformation.featureStatus } :
+                {}
+        };
+    } finally {
+        browserClient.close();
+    }
+}
+
+async function collectPageRuntimeEnvironment(client) {
+    const expression = String.raw`(async () => {
+        let adapterRecord = null;
+        if (navigator.gpu) {
+            const adapter = await navigator.gpu.requestAdapter();
+            if (adapter) {
+                const adapterInfo = adapter.info ?? {};
+                adapterRecord = {
+                    architecture: adapterInfo.architecture || 'not-exposed',
+                    description: adapterInfo.description || 'not-exposed',
+                    device: adapterInfo.device || 'not-exposed',
+                    features: Array.from(adapter.features).sort(),
+                    isFallbackAdapter: adapterInfo.isFallbackAdapter === true,
+                    limits: {
+                        maxBufferSize: Number(adapter.limits.maxBufferSize),
+                        maxComputeInvocationsPerWorkgroup:
+                            Number(adapter.limits.maxComputeInvocationsPerWorkgroup),
+                        maxStorageBufferBindingSize:
+                            Number(adapter.limits.maxStorageBufferBindingSize),
+                        maxTextureDimension2D: Number(adapter.limits.maxTextureDimension2D)
+                    },
+                    vendor: adapterInfo.vendor || 'not-exposed'
+                };
+            }
+        }
+        let authenticatedSystemInformation = null;
+        try {
+            if (typeof ApiClient === 'object'
+                && typeof ApiClient.getSystemInfo === 'function') {
+                authenticatedSystemInformation = await ApiClient.getSystemInfo();
+            }
+        } catch {
+            if (typeof ApiClient === 'object'
+                && typeof ApiClient.getPublicSystemInfo === 'function') {
+                authenticatedSystemInformation = await ApiClient.getPublicSystemInfo();
+            }
+        }
+        const selectedServerInformation = typeof ApiClient === 'object'
+            && typeof ApiClient.serverInfo === 'function' ?
+            ApiClient.serverInfo() :
+            null;
+        const readServerField = name => authenticatedSystemInformation?.[name]
+            ?? selectedServerInformation?.[name]
+            ?? 'unknown';
+        return {
+            browser: {
+                language: navigator.language || 'unknown',
+                platform: navigator.userAgentData?.platform || navigator.platform || 'unknown',
+                userAgent: navigator.userAgent || 'unknown'
+            },
+            gpu: {
+                adapter: adapterRecord,
+                canvasFormat: navigator.gpu?.getPreferredCanvasFormat?.() ?? 'unavailable',
+                display: {
+                    colorDepth: screen.colorDepth,
+                    devicePixelRatio,
+                    HDRDynamicRange: matchMedia('(dynamic-range: high)').matches,
+                    height: screen.height,
+                    pixelDepth: screen.pixelDepth,
+                    width: screen.width
+                },
+                secureContext: isSecureContext,
+                webGPUAvailable: Boolean(navigator.gpu)
+            },
+            server: {
+                architecture: readServerField('Architecture'),
+                operatingSystem: readServerField('OperatingSystem'),
+                productName: readServerField('ProductName'),
+                version: readServerField('Version')
+            }
+        };
+    })()`;
+    const evidence = await evaluateValue(client, expression);
+    if (!evidence
+        || typeof evidence !== 'object'
+        || typeof evidence.browser !== 'object'
+        || typeof evidence.gpu !== 'object'
+        || typeof evidence.server !== 'object') {
+        throw new SmokeHarnessError(
+            'runtime-environment-unavailable',
+            'The browser did not return bounded runtime environment evidence'
+        );
+    }
+    return evidence;
+}
+
+async function collectRuntimeEnvironmentEvidence(
+    client,
+    browserVersion,
+    configuration
+) {
+    const [ pageEvidence, CDPGPUEvidence ] = await Promise.all([
+        collectPageRuntimeEnvironment(client),
+        collectCDPGPUEvidence(configuration)
+    ]);
+    const customFeatureFlags = getStartupModeFeatureFlags('custom');
+    return {
+        browser: {
+            ...pageEvidence.browser,
+            product: browserVersion.product || 'unknown',
+            protocolVersion: browserVersion.protocolVersion || 'unknown'
+        },
+        featureFlags: {
+            ...customFeatureFlags,
+            comparisonModes: configuration.startupSampleCount > 0 ?
+                [ 'html', 'presentation', 'custom' ] :
+                [ 'custom' ],
+            source: 'request-interceptor'
+        },
+        gpu: {
+            ...pageEvidence.gpu,
+            CDP: CDPGPUEvidence
+        },
+        server: pageEvidence.server
+    };
 }
 
 async function waitForBrowserTargetByID(configuration, targetID) {
@@ -1945,6 +2113,10 @@ function isExpectedCustomPlaybackActive(snapshot, configuration, previousGenerat
         && (configuration.expectedVideoDecoderBackend === null
             || snapshot.customPlaybackEligibility?.videoDecoderBackend
                 === configuration.expectedVideoDecoderBackend)
+        && hasExpectedPresentationRoute(
+            snapshot,
+            configuration.expectedPresentationRoute
+        )
         && (snapshot.customPlaybackEligibility?.hdr !== true
             || hasAuthorizedHDRPlaybackRoute(snapshot))
         && (snapshot.customPlayback?.videoDecode?.receivedFrameCount ?? 0)
@@ -2400,6 +2572,10 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                 && (configuration.expectedVideoDecoderBackend === null
                     || snapshot.customPlaybackEligibility.videoDecoderBackend
                         === configuration.expectedVideoDecoderBackend)
+                && hasExpectedPresentationRoute(
+                    snapshot,
+                    configuration.expectedPresentationRoute
+                )
                 && snapshot.presentation?.state === 'presenting'
                 && snapshot.presentation.fallbackReason === null
                 && snapshot.presentation.presentationSource === 'decoded'
@@ -3280,6 +3456,8 @@ async function runRetentionSoak(options) {
             `soak-${sessionNumber}-playback`,
             validateActivePlaybackSnapshot(activeInitial, activeLater, {
                 expectedAudioPath: options.configuration.expectedAudioPath,
+                expectedPresentationRoute:
+                    options.configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend:
                     options.configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
@@ -3385,6 +3563,8 @@ async function finishNaturalEndExercise(options) {
         'playback',
         validateActivePlaybackSnapshot(options.activeInitial, options.activeLater, {
             expectedAudioPath: options.configuration.expectedAudioPath,
+            expectedPresentationRoute:
+                options.configuration.expectedPresentationRoute,
             expectedVideoDecoderBackend:
                 options.configuration.expectedVideoDecoderBackend,
             expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
@@ -3480,6 +3660,8 @@ async function runRepeatedPlaybackSessions(options) {
             `repeat-${sessionNumber}`,
             validateActivePlaybackSnapshot(initialSnapshot, laterSnapshot, {
                 expectedAudioPath: options.configuration.expectedAudioPath,
+                expectedPresentationRoute:
+                    options.configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend:
                     options.configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: options.configuration.expectedVideoOutputMode
@@ -4059,6 +4241,7 @@ async function runPlaybackExercise(
             'playback',
             validateActivePlaybackSnapshot(activeInitial, activeLater, {
                 expectedAudioPath: configuration.expectedAudioPath,
+                expectedPresentationRoute: configuration.expectedPresentationRoute,
                 expectedVideoDecoderBackend: configuration.expectedVideoDecoderBackend,
                 expectedVideoOutputMode: configuration.expectedVideoOutputMode
             })
@@ -4273,11 +4456,13 @@ async function runSmoke(configuration) {
             attachBrowserDiagnostics(error, browserErrorMonitor);
             throw error;
         }
+        const runtimeEnvironment = await collectRuntimeEnvironmentEvidence(
+            client,
+            browserVersion,
+            configuration
+        );
         return {
-            browser: {
-                product: browserVersion.product || 'unknown',
-                protocolVersion: browserVersion.protocolVersion || 'unknown'
-            },
+            browser: runtimeEnvironment.browser,
             diagnostics: playbackResult.diagnostics,
             expectations: {
                 audioStreamIndex: configuration.audioStreamIndex,
@@ -4286,6 +4471,7 @@ async function runSmoke(configuration) {
                 expectedAudioConfiguration: configuration.expectedAudioConfiguration,
                 audioPath: configuration.expectedAudioPath,
                 failureInjection: configuration.failureInjection,
+                presentationRoute: configuration.expectedPresentationRoute,
                 repeatSessionCount: configuration.repeatSessionCount,
                 seekStormCount: configuration.seekStormCount,
                 soakSessionCount: configuration.soakSessionCount,
@@ -4294,9 +4480,12 @@ async function runSmoke(configuration) {
                 videoOutputMode: configuration.expectedVideoOutputMode
             },
             failures: playbackResult.failures,
+            featureFlags: runtimeEnvironment.featureFlags,
+            gpu: runtimeEnvironment.gpu,
             loginPerformed,
             observations: playbackResult.observations,
             schemaVersion: 1,
+            server: runtimeEnvironment.server,
             status: playbackResult.failures.length === 0 ? 'passed' : 'failed'
         };
     } finally {

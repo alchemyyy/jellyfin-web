@@ -12,7 +12,14 @@ overlays, schemas, and the shared failure vocabulary.
 python scripts/webgpu/validation_matrix.py validate --verify-fixtures
 python scripts/webgpu/validation_matrix.py plan --matrix static
 python scripts/webgpu/validation_matrix.py run --matrix static
+python scripts/webgpu/generate_validation_live_overlay.py --list-catalog
 ```
+
+Use `generate_validation_live_overlay.py` with an ignored source specification
+to expand exact HDR/Dolby Vision routes through the shared lifecycle, fault,
+startup, retention, worker, and mpv A/B adapters. The generated overlay stores
+only environment names and content identities, never private values. The
+complete procedure and schemas are in `validation/README.md`.
 
 The individual commands below remain adapter implementations and focused
 debugging entry points. New release orchestration belongs in the shared matrix,

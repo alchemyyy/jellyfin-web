@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-live-overlay-spec-v1.json",
+  "$defs": {
+    "audioSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "expectedCodec": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": "string"
+        },
+        "exerciseIds": {
+          "items": {
+            "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "outputChannelCount": {
+          "maximum": 32,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "outputSampleRate": {
+          "maximum": 192000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sourceChannelCount": {
+          "maximum": 32,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sourceSampleRate": {
+          "maximum": 192000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "streamIndex": {
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "streamIndex",
+        "expectedCodec",
+        "exerciseIds"
+      ],
+      "type": "object"
+    },
+    "MPV": {
+      "additionalProperties": false,
+      "properties": {
+        "planEnvironment": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+        }
+      },
+      "required": [
+        "planEnvironment"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "audioPath": {
+          "enum": [
+            "disabled",
+            "native-media",
+            "ready"
+          ]
+        },
+        "audioSelection": {
+          "$ref": "#/$defs/audioSelection"
+        },
+        "exerciseIds": {
+          "items": {
+            "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+        },
+        "itemEnvironment": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+        },
+        "licenseEnvironment": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+        },
+        "licenseExpression": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "media": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/fixture/properties/media"
+        },
+        "mediaEnvironment": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+        },
+        "MPV": {
+          "$ref": "#/$defs/MPV"
+        },
+        "provenance": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/fixture/properties/provenance"
+        },
+        "routeId": {
+          "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/identifier"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "worker": {
+          "additionalProperties": false,
+          "properties": {
+            "debugURLEnvironment": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+            },
+            "frontendURLEnvironment": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+            },
+            "mediaURLEnvironment": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+            },
+            "workerURLEnvironment": {
+              "$ref": "https://jellyfin.org/schemas/webgpu-validation-manifest-v1.json#/$defs/environmentName"
+            }
+          },
+          "required": [
+            "debugURLEnvironment",
+            "frontendURLEnvironment",
+            "mediaURLEnvironment"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "routeId",
+        "mediaEnvironment",
+        "licenseEnvironment",
+        "licenseExpression",
+        "itemEnvironment",
+        "audioPath",
+        "exerciseIds",
+        "provenance",
+        "media"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "sources"
+  ],
+  "type": "object"
+}

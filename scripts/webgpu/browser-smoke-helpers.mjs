@@ -65,6 +65,10 @@ const OPTION_DEFINITIONS = Object.freeze({
         environmentName: 'WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE',
         name: 'expectedFrameEvidence'
     },
+    '--expected-presentation-route': {
+        environmentName: 'WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE',
+        name: 'expectedPresentationRoute'
+    },
     '--expected-video-output': {
         environmentName: 'WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT',
         name: 'expectedVideoOutputMode'
@@ -155,6 +159,8 @@ Options:
                          Optional normalized output sample rate
   --expected-frame-evidence <none|testsrc2-motion>
                          Optional canvas evidence for generated smoke media
+  --expected-presentation-route <route>
+                         Optional exact SDR, HDR, or Dolby Vision presentation route
   --completion-mode <controlled-stop|natural-end>
                          Lifecycle exercise; defaults to controlled-stop
   --repeat-sessions <1-5>
@@ -178,6 +184,7 @@ Environment equivalents:
   WEBGPU_SMOKE_SERVER_URL, WEBGPU_SMOKE_ITEM_ID,
   WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT, WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER,
   WEBGPU_SMOKE_EXPECTED_AUDIO, WEBGPU_SMOKE_EXPECTED_FRAME_EVIDENCE,
+  WEBGPU_SMOKE_EXPECTED_PRESENTATION_ROUTE,
   WEBGPU_SMOKE_AUDIO_STREAM_INDEX, WEBGPU_SMOKE_EXPECTED_AUDIO_CODEC,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_CHANNELS,
   WEBGPU_SMOKE_EXPECTED_AUDIO_SOURCE_RATE,
@@ -590,6 +597,26 @@ export function parseSmokeConfiguration(argumentList, environment) {
         '--expected-frame-evidence',
         [ 'none', 'testsrc2-motion' ]
     );
+    const configuredPresentationRoute = configuredValue('expectedPresentationRoute');
+    const expectedPresentationRoute = configuredPresentationRoute === undefined ?
+        null :
+        parseExpectedValue(
+            configuredPresentationRoute,
+            '--expected-presentation-route',
+            [
+                'external-dolby-vision-profile5',
+                'external-hdr-hlg',
+                'external-hdr-pq',
+                'identity-sdr',
+                'raw-dolby-vision-profile5',
+                'raw-dolby-vision-profile7-base-fallback',
+                'raw-dolby-vision-profile7-fel',
+                'raw-dolby-vision-profile7-mel',
+                'raw-dolby-vision-profile8',
+                'raw-hdr-hlg',
+                'raw-hdr-pq'
+            ]
+        );
     const configuredVideoDecoderBackend = configuredValue('expectedVideoDecoderBackend');
     const expectedVideoDecoderBackend = configuredVideoDecoderBackend === undefined ?
         null :
@@ -655,6 +682,7 @@ export function parseSmokeConfiguration(argumentList, environment) {
         expectedAudioConfiguration,
         expectedAudioPath,
         expectedFrameEvidence,
+        expectedPresentationRoute,
         expectedVideoDecoderBackend,
         expectedVideoOutputMode,
         itemID: requireNonEmptyString(configuredValue('itemID'), '--item-id'),
@@ -966,6 +994,92 @@ export function hasAuthorizedHDRPlaybackRoute(snapshot) {
         case 'raw-dolby-vision':
         case 'raw-yuv':
             return hasAuthorizedRawHDRPlaybackRoute(snapshot);
+        default:
+            return false;
+    }
+}
+
+function hasProfile7Disposition(snapshot, disposition) {
+    const presentation = snapshot?.presentation;
+    const MELFrameCount = presentation?.dolbyVisionProfile7MELPresentedFrameCount;
+    const FELBaseFallbackFrameCount =
+        presentation?.dolbyVisionProfile7FELBaseFallbackPresentedFrameCount;
+    const FELFrameCount = presentation?.dolbyVisionProfile7FELPresentedFrameCount;
+    if (![ MELFrameCount, FELBaseFallbackFrameCount, FELFrameCount ].every(value => (
+        Number.isSafeInteger(value) && value >= 0
+    ))) {
+        return false;
+    }
+    switch (disposition) {
+        case 'base-fallback':
+            return FELBaseFallbackFrameCount > 0
+                && FELFrameCount === 0
+                && MELFrameCount === 0;
+        case 'fel':
+            return FELFrameCount > 0
+                && FELBaseFallbackFrameCount === 0
+                && MELFrameCount === 0
+                && hasAuthorizedProfile7FELPlaybackRoute(snapshot);
+        case 'mel':
+            return MELFrameCount > 0
+                && FELBaseFallbackFrameCount === 0
+                && FELFrameCount === 0;
+        default:
+            return false;
+    }
+}
+
+/** Confirms the exact production presentation route selected for a live case. */
+export function hasExpectedPresentationRoute(snapshot, expectedRoute) {
+    switch (expectedRoute) {
+        case null:
+        case undefined:
+            return true;
+        case 'identity-sdr':
+            return snapshot?.customPlaybackEligibility?.hdr === false
+                && snapshot?.presentationInputMode === 'external-texture'
+                && snapshot?.presentation?.mode === 'identity-sdr';
+        case 'external-hdr-pq':
+        case 'external-hdr-hlg': {
+            const expectedTransfer = expectedRoute === 'external-hdr-pq' ? 'pq' : 'hlg';
+            return snapshot?.presentationInputMode === 'external-hdr'
+                && snapshot?.customPlaybackEligibility?.nativeHDRTransfer === expectedTransfer
+                && hasAuthorizedHDRPlaybackRoute(snapshot);
+        }
+        case 'external-dolby-vision-profile5':
+            return snapshot?.presentationInputMode === 'external-dolby-vision'
+                && snapshot?.dolbyVisionProfile === 5
+                && hasAuthorizedHDRPlaybackRoute(snapshot);
+        case 'raw-hdr-pq':
+        case 'raw-hdr-hlg': {
+            const expectedTransfer = expectedRoute === 'raw-hdr-pq' ? 'pq' : 'hlg';
+            return snapshot?.presentationInputMode === 'raw-yuv'
+                && snapshot?.rawHDRPlaybackRouteKey
+                    === `I420P10:bt2020-ncl:bt2020:limited:${expectedTransfer}`
+                && hasAuthorizedRawHDRPlaybackRoute(snapshot);
+        }
+        case 'raw-dolby-vision-profile5':
+        case 'raw-dolby-vision-profile8': {
+            const expectedProfile = expectedRoute === 'raw-dolby-vision-profile5' ? 5 : 8;
+            return snapshot?.presentationInputMode === 'raw-dolby-vision'
+                && snapshot?.dolbyVisionProfile === expectedProfile
+                && hasAuthorizedRawHDRPlaybackRoute(snapshot);
+        }
+        case 'raw-dolby-vision-profile7-base-fallback':
+            return snapshot?.presentationInputMode === 'raw-dolby-vision'
+                && snapshot?.dolbyVisionProfile === 7
+                && hasAuthorizedRawHDRPlaybackRoute(snapshot)
+                && hasProfile7Disposition(snapshot, 'base-fallback');
+        case 'raw-dolby-vision-profile7-fel':
+            return snapshot?.presentationInputMode === 'raw-dolby-vision'
+                && snapshot?.dolbyVisionProfile === 7
+                && hasAuthorizedRawHDRPlaybackRoute(snapshot)
+                && hasProfile7Disposition(snapshot, 'fel');
+        case 'raw-dolby-vision-profile7-mel':
+            return snapshot?.presentationInputMode === 'raw-dolby-vision'
+                && snapshot?.dolbyVisionProfile === 7
+                && hasAuthorizedRawHDRPlaybackRoute(snapshot)
+                && hasProfile7Disposition(snapshot, 'mel');
         default:
             return false;
     }
@@ -1408,6 +1522,7 @@ export function validateActivePlaybackSnapshot(
     const expectedOutputMode = expectations.expectedVideoOutputMode;
     const expectedVideoDecoderBackend = expectations.expectedVideoDecoderBackend;
     const expectedAudioPath = expectations.expectedAudioPath;
+    const expectedPresentationRoute = expectations.expectedPresentationRoute ?? null;
     addFailure(
         failures,
         eligibility?.videoOutputMode === expectedOutputMode,
@@ -1436,6 +1551,11 @@ export function validateActivePlaybackSnapshot(
         failures,
         eligibility?.audioOutputMode === expectedAudioOutputMode,
         'unexpected-audio-output-mode'
+    );
+    addFailure(
+        failures,
+        hasExpectedPresentationRoute(laterSnapshot, expectedPresentationRoute),
+        'unexpected-presentation-route'
     );
     const expectedHDR = expectedOutputMode === 'raw-planes'
         || laterSnapshot.presentationInputMode === 'external-dolby-vision'

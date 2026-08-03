@@ -48,6 +48,8 @@ class ManifestTests(unittest.TestCase):
             "failure-codes-schema.json",
             "failure-codes.json",
             "fixture-registry-fragment-schema.json",
+            "live-case-catalog-schema.json",
+            "live-overlay-spec-schema.json",
             "overlay-schema.json",
             "result-schema.json",
             "schema.json",
@@ -382,12 +384,34 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["failures"][0]["code"], "input-missing")
 
-    def test_runtime_probe_populates_browser_and_server_without_urls(self) -> None:
+    def test_live_adapters_populate_runtime_environment_without_urls(self) -> None:
         environment = {
             "browser": {"status": "not-recorded"},
+            "featureFlags": {"status": "not-recorded"},
+            "gpu": {"status": "not-recorded"},
             "server": {"status": "not-recorded"},
             "tools": {},
         }
+        browser_check = {"id": "browser", "adapter": "browser-smoke"}
+        merge_environment_evidence(
+            environment,
+            browser_check,
+            {
+                "browser": {"product": "Chrome/151"},
+                "featureFlags": {"enableWebGPUVideoPlayer": True},
+                "gpu": {
+                    "adapter": {"vendor": "example"},
+                    "display": {"HDRDynamicRange": False},
+                },
+                "server": {"productName": "Jellyfin", "version": "12.0"},
+            },
+            {},
+        )
+        self.assertEqual(environment["browser"]["product"], "Chrome/151")
+        self.assertTrue(environment["featureFlags"]["enableWebGPUVideoPlayer"])
+        self.assertEqual(environment["gpu"]["adapter"]["vendor"], "example")
+        self.assertEqual(environment["server"]["version"], "12.0")
+
         check = {"id": "runtime", "adapter": "toolchain-probe"}
 
         merge_environment_evidence(

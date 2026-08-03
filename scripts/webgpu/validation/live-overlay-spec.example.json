@@ -1,0 +1,63 @@
+{
+  "$schema": "live-overlay-spec-schema.json",
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "audioPath": "ready",
+      "exerciseIds": [
+        "lifecycle",
+        "repeat-five",
+        "device-loss",
+        "paused-device-loss",
+        "startup-ten",
+        "retention-thirty"
+      ],
+      "id": "private-hdr10-primary",
+      "itemEnvironment": "WEBGPU_VALIDATION_HDR10_ITEM_ID",
+      "licenseEnvironment": "WEBGPU_VALIDATION_HDR10_LICENSE",
+      "licenseExpression": "LicenseRef-Private-Validation-Only",
+      "media": {
+        "audio": {
+          "bitsPerSample": 24,
+          "channelCount": 2,
+          "channelLayout": "stereo",
+          "codec": "flac",
+          "profile": "lossless",
+          "sampleRate": 48000
+        },
+        "container": "matroska",
+        "packetization": "hevc-length-prefixed",
+        "video": {
+          "bitDepth": 10,
+          "chroma": "4:2:0",
+          "codec": "hevc",
+          "frameRate": 23.976025,
+          "height": 2160,
+          "matrix": "bt2020-ncl",
+          "primaries": "bt2020",
+          "profile": "main-10-high-tier-level-5.1",
+          "progressive": true,
+          "range": "limited",
+          "transfer": "pq",
+          "width": 3840
+        }
+      },
+      "mediaEnvironment": "WEBGPU_VALIDATION_HDR10_MEDIA",
+      "MPV": {
+        "planEnvironment": "WEBGPU_VALIDATION_HDR10_MPV_PLAN"
+      },
+      "provenance": {
+        "generatorArguments": [
+          "documented",
+          "private",
+          "acquisition"
+        ],
+        "kind": "upstream",
+        "revision": "local-v1",
+        "source": "Private validation source record"
+      },
+      "routeId": "hdr10-native-external",
+      "title": "Private High Tier HDR10 reference"
+    }
+  ]
+}
