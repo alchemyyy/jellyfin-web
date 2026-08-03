@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hardware-matrix-result-schema.json",
+  "title": "WebGPU hardware and browser matrix result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "generatedAtUTC",
+    "repository",
+    "host",
+    "plan",
+    "coverage",
+    "cells"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "scripts/webgpu/validation/hardware-matrix-result-schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "generatedAtUTC": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "repository": {
+      "$ref": "#/$defs/repository"
+    },
+    "host": {
+      "$ref": "#/$defs/host"
+    },
+    "plan": {
+      "$ref": "#/$defs/plan"
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/cell"
+      }
+    }
+  },
+  "$defs": {
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "dirty"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40,64}$"
+        },
+        "dirty": {
+          "type": "boolean"
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "operatingSystem",
+        "release"
+      ],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operatingSystem": {
+          "type": "string",
+          "minLength": 1
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "browserFamilies",
+        "gpuVendors",
+        "exerciseIds",
+        "authorizationRoutes"
+      ],
+      "properties": {
+        "browserFamilies": {
+          "const": [
+            "chrome",
+            "edge"
+          ]
+        },
+        "gpuVendors": {
+          "const": [
+            "nvidia",
+            "amd",
+            "intel"
+          ]
+        },
+        "exerciseIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "authorizationRoutes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "unsupported",
+        "notRun"
+      ],
+      "properties": {
+        "total": {
+          "const": 6
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "unsupported": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "notRun": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "availability",
+        "version",
+        "product",
+        "protocolVersion"
+      ],
+      "properties": {
+        "family": {
+          "enum": [
+            "chrome",
+            "edge"
+          ]
+        },
+        "availability": {
+          "enum": [
+            "installed",
+            "unavailable"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocolVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "adapter": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "vendor",
+        "architecture",
+        "description",
+        "device",
+        "isFallbackAdapter",
+        "driverVendor",
+        "driverVersion"
+      ],
+      "properties": {
+        "vendor": {
+          "type": "string"
+        },
+        "architecture": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "device": {
+          "type": "string"
+        },
+        "isFallbackAdapter": {
+          "type": "boolean"
+        },
+        "driverVendor": {
+          "type": "string"
+        },
+        "driverVersion": {
+          "type": "string"
+        }
+      }
+    },
+    "webGPU": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "canvasFormat",
+        "adapterFeatures",
+        "adapterLimits",
+        "deviceFeatures",
+        "deviceLimits",
+        "featureStatus"
+      ],
+      "properties": {
+        "canvasFormat": {
+          "type": "string"
+        },
+        "adapterFeatures": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "adapterLimits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "deviceFeatures": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "deviceLimits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "featureStatus": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "boolean",
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "statusRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unsupported",
+            "not-run"
+          ]
+        },
+        "evidence": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^artifact://"
+        }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "browser",
+        "gpuVendor",
+        "status",
+        "dispositionCode",
+        "adapter",
+        "webGPU",
+        "nativeCodecConfigurations",
+        "productionCapabilities",
+        "authorizations",
+        "exercises"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(chrome|edge)-(nvidia|amd|intel)$"
+        },
+        "browser": {
+          "$ref": "#/$defs/browser"
+        },
+        "gpuVendor": {
+          "enum": [
+            "nvidia",
+            "amd",
+            "intel"
+          ]
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unsupported",
+            "not-run"
+          ]
+        },
+        "dispositionCode": {
+          "enum": [
+            "validated",
+            "hardware-unavailable",
+            "browser-unavailable",
+            "live-input-unavailable",
+            "probe-failed",
+            "webgpu-unavailable",
+            "adapter-vendor-mismatch",
+            "validation-failed"
+          ]
+        },
+        "adapter": {
+          "$ref": "#/$defs/adapter"
+        },
+        "webGPU": {
+          "$ref": "#/$defs/webGPU"
+        },
+        "nativeCodecConfigurations": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "productionCapabilities": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "external-hdr",
+            "raw-hdr",
+            "external-dolby-vision",
+            "raw-dolby-vision",
+            "dolby-vision-profile7",
+            "dolby-vision-profile7-fel"
+          ],
+          "properties": {
+            "external-hdr": {
+              "$ref": "#/$defs/statusRecord"
+            },
+            "raw-hdr": {
+              "$ref": "#/$defs/statusRecord"
+            },
+            "external-dolby-vision": {
+              "$ref": "#/$defs/statusRecord"
+            },
+            "raw-dolby-vision": {
+              "$ref": "#/$defs/statusRecord"
+            },
+            "dolby-vision-profile7": {
+              "$ref": "#/$defs/statusRecord"
+            },
+            "dolby-vision-profile7-fel": {
+              "$ref": "#/$defs/statusRecord"
+            }
+          }
+        },
+        "exercises": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/statusRecord"
+          }
+        }
+      }
+    }
+  }
+}

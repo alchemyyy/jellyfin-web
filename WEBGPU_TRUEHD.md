@@ -18,18 +18,21 @@ and `libavutil` dependencies.
 | --- | --- |
 | Container | MKV/Matroska VOD through Mediabunny `A_TRUEHD` or `A_MLP` packets |
 | Codecs | Dolby TrueHD and MLP |
-| Exact input tuples | TrueHD stereo/48 kHz, TrueHD 5.1/96 kHz, TrueHD 5.1/192 kHz, and MLP stereo/48 kHz |
+| Authorized layouts | TrueHD stereo/5.1 and MLP stereo |
+| Source-rate contract | Every safe integer from 3000 through 192000 Hz |
+| Exact capability fixtures | TrueHD stereo/48 kHz, TrueHD 5.1/96 kHz, TrueHD 5.1/192 kHz, and MLP stereo/48 kHz |
 | Qualified source depth | 24-bit lossless PCM reference |
 | Internal decoder output | Owned planar `Float32Array` PCM with an exact WAVE channel layout |
-| Player output | Stereo 48 kHz through the shared downmix, streaming resampler, and AudioWorklet clock |
+| Player output | Native 5.1 only when the exact destination exposes six channels; otherwise stereo 48 kHz through the shared downmix, streaming resampler, and AudioWorklet clock |
 | Seek | One-second packet preroll, major-sync recovery, then sample-exact discard before the requested signed-microsecond boundary |
 | Capability floor | Exact PCM fingerprints, full fixture coverage, major-sync recovery, and at least 2x real-time throughput |
 
 The adapter structurally accepts decoder-reported 16-, 20-, or 24-bit PCM and
 2/6/8-channel exact WAVE masks. Capability, eligibility, and device-profile
-claims remain narrower: only the four exact codec/layout/rate tuples above are
-advertised. They are not treated as every combination of 2/6 channels and
-48/96/192 kHz.
+claims remain narrower: TrueHD is stereo/5.1 and MLP is stereo. The four exact
+fixtures prove those decoder/layout families; they are not a source-rate
+whitelist. Supported pairs use the shared bounded integer source-rate contract,
+and the decoder must report the same rate and shape as the selected track.
 
 ## Atmos semantics
 
@@ -52,7 +55,7 @@ Jellyfin MKV range source
   -> Mediabunny Input / InputAudioTrack / EncodedPacketSink
   -> one owned TrueHDSoftwareAudioDecoder
   -> owned planar Float32 PCM
-  -> exact WAVE-layout stereo downmix
+  -> complete 5.1 bed or exact WAVE-layout stereo downmix
   -> streaming 48 kHz resampler
   -> bounded worker credits
   -> owned AudioWorklet output and player clock
@@ -122,9 +125,9 @@ a clean synthetic 7.1 qualification source. Do not infer 7.1 support from the
 decoder accepting eight channels. Obtain a license-clean redistributable 7.1
 TrueHD source, record its provenance and hash, add exact native-reference PCM
 and WAVE-mask checks, add maximum-envelope throughput and seek recovery, then
-expand the exact capability tuple, input policy, eligibility, and device profile
-together. Until that work passes, common 7.1 TrueHD/Atmos tracks transcode or
-fall back rather than being falsely advertised.
+expand the authorized layout, capability evidence, input policy, eligibility,
+and device profile together. Until that work passes, common 7.1 TrueHD/Atmos
+tracks transcode or fall back rather than being falsely advertised.
 
 ### Blu-ray M2TS
 
@@ -142,5 +145,5 @@ Before release, run licensed stereo/5.1 TrueHD and Atmos-bed titles through
 start, pause/resume, representative seeks, seek storms, audio switching, EOF,
 replay, repeated sessions, cancellation, A/V drift, queue bounds, worker
 retirement, and mpv PCM/loudness A/B comparisons. Add a port-8096 Playback Info
-assertion proving exact-probe-qualified MKV sources select WebGPU Direct Play
+assertion proving probe-qualified MKV sources select WebGPU Direct Play
 without claiming Atmos objects or passthrough.

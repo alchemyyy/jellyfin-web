@@ -418,16 +418,59 @@ run status to `failed`; it never modifies the baseline. The result records only
 the baseline hash, approval time, source run ID, status, failures, and a
 repository-relative or private URI.
 
+## Hardware and browser matrix
+
+`hardware_matrix.py` expands the checked
+`validation/hardware-matrix-plan.json` into the six Chrome/Edge by
+NVIDIA/AMD/Intel cells. It launches each installed browser with an isolated
+profile, verifies the selected physical adapter through both WebGPU and CDP,
+then delegates live playback to the existing generated overlay,
+`validation_matrix.py`, and `browser-smoke` adapters. It does not duplicate a
+second playback harness.
+
+The runtime probe records browser and driver versions, every exposed adapter
+and device feature, every exposed numeric limit, CDP feature status, and native
+WebCodecs configuration support. The live lifecycle adds output-qualified
+production codec capabilities and exact-device external HDR, raw HDR, external
+Dolby Vision, raw Dolby Vision, Profile 7, and Profile 7 FEL authorization.
+Each physically selected cell must also pass DirectPlay lifecycle, active and
+paused device-loss recovery, ten-sample startup comparison, and the
+thirty-session retention soak.
+
+```powershell
+$env:WEBGPU_SMOKE_USERNAME = '<validation account>'
+$env:WEBGPU_SMOKE_PASSWORD = '<validation password>'
+
+python scripts/webgpu/hardware_matrix.py `
+    --output artifacts/webgpu-hardware-matrix/current-host
+```
+
+Use `--probe-only` to inspect browser/GPU availability without claiming any
+live exercise passed. `passed` requires all exercises and authorizations.
+`failed` means a physically available cell ran and failed. `unsupported` means
+the installed browser could not use the selected hardware route. `not-run` is
+reserved for an absent browser, absent physical GPU vendor, or deliberately
+omitted live input. An AMD or Intel pass is never inferred from NVIDIA output.
+
+The report schema rejects duplicate/missing cells, a pass on a fallback or
+wrong-vendor adapter, incomplete pass records, absolute machine paths, network
+URLs, and secret-shaped content. Full browser profiles, private overlays, and
+raw validation evidence remain ignored under `artifacts/`; the authoritative
+summary contains only `artifact://` references. See the
+[hardware matrix record](../../../WEBGPU_HARDWARE_MATRIX.md) for the latest
+physically executed host coverage.
+
 ## Current coverage boundary
 
 The canonical v1 registry contains the 15 checked-in exact fixtures/cases for
 JPEG 2000, progressive MPEG-2 Matroska, seven DTS tuples plus representative
 Matroska demux, and four TrueHD/MLP tuples plus representative Matroska demux.
 It does not claim that static checks are live Jellyfin DirectPlay evidence.
-Live title, HDR/Dolby Vision, fault, startup, soak, and cross-browser/GPU cases
-still require exact private source records and real executions before their
-matrix can pass. Their route/exercise definitions and overlay generation are
-now shared rather than duplicated per title.
+Live title and HDR/Dolby Vision routes still require exact private source
+records and real executions before their matrix can pass. Cross-browser/GPU
+coverage uses the hardware matrix above; unavailable vendors remain explicit
+`not-run` cells. Route/exercise definitions and overlay generation are shared
+rather than duplicated per title.
 
 Shared case-ID failure injection, pairwise matrix generation, and
 manual-observation ingestion remain framework work. Bounded server-log capture

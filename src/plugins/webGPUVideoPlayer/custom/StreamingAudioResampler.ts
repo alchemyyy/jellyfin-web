@@ -4,12 +4,12 @@ import {
     audioFramesToMicroseconds,
     requireMicroseconds
 } from './TimeMath';
+import { requireSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 
 const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
 const FILTER_RADIUS = 32;
 const FILTER_TAP_COUNT = FILTER_RADIUS * 2;
-const MAXIMUM_SUPPORTED_SAMPLE_RATE = 192_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
 export type StreamingAudioResamplerOptions = {
@@ -117,20 +117,14 @@ export default class StreamingAudioResampler {
             options.maximumOutputFrameCount,
             'Maximum output frame count'
         );
-        this.sourceSampleRate = requirePositiveSafeInteger(
+        this.sourceSampleRate = requireSupportedCustomAudioSampleRate(
             options.sourceSampleRate,
             'Source sample rate'
         );
-        this.targetSampleRate = requirePositiveSafeInteger(
+        this.targetSampleRate = requireSupportedCustomAudioSampleRate(
             options.targetSampleRate,
             'Target sample rate'
         );
-        if (this.sourceSampleRate > MAXIMUM_SUPPORTED_SAMPLE_RATE
-            || this.targetSampleRate > MAXIMUM_SUPPORTED_SAMPLE_RATE) {
-            throw new RangeError(
-                `Audio sample rates must not exceed ${MAXIMUM_SUPPORTED_SAMPLE_RATE} Hz`
-            );
-        }
 
         for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
             this.channelBuffers.push(new Float32Array(0));

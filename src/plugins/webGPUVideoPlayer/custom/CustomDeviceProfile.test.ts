@@ -546,6 +546,21 @@ type AudioRouteFixture = {
     sampleRate: number
 };
 
+const BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS: readonly ProfileCondition[] = [
+    {
+        Condition: 'GreaterThanEqual',
+        IsRequired: true,
+        Property: 'AudioSampleRate',
+        Value: '3000'
+    },
+    {
+        Condition: 'LessThanEqual',
+        IsRequired: true,
+        Property: 'AudioSampleRate',
+        Value: '192000'
+    }
+];
+
 function getAudioRouteConditionValue(
     condition: ProfileCondition,
     route: AudioRouteFixture
@@ -578,6 +593,10 @@ function isAudioRouteConditionSatisfied(
             return expectedValues.some(expectedValue => (
                 currentValue.toLowerCase() === expectedValue.toLowerCase()
             ));
+        case 'GreaterThanEqual':
+            return Number(currentValue) >= Number(expectedValues[0]);
+        case 'LessThanEqual':
+            return Number(currentValue) <= Number(expectedValues[0]);
         default:
             throw new TypeError(`Unexpected audio route condition: ${condition.Condition}`);
     }
@@ -926,12 +945,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2'
                 },
-                {
-                    Condition: 'Equals',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '48000'
-                }
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -939,7 +953,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
     });
 
     it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
-        'advertises exact qualified native 5.1 %s limits',
+        'advertises bounded decoded-PCM sample rates for qualified native 5.1 %s',
         codec => {
             const result = augmentDeviceProfileForCustomDecode(
                 createBaseProfile(),
@@ -963,12 +977,9 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 Property: 'AudioChannels',
                 Value: '2|6'
             });
-            expect(measuredProfile?.Conditions).toContainEqual({
-                Condition: 'Equals',
-                IsRequired: true,
-                Property: 'AudioSampleRate',
-                Value: '48000'
-            });
+            expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining(
+                [ ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS ]
+            ));
         }
     );
 
@@ -1008,19 +1019,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2|6'
                 },
-                {
-                    Condition: 'Equals',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '48000'
-                }
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
         });
     });
 
-    it('advertises qualified DTS only for Matroska with exact bed limits', () => {
+    it('advertises DTS only for Matroska with bounded rates and measured beds', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities([ 'h264' ], [ 'dts' ])
@@ -1046,17 +1052,37 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '6|7|8'
                 },
-                {
-                    Condition: 'EqualsAny',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '48000|96000|192000'
-                },
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS,
                 {
                     Condition: 'EqualsAny',
                     IsRequired: true,
                     Property: 'AudioProfile',
                     Value: 'DTS|DTS 96/24|DTS-ES|DTS-HD HRA|DTS-HD MA|DTS-HD MA + DTS:X'
+                }
+            ],
+            Container: 'mkv',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ApplyConditions: [ {
+                Condition: 'GreaterThanEqual',
+                IsRequired: true,
+                Property: 'AudioSampleRate',
+                Value: '96001'
+            } ],
+            Codec: 'dts',
+            Conditions: [
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '6'
+                },
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioProfile',
+                    Value: 'DTS-HD MA|DTS-HD MA + DTS:X'
                 }
             ],
             Container: 'mkv',
@@ -1069,12 +1095,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     IsRequired: true,
                     Property: 'AudioChannels',
                     Value: '8'
-                },
-                {
-                    Condition: 'Equals',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '48000'
                 }
             ],
             Codec: 'dts',
@@ -1094,17 +1114,23 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             { channelCount: 7, profile: 'DTS-ES', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD HRA', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 96_000 },
-            { channelCount: 6, profile: 'DTS-HD MA + DTS:X', sampleRate: 192_000 }
+            { channelCount: 6, profile: 'DTS-HD MA', sampleRate: 96_001 },
+            { channelCount: 6, profile: 'DTS-HD MA + DTS:X', sampleRate: 192_000 },
+            { channelCount: 6, profile: 'DTS', sampleRate: 12_345 },
+            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 }
         ]) {
             expect(acceptsMeasuredAudioRoute(codecProfiles, 'dts', route)).toBe(true);
         }
         for (const route of [
             { channelCount: 2, profile: 'DTS', sampleRate: 48_000 },
-            { channelCount: 6, profile: 'DTS-HD MA', sampleRate: 48_000 },
-            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 },
+            { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 96_001 },
+            { channelCount: 8, profile: 'DTS-HD HRA', sampleRate: 96_001 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 192_000 },
             { channelCount: 8, profile: 'DTS', sampleRate: 48_000 },
-            { channelCount: 6, profile: null, sampleRate: 96_000 }
+            { channelCount: 6, profile: null, sampleRate: 96_000 },
+            { channelCount: 6, profile: 'DTS', sampleRate: 192_000 },
+            { channelCount: 6, profile: 'DTS', sampleRate: 192_001 },
+            { channelCount: 6, profile: 'DTS', sampleRate: 2_999 }
         ]) {
             expect(acceptsMeasuredAudioRoute(codecProfiles, 'dts', route)).toBe(false);
         }
@@ -1136,7 +1162,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('advertises qualified TrueHD only for Matroska with exact bed limits', () => {
+    it('advertises TrueHD only for Matroska with bounded rates and measured beds', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities([ 'h264' ], [ 'truehd' ])
@@ -1162,12 +1188,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2|6'
                 },
-                {
-                    Condition: 'EqualsAny',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '48000|96000|192000'
-                }
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mkv',
             Type: 'VideoAudio'
@@ -1192,16 +1213,21 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             channelCount: 2,
             profile: null,
             sampleRate: 96_000
-        })).toBe(false);
+        })).toBe(true);
         expect(acceptsMeasuredAudioRoute(codecProfiles, 'truehd', {
             channelCount: 6,
             profile: null,
             sampleRate: 48_000
+        })).toBe(true);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'truehd', {
+            channelCount: 6,
+            profile: null,
+            sampleRate: 192_001
         })).toBe(false);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'truehd' ]);
     });
 
-    it('advertises only the exact qualified MLP Matroska route', () => {
+    it('advertises the measured MLP bed across bounded source rates', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities([ 'h264' ], [ 'mlp' ])
@@ -1228,7 +1254,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             channelCount: 2,
             profile: null,
             sampleRate: 96_000
-        })).toBe(false);
+        })).toBe(true);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'mlp' ]);
     });
 
@@ -1254,7 +1280,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('advertises exact Mediabunny PCM container, rate, and layout routes', () => {
+    it('advertises Mediabunny PCM containers, layouts, and bounded rates', () => {
         const supportedPCMCodecs = [
             'pcm_s24le',
             'pcm_s8',
@@ -1299,12 +1325,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '1|2|6'
                 },
-                {
-                    Condition: 'EqualsAny',
-                    IsRequired: true,
-                    Property: 'AudioSampleRate',
-                    Value: '8000|11025|12000|16000|22050|24000|32000|44100|48000|88200|96000|176400|192000'
-                }
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1392,6 +1413,52 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }));
     });
 
+    it('replaces a browser exact-48-kHz constraint on a decoded custom route', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'aac',
+            Conditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Type: 'VideoAudio'
+        } ];
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac' ])
+        );
+
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'aac',
+            Conditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2'
+                },
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+            ],
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[0],
+            Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        });
+    });
+
     it('advertises native AC-3 routes only at their exact measured layouts', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
@@ -1449,6 +1516,66 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }));
     });
 
+    it('lets bounded software Dolby routes supersede exact native rate profiles', () => {
+        const original = createBaseProfile();
+        if (!original.CodecProfiles) {
+            throw new Error('The base profile codec constraints are unavailable');
+        }
+        original.CodecProfiles.push({
+            Codec: 'ac3',
+            Conditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2'
+                },
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioSampleRate',
+                    Value: '48000'
+                }
+            ],
+            Type: 'VideoAudio'
+        });
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'ac3', 'eac3' ]),
+            {
+                nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(
+                    new Set([ 'ac3:2:48000', 'eac3:2:48000', 'eac3:6:48000' ])
+                )
+            }
+        );
+        const dolbyProfiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Codec?.split(',').some(codec => codec === 'ac3' || codec === 'eac3')
+            && profile.Container === 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        )) ?? [];
+
+        expect(dolbyProfiles).toContainEqual({
+            Codec: 'ac3,eac3',
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2|6'
+                },
+                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+            ],
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(dolbyProfiles.some(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Property === 'AudioSampleRate'
+                && condition.Condition === 'Equals'
+                && condition.Value === '48000'
+            )) === true
+        ))).toBe(false);
+    });
+
     it('widens raw HDR ranges only for supported high-bit-depth codec families', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
@@ -1476,65 +1603,34 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             RAW_HDR_PROFILE_OPTIONS
         );
 
-        expect(result.profile.CodecProfiles?.slice(0, 3)).toEqual([
-            {
-                Codec: 'h264,av1',
-                Conditions: original.CodecProfiles[0].Conditions,
-                Type: 'Video'
-            },
-            {
-                Codec: 'hevc,vp9',
-                Conditions: original.CodecProfiles[0].Conditions,
-                Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
-                Type: 'Video'
-            },
-            {
-                Codec: 'hevc,vp9',
-                Conditions: [
-                    {
-                        Condition: 'EqualsAny',
-                        IsRequired: false,
-                        Property: 'VideoRangeType',
-                        Value: 'SDR|HDR10|HLG'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: false,
-                        Property: 'VideoLevel',
-                        Value: '120'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'VideoBitDepth',
-                        Value: '10'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'VideoFramerate',
-                        Value: '30'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'Width',
-                        Value: '3840'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'Height',
-                        Value: '2160'
-                    }
-                ],
-                Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
-                Type: 'Video'
-            }
-        ]);
-        expect(result.profile.CodecProfiles?.[2].Conditions?.[0].Value).not.toContain('DOVI');
-        expect(result.profile.CodecProfiles?.[2].Conditions?.[0].Value).not.toContain('HDR10Plus');
-        expect(result.telemetry.widenedHDRCodecProfileCount).toBe(1);
+        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+            Codec: 'hevc',
+            Conditions: expect.arrayContaining([
+                expect.objectContaining({
+                    Property: 'VideoRangeType',
+                    Value: 'SDR|HDR10|HLG|HDR10Plus'
+                })
+            ]),
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        }));
+        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+            Codec: 'vp9',
+            Conditions: expect.arrayContaining([
+                expect.objectContaining({
+                    Property: 'VideoRangeType',
+                    Value: 'SDR|HDR10|HLG'
+                })
+            ]),
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        }));
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'vp9'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR10Plus')
+            ))
+        ))).toBe(false);
+        expect(result.telemetry.widenedHDRCodecProfileCount).toBe(2);
     });
 
     it('replaces narrower HTML video caps with measured authorized HDR limits', () => {
@@ -1707,7 +1803,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(pqAuthorization.profile.CodecProfiles?.some(profile => (
             profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
-                && condition.Value === 'SDR|HDR10'
+                && condition.Value === 'SDR|HDR10|HDR10Plus'
             ))
         ))).toBe(true);
         expect(pqAuthorization.profile.CodecProfiles?.some(profile => (
@@ -1796,7 +1892,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             profile.Codec === 'hevc'
             && profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
-                && condition.Value === 'HDR10'
+                && condition.Value === 'HDR10|HDR10Plus'
             ))
             && profile.Conditions.some(condition => (
                 condition.Property === 'IsInterlaced'
@@ -1815,6 +1911,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.CodecProfiles?.some(profile => (
             profile.Conditions?.some(condition => condition.Value?.includes('HLG'))
         ))).toBe(false);
+        expect(nativeHDRProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                Property: 'VideoRangeType',
+                Value: 'HDR10|HDR10Plus'
+            })
+        ]));
         expect(result.profile.DirectPlayProfiles).toContainEqual(expect.objectContaining({
             AudioCodec: expect.stringContaining('flac'),
             Container: 'mkv',
@@ -1892,7 +1994,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             profile.Codec === 'hevc'
             && profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
-                && condition.Value === 'SDR|HDR10|HLG'
+                && condition.Value === 'SDR|HDR10|HDR10Plus|HLG'
             ))
         ));
         const nativeHLGProfile = result.profile.CodecProfiles?.find(profile => (
@@ -1906,7 +2008,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             profile.Codec === 'hevc'
             && profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
-                && condition.Value === 'HDR10'
+                && condition.Value === 'HDR10|HDR10Plus'
             ))
         ));
 
@@ -2226,7 +2328,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                         Condition: 'EqualsAny',
                         IsRequired: false,
                         Property: 'VideoRangeType',
-                        Value: 'SDR|HDR10|HLG'
+                        Value: 'SDR|HDR10|HLG|HDR10Plus'
                     },
                     {
                         Condition: 'LessThanEqual',
@@ -2536,7 +2638,10 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
             Codec: 'hevc',
             Conditions: expect.arrayContaining([
-                expect.objectContaining({ Property: 'VideoRangeType', Value: 'HDR10|HLG' }),
+                expect.objectContaining({
+                    Property: 'VideoRangeType',
+                    Value: 'HDR10|HLG|HDR10Plus'
+                }),
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
                 expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
@@ -2582,7 +2687,10 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
             Codec: 'hevc',
             Conditions: expect.arrayContaining([
-                expect.objectContaining({ Property: 'VideoRangeType', Value: 'HDR10|HLG' }),
+                expect.objectContaining({
+                    Property: 'VideoRangeType',
+                    Value: 'HDR10|HLG|HDR10Plus'
+                }),
                 expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
                 expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
                 expect.objectContaining({ Property: 'Width', Value: '1920' }),

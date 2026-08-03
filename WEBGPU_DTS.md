@@ -15,24 +15,32 @@ general-purpose container, filter, encoder, or protocol stack.
 
 ## Qualified support
 
-| Family | Decoder result | Exact fixture | Current claim |
+| Family | Decoder result | Exact fixture | Authorized layout |
 | --- | --- | --- | --- |
 | DTS Core | Core profile, 16/24-bit PCM | 5.1-side, 48 kHz | Supported |
 | DTS 96/24 | 96/24 profile, 24-bit PCM | 5.1-side, 96 kHz | Supported |
 | DTS-ES | ES profile, 24-bit PCM | 6.1, 48 kHz | Supported |
 | DTS-HD High Resolution | HRA profile, 24-bit PCM | 7.1, 48 kHz | Supported |
-| DTS-HD Master Audio | MA profile, lossless flag only after clean parse/filter | 7.1 at 48/96 kHz and 5.1 at 192 kHz | Supported |
+| DTS-HD Master Audio | MA profile, lossless flag only after clean parse/filter | 7.1 at 48/96 kHz and 5.1 at 192 kHz | 5.1 or 7.1 subject to the rate rule below |
 | DTS-HD MA + DTS:X | MA channel bed | Same MA envelope | Channel bed only |
 | DTS:X objects | No browser object renderer or compressed passthrough | None | Not supported or claimed |
 
-The server-facing route is the exact union of the seven rows above, not a
-Cartesian product of their rates, layouts, and profiles. Specifically, it is
-5.1 Core/48, 5.1 96/24/96, 6.1 ES/48, 7.1 HRA/48, 7.1 MA/48, 7.1 MA/96, and
-5.1 MA/192. The two MA rows also accept the DTS:X label while decoding only
-the MA channel bed. Channel masks must map to the corresponding known WAVE
-order; ambiguous masks fail closed. Output is bounded stereo 48 kHz through
-the shared downmix and resampler. A stream that changes its channel count or
-rate after readiness terminates the custom route.
+The seven fixtures prove decoder output, throughput, profile identification,
+and the supported profile/layout pairs. They are not a source-rate whitelist.
+The server-facing rule is:
+
+- Any safe integer source rate from 3000 through 96000 Hz may use 5.1 Core,
+  5.1 96/24, 6.1 ES, 7.1 HRA, or 5.1/7.1 MA.
+- Rates from 96001 through 192000 Hz require a 5.1 MA bed.
+- The MA pairs also accept the DTS:X label while decoding only the MA channel
+  bed.
+
+Channel masks must map to a known exact WAVE order; ambiguous masks fail closed.
+Complete 5.1/7.1 beds may retain native multichannel output when the exact
+playback destination exposes the full bed. Other supported beds and insufficient
+destinations use bounded stereo 48 kHz through the shared downmix and resampler.
+A stream that changes its channel count or rate after readiness terminates the
+custom route.
 
 ## 7.1 stereo reference policy
 
@@ -90,13 +98,14 @@ profile rules.
 - WebAssembly initial memory: 32 MiB; maximum memory: 256 MiB.
 - One decoder context per playback stream.
 - Accepted sample depths: 16 and 24 bits.
-- Accepted server routes are only the seven exact profile/layout/rate tuples
-  listed above. Decoder-level acceptance does not widen the product claim.
-- The decoder rechecks the actual 192 kHz output profile and channel count;
-  server metadata cannot widen that envelope.
+- Accepted server routes use only the fixture-derived profile/layout pairs and
+  the shared 3000-192000 Hz integer source-rate bound. Decoder-level acceptance
+  does not add another profile or layout.
+- The decoder rechecks actual output rate, profile, and channel count. Above
+  96 kHz it requires 5.1 MA; server metadata cannot widen that envelope.
 - The decoder can map exact stereo, 5.1-back, 5.1-side, 6.1, and 7.1 WAVE
-  masks, but server negotiation authorizes only the masks present in the seven
-  exact tuples above. Stereo and 5.1-back are not current DirectPlay claims.
+  masks, but server negotiation authorizes only the profile/channel-count pairs
+  listed above. Stereo is not a current DirectPlay claim.
 - Decoder output is copied before the next parse can invalidate libdcadec
   memory.
 - Unsupported profile, mask, depth, rate, packet size, output size, or changed
@@ -140,11 +149,12 @@ compile in two isolated directories and reject a different module SHA-256.
 - Matroska `A_DTS` track metadata, packet extraction, timestamp, and real WASM
   decode integration.
 - Eligibility aliases/profiles, MKV-only claim, M2TS negatives, missing exact
-  evidence, layout/rate negatives, and bundled runtime requirements.
+  evidence, profile/layout negatives, 3000/192000 bounds, the 96000/96001
+  transition, and bundled runtime requirements.
 - Device-profile MKV-only direct-play advertisement with `ApplyConditions`
-  refinements for each exact profile/layout/rate tuple. Missing or mismatched
-  profile metadata cannot turn the exact union into a Cartesian product; other
-  named variants fail closed before playback.
+  refinements for fixture-derived profile/layout pairs and the high-rate MA
+  restriction. Missing or mismatched profile metadata and out-of-range source
+  rates fail closed before playback.
 
 Remaining live validation requires licensed/user media without checking it into
 the repository: seek start and seek storms for each profile, audio switching,

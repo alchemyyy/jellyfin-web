@@ -21,15 +21,18 @@ import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
+    assertCustomAudioOutputChannelLayout,
     getCustomAudioChannelLayout,
-    mixCustomAudioToStereo,
-    type CustomAudioChannelLayout
+    prepareCustomAudioOutputChannelData,
+    type CustomAudioChannelLayout,
+    type CustomAudioOutputChannelCount
 } from './CustomAudioChannelLayout';
 import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
+import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 import StreamingAudioResampler, {
     type StreamingAudioResamplerOutput
 } from './StreamingAudioResampler';
@@ -87,6 +90,8 @@ import {
 } from './HEVCSoftwareVideoDecoder';
 import { parseHEVCSPS } from './HEVCSPSParser';
 import { scanHEVCStaticHDRMetadata } from './HEVCStaticHDRMetadata';
+import HEVCDynamicHDRMetadataQueue from './HEVCDynamicHDRMetadataQueue';
+import type { HDR10PlusFrameMetadata } from './HDR10PlusMetadata';
 import {
     requireValidByteRangeResponse,
     UnsupportedRangeResponseError
@@ -225,6 +230,7 @@ type PreparedAudioTrack = {
     inputChannelCount: number
     inputChannelLayout: CustomAudioChannelLayout
     outputMode: CustomDecodeAudioOutputMode
+    outputChannelCount: CustomAudioOutputChannelCount
     sourceSampleRate: number
 };
 
@@ -920,8 +926,10 @@ async function getSelectedAudioTrackMetadata(
     if (!Number.isSafeInteger(channelCount) || channelCount <= 0 || channelCount > MAX_DECODED_AUDIO_CHANNELS) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio channel count is unsupported');
     }
-    if (!Number.isSafeInteger(sampleRate) || sampleRate <= 0) {
-        throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
+    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected audio sample rate is outside the supported range'
+        );
     }
     const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
     if (!inputChannelLayout) {
@@ -985,12 +993,14 @@ function prepareNativeMediaAudioTrack(
         inputChannelCount: channelCount,
         inputChannelLayout,
         outputMode: 'native-media',
+        outputChannelCount: channelCount as 2 | 6,
         sourceSampleRate: sampleRate
     };
 }
 
 function prepareDTSAudioTrack(
-    metadata: SelectedAudioTrackMetadata
+    metadata: SelectedAudioTrackMetadata,
+    outputChannelCount: CustomAudioOutputChannelCount
 ): PreparedAudioTrack {
     const { audioTrack, channelCount, inputChannelLayout, sampleRate } = metadata;
     if (!isSupportedCustomAudioInputLayout('dts', channelCount, sampleRate)) {
@@ -998,10 +1008,11 @@ function prepareDTSAudioTrack(
             'The selected audio track does not match a qualified decoded PCM route'
         );
     }
+    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
 
     return {
         audioConfiguration: {
-            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            channelCount: outputChannelCount,
             codec: 'dts',
             sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
             sourceChannelCount: channelCount,
@@ -1013,12 +1024,14 @@ function prepareDTSAudioTrack(
         inputChannelCount: channelCount,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
+        outputChannelCount,
         sourceSampleRate: sampleRate
     };
 }
 
 function prepareTrueHDAudioTrack(
-    metadata: SelectedAudioTrackMetadata
+    metadata: SelectedAudioTrackMetadata,
+    outputChannelCount: CustomAudioOutputChannelCount
 ): PreparedAudioTrack {
     const {
         audioTrack,
@@ -1033,10 +1046,11 @@ function prepareTrueHDAudioTrack(
             'The selected TrueHD track does not match a qualified decoded PCM route'
         );
     }
+    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
 
     return {
         audioConfiguration: {
-            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            channelCount: outputChannelCount,
             codec: trueHDDecoderCodec,
             sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
             sourceChannelCount: channelCount,
@@ -1048,13 +1062,15 @@ function prepareTrueHDAudioTrack(
         inputChannelCount: channelCount,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
+        outputChannelCount,
         sourceSampleRate: sampleRate
     };
 }
 
 async function prepareMediabunnyDecodedAudioTrack(
     metadata: SelectedAudioTrackMetadata,
-    run: DecodeRun
+    run: DecodeRun,
+    outputChannelCount: CustomAudioOutputChannelCount
 ): Promise<PreparedAudioTrack> {
     const {
         audioTrack,
@@ -1074,6 +1090,7 @@ async function prepareMediabunnyDecodedAudioTrack(
             'The selected audio track does not match a qualified decoded PCM route'
         );
     }
+    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
     await registerRequiredCustomAudioDecoder(codec);
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
@@ -1087,7 +1104,7 @@ async function prepareMediabunnyDecodedAudioTrack(
 
     return {
         audioConfiguration: {
-            channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            channelCount: outputChannelCount,
             codec: decoderConfig.codec,
             sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
             sourceChannelCount: channelCount,
@@ -1099,6 +1116,7 @@ async function prepareMediabunnyDecodedAudioTrack(
         inputChannelCount: channelCount,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
+        outputChannelCount,
         sourceSampleRate: sampleRate
     };
 }
@@ -1107,7 +1125,8 @@ async function prepareAudioTrack(
     input: Input,
     run: DecodeRun,
     audioTrackOrdinal: number,
-    outputMode: CustomDecodeAudioOutputMode
+    outputMode: CustomDecodeAudioOutputMode,
+    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
 ): Promise<PreparedAudioTrack> {
     const metadata = await getSelectedAudioTrackMetadata(input, run, audioTrackOrdinal);
     switch (outputMode) {
@@ -1115,11 +1134,15 @@ async function prepareAudioTrack(
             return prepareNativeMediaAudioTrack(metadata);
         case 'decoded-pcm':
             if (metadata.isDTS) {
-                return prepareDTSAudioTrack(metadata);
+                return prepareDTSAudioTrack(metadata, decodedAudioOutputChannelCount);
             }
             return metadata.trueHDDecoderCodec ?
-                prepareTrueHDAudioTrack(metadata) :
-                prepareMediabunnyDecodedAudioTrack(metadata, run);
+                prepareTrueHDAudioTrack(metadata, decodedAudioOutputChannelCount) :
+                prepareMediabunnyDecodedAudioTrack(
+                    metadata,
+                    run,
+                    decodedAudioOutputChannelCount
+                );
     }
 }
 
@@ -1226,13 +1249,23 @@ function attachDolbyVisionEncodedMetadata(
     return getDolbyVisionEncodedMetadataTransferList(transferableMetadata);
 }
 
+function attachHDR10PlusMetadata(
+    response: MutableDecodeWorkerFrameResponse,
+    metadata: HDR10PlusFrameMetadata | null | undefined
+): void {
+    if (metadata) {
+        response.HDR10PlusMetadata = metadata;
+    }
+}
+
 async function postRawVideoFrame(
     run: DecodeRun,
     frame: VideoFrame,
     decodedVideoGeometry: RawVideoFrameGeometry,
     durationMicroseconds: Microseconds,
     mediaTimeMicroseconds: Microseconds,
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): Promise<void> {
     const rawVideoFrameFormat = run.rawVideoFrameFormat;
     if (rawVideoFrameFormat === null) {
@@ -1280,6 +1313,7 @@ async function postRawVideoFrame(
         type: 'frame'
     };
     const transferables = getRawVideoFrameTransferList(rawFrame);
+    attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     transferables.push(...attachDolbyVisionEncodedMetadata(
         response,
         encodedDolbyVisionMetadata
@@ -1292,6 +1326,7 @@ type RawVideoFramePairPostRequest = {
     baseGeometry: RawVideoFrameGeometry
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
     enhancementFrame: VideoFrame | null
     enhancementGeometry: RawVideoFrameGeometry
     mediaTimeMicroseconds: Microseconds
@@ -1306,6 +1341,7 @@ async function postRawVideoFramePair(
         baseGeometry,
         durationMicroseconds,
         encodedDolbyVisionMetadata,
+        HDR10PlusMetadata,
         enhancementFrame,
         enhancementGeometry,
         mediaTimeMicroseconds
@@ -1379,6 +1415,7 @@ async function postRawVideoFramePair(
         type: 'frame'
     };
     const transferables = getRawVideoFramePairTransferList(rawFramePair);
+    attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     transferables.push(...attachDolbyVisionEncodedMetadata(
         response,
         encodedDolbyVisionMetadata
@@ -1391,7 +1428,8 @@ function postTransferredVideoFrame(
     frame: VideoFrame,
     durationMicroseconds: Microseconds,
     mediaTimeMicroseconds: Microseconds,
-    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
+    HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): void {
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds,
@@ -1401,6 +1439,7 @@ function postTransferredVideoFrame(
         outputMode: 'video-frame',
         type: 'frame'
     };
+    attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     const transferables: Transferable[] = [ frame as unknown as Transferable ];
     transferables.push(...attachDolbyVisionEncodedMetadata(
         response,
@@ -1467,6 +1506,7 @@ async function postVideoFrame(
                         baseGeometry: decodedVideoGeometry,
                         durationMicroseconds,
                         encodedDolbyVisionMetadata,
+                        HDR10PlusMetadata: output.HDR10PlusMetadata,
                         enhancementFrame: ownedEnhancementFrame,
                         enhancementGeometry: enhancementExpectedGeometry,
                         mediaTimeMicroseconds
@@ -1479,7 +1519,8 @@ async function postVideoFrame(
                     decodedVideoGeometry,
                     durationMicroseconds,
                     mediaTimeMicroseconds,
-                    encodedDolbyVisionMetadata
+                    encodedDolbyVisionMetadata,
+                    output.HDR10PlusMetadata
                 );
                 return;
             }
@@ -1489,7 +1530,8 @@ async function postVideoFrame(
                     frame,
                     durationMicroseconds,
                     mediaTimeMicroseconds,
-                    encodedDolbyVisionMetadata
+                    encodedDolbyVisionMetadata,
+                    output.HDR10PlusMetadata
                 );
                 frame = null;
                 return;
@@ -1546,9 +1588,10 @@ function normalizeAudioSample(
             inputChannelData.push(channel);
         }
 
-        const channelData = mixCustomAudioToStereo(
+        const channelData = prepareCustomAudioOutputChannelData(
             inputChannelData,
-            preparedAudioTrack.inputChannelLayout
+            preparedAudioTrack.inputChannelLayout,
+            preparedAudioTrack.outputChannelCount
         );
         return resampler.push({
             channelData,
@@ -1591,9 +1634,10 @@ function normalizeDTSAudioOutput(
     for (const channel of output.channelData) {
         inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
     }
-    const channelData = mixCustomAudioToStereo(
+    const channelData = prepareCustomAudioOutputChannelData(
         inputChannelData,
-        output.channelLayout
+        output.channelLayout,
+        preparedAudioTrack.outputChannelCount
     );
     return resampler.push({
         channelData,
@@ -1611,7 +1655,7 @@ function normalizeTrueHDAudioOutput(
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
         || output.sampleRate !== preparedAudioTrack.sourceSampleRate
         || !isSupportedCustomAudioInputLayout(
-            'truehd',
+            output.codec,
             output.channelData.length,
             output.sampleRate
         )) {
@@ -1634,9 +1678,10 @@ function normalizeTrueHDAudioOutput(
     for (const channel of output.channelData) {
         inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
     }
-    const channelData = mixCustomAudioToStereo(
+    const channelData = prepareCustomAudioOutputChannelData(
         inputChannelData,
-        output.channelLayout
+        output.channelLayout,
+        preparedAudioTrack.outputChannelCount
     );
     return resampler.push({
         channelData,
@@ -1691,6 +1736,7 @@ type OwnedDecodedVideoSource =
 type OwnedDecodedVideoOutput = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata | null
     mediaTimeMicroseconds: Microseconds
     source: OwnedDecodedVideoSource
 };
@@ -1849,6 +1895,7 @@ class OwnedHEVCStreamState {
 
     public constructor(
         private readonly metadataQueue: DolbyVisionEncodedMetadataQueue,
+        private readonly dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue,
         private readonly startTimeMicroseconds: Microseconds,
         private readonly enhancementExpectedGeometry: RawVideoFrameGeometry | null
     ) {
@@ -1882,6 +1929,9 @@ class OwnedHEVCStreamState {
             decodedOutput = {
                 durationMicroseconds: timing.durationMicroseconds,
                 encodedDolbyVisionMetadata: this.metadataQueue.takeFrameMetadata(
+                    timing.mediaTimeMicroseconds
+                ),
+                HDR10PlusMetadata: this.dynamicHDRMetadataQueue.takeFrameMetadata(
                     timing.mediaTimeMicroseconds
                 ),
                 mediaTimeMicroseconds: timing.mediaTimeMicroseconds,
@@ -1944,6 +1994,7 @@ class OwnedHEVCStreamState {
         separateEnhancementPacket: EncodedPacket | null = null,
         separateEnhancementInputFormat: HEVCNALFormat | null = null
     ): Promise<void> {
+        this.dynamicHDRMetadataQueue.processPacket(packet);
         const processedPacket = await this.processEncodedPacket(
             packet,
             separateEnhancementPacket,
@@ -2003,6 +2054,9 @@ class OwnedHEVCStreamState {
         const packetAccepted = decoder.decode(decoderPacket);
         if (!packetAccepted && processedPacket.hasBaseLayerVCL) {
             this.metadataQueue.takeFrameMetadata(sourcePacket.microsecondTimestamp);
+            this.dynamicHDRMetadataQueue.takeFrameMetadata(
+                sourcePacket.microsecondTimestamp
+            );
         }
     }
 
@@ -2023,6 +2077,7 @@ class OwnedHEVCStreamState {
             this.framePairs.finishEnhancement();
         }
         this.metadataQueue.requireDrained();
+        this.dynamicHDRMetadataQueue.requireDrained();
         this.queueFirstPresentationOutput();
         this.packetsEnded = true;
     }
@@ -2077,6 +2132,7 @@ class OwnedHEVCStreamState {
         this.preStartOutput = null;
         this.framePairs.close();
         this.metadataQueue.clear();
+        this.dynamicHDRMetadataQueue.clear();
     }
 
     private queueBaseOutput(decodedOutput: OwnedDecodedVideoOutput): void {
@@ -2489,6 +2545,7 @@ async function streamOwnedHEVCFrames(
             rpuParser,
             enhancementConfiguration?.packetFormat ?? inputFormat
         ),
+        new HEVCDynamicHDRMetadataQueue(inputFormat),
         request.startTimeMicroseconds,
         enhancementConfiguration?.geometry ?? null
     );
@@ -2943,7 +3000,7 @@ async function streamAudioSamples(
 ): Promise<void> {
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
     const resampler = new StreamingAudioResampler({
-        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
@@ -2990,7 +3047,7 @@ async function streamDTSAudioPackets(
     run.audioIterator = iterator;
     const decoder = await DTSSoftwareAudioDecoder.create();
     const resampler = new StreamingAudioResampler({
-        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
@@ -3051,7 +3108,7 @@ async function streamTrueHDAudioPackets(
     run.audioIterator = iterator;
     const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
     const resampler = new StreamingAudioResampler({
-        channelCount: CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+        channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
@@ -3256,7 +3313,9 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
                     input,
                     run,
                     request.audioTrackIndex,
-                    request.audioOutputMode ?? 'decoded-pcm'
+                    request.audioOutputMode ?? 'decoded-pcm',
+                    request.decodedAudioOutputChannelCount
+                        ?? CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT
                 )
         ];
         const [ preparedVideoTrack, preparedAudioTrack ] = await Promise.all(preparedTrackPromises);

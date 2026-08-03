@@ -1,3 +1,5 @@
+import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
+
 export type DTSProfileToken =
     | 'DTS'
     | 'DTS9624'
@@ -6,13 +8,13 @@ export type DTSProfileToken =
     | 'DTSHDMA'
     | 'DTSHDMADTSX';
 
-export type DTSExactInputRoute = Readonly<{
+export type DTSCapabilityFixtureRoute = Readonly<{
     channelCount: 6 | 7 | 8
     profileTokens: readonly DTSProfileToken[]
     sampleRate: 48_000 | 96_000 | 192_000
 }>;
 
-export type TrueHDExactInputRoute = Readonly<{
+export type TrueHDCapabilityFixtureRoute = Readonly<{
     channelCount: 2 | 6
     codec: 'mlp' | 'truehd'
     sampleRate: 48_000 | 96_000 | 192_000
@@ -28,7 +30,7 @@ export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string
         DTSHDMADTSX: 'DTS-HD MA + DTS:X'
     });
 
-export const DTS_EXACT_INPUT_ROUTES = Object.freeze([
+export const DTS_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
     Object.freeze({
         channelCount: 6,
         profileTokens: Object.freeze([ 'DTS' ] as const),
@@ -64,28 +66,32 @@ export const DTS_EXACT_INPUT_ROUTES = Object.freeze([
         profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 192_000
     })
-] as const) satisfies readonly DTSExactInputRoute[];
+] as const) satisfies readonly DTSCapabilityFixtureRoute[];
 
-export const TRUEHD_EXACT_INPUT_ROUTES = Object.freeze([
+export const TRUEHD_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
     Object.freeze({ channelCount: 2, codec: 'truehd', sampleRate: 48_000 }),
     Object.freeze({ channelCount: 6, codec: 'truehd', sampleRate: 96_000 }),
     Object.freeze({ channelCount: 6, codec: 'truehd', sampleRate: 192_000 }),
     Object.freeze({ channelCount: 2, codec: 'mlp', sampleRate: 48_000 })
-] as const) satisfies readonly TrueHDExactInputRoute[];
+] as const) satisfies readonly TrueHDCapabilityFixtureRoute[];
 
-/** Accepts only DTS profile, layout, and rate tuples covered by exact fixtures. */
-export function isQualifiedDTSInputRoute(
+/** Accepts measured DTS profile/layout pairs at any bounded source sample rate. */
+export function isSupportedDTSInputRoute(
     channelCount: unknown,
     sampleRate: unknown,
     profileToken: string | null
 ): boolean {
-    if (profileToken === null) {
+    if (profileToken === null || !isSupportedCustomAudioSampleRate(sampleRate)) {
         return false;
     }
-    for (const route of DTS_EXACT_INPUT_ROUTES) {
+    if (sampleRate > 96_000
+        && (channelCount !== 6
+            || (profileToken !== 'DTSHDMA' && profileToken !== 'DTSHDMADTSX'))) {
+        return false;
+    }
+    for (const route of DTS_CAPABILITY_FIXTURE_ROUTES) {
         const routeProfileTokens: readonly DTSProfileToken[] = route.profileTokens;
         if (route.channelCount === channelCount
-            && route.sampleRate === sampleRate
             && routeProfileTokens.includes(profileToken as DTSProfileToken)) {
             return true;
         }
@@ -93,16 +99,18 @@ export function isQualifiedDTSInputRoute(
     return false;
 }
 
-/** Accepts only TrueHD/MLP codec, layout, and rate tuples covered by exact fixtures. */
-export function isQualifiedTrueHDInputRoute(
+/** Accepts measured TrueHD/MLP codec/layout pairs at any bounded source rate. */
+export function isSupportedTrueHDInputRoute(
     codec: string,
     channelCount: unknown,
     sampleRate: unknown
 ): boolean {
-    for (const route of TRUEHD_EXACT_INPUT_ROUTES) {
+    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
+        return false;
+    }
+    for (const route of TRUEHD_CAPABILITY_FIXTURE_ROUTES) {
         if (route.codec === codec
-            && route.channelCount === channelCount
-            && route.sampleRate === sampleRate) {
+            && route.channelCount === channelCount) {
             return true;
         }
     }

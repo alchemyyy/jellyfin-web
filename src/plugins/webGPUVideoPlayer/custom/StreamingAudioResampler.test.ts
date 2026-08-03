@@ -150,6 +150,36 @@ describe('StreamingAudioResampler', () => {
         expect(stopbandRootMeanSquare).toBeLessThan(0.002);
     });
 
+    it('resamples a bounded integer source rate not represented by a fixture', () => {
+        const sourceSampleRate = 12_345;
+        const source = createSine(sourceSampleRate, 1_000, sourceSampleRate / 5);
+        const resampler = new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 65_536,
+            sourceSampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+
+        const output = resampler.push({
+            channelData: [ source ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+        output.push(...resampler.finalize());
+
+        const samples = concatenateOutput(output);
+        expect(samples).toHaveLength(9_600);
+        expect(calculateRootMeanSquare(samples, 128)).toBeCloseTo(Math.SQRT1_2, 2);
+    });
+
+    it.each([ 2_999, 192_001 ])('rejects out-of-range source rate %d', sampleRate => {
+        expect(() => new StreamingAudioResampler({
+            channelCount: 1,
+            maximumOutputFrameCount: 1_024,
+            sourceSampleRate: sampleRate,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        })).toThrow('Source sample rate must be between 3000 and 192000 Hz');
+    });
+
     it('bounds retained history and rejects discontinuous input timestamps', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 1,

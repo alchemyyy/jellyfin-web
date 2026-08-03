@@ -28,6 +28,7 @@ import type {
     CustomAudioOutputFactory
 } from './CustomPlaybackControllerTypes';
 import type { DecodeWorkerAudioConfiguration } from './DecodeWorkerProtocol';
+import { configureCustomAudioDestination } from './NativeMultichannelAudioOutput';
 import { requireMicroseconds } from './TimeMath';
 
 const MAX_BUFFERED_AUDIO_SECONDS = 2;
@@ -345,6 +346,10 @@ async function createOutput(
         if (audioContext.sampleRate !== configuration.sampleRate) {
             throw new RangeError('The browser did not create the requested audio sample rate');
         }
+        configureCustomAudioDestination(
+            audioContext,
+            configuration.channelCount as 2 | 6 | 8
+        );
         await waitForBrowserAudioOperation(
             audioContextReference.resumePromise,
             consumedPrewarm ? 'Prewarmed AudioContext resume' : 'AudioContext resume'

@@ -104,46 +104,49 @@ describe('AudioWorkletController', () => {
         vi.unstubAllGlobals();
     });
 
-    it('creates an explicit speaker-layout output without browser-selected channel expansion', async () => {
-        let capturedOptions: AudioWorkletNodeOptions | undefined;
-        const connect = vi.fn();
-        class MockAudioWorkletNode {
-            public readonly connect = connect;
-            public readonly port = new MockMessagePort();
+    it.each([ 2, 6, 8 ])(
+        'creates an explicit $channelCount-channel speaker output without browser expansion',
+        async channelCount => {
+            let capturedOptions: AudioWorkletNodeOptions | undefined;
+            const connect = vi.fn();
+            class MockAudioWorkletNode {
+                public readonly connect = connect;
+                public readonly port = new MockMessagePort();
 
-            public constructor(
-                _audioContext: BaseAudioContext,
-                _processorName: string,
-                options?: AudioWorkletNodeOptions
-            ) {
-                capturedOptions = options;
+                public constructor(
+                    _audioContext: BaseAudioContext,
+                    _processorName: string,
+                    options?: AudioWorkletNodeOptions
+                ) {
+                    capturedOptions = options;
+                }
             }
+            const addModule = vi.fn((): Promise<void> => Promise.resolve());
+            const audioContext = {
+                audioWorklet: { addModule },
+                destination: {},
+                sampleRate: 48_000
+            } as unknown as AudioContext;
+            vi.stubGlobal('AudioWorkletNode', MockAudioWorkletNode);
+            vi.stubGlobal('URL', {
+                createObjectURL: vi.fn((): string => 'blob:audio-worklet'),
+                revokeObjectURL: vi.fn()
+            });
+
+            await AudioWorkletController.create(audioContext, {
+                channelCount,
+                maxBufferedFrames: 96_000
+            });
+
+            expect(capturedOptions).toMatchObject({
+                channelCount,
+                channelCountMode: 'explicit',
+                channelInterpretation: 'speakers',
+                outputChannelCount: [ channelCount ]
+            });
+            expect(connect).toHaveBeenCalledWith(audioContext.destination);
         }
-        const addModule = vi.fn((): Promise<void> => Promise.resolve());
-        const audioContext = {
-            audioWorklet: { addModule },
-            destination: {},
-            sampleRate: 48_000
-        } as unknown as AudioContext;
-        vi.stubGlobal('AudioWorkletNode', MockAudioWorkletNode);
-        vi.stubGlobal('URL', {
-            createObjectURL: vi.fn((): string => 'blob:audio-worklet'),
-            revokeObjectURL: vi.fn()
-        });
-
-        await AudioWorkletController.create(audioContext, {
-            channelCount: 2,
-            maxBufferedFrames: 96_000
-        });
-
-        expect(capturedOptions).toMatchObject({
-            channelCount: 2,
-            channelCountMode: 'explicit',
-            channelInterpretation: 'speakers',
-            outputChannelCount: [ 2 ]
-        });
-        expect(connect).toHaveBeenCalledWith(audioContext.destination);
-    });
+    );
 
     it('submits planar PCM with transferable buffers and generation metadata', () => {
         const harness = createAudioNodeHarness();

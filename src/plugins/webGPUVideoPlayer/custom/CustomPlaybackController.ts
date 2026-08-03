@@ -155,6 +155,17 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioTrackIndex === null && options.audioOutputMode !== undefined) {
         throw new TypeError('Custom playback cannot select an audio output mode without audio');
     }
+    const decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
+    if (decodedAudioOutputChannelCount !== undefined
+        && decodedAudioOutputChannelCount !== 2
+        && decodedAudioOutputChannelCount !== 6
+        && decodedAudioOutputChannelCount !== 8) {
+        throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
+    }
+    if (decodedAudioOutputChannelCount !== undefined
+        && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
+        throw new TypeError('Decoded audio output channels require decoded PCM audio');
+    }
 }
 
 function validateHDRColorNeutralization(options: CustomPlaybackPlayOptions): void {
@@ -255,6 +266,7 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
     return {
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
+        decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
         durationMicroseconds: options.durationMicroseconds,
         dolbyVisionProfile: options.dolbyVisionProfile,
         maximumCodedHeight: options.maximumCodedHeight,
@@ -612,7 +624,8 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     public setAudioStreamIndex(
         audioStreamIndex: number,
         audioOutputMode: CustomDecodeAudioOutputMode =
-        this.currentSource?.audioOutputMode ?? 'decoded-pcm'
+        this.currentSource?.audioOutputMode ?? 'decoded-pcm',
+        decodedAudioOutputChannelCount = this.currentSource?.decodedAudioOutputChannelCount
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
@@ -632,6 +645,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             ...this.currentSource,
             audioOutputMode,
             audioTrackIndex: audioStreamIndex,
+            decodedAudioOutputChannelCount: audioOutputMode === 'decoded-pcm' ?
+                decodedAudioOutputChannelCount :
+                undefined,
             startTimeMicroseconds: switchTimeMicroseconds
         };
         return this.beginPlayback(switchOptions, desiredPlaying, 'seeking');
@@ -940,6 +956,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             this.videoDecodeSession.start({
                 audioOutputMode: options.audioOutputMode,
                 audioTrackIndex: options.audioTrackIndex,
+                decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
                 durationMicroseconds: options.durationMicroseconds,
                 dolbyVisionProfile: options.dolbyVisionProfile,
                 generation,

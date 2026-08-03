@@ -1,5 +1,6 @@
 import type { Microseconds } from '../MediaTime';
 import type { FFmpegTrueHDModule } from '../../../lib/ffmpeg-truehd/ffmpeg-truehd.mjs';
+import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 import {
     getQualifiedCustomWaveChannelLayout,
     type QualifiedCustomWaveChannelLayout
@@ -19,7 +20,6 @@ const TRUEHD_ATMOS_PROFILE = 30;
 const TRUEHD_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const TRUEHD_FNV1A_PRIME = 16_777_619;
 const TRUEHD_QUALIFIED_CHANNEL_COUNTS = new Set<number>([ 2, 6, 8 ]);
-const TRUEHD_QUALIFIED_SAMPLE_RATES = new Set<number>([ 48_000, 96_000, 192_000 ]);
 const TRUEHD_SUPPORTED_BITS_PER_SAMPLE = new Set<number>([ 16, 20, 24 ]);
 
 export const TRUEHD_CODEC_MLP = 0;
@@ -38,7 +38,7 @@ export type TrueHDDecodedAudioOutput = Readonly<{
     mediaTimeMicroseconds: Microseconds
     objectAudioRendered: false
     pcmFingerprint: number
-    sampleRate: 48_000 | 96_000 | 192_000
+    sampleRate: number
 }>;
 
 type FFmpegTrueHDFunctionTable = {
@@ -259,9 +259,9 @@ export default class TrueHDSoftwareAudioDecoder {
             throw new RangeError('Bundled TrueHD output frame count is invalid');
         }
         const sampleRate = this.functions.getSampleRate(this.decoder);
-        if (!TRUEHD_QUALIFIED_SAMPLE_RATES.has(sampleRate)) {
+        if (!isSupportedCustomAudioSampleRate(sampleRate)) {
             throw new RangeError(
-                `Bundled TrueHD output sample rate ${sampleRate} Hz is unqualified`
+                `Bundled TrueHD output sample rate ${sampleRate} Hz is outside the supported range`
             );
         }
         const bitsPerSample = this.functions.getBitsPerRawSample(this.decoder);
@@ -348,7 +348,7 @@ export default class TrueHDSoftwareAudioDecoder {
             mediaTimeMicroseconds,
             objectAudioRendered: false,
             pcmFingerprint: getPCMByteFingerprint(outputBytes),
-            sampleRate: sampleRate as 48_000 | 96_000 | 192_000
+            sampleRate
         };
     }
 

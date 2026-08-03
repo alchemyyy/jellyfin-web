@@ -32,6 +32,8 @@ import type {
     TransferableRawVideoFrame
 } from './RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
+import { createHDR10PlusHEVCFixture } from '../validation/HDR10PlusFixture';
+import { parseHEVCHDR10PlusMetadata } from './HDR10PlusMetadata';
 
 vi.mock('./CustomDecode.worker', () => ({
     default: class MockBundledWorker {}
@@ -407,6 +409,57 @@ describe('CustomDecodeSession', () => {
         presentationFrame.frame.close();
     });
 
+    it('forwards per-frame HDR10+ states and records fail-closed telemetry', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            (): void => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 32);
+        emitRawReady(worker, 32);
+        const validMetadata = parseHEVCHDR10PlusMetadata(
+            createHDR10PlusHEVCFixture('valid'),
+            { kind: 'annex-b' }
+        );
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            frame: createFrame(),
+            generation: 32,
+            HDR10PlusMetadata: validMetadata,
+            mediaTimeMicroseconds: 1_100_000,
+            outputMode: 'video-frame',
+            type: 'frame'
+        });
+        worker.emitMessage({
+            durationMicroseconds: 100_000,
+            frame: createFrame(),
+            generation: 32,
+            HDR10PlusMetadata: { metadata: null, status: 'malformed' },
+            mediaTimeMicroseconds: 1_200_000,
+            outputMode: 'video-frame',
+            type: 'frame'
+        });
+
+        const validFrame = session.takeFrame(secondsToMicroseconds(1.1));
+        const malformedFrame = session.takeFrame(secondsToMicroseconds(1.2));
+        expect(validFrame?.HDR10PlusMetadata).toBe(validMetadata);
+        expect(malformedFrame?.HDR10PlusMetadata).toEqual({
+            metadata: null,
+            status: 'malformed'
+        });
+        expect(session.getTelemetry()).toMatchObject({
+            receivedHDR10PlusMalformedFrameCount: 1,
+            receivedHDR10PlusValidFrameCount: 1
+        });
+        for (const presentationFrame of [ validFrame, malformedFrame ]) {
+            if (!presentationFrame || presentationFrame.outputMode !== 'video-frame') {
+                throw new Error('Expected a transferred decoded video frame');
+            }
+            expect(session.acknowledgeFrame(presentationFrame)).toBe(true);
+            presentationFrame.frame.close();
+        }
+    });
+
     it('starts with four credits and replenishes only consumed queue entries', () => {
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];
@@ -593,6 +646,93 @@ describe('CustomDecodeSession', () => {
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame'
         });
+    });
+
+    it('forwards an exact decoded multichannel output count to the worker', () => {
+        const worker = new MockWorker();
+        const audioBridge = {
+            enqueue: vi.fn(),
+            initialAudioSampleCredits: 2,
+            start: vi.fn(),
+            stop: vi.fn()
+        } as unknown as CustomDecodeAudioBridge;
+        const session = new CustomDecodeSession(
+            vi.fn(),
+            () => worker as unknown as Worker,
+            audioBridge
+        );
+
+        session.start({
+            audioTrackIndex: 0,
+            decodedAudioOutputChannelCount: 8,
+            dolbyVisionProfile: null,
+            generation: 9,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mkv?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+
+        expect(worker.postedMessages[0]).toMatchObject({
+            audioTrackIndex: 0,
+            decodedAudioOutputChannelCount: 8,
+            generation: 9,
+            type: 'start'
+        });
+    });
+
+    it('rejects a decoded output count that does not match the request', () => {
+        const worker = new MockWorker();
+        const audioBridge = {
+            enqueue: vi.fn(),
+            initialAudioSampleCredits: 2,
+            start: vi.fn(),
+            stop: vi.fn()
+        } as unknown as CustomDecodeAudioBridge;
+        const session = new CustomDecodeSession(
+            vi.fn(),
+            () => worker as unknown as Worker,
+            audioBridge
+        );
+        session.start({
+            audioTrackIndex: 0,
+            decodedAudioOutputChannelCount: 8,
+            dolbyVisionProfile: null,
+            generation: 10,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mkv?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+
+        worker.emitMessage({
+            audio: { channelCount: 2, codec: 'flac', sampleRate: 48_000 },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 10,
+            type: 'ready'
+        });
+
+        expect(session.getTelemetry()).toMatchObject({
+            failureKind: 'audio-output-failed',
+            state: 'error'
+        });
+        expect(audioBridge.start).not.toHaveBeenCalled();
     });
 
     it('keeps two raw frames outstanding while acknowledgement is delayed', () => {
@@ -1219,7 +1359,7 @@ describe('CustomDecodeSession', () => {
             codec: 'pcm-s24',
             sampleRate: 48_000,
             sourceChannelCount: 1,
-            sourceSampleRate: 44_100
+            sourceSampleRate: 12_345
         };
         worker.emitMessage({
             audio: audioConfiguration,
@@ -1270,7 +1410,7 @@ describe('CustomDecodeSession', () => {
             audioCodec: 'pcm-s24',
             audioSampleRate: 48_000,
             audioSourceChannelCount: 1,
-            audioSourceSampleRate: 44_100,
+            audioSourceSampleRate: 12_345,
             receivedAudioFrameCount: 1_024,
             receivedAudioSampleCount: 1,
             submittedAudioFrameCount: 1_024,

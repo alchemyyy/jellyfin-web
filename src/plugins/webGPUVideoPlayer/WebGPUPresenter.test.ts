@@ -154,9 +154,14 @@ import {
     type TransferableDolbyVisionEncodedFrameMetadata
 } from './custom/DolbyVisionEncodedMetadataProtocol';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from './custom/DolbyVisionRPUParser';
+import { parseHEVCHDR10PlusMetadata } from './custom/HDR10PlusMetadata';
 import { microsecondsToMilliseconds, secondsToMicroseconds } from './MediaTime';
-import { createHDRToSDRRenderSettings } from './RenderSettings';
+import {
+    createHDRToSDRRenderSettings,
+    RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
+} from './RenderSettings';
 import { createDolbyVisionAuthorizationRPUFixture } from './validation/DolbyVisionAuthorizationFixture';
+import { createHDR10PlusHEVCFixture } from './validation/HDR10PlusFixture';
 import WebGPUPresenter, {
     type PresentationSurface,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
@@ -1173,6 +1178,98 @@ describe('WebGPUPresenter', () => {
             await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
         }
     );
+
+    it('applies per-frame HDR10+ metadata and clears it on fallback and seek', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 1)).resolves.toBe(true);
+        const deviceHarness = gpuHarness.devices[0];
+        deviceHarness.queueWriteBuffer.mockClear();
+
+        const validMetadata = parseHEVCHDR10PlusMetadata(
+            createHDR10PlusHEVCFixture('valid'),
+            { kind: 'annex-b' }
+        );
+        const validFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            HDR10PlusMetadata: validMetadata,
+            durationMicroseconds: validFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: validFrame,
+            mediaTimeMicroseconds: validFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        const getLastRenderSettingsWrite = (): Uint8Array<ArrayBuffer> => {
+            const renderSettingsWrites = deviceHarness.queueWriteBuffer.mock.calls
+                .map((call: unknown[]): unknown => call[2])
+                .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
+                    value instanceof Uint8Array
+                    && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
+                ));
+            const renderSettingsWrite = renderSettingsWrites.at(-1);
+            expect(renderSettingsWrite).toBeDefined();
+            return renderSettingsWrite as Uint8Array<ArrayBuffer>;
+        };
+        let renderSettingsWrite = getLastRenderSettingsWrite();
+        expect(new Uint32Array(renderSettingsWrite.buffer)[3]).toBe(2);
+        expect(new Float32Array(renderSettingsWrite.buffer)[6]).toBeCloseTo(834.75);
+        expect(new Float32Array(renderSettingsWrite.buffer)[12]).toBeCloseTo(166.95);
+        expect(new Uint32Array(renderSettingsWrite.buffer)[16]).toBe(2);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 1,
+            lastHDR10PlusMetadataStatus: 'valid',
+            staticFallbackHDR10PlusFrameCount: 0
+        });
+        expect(presenter.getTelemetry().lastHDR10PlusInputPeakNits).toBeCloseTo(834.75);
+
+        const malformedFrame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            HDR10PlusMetadata: parseHEVCHDR10PlusMetadata(
+                createHDR10PlusHEVCFixture('malformed'),
+                { kind: 'annex-b' }
+            ),
+            durationMicroseconds: malformedFrame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame: malformedFrame,
+            mediaTimeMicroseconds: malformedFrame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+
+        renderSettingsWrite = getLastRenderSettingsWrite();
+        expect(new Uint32Array(renderSettingsWrite.buffer)[3]).toBe(0);
+        expect(new Float32Array(renderSettingsWrite.buffer)[6]).toBe(1_000);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 1,
+            lastHDR10PlusInputPeakNits: null,
+            lastHDR10PlusMetadataStatus: 'malformed',
+            staticFallbackHDR10PlusFrameCount: 1
+        });
+
+        presenter.seek(2);
+        renderSettingsWrite = getLastRenderSettingsWrite();
+        expect(new Uint32Array(renderSettingsWrite.buffer)[3]).toBe(0);
+    });
 
     it('composes the visible rectangle, reuses matching plane textures, and releases them', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;

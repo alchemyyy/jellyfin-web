@@ -42,6 +42,10 @@ describe('createColorPipelineWGSL', () => {
         expect(shader).toContain('renderSettings.toneMapOperator == 0u');
         expect(shader).toContain('renderSettings.toneMapOperator == 2u');
         expect(shader).toContain('fn evaluateSplineToneMapPQ');
+        expect(shader).toContain('fn toneMapHDR10PlusPerceptualToSDR');
+        expect(shader).toContain('fn getHDR10PlusBezierAnchor');
+        expect(shader).toContain('renderSettings.dynamicHDRMode == 2u');
+        expect(shader).toContain('dynamicBezierAnchors3: vec4f');
         expect(shader).toContain('renderSettings.outputPeakNits / 1000.0');
         expect(shader).toContain('componentNits - outputMinimumNits');
         expect(shader).toContain('fn perceptuallyMapIPTPQToBT709');

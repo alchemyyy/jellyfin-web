@@ -36,6 +36,8 @@ import {
     prewarmBrowserAudioContext,
     type BrowserAudioContextPrewarmLease
 } from './custom/BrowserAudioContextPrewarm';
+import { CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE } from './custom/CustomAudioOutputPolicy';
+import { isSupportedCustomAudioSampleRate } from './custom/CustomAudioSampleRate';
 import {
     getCustomPlaybackEligibility,
     type CustomPlaybackEligibility,
@@ -68,6 +70,7 @@ import {
     probeCachedNativeMediaAudioCapabilities,
     type NativeMediaAudioCapabilities
 } from './custom/NativeMediaAudioCapabilities';
+import { selectCustomAudioOutputChannelCount } from './custom/NativeMultichannelAudioOutput';
 import {
     getStaticHDRToneMappingPeakNits,
     type StaticHDRMetadata
@@ -451,10 +454,22 @@ function getSelectedAudioSampleRate(options: unknown): number | null {
         return null;
     }
 
-    return Number.isSafeInteger(selectedAudioStream.sampleRate)
-        && Number(selectedAudioStream.sampleRate) > 0 ?
-        Number(selectedAudioStream.sampleRate) :
+    return isSupportedCustomAudioSampleRate(selectedAudioStream.sampleRate) ?
+        selectedAudioStream.sampleRate :
         null;
+}
+
+function selectDecodedAudioOutputChannelCount(
+    eligibility: EligibleCustomPlayback,
+    audioContext: AudioContext | null
+): 2 | 6 | 8 | undefined {
+    if (eligibility.audioOutputMode !== 'decoded-pcm') {
+        return undefined;
+    }
+    return selectCustomAudioOutputChannelCount(
+        audioContext,
+        eligibility.audioSourceChannelCount
+    );
 }
 
 /**
@@ -1647,15 +1662,15 @@ export default class WebGPUPlayer {
             return;
         }
 
-        const sampleRate = getSelectedAudioSampleRate(options);
-        if (sampleRate === null) {
+        const sourceSampleRate = getSelectedAudioSampleRate(options);
+        if (sourceSampleRate === null) {
             return;
         }
 
         try {
             this.customPlaybackAudioPrewarm = {
                 backendGeneration,
-                lease: prewarmBrowserAudioContext(sampleRate)
+                lease: prewarmBrowserAudioContext(CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE)
             };
         } catch (error) {
             console.warn('Unable to prewarm custom playback audio', error);
@@ -1867,6 +1882,10 @@ export default class WebGPUPlayer {
             eligibility.audioOutputMode,
             backendGeneration
         );
+        const decodedAudioOutputChannelCount = selectDecodedAudioOutputChannelCount(
+            eligibility,
+            audioPrewarm?.audioContext ?? null
+        );
 
         let completedStartResult: CustomPlaybackStartResult | null = null;
         try {
@@ -1964,6 +1983,7 @@ export default class WebGPUPlayer {
             const startResult = await customPlaybackController.play({
                 audioOutputMode: eligibility.audioOutputMode ?? undefined,
                 audioTrackIndex: eligibility.audioTrackIndex,
+                decodedAudioOutputChannelCount,
                 durationMicroseconds: eligibility.durationMicroseconds,
                 dolbyVisionProfile:
                     this.currentDolbyVisionPresentationDescriptor?.profile ?? null,
@@ -2655,7 +2675,11 @@ export default class WebGPUPlayer {
 
         const result = await customPlaybackController.setAudioStreamIndex(
             eligibility.audioTrackIndex,
-            eligibility.audioOutputMode ?? 'decoded-pcm'
+            eligibility.audioOutputMode ?? 'decoded-pcm',
+            selectDecodedAudioOutputChannelCount(
+                eligibility,
+                this.getCustomPlaybackAudioPrewarm(backendGeneration)?.audioContext ?? null
+            )
         );
         if (!this.isCustomPlaybackAudioSelectionCurrent(
             customPlaybackController,

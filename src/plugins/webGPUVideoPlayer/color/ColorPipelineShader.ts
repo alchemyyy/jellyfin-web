@@ -237,7 +237,15 @@ fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
     let inputMaximum = encodePerceptualPQ(renderSettings.inputPeakNits);
     let outputMinimum = encodePerceptualPQ(renderSettings.outputPeakNits / 1000.0);
     let outputMaximum = encodePerceptualPQ(renderSettings.outputPeakNits);
-    let sourcePivot = mix(inputMinimum, inputMaximum, 0.4);
+    var sourcePivot = mix(inputMinimum, inputMaximum, 0.4);
+    if (renderSettings.dynamicHDRMode == 1u
+        && renderSettings.dynamicSceneAverageNits > 0.0) {
+        sourcePivot = clamp(
+            encodePerceptualPQ(renderSettings.dynamicSceneAverageNits),
+            mix(inputMinimum, inputMaximum, 0.1),
+            mix(inputMinimum, inputMaximum, 0.8)
+        );
+    }
     let sourceTarget = (sourcePivot - inputMinimum) / (inputMaximum - inputMinimum);
     let adaptedPivot = mix(outputMinimum, outputMaximum, sourceTarget);
     let tuning = 1.0
@@ -276,6 +284,176 @@ fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
         mappedOffset = (lowerQuadratic * inputOffset + pivotSlope) * inputOffset;
     }
     return clamp(mappedOffset + destinationPivot, outputMinimum, outputMaximum);
+}
+
+fn getHDR10PlusBezierAnchor(anchorIndex: u32) -> f32 {
+    if (anchorIndex < 4u) {
+        return renderSettings.dynamicBezierAnchors0[anchorIndex];
+    }
+    if (anchorIndex < 8u) {
+        return renderSettings.dynamicBezierAnchors1[anchorIndex - 4u];
+    }
+    if (anchorIndex < 12u) {
+        return renderSettings.dynamicBezierAnchors2[anchorIndex - 8u];
+    }
+    return renderSettings.dynamicBezierAnchors3[anchorIndex - 12u];
+}
+
+fn getBinomialCoefficient(degree: u32, index: u32) -> f32 {
+    let symmetricIndex = min(index, degree - index);
+    var coefficient = 1.0;
+    for (var factorIndex = 1u; factorIndex <= symmetricIndex; factorIndex += 1u) {
+        coefficient *= f32(degree + 1u - factorIndex) / f32(factorIndex);
+    }
+    return coefficient;
+}
+
+fn getHDR10PlusIntercept(degree: u32, kneeX: f32, kneeY: f32) -> f32 {
+    if (kneeX <= 0.0 || kneeY >= 1.0) {
+        return 1.0 / f32(degree);
+    }
+    let slope = kneeY / kneeX * (1.0 - kneeX) / (1.0 - kneeY);
+    return min(slope / f32(degree), 1.0);
+}
+
+fn getHDR10PlusControlPoint(
+    pointIndex: u32,
+    degree: u32,
+    kneeX: f32,
+    kneeY: f32,
+    targetPeakNits: f32
+) -> f32 {
+    var controlPoint = select(
+        getHDR10PlusBezierAnchor(pointIndex - 1u),
+        1.0,
+        pointIndex == degree
+    );
+    let outputPeakNits = renderSettings.outputPeakNits;
+    if (outputPeakNits < targetPeakNits) {
+        let adaptation = max(outputPeakNits / targetPeakNits, 0.0);
+        if (pointIndex == 1u) {
+            controlPoint = mix(
+                getHDR10PlusIntercept(degree, kneeX, kneeY),
+                controlPoint,
+                adaptation
+            );
+        } else {
+            controlPoint = mix(1.0, controlPoint, adaptation);
+        }
+    } else if (outputPeakNits > targetPeakNits
+        && renderSettings.inputPeakNits > targetPeakNits) {
+        let adaptation = pow(clamp(
+            1.0 - (outputPeakNits - targetPeakNits)
+                / (renderSettings.inputPeakNits - targetPeakNits),
+            0.0,
+            1.0
+        ), 1.4);
+        if (pointIndex == 1u) {
+            controlPoint = mix(
+                getHDR10PlusIntercept(degree, kneeX, kneeY),
+                controlPoint,
+                adaptation
+            );
+        } else if (pointIndex < degree) {
+            controlPoint = mix(
+                f32(pointIndex) / f32(degree),
+                controlPoint,
+                adaptation
+            );
+        }
+    }
+    return controlPoint;
+}
+
+fn toneMapHDR10PlusPerceptualToSDR(linearInputNits: vec3f) -> vec3f {
+    let exposedRGB = max(
+        linearInputNits * pow(2.0, renderSettings.exposure),
+        vec3f(0.0)
+    );
+    let sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB);
+    let originalIntensity = sourceIPT.x;
+    let originalNits = decodePerceptualPQ(originalIntensity);
+    let degree = renderSettings.dynamicBezierAnchorCount + 1u;
+    let targetPeakNits = clamp(
+        renderSettings.dynamicTargetPeakNits,
+        1.0,
+        renderSettings.inputPeakNits
+    );
+    var kneeX = clamp(renderSettings.dynamicKneeX, 0.0, 1.0);
+    var kneeY = clamp(renderSettings.dynamicKneeY, 0.0, 1.0);
+    if (renderSettings.outputPeakNits < targetPeakNits) {
+        let adaptation = max(renderSettings.outputPeakNits / targetPeakNits, 0.0);
+        kneeX *= adaptation;
+        kneeY *= adaptation;
+        let beta = f32(degree) * kneeX / max(1.0 - kneeX, 0.000001);
+        let constrainedKnee = min(
+            kneeX * renderSettings.inputPeakNits / renderSettings.outputPeakNits,
+            beta / (beta + 1.0)
+        );
+        kneeY = mix(constrainedKnee, kneeY, adaptation);
+    } else if (renderSettings.outputPeakNits > targetPeakNits
+        && renderSettings.inputPeakNits > targetPeakNits) {
+        let adaptation = pow(clamp(
+            1.0 - (renderSettings.outputPeakNits - targetPeakNits)
+                / (renderSettings.inputPeakNits - targetPeakNits),
+            0.0,
+            1.0
+        ), 1.4);
+        kneeY *= targetPeakNits / renderSettings.outputPeakNits;
+        let linearKnee = kneeX * renderSettings.outputPeakNits
+            / renderSettings.inputPeakNits;
+        kneeY = mix(linearKnee, kneeY, adaptation);
+    }
+
+    let normalizedInput = clamp(
+        originalNits / renderSettings.inputPeakNits,
+        0.0,
+        1.0
+    );
+    var normalizedOutput = 0.0;
+    if (normalizedInput <= kneeX && kneeX > 0.0) {
+        normalizedOutput = normalizedInput * kneeY / kneeX;
+    } else {
+        let curvePosition = clamp(
+            (normalizedInput - kneeX) / max(1.0 - kneeX, 0.000001),
+            0.0,
+            1.0
+        );
+        var bezierValue = 0.0;
+        for (var pointIndex = 0u; pointIndex <= degree; pointIndex += 1u) {
+            var controlPoint = 0.0;
+            if (pointIndex > 0u) {
+                controlPoint = getHDR10PlusControlPoint(
+                    pointIndex,
+                    degree,
+                    kneeX,
+                    kneeY,
+                    targetPeakNits
+                );
+            }
+            bezierValue += getBinomialCoefficient(degree, pointIndex)
+                * pow(curvePosition, f32(pointIndex))
+                * pow(1.0 - curvePosition, f32(degree - pointIndex))
+                * controlPoint;
+        }
+        normalizedOutput = kneeY + (1.0 - kneeY) * bezierValue;
+    }
+    let mappedIntensity = encodePerceptualPQ(
+        clamp(normalizedOutput, 0.0, 1.0) * renderSettings.outputPeakNits
+    );
+    if (originalIntensity <= 0.0000001 || mappedIntensity <= 0.0000001) {
+        return vec3f(0.0);
+    }
+    let originalHull = max(calculateIPTChromaHull(originalIntensity), 0.0000001);
+    let mappedHull = calculateIPTChromaHull(mappedIntensity);
+    let chromaScale = clamp(min(
+        originalIntensity / mappedIntensity,
+        mappedHull / originalHull
+    ), 0.0, 1.0);
+    return perceptuallyMapIPTPQToBT709(vec3f(
+        mappedIntensity,
+        sourceIPT.yz * chromaScale
+    ));
 }
 
 fn calculateIPTChromaHull(intensity: f32) -> f32 {
@@ -430,7 +608,9 @@ fn processColor(encodedRGB: vec3f, pixelCoordinate: vec2f) -> vec3f {
     }
     let linearInputNits = decodeInputTransfer(encodedRGB);
     var toneMappedNits: vec3f;
-    if (renderSettings.toneMapOperator == 2u) {
+    if (renderSettings.dynamicHDRMode == 2u) {
+        toneMappedNits = toneMapHDR10PlusPerceptualToSDR(linearInputNits);
+    } else if (renderSettings.toneMapOperator == 2u) {
         toneMappedNits = toneMapSplinePerceptualToSDR(linearInputNits);
     } else {
         let linearBT709Nits = convertToBT709(linearInputNits);
@@ -470,7 +650,7 @@ struct RenderSettingsUniforms {
     version: u32,
     toneMapOperator: u32,
     outputTransfer: u32,
-    reserved: u32,
+    dynamicHDRMode: u32,
     desaturationStrength: f32,
     exposure: f32,
     inputPeakNits: f32,
@@ -479,6 +659,18 @@ struct RenderSettingsUniforms {
     brightness: f32,
     contrast: f32,
     saturation: f32,
+    dynamicSceneAverageNits: f32,
+    dynamicTargetPeakNits: f32,
+    dynamicKneeX: f32,
+    dynamicKneeY: f32,
+    dynamicBezierAnchorCount: u32,
+    dynamicReserved0: u32,
+    dynamicReserved1: u32,
+    dynamicReserved2: u32,
+    dynamicBezierAnchors0: vec4f,
+    dynamicBezierAnchors1: vec4f,
+    dynamicBezierAnchors2: vec4f,
+    dynamicBezierAnchors3: vec4f,
 }
 
 @group(0) @binding(${binding}) var<uniform> renderSettings: RenderSettingsUniforms;

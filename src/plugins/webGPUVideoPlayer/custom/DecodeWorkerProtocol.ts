@@ -4,6 +4,10 @@ import {
     type TransferableDolbyVisionEncodedFrameMetadata
 } from './DolbyVisionEncodedMetadataProtocol';
 import {
+    isHDR10PlusFrameMetadata,
+    type HDR10PlusFrameMetadata
+} from './HDR10PlusMetadata';
+import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH,
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from './NativeMediaAudioLimits';
@@ -21,13 +25,20 @@ import {
     isStaticHDRMetadataScanResult,
     type StaticHDRMetadataScanResult
 } from './StaticHDRMetadata';
+import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
+import {
+    MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
+    MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
+    isSupportedCustomAudioSampleRate
+} from './CustomAudioSampleRate';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
 export const MAX_DECODED_RAW_FRAME_CREDITS = 2;
 export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
-export const MAX_DECODED_AUDIO_SAMPLE_RATE = 192_000;
+export const MIN_DECODED_AUDIO_SAMPLE_RATE = MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE;
+export const MAX_DECODED_AUDIO_SAMPLE_RATE = MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE;
 export const MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT = 512;
 const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
@@ -76,6 +87,8 @@ export type DecodeWorkerStartRequest = {
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
+    /** Defaults to stereo and is valid only for decoded PCM audio. */
+    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
     frameCredits: number
@@ -156,6 +169,7 @@ export type DecodeWorkerReadyResponse = {
 type DecodeWorkerFrameResponseBase = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata
     generation: number
     mediaTimeMicroseconds: Microseconds
     type: 'frame'
@@ -313,6 +327,24 @@ function isNativeHDRTransfer(value: unknown): value is CustomDecodeNativeHDRTran
 
 function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode {
     return value === 'decoded-pcm' || value === 'native-media';
+}
+
+function isDecodedAudioOutputChannelCount(
+    value: unknown
+): value is CustomAudioOutputChannelCount {
+    return value === 2 || value === 6 || value === 8;
+}
+
+function isValidDecodedAudioOutputSelection(
+    value: Record<string, unknown>,
+    audioOutputMode: unknown,
+    hasAudioTrack: boolean
+): boolean {
+    if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
+        return value.decodedAudioOutputChannelCount === undefined;
+    }
+    return value.decodedAudioOutputChannelCount === undefined
+        || isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount);
 }
 
 function isRawVideoFrameFormat(value: unknown): value is CustomDecodeRawVideoFrameFormat {
@@ -554,8 +586,7 @@ function isAudioConfiguration(value: unknown): value is DecodeWorkerReadyAudioCo
         && value.codec.length > 0
         && isPositiveInteger(value.channelCount)
         && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS
-        && isPositiveInteger(value.sampleRate)
-        && Number(value.sampleRate) <= MAX_DECODED_AUDIO_SAMPLE_RATE;
+        && isSupportedCustomAudioSampleRate(value.sampleRate);
     if (!commonFieldsValid) {
         return false;
     }
@@ -563,8 +594,7 @@ function isAudioConfiguration(value: unknown): value is DecodeWorkerReadyAudioCo
             && (!isPositiveInteger(value.sourceChannelCount)
                 || Number(value.sourceChannelCount) > MAX_DECODED_AUDIO_CHANNELS))
         || (value.sourceSampleRate !== undefined
-            && (!isPositiveInteger(value.sourceSampleRate)
-                || Number(value.sourceSampleRate) > MAX_DECODED_AUDIO_SAMPLE_RATE))) {
+            && !isSupportedCustomAudioSampleRate(value.sourceSampleRate))) {
         return false;
     }
     if (value.outputMode === undefined) {
@@ -602,6 +632,11 @@ function hasValidOptionalDolbyVisionMetadata(value: Record<string, unknown>): bo
         );
 }
 
+function hasValidOptionalHDR10PlusMetadata(value: Record<string, unknown>): boolean {
+    return value.HDR10PlusMetadata === undefined
+        || isHDR10PlusFrameMetadata(value.HDR10PlusMetadata);
+}
+
 function isDolbyVisionProfile(value: unknown): value is CustomDecodeDolbyVisionProfile {
     return value === null || value === 5 || value === 7 || value === 8;
 }
@@ -618,6 +653,11 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             const hasNoAudioTrack = value.audioTrackIndex === null;
             const hasValidAudioCredits = isAudioSampleCredit(value.audioSampleCredits, true);
             const audioOutputMode = value.audioOutputMode ?? 'decoded-pcm';
+            const hasValidDecodedAudioOutput = isValidDecodedAudioOutputSelection(
+                value,
+                audioOutputMode,
+                hasAudioTrack
+            );
             const hasValidVideoOutput = value.videoOutputMode === 'raw-planes' ?
                 isRawVideoFrameFormat(value.rawVideoFrameFormat) :
                 value.videoOutputMode === 'video-frame'
@@ -667,6 +707,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                     || value.frameCredits === MAX_DECODED_RAW_FRAME_CREDITS)
                 && (hasAudioTrack || hasNoAudioTrack)
                 && isAudioOutputMode(audioOutputMode)
+                && hasValidDecodedAudioOutput
                 && (hasAudioTrack || value.audioOutputMode === undefined)
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);
@@ -689,6 +730,7 @@ function isDecodeWorkerFrameResponse(value: Record<string, unknown>): boolean {
         || !isMicroseconds(value.durationMicroseconds)
         || Number(value.durationMicroseconds) < 0
         || !hasValidOptionalDolbyVisionMetadata(value)
+        || !hasValidOptionalHDR10PlusMetadata(value)
     ) {
         return false;
     }
@@ -751,8 +793,7 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && channelCount <= MAX_DECODED_AUDIO_CHANNELS
                 && isPositiveInteger(value.frameCount)
                 && frameCount <= MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE
-                && isPositiveInteger(value.sampleRate)
-                && Number(value.sampleRate) <= MAX_DECODED_AUDIO_SAMPLE_RATE
+                && isSupportedCustomAudioSampleRate(value.sampleRate)
                 && isChannelData(value.channelData, channelCount, frameCount);
         }
         case 'native-audio-init':

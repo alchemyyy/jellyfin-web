@@ -1,0 +1,28 @@
+{
+  "$schema": "hardware-matrix-plan-schema.json",
+  "schemaVersion": 1,
+  "browserFamilies": [
+    "chrome",
+    "edge"
+  ],
+  "gpuVendors": [
+    "nvidia",
+    "amd",
+    "intel"
+  ],
+  "exerciseIds": [
+    "lifecycle",
+    "device-loss",
+    "paused-device-loss",
+    "startup-ten",
+    "retention-thirty"
+  ],
+  "authorizationRoutes": [
+    "external-hdr",
+    "raw-hdr",
+    "external-dolby-vision",
+    "raw-dolby-vision",
+    "dolby-vision-profile7",
+    "dolby-vision-profile7-fel"
+  ]
+}

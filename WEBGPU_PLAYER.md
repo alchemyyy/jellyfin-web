@@ -127,19 +127,22 @@ Eligibility remains narrower than the decoder's theoretical support:
   padding and exact visible and display geometry. Each Ultra HD result is
   independent; failure retains that codec's qualified baseline limit without
   reducing the other codecs. H.264 and VP8 remain bounded to 1920x1080.
-- AAC LC, Opus, FLAC, MP3, and Vorbis each require their exact 48 kHz stereo
-  decoder initialization data and one or two pinned silence packets to produce
-  exactly one owned `AudioData`. The probe verifies timestamp, channel count,
-  frame count, sample rate, duration, finite planar `f32` copying, and a tight
-  silence bound before closing the output and decoder. Configuration-only,
-  missing, duplicate, malformed, non-silent, or timed-out output remains
-  unadvertised.
-- AAC LC, Opus, FLAC, and Vorbis independently add 48 kHz 5.1 input only after
-  a second codec-specific configuration decodes pinned six-channel packets
-  into one exact owned `AudioData`. Chromium constructs six-channel WebCodecs
+- AAC LC, Opus, FLAC, MP3, and Vorbis each require exact 48 kHz stereo
+  capability fixtures to produce one owned `AudioData`. The probe verifies
+  timestamp, channel count, frame count, sample rate, duration, finite planar
+  `f32` copying, and a tight silence bound before closing the output and
+  decoder. The fixture rate proves the codec/layout path rather than forming a
+  playback whitelist: selected tracks may use any safe integer 3000-192000 Hz
+  source rate only after their exact `canDecode()` check passes, then normalize
+  to 48 kHz. Configuration-only, missing, duplicate, malformed, non-silent, or
+  timed-out output remains unadvertised.
+- AAC LC, Opus, FLAC, and Vorbis independently add 5.1 input only after a
+  second codec-specific 48 kHz fixture decodes pinned six-channel packets into
+  one exact owned `AudioData`. Chromium constructs six-channel WebCodecs
   configurations as canonical 5.1 and exposes its planes in
-  `FL, FR, FC, LFE, surround L, surround R` order. The worker omits LFE and
-  applies its bounded Lo/Ro matrix before submitting stereo PCM. MP3 remains
+  `FL, FR, FC, LFE, surround L, surround R` order. A complete bed may retain
+  native 5.1 when the exact playback destination exposes six channels;
+  otherwise the worker applies its bounded stereo matrix. MP3 remains
   stereo-only, and a failed 5.1 result does not reduce that codec's qualified
   stereo route.
 - Native Dolby Vision Profile 5 additionally decodes one warm-up frame and
@@ -692,8 +695,8 @@ console assertions enabled, record whether it occurs during stress runs, and
 do not claim a leak-free long-duration soak until retained-object or memory
 evidence closes it. Do not suppress the warning or weaken fallback behavior.
 
-For an enabled local AC-3 build, select an exact stereo 48 kHz Jellyfin audio
-stream and assert its decoder codec:
+For an enabled local AC-3 build, select a stereo 48 kHz Jellyfin audio stream
+to exercise the exact native-media bridge fixture and assert its decoder codec:
 
 ```powershell
 $env:WEBGPU_SMOKE_AUDIO_STREAM_INDEX = '<stream-index>'

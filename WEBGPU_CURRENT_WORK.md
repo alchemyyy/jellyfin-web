@@ -4,18 +4,19 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `4fc371595a51ec4dc1ada3bc1fad9d978f36ce94`
+Parent checkpoint: `eaa6bb627d63dd1a7cb91e8dc45c5e2bb8d81143`
 
-Checkpoint state: the four-state static-HDR matrix, ES5 worker conflict fix,
-custom audio volume repair, and metadata-driven normalization path are committed
-and pushed. The current worktree makes live normalization coverage explicit
-before continuing the broader portable HDR matrix.
+Checkpoint state: the portable High Tier playback validation is committed and
+pushed. The current worktree integrates runtime-gated native multichannel PCM,
+exact-PTS HEVC HDR10+ handling, and a checked cross-browser/GPU hardware-matrix
+runner. These changes passed the integrated gates described below and form the
+next checkpoint.
 
 ## Current objective
 
-Distinguish real non-unity normalization evidence from the unity fallback,
-then add the compact native HEVC Main10 High Tier playback regression required
-by the product checklist without reintroducing bitrate-based selection.
+Finish this integration without widening unmeasured capability claims. Preserve
+deterministic stereo fallback, static HDR fallback, and explicit failed/not-run
+matrix cells while qualifying the new paths on real media and hardware.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -165,16 +166,50 @@ Remaining Group B work:
 4. Execute the same environment contract on Edge plus AMD and Intel systems;
    retain explicit `not-recorded` values only for matrices with no live adapter.
 
-## Exact codec checkpoint
+## Current integration checkpoint
+
+- The decoded-PCM output route now uses the browser's exact
+  `AudioContext.destination.maxChannelCount` result. Complete 5.1 beds may use
+  six speaker-interpreted channels and complete 7.1 beds may use eight. Any
+  missing, invalid, changing, or insufficient capability retains the existing
+  qualified stereo downmix. There is no partial 7.1-to-5.1 route and no new
+  compressed-passthrough or server capability claim.
+- Encoded audio bitrate is telemetry only. Every decoded-PCM route now uses one
+  source-rate contract: any safe integer from 3000 through 192000 Hz is
+  eligible for normalization to 48 kHz. Codec, container, profile, and channel
+  layout remain explicit constraints, and native/WebCodecs or bundled decoders
+  must still accept the actual configuration. The native AC-3/E-AC-3 MSE bridge
+  remains an exact 48 kHz route; the software PCM fallback uses the bounded
+  contract. Audio prewarm validates the selected source rate but always creates
+  the actual 48 kHz decoded-PCM output context, so 96 kHz and nonstandard source
+  rates do not discard the user-activation-time context.
+- HEVC HDR10+ ST 2094-40 metadata now travels from bounded prefix/suffix SEI
+  parsing through an exact-PTS queue to renderer settings version 7. The
+  implemented subset is application version 0/1 with one whole-frame processing
+  window and no peak-luminance grid. Missing, malformed, conflicting, or
+  unsupported metadata clears the dynamic state for that frame and uses static
+  HDR10. AV1, VP9, H.264, multiwindow, and grid HDR10+ remain unsupported.
+- Dolby Vision continues to use its existing exact-PTS RPU path. This checkpoint
+  does not add or infer metadata from decoded `VideoFrame` objects.
+- The hardware runner records Chrome/Edge x NVIDIA/AMD/Intel as a fixed six-cell
+  matrix and refuses to infer unavailable hardware. On this host, Chrome/NVIDIA
+  passed four of five live exercises and all six route authorizations, but the
+  30-session retention exercise timed out. Edge/NVIDIA probing succeeded, while
+  live custom-playback entry remains unresolved; AMD and Intel were not run.
+- The Chrome retention result remains a fail-closed record of the deferred
+  Mediabunny `VideoSample` ownership/long-session risk. It is not being repaired
+  in this checkpoint by explicit project direction.
+
+## Codec and layout checkpoint
 
 | Route | Current authorized input | Decoder and output | Explicit exclusions |
 | --- | --- | --- | --- |
 | JPEG 2000 | `MJ2` or QuickTime `MOV`; `mjp2`; progressive unsigned 8-bit sRGB/gray; at most 960x540 and 24 fps | Mediabunny packets -> pinned OpenJPEG WASM -> owned RGBA `VideoFrame`; exact fingerprint and at least 30 decode/output fps | HDR, high bit depth, MXF, DCI 2K/4K, JPX/HTJ2K, alpha, signed or ambiguous component layouts |
 | MPEG-2 Video | Matroska only; Main Profile; progressive 8-bit SDR; at most 1920x1080 and 24 fps | Mediabunny packets -> focused MPEG-2-only FFmpeg WASM -> owned I420 `VideoSample`/`VideoFrame`; exact reordered output and at least 30 fps | VC-1, WMV3, MPEG-1, interlaced MPEG-2, non-Main profiles, TS/MTS/M2TS, PS/VOB, MOV, MP4, and every non-Matroska container |
-| DTS family | Matroska only; seven exact tuples listed below | Mediabunny `A_DTS` packets -> pinned `libdcadec` WASM -> exact WAVE layout -> stereo 48 kHz PCM | Any unlisted profile/layout/rate tuple, TS/MTS/M2TS, MOV/MP4, DTS:X object rendering, and passthrough |
-| TrueHD/MLP | Matroska only; four exact tuples listed below | Mediabunny `A_TRUEHD`/`A_MLP` packets -> focused FFmpeg WASM -> exact WAVE layout -> stereo 48 kHz PCM | Any unlisted tuple, 7.1/eight-channel claims, TS/MTS/M2TS, Atmos object rendering, and passthrough |
+| DTS family | Matroska only; fixture-proven profile/layout pairs at integer source rates from 3000 through 192000 Hz; rates above 96 kHz require a 5.1 MA or MA+DTS:X bed | Mediabunny `A_DTS` packets -> pinned `libdcadec` WASM -> exact WAVE layout -> native 5.1/7.1 only when the complete physical bed is exposed, otherwise stereo 48 kHz PCM | Unlisted profile/layout pairs, rates outside the bounded contract, TS/MTS/M2TS, MOV/MP4, DTS:X object rendering, and passthrough |
+| TrueHD/MLP | Matroska only; TrueHD stereo/5.1 or MLP stereo at integer source rates from 3000 through 192000 Hz | Mediabunny `A_TRUEHD`/`A_MLP` packets -> focused FFmpeg WASM -> exact WAVE layout -> native 5.1 only when six output channels are exposed, otherwise stereo 48 kHz PCM | TrueHD 7.1/eight-channel claims, MLP surround, rates outside the bounded contract, TS/MTS/M2TS, Atmos object rendering, and passthrough |
 
-### Exact DTS tuples
+### DTS capability fixtures and rate contract
 
 1. DTS Core, 5.1, 48 kHz
 2. DTS 96/24, 5.1, 96 kHz
@@ -184,19 +219,24 @@ Remaining Group B work:
 6. DTS-HD MA, 7.1, 96 kHz
 7. DTS-HD MA, 5.1, 192 kHz
 
-The DTS-HD MA tuples also accept the DTS:X label while decoding only the MA
-channel bed. These tuples are a union, not a Cartesian product.
+These seven tuples are exact decoder, layout, output, and throughput fixtures;
+they are not a sample-rate whitelist. They authorize their profile/layout pairs
+across the shared bounded source-rate contract. Above 96 kHz, only 5.1 DTS-HD
+MA or DTS-HD MA + DTS:X is admitted. The DTS:X label still decodes only the MA
+channel bed.
 
-### Exact TrueHD/MLP tuples
+### TrueHD/MLP capability fixtures and rate contract
 
 1. TrueHD, stereo, 48 kHz
 2. TrueHD, 5.1, 96 kHz
 3. TrueHD, 5.1, 192 kHz
 4. MLP, stereo, 48 kHz
 
-These tuples are a union, not every combination of two/six channels and
-48/96/192 kHz. Atmos metadata may be detected, but output remains the lossless
-channel bed.
+These four tuples prove the decoder and the TrueHD stereo/5.1 and MLP stereo
+layout families; they are not a sample-rate whitelist. Each supported
+codec/layout pair accepts bounded integer source rates from 3000 through
+192000 Hz and normalizes them to 48 kHz. Atmos metadata may be detected, but
+output remains the lossless channel bed.
 
 ## Implemented in the worktree
 
@@ -207,8 +247,9 @@ channel bed.
   generation-safe iterator retirement.
 - Owned decoder contexts, copied output memory, bounded packets/frames/queues,
   and existing WebGPU/AudioWorklet presentation paths.
-- Exact non-Cartesian DTS and TrueHD route tables shared by eligibility, device
-  profiles, and runtime validation.
+- Fixture-derived DTS and TrueHD profile/layout tables plus one shared bounded
+  source-rate contract across eligibility, device profiles, protocol checks,
+  resampling, and runtime validation.
 - Controller, session, and worker protocol support for the focused
   `openjpeg` and `legacy-software` video backends.
 - Portable mpv/browser A/B tooling. Example manifests contain placeholders;
@@ -227,8 +268,9 @@ channel bed.
   exists, before the first non-Dolby-Vision PQ frame. Consistent partial fields
   merge across access units. Missing, malformed, or conflicting optional
   metadata is reported explicitly and retains the bounded 1000-nit default
-  without interrupting decode. Metadata beyond the startup prefix and dynamic
-  HDR metadata remain unsupported.
+  without interrupting decode. Metadata beyond the startup prefix remains
+  unsupported. Exact-PTS HEVC HDR10+ is handled separately by the version 7
+  dynamic path described above.
 - All seven HDR/Dolby Vision shader variants compile and create pipelines in
   Chrome 151 WebGPU. A five-frame private HDR10 comparison against mpv spline
   now records static-reference mean/minimum SSIM of 0.9938272/0.990991 and
@@ -303,6 +345,12 @@ channel bed.
 
 ## Completed checkpoint gates
 
+- The bounded audio source-rate integration passed TypeScript, 1,529 WebGPU
+  Vitest tests across 108 files, 147 standalone Node harness tests, 96 Python
+  harness tests, full WebGPU plugin plus changed-script ESLint, development and
+  production builds, and ordinary codec artifact verification. Jellyfin 12
+  nightly is serving that production bundle on port 8096 with the ignored local
+  feature overlay enabled; source feature flags remain false.
 - The generated native High Tier fixture passed one live lifecycle case and
   both required checks on Jellyfin 12 nightly and Chrome 151: client/server
   DirectPlay, native HEVC `VideoFrame`, external HDR, decoded FLAC, valid static
@@ -381,9 +429,10 @@ channel bed.
 
 ## Remaining product validation
 
-1. Run Jellyfin 12 nightly DirectPlay negotiation for every exact positive tuple
-   and nearby negative tuple. Confirm Playback Info never widens DTS or TrueHD
-   into a channel/rate Cartesian product.
+1. Run Jellyfin 12 nightly DirectPlay negotiation for every supported
+   profile/layout pair at lower, representative, 96 kHz transition, and upper
+   source-rate boundaries plus nearby negatives. Confirm Playback Info never
+   widens DTS or TrueHD beyond the listed envelope.
 2. Exercise start, pause/resume, representative seeks, seek storms, audio
    switching, natural EOF, explicit stop, replay, source replacement, and
    repeated sessions for every new route.
@@ -404,17 +453,32 @@ channel bed.
    is fixed and retention evidence passes.
 7. Keep all WebGPU feature flags disabled in source until the supported browser,
    GPU, output, and server matrix is complete.
+8. Physically verify 5.1 and 7.1 channel isolation, ordering, output-device
+   changes, mute, volume, normalization, seeking, and fallback in Chrome and
+   Edge. Automated channel-array tests do not prove speaker wiring.
+9. Run decodable real HDR10+ material through a temporal browser capture and
+   compare exact frames against pinned mpv/libplacebo output. Include scenes
+   with changing peaks and static-fallback frames.
+10. Reproduce Edge custom-playback entry while capturing active pre-stop state;
+    the current post-stop snapshot does not prove its persisted
+    `play-method-unsupported` value caused the failure.
+11. Execute the checked hardware plan on physical AMD and Intel systems and run
+    visual HDR output checks on an HDR-capable display.
 
 ## Navigation
 
 - `webgpu_plan_2.md`: encompassing product plan and validation matrix
 - `WEBGPU_JPEG2000.md`: exact OpenJPEG route and expansion procedure
 - `WEBGPU_LEGACY_VIDEO.md`: exact progressive MPEG-2 Matroska route
-- `WEBGPU_DTS.md`: exact seven-tuple DTS route
-- `WEBGPU_TRUEHD.md`: exact four-tuple TrueHD/MLP route
+- `WEBGPU_DTS.md`: DTS fixture evidence, profile/layout rules, and bounded-rate route
+- `WEBGPU_TRUEHD.md`: TrueHD/MLP fixture evidence, layout rules, and bounded-rate route
+- `WEBGPU_AUDIO_MULTICHANNEL.md`: native decoded-PCM output policy and physical
+  qualification requirements
+- `WEBGPU_DYNAMIC_HDR.md`: exact HDR10+/Dolby Vision dynamic-metadata contract
+- `WEBGPU_HARDWARE_MATRIX.md`: checked matrix tooling and current-host results
 - `scripts/webgpu/README.md`: fixture, build, artifact, browser, and A/B commands
 - `scripts/webgpu/validation/README.md`: shared matrices, schemas, selectors,
   reports, and private live-case overlays
 
-No validation command is running. The current local development bundle remains
+No validation command is running. The current local production bundle remains
 available through the Jellyfin 12 nightly server on port 8096.

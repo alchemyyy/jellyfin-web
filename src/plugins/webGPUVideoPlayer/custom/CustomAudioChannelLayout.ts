@@ -9,6 +9,14 @@ export const CUSTOM_STEREO_INPUT_CHANNEL_COUNT = 2;
 export const CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT = 6;
 export const CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT = 7;
 export const CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT = 8;
+export const CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT = 2;
+export const CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT = 6;
+export const CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT = 8;
+
+export type CustomAudioOutputChannelCount =
+    | typeof CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
+    | typeof CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT
+    | typeof CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT;
 
 export type CustomAudioChannel =
     | 'front-center'
@@ -88,6 +96,28 @@ export const CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT: CustomAudioChannelLayout = Obj
 });
 
 export type StereoChannelData = [ Float32Array, Float32Array ];
+export type CustomAudioOutputChannelData = readonly Float32Array[];
+
+/** Rejects incomplete multichannel speaker beds and unsupported layout conversion. */
+export function assertCustomAudioOutputChannelLayout(
+    layout: CustomAudioChannelLayout,
+    outputChannelCount: CustomAudioOutputChannelCount
+): void {
+    switch (outputChannelCount) {
+        case CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT:
+            return;
+        case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
+            if (layout.id === '5.1-back' || layout.id === '5.1-side') {
+                return;
+            }
+            throw new RangeError('Native 5.1 output requires a 5.1 input layout');
+        case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
+            if (layout.id === '7.1') {
+                return;
+            }
+            throw new RangeError('Native 7.1 output requires a 7.1 input layout');
+    }
+}
 
 /** Maps only layouts with an explicit, implemented stereo presentation matrix. */
 export function getCustomAudioChannelLayout(
@@ -154,5 +184,22 @@ export function mixCustomAudioToStereo(
             return downmixSixPointOneToStereo(channelData);
         case '7.1':
             return downmixSevenPointOneToStereo(channelData);
+    }
+}
+
+/** Preserves a complete speaker bed or applies the qualified stereo fallback. */
+export function prepareCustomAudioOutputChannelData(
+    channelData: readonly Float32Array[],
+    layout: CustomAudioChannelLayout,
+    outputChannelCount: CustomAudioOutputChannelCount
+): CustomAudioOutputChannelData {
+    assertCustomAudioOutputChannelLayout(layout, outputChannelCount);
+    switch (outputChannelCount) {
+        case CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT:
+            return mixCustomAudioToStereo(channelData, layout);
+        case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
+        case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
+            requireLayoutChannelData(channelData, layout);
+            return channelData;
     }
 }

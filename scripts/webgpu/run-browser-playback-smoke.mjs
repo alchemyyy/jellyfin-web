@@ -1263,6 +1263,14 @@ function createPlayerSnapshotExpression(accessKey) {
             typeof player.getExternalHDRAuthorizationTelemetry === 'function' ?
                 player.getExternalHDRAuthorizationTelemetry() :
                 null;
+        const settledRawHDRAuthorization =
+            typeof player.getRawHDRAuthorizationTelemetry === 'function' ?
+                player.getRawHDRAuthorizationTelemetry() :
+                null;
+        const settledRawDolbyVisionAuthorization =
+            typeof player.getDolbyVisionAuthorizationTelemetry === 'function' ?
+                player.getDolbyVisionAuthorizationTelemetry() :
+                null;
         const rawHDRAuthorization = presentationInputMode === 'raw-yuv'
             && customEligibility?.eligible === true
             && customEligibility.hdr === true
@@ -1604,6 +1612,28 @@ function createPlayerSnapshotExpression(accessKey) {
                 sampleCount: profile7FELDolbyVisionAuthorization.sampleCount,
                 status: profile7FELDolbyVisionAuthorization.status,
                 targetFormat: profile7FELDolbyVisionAuthorization.targetFormat
+            } : null,
+            settledRawHDRValidation: settledRawHDRAuthorization ? {
+                authorizedRouteKeys: [ ...settledRawHDRAuthorization.authorizedRouteKeys ],
+                failureReasons: { ...settledRawHDRAuthorization.failureReasons },
+                fixtureVersion: settledRawHDRAuthorization.fixtureVersion,
+                pendingRouteKeys: [ ...settledRawHDRAuthorization.pendingRouteKeys ],
+                rejectedRouteKeys: [ ...settledRawHDRAuthorization.rejectedRouteKeys ],
+                renderSettingsVersion: settledRawHDRAuthorization.renderSettingsVersion,
+                status: settledRawHDRAuthorization.status,
+                targetFormat: settledRawHDRAuthorization.targetFormat
+            } : null,
+            settledRawDolbyVisionValidation: settledRawDolbyVisionAuthorization ? {
+                failureReason: settledRawDolbyVisionAuthorization.failureReason,
+                fixtureVersion: settledRawDolbyVisionAuthorization.fixtureVersion,
+                maximumChannelError:
+                    settledRawDolbyVisionAuthorization.maximumChannelError,
+                renderSettingsVersion:
+                    settledRawDolbyVisionAuthorization.renderSettingsVersion,
+                routeKey: settledRawDolbyVisionAuthorization.routeKey,
+                sampleCount: settledRawDolbyVisionAuthorization.sampleCount,
+                status: settledRawDolbyVisionAuthorization.status,
+                targetFormat: settledRawDolbyVisionAuthorization.targetFormat
             } : null,
             rawHDRValidation: rawHDRAuthorization ? {
                 authorizedRouteKeys: [ ...rawHDRAuthorization.authorizedRouteKeys ],

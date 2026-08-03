@@ -1,13 +1,13 @@
 import type { Microseconds } from '../MediaTime';
 import type { CustomAudioChannelLayout } from './CustomAudioChannelLayout';
+import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 import { getQualifiedDTSChannelLayout } from './DTSChannelLayout';
 import { requireMicroseconds } from './TimeMath';
 import type { LibDCADECModule } from '../../../lib/libdcadec/libdcadec.mjs';
 
 const DTS_MAXIMUM_PACKET_SIZE = 2 * 1024 * 1024;
 const DTS_MAXIMUM_DECODED_FRAME_COUNT = 16_384;
-const DTS_QUALIFIED_SAMPLE_RATES = new Set<number>([ 48_000, 96_000, 192_000 ]);
-const DTS_192_KHZ_QUALIFIED_CHANNEL_COUNTS = new Set<number>([ 2, 6 ]);
+const DTS_HIGH_SAMPLE_RATE_SUPPORTED_CHANNEL_COUNTS = new Set<number>([ 2, 6 ]);
 const DTS_SUPPORTED_BITS_PER_SAMPLE = new Set<number>([ 16, 24 ]);
 const DTS_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const DTS_FNV1A_PRIME = 16_777_619;
@@ -36,7 +36,7 @@ export type DTSDecodedAudioOutput = Readonly<{
     mediaTimeMicroseconds: Microseconds
     parseStatus: number
     profile: DTSDecodedProfile
-    sampleRate: 48_000 | 96_000 | 192_000
+    sampleRate: number
 }>;
 
 type LibDCADECFunctionTable = {
@@ -122,11 +122,11 @@ function isQualifiedDTSOutputEnvelope(
     sampleRate: number,
     channelCount: number
 ): boolean {
-    if (sampleRate !== 192_000) {
+    if (sampleRate <= 96_000) {
         return true;
     }
     return profile === DTS_PROFILE_HD_MASTER_AUDIO
-        && DTS_192_KHZ_QUALIFIED_CHANNEL_COUNTS.has(channelCount);
+        && DTS_HIGH_SAMPLE_RATE_SUPPORTED_CHANNEL_COUNTS.has(channelCount);
 }
 
 function requirePositiveSafeInteger(value: number, name: string): number {
@@ -218,8 +218,10 @@ export default class DTSSoftwareAudioDecoder {
             throw new RangeError('Bundled DTS output frame count is invalid');
         }
         const sampleRate = this.functions.getSampleRate(this.decoder);
-        if (!DTS_QUALIFIED_SAMPLE_RATES.has(sampleRate)) {
-            throw new RangeError(`Bundled DTS output sample rate ${sampleRate} Hz is unqualified`);
+        if (!isSupportedCustomAudioSampleRate(sampleRate)) {
+            throw new RangeError(
+                `Bundled DTS output sample rate ${sampleRate} Hz is outside the supported range`
+            );
         }
         const bitsPerSample = this.functions.getBitsPerSample(this.decoder);
         if (!DTS_SUPPORTED_BITS_PER_SAMPLE.has(bitsPerSample)) {
@@ -242,7 +244,7 @@ export default class DTSSoftwareAudioDecoder {
             channelLayout.channelCount
         )) {
             throw new RangeError(
-                'Bundled DTS 192 kHz output is outside the qualified Master Audio envelope'
+                'Bundled DTS high-sample-rate output is outside the supported Master Audio envelope'
             );
         }
 
@@ -284,7 +286,7 @@ export default class DTSSoftwareAudioDecoder {
             mediaTimeMicroseconds,
             parseStatus,
             profile,
-            sampleRate: sampleRate as 48_000 | 96_000 | 192_000
+            sampleRate
         };
     }
 

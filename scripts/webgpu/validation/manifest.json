@@ -611,6 +611,16 @@
       "arguments": [
         "--check-runtime"
       ],
+      "environmentArguments": [
+        {
+          "environment": "WEBGPU_SMOKE_DEBUG_URL",
+          "option": "--debug-url"
+        },
+        {
+          "environment": "WEBGPU_SMOKE_FRONTEND_URL",
+          "option": "--frontend-url"
+        }
+      ],
       "id": "local-runtime-toolchain",
       "resultAssertions": [
         {

@@ -10,6 +10,7 @@ import {
     isDecodeWorkerResponse,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_AUDIO_SAMPLE_RATE,
+    MIN_DECODED_AUDIO_SAMPLE_RATE,
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT
@@ -24,6 +25,8 @@ import {
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
 import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
+import { createHDR10PlusHEVCFixture } from '../validation/HDR10PlusFixture';
+import { parseHEVCHDR10PlusMetadata } from './HDR10PlusMetadata';
 
 const DOLBY_VISION_RPU_PARSER_WASM_URL =
     'https://example.test/libraries/libdovi/dovi-rpu-parser.wasm';
@@ -466,6 +469,43 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
+    it('accepts explicit bounded HDR10+ states and rejects malformed metadata', () => {
+        const baseFrame = {
+            durationMicroseconds: 41_708,
+            frame: { close: vi.fn() },
+            generation: 1,
+            mediaTimeMicroseconds: 500_000,
+            outputMode: 'video-frame',
+            type: 'frame'
+        } as const;
+        const validMetadata = parseHEVCHDR10PlusMetadata(
+            createHDR10PlusHEVCFixture('valid'),
+            { kind: 'annex-b' }
+        );
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: validMetadata
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: { metadata: null, status: 'conflicting' }
+        })).toBe(true);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: {
+                metadata: {
+                    ...validMetadata.metadata,
+                    averageMaxRGBNits: Number.NaN
+                },
+                status: 'valid'
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            ...baseFrame,
+            HDR10PlusMetadata: { metadata: validMetadata.metadata, status: 'absent' }
+        })).toBe(false);
+    });
+
     it('requires a raw format that matches the selected output mode', () => {
         const baseRequest = {
             audioSampleCredits: 0,
@@ -761,9 +801,10 @@ describe('DecodeWorkerProtocol', () => {
     });
 
     it('validates bounded planar PCM and independent audio credits', () => {
-        expect(isDecodeWorkerRequest({
+        const decodedAudioStartRequest = {
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             audioTrackIndex: 1,
+            decodedAudioOutputChannelCount: 8,
             dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
@@ -779,7 +820,12 @@ describe('DecodeWorkerProtocol', () => {
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame',
             videoTrackIndex: 0
-        })).toBe(true);
+        } as const;
+        expect(isDecodeWorkerRequest(decodedAudioStartRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            decodedAudioOutputChannelCount: 7
+        })).toBe(false);
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 2,
             generation: 2,
@@ -851,10 +897,35 @@ describe('DecodeWorkerProtocol', () => {
             type: 'audio'
         })).toBe(false);
         expect(isDecodeWorkerResponse({
+            channelCount: 2,
+            channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
+            durationMicroseconds: 5_333,
+            frameCount: 1_024,
+            generation: 2,
+            mediaTimeMicroseconds: 0,
+            sampleRate: MIN_DECODED_AUDIO_SAMPLE_RATE - 1,
+            type: 'audio'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
             audio: {
                 channelCount: 2,
                 codec: 'opus',
                 sampleRate: MAX_DECODED_AUDIO_SAMPLE_RATE + 1
+            },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 2,
+            type: 'ready'
+        })).toBe(false);
+        expect(isDecodeWorkerResponse({
+            audio: {
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: 48_000,
+                sourceSampleRate: MIN_DECODED_AUDIO_SAMPLE_RATE - 1
             },
             codec: 'avc1.640028',
             codedHeight: 1_080,
@@ -888,6 +959,10 @@ describe('DecodeWorkerProtocol', () => {
             videoTrackIndex: 0
         };
         expect(isDecodeWorkerRequest(nativeStartRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...nativeStartRequest,
+            decodedAudioOutputChannelCount: 6
+        })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...nativeStartRequest,
             audioTrackIndex: null

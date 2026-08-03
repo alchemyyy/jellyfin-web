@@ -6,6 +6,7 @@ import type {
 } from '../WebGPUPresenter';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from './CustomDecodeNativeAudioBridge';
+import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import {
     DecodedVideoGeometryError,
     requireConsistentDecodedVideoGeometry
@@ -49,6 +50,7 @@ const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 export type CustomDecodeSessionStartOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
+    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
     durationMicroseconds?: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     generation: number
@@ -112,6 +114,11 @@ export type CustomDecodeSessionTelemetry = {
     receivedDolbyVisionEnhancementFrameCount: number
     receivedDolbyVisionFrameCount: number
     receivedDolbyVisionRPUCount: number
+    receivedHDR10PlusAbsentFrameCount: number
+    receivedHDR10PlusConflictingFrameCount: number
+    receivedHDR10PlusMalformedFrameCount: number
+    receivedHDR10PlusUnsupportedFrameCount: number
+    receivedHDR10PlusValidFrameCount: number
     receivedNativeAudioSegmentCount: number
     receivedFrameCount: number
     recycledRawFrameCount: number
@@ -146,6 +153,7 @@ type WorkerRecord = {
     audioOutputMode: CustomDecodeAudioOutputMode
     audioRequested: boolean
     configurationReceived: boolean
+    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount | null
     decodedVideoGeometry: RawVideoFrameGeometry | null
     errorHandler: (event: ErrorEvent) => void
     generation: number
@@ -190,6 +198,11 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         receivedDolbyVisionEnhancementFrameCount: 0,
         receivedDolbyVisionFrameCount: 0,
         receivedDolbyVisionRPUCount: 0,
+        receivedHDR10PlusAbsentFrameCount: 0,
+        receivedHDR10PlusConflictingFrameCount: 0,
+        receivedHDR10PlusMalformedFrameCount: 0,
+        receivedHDR10PlusUnsupportedFrameCount: 0,
+        receivedHDR10PlusValidFrameCount: 0,
         receivedNativeAudioSegmentCount: 0,
         receivedFrameCount: 0,
         recycledRawFrameCount: 0,
@@ -278,6 +291,47 @@ function closePresentationFrame(presentationFrame: DecodedPresentationFrame): vo
     }
 }
 
+function validateDecodedAudioOutputChannelCount(
+    options: CustomDecodeSessionStartOptions,
+    audioOutputMode: CustomDecodeAudioOutputMode
+): void {
+    const outputChannelCount = options.decodedAudioOutputChannelCount;
+    if (outputChannelCount !== undefined
+        && outputChannelCount !== 2
+        && outputChannelCount !== 6
+        && outputChannelCount !== 8) {
+        throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
+    }
+    if (outputChannelCount !== undefined
+        && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
+        throw new TypeError('Decoded audio output channels require decoded PCM audio');
+    }
+}
+
+function getReadyAudioConfigurationError(
+    workerRecord: WorkerRecord,
+    audioConfiguration: DecodeWorkerReadyAudioConfiguration | null
+): string | null {
+    if (workerRecord.audioRequested !== Boolean(audioConfiguration)) {
+        return 'Decoded audio configuration did not match the request';
+    }
+    if (!audioConfiguration) {
+        return null;
+    }
+
+    const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ?
+        'native-media' :
+        'decoded-pcm';
+    if (responseOutputMode !== workerRecord.audioOutputMode) {
+        return 'Decoded audio output mode did not match the request';
+    }
+    if (responseOutputMode === 'decoded-pcm'
+        && audioConfiguration.channelCount !== workerRecord.decodedAudioOutputChannelCount) {
+        return 'Decoded audio channel count did not match the request';
+    }
+    return null;
+}
+
 function validateAudioStartOptions(
     options: CustomDecodeSessionStartOptions,
     decodedAudioAvailable: boolean,
@@ -299,6 +353,7 @@ function validateAudioStartOptions(
     if (options.audioTrackIndex == null && options.audioOutputMode !== undefined) {
         throw new TypeError('Custom decode cannot select an audio output mode without audio');
     }
+    validateDecodedAudioOutputChannelCount(options, audioOutputMode);
     if (options.audioTrackIndex == null) {
         return;
     }
@@ -426,6 +481,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             };
             if (workerRecord.audioOutputMode === 'native-media') {
                 startRequest.audioOutputMode = 'native-media';
+            }
+            if (options.decodedAudioOutputChannelCount !== undefined) {
+                startRequest.decodedAudioOutputChannelCount =
+                    options.decodedAudioOutputChannelCount;
             }
             this.postRequest(workerRecord, startRequest);
         } catch {
@@ -645,6 +704,11 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             audioOutputMode: options.audioOutputMode ?? 'decoded-pcm',
             audioRequested: options.audioTrackIndex != null,
             configurationReceived: false,
+            decodedAudioOutputChannelCount:
+                (options.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm'
+                    && options.audioTrackIndex != null ?
+                    options.decodedAudioOutputChannelCount ?? 2 :
+                    null,
             decodedVideoGeometry: null,
             errorHandler: (): void => undefined,
             generation: options.generation,
@@ -781,21 +845,13 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             displayHeight: message.displayHeight,
             displayWidth: message.displayWidth
         };
-        if (workerRecord.audioRequested !== Boolean(audioConfiguration)) {
-            this.handleAudioOutputFailure(workerRecord, 'Decoded audio configuration did not match the request');
+        const audioConfigurationError = getReadyAudioConfigurationError(
+            workerRecord,
+            audioConfiguration
+        );
+        if (audioConfigurationError) {
+            this.handleAudioOutputFailure(workerRecord, audioConfigurationError);
             return;
-        }
-        if (audioConfiguration) {
-            const responseOutputMode = isNativeMediaAudioConfiguration(audioConfiguration) ?
-                'native-media' :
-                'decoded-pcm';
-            if (responseOutputMode !== workerRecord.audioOutputMode) {
-                this.handleAudioOutputFailure(
-                    workerRecord,
-                    'Decoded audio output mode did not match the request'
-                );
-                return;
-            }
         }
 
         workerRecord.videoCodec = videoCodec;
@@ -1106,6 +1162,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 presentationFrame = {
                     durationMicroseconds: message.durationMicroseconds,
                     encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    HDR10PlusMetadata: message.HDR10PlusMetadata,
                     enhancementFrame: message.enhancementFrame,
                     frame: message.frame,
                     mediaTimeMicroseconds: message.mediaTimeMicroseconds,
@@ -1116,6 +1173,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 presentationFrame = {
                     durationMicroseconds: message.durationMicroseconds,
                     encodedDolbyVisionMetadata: message.encodedDolbyVisionMetadata,
+                    HDR10PlusMetadata: message.HDR10PlusMetadata,
                     frame: message.frame,
                     mediaTimeMicroseconds: message.mediaTimeMicroseconds,
                     outputMode: message.outputMode
@@ -1146,6 +1204,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         );
         this.telemetry.receivedFrameCount += 1;
         this.recordDolbyVisionMetadata(message);
+        this.recordHDR10PlusMetadata(message);
         this.emitReadyEventIfMediaReady(workerRecord);
     }
 
@@ -1159,6 +1218,28 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         this.telemetry.receivedDolbyVisionRPUCount += metadata.parsedRPUData.length;
         if (metadata.hasEnhancementLayerVCL) {
             this.telemetry.receivedDolbyVisionEnhancementFrameCount += 1;
+        }
+    }
+
+    private recordHDR10PlusMetadata(message: DecodeWorkerFrameResponse): void {
+        switch (message.HDR10PlusMetadata?.status) {
+            case 'absent':
+                this.telemetry.receivedHDR10PlusAbsentFrameCount += 1;
+                break;
+            case 'conflicting':
+                this.telemetry.receivedHDR10PlusConflictingFrameCount += 1;
+                break;
+            case 'malformed':
+                this.telemetry.receivedHDR10PlusMalformedFrameCount += 1;
+                break;
+            case 'unsupported':
+                this.telemetry.receivedHDR10PlusUnsupportedFrameCount += 1;
+                break;
+            case 'valid':
+                this.telemetry.receivedHDR10PlusValidFrameCount += 1;
+                break;
+            case undefined:
+                break;
         }
     }
 

@@ -1054,8 +1054,11 @@ npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDMediabunnyDemuxIntegratio
 The browser exact-capability worker requires lossless PCM fingerprints for
 TrueHD stereo/48, TrueHD 5.1/96, TrueHD 5.1/192, and MLP stereo/48, recovery at
 a later major sync after dependent-frame startup, and at least 2x real-time
-throughput. These four tuples are an exact union, not a channel/rate Cartesian
-product.
+throughput. These four cases are exact capability-probe evidence, not a
+playback rate whitelist or permission to combine unrelated layouts. For
+playback negotiation they prove TrueHD stereo/5.1 and MLP stereo; those layout
+families use the shared integer 3000-192000 Hz source-rate contract and still
+validate actual decoder output.
 Atmos is explicitly channel-bed-only. Seven/eight-channel and M2TS routes remain
 unadvertised pending exact fixtures and bounded demux evidence. See
 `WEBGPU_TRUEHD.md` for the supported envelope and expansion procedure.
@@ -1076,11 +1079,12 @@ npm test -- src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.integra
 npm test -- src/plugins/webGPUVideoPlayer/custom/DTSMediabunnyDemuxIntegration.test.ts
 ```
 
-Capability and server negotiation authorize only the seven exact
-profile/layout/rate tuples recorded in `WEBGPU_DTS.md`. They do not authorize a
-Cartesian product. DTS:X means decoded DTS-HD MA channel bed only. Eight-channel
-output uses the WAVE `FL, FR, FC, LFE, BL, BR, SL, SR` order and the explicitly
-selected `mpv --audio-normalize-downmix=yes` stereo matrix. See
+The seven exact fixtures authorize only the profile/layout pairs recorded in
+`WEBGPU_DTS.md`; they are not a rate whitelist. Playback uses the shared integer
+3000-192000 Hz source-rate bound, with rates above 96 kHz restricted to a 5.1
+MA or MA+DTS:X bed. DTS:X means decoded DTS-HD MA channel bed only.
+Eight-channel output uses the WAVE `FL, FR, FC, LFE, BL, BR, SL, SR` order and
+the explicitly selected `mpv --audio-normalize-downmix=yes` stereo matrix. See
 `WEBGPU_AUDIO_DOWNMIX.md` for the pinned mpv/FFmpeg comparison, metrics, and
 external reproduction command.
 

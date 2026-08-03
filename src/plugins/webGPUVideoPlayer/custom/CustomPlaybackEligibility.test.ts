@@ -1542,6 +1542,41 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
     });
 
+    it('selects the authorized raw HEVC route for HDR10+ input', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            BitDepth: 10,
+            Codec: 'hevc',
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'smpte2084',
+            Hdr10PlusPresentFlag: true,
+            Height: 2_160,
+            Index: 0,
+            IsInterlaced: false,
+            Level: 153,
+            Profile: 'Main 10',
+            Type: 'Video',
+            VideoRangeType: 'HDR10Plus',
+            Width: 3_840
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            PQ_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            hdr: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
     it.each([
         [ 'missing rate', undefined, undefined, false ],
         [ 'non-finite real rate', Number.NaN, 24, false ],
@@ -2046,6 +2081,7 @@ describe('CustomPlaybackEligibility', () => {
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
             )).toMatchObject({
                 audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: 6,
                 audioTrackIndex: 0,
                 eligible: true
             });
@@ -2058,10 +2094,12 @@ describe('CustomPlaybackEligibility', () => {
         [ 'DTS-ES', 7, 48_000 ],
         [ 'DTS-HD HRA', 8, 48_000 ],
         [ 'DTS-HD MA', 8, 48_000 ],
+        [ 'DTS-HD MA', 6, 96_001 ],
         [ 'DTS-HD MA', 6, 192_000 ],
-        [ 'DTS-HD MA + DTS:X', 8, 48_000 ]
+        [ 'DTS-HD MA + DTS:X', 8, 48_000 ],
+        [ 'DTS', 6, 12_345 ]
     ] as const)(
-        'selects the exact qualified Matroska DTS channel-bed route for %s',
+        'selects the fixture-derived Matroska DTS channel-bed route for %s',
         (profile, channelCount, sampleRate) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -2095,7 +2133,7 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it('accepts the Matroska DCA alias through the same exact DTS route', () => {
+    it('accepts the Matroska DCA alias through the same DTS route', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
@@ -2116,32 +2154,35 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('limits 192 kHz DTS to the exact 5.1-channel Master Audio bed', () => {
-        const options = createOptions();
-        const mediaSource = options.mediaSource as {
-            Container: string
-            MediaStreams: Array<Record<string, unknown>>
-        };
-        mediaSource.Container = 'mkv';
-        mediaSource.MediaStreams[1].Channels = 8;
-        mediaSource.MediaStreams[1].Codec = 'dts';
-        mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
-        mediaSource.MediaStreams[1].SampleRate = 192_000;
+    it.each([ 96_001, 192_000 ])(
+        'limits %i Hz DTS to the 5.1-channel Master Audio bed',
+        sampleRate => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = 'mkv';
+            mediaSource.MediaStreams[1].Channels = 8;
+            mediaSource.MediaStreams[1].Codec = 'dts';
+            mediaSource.MediaStreams[1].Profile = 'DTS-HD MA';
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
 
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
 
-        mediaSource.MediaStreams[1].Channels = 6;
-        mediaSource.MediaStreams[1].Profile = 'DTS-HD HRA';
-        expect(getCustomPlaybackEligibility(
-            options,
-            createCapabilities(),
-            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
-    });
+            mediaSource.MediaStreams[1].Channels = 6;
+            mediaSource.MediaStreams[1].Profile = 'DTS-HD HRA';
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+        }
+    );
 
     it.each([ 'm2ts', 'mts', 'ts' ] as const)(
         'does not advertise DTS in the unsupported Mediabunny %s demux route',
@@ -2209,7 +2250,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'matroska', 'truehd', 'Dolby TrueHD + Dolby Atmos', 6, 96_000 ],
         [ 'mkv', 'mlp', undefined, 2, 48_000 ]
     ] as const)(
-        'selects the exact qualified %s/%s TrueHD channel-bed route',
+        'selects the fixture-derived %s/%s TrueHD channel-bed route',
         (container, codec, profile, channelCount, sampleRate) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -2309,6 +2350,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mkv', 'pcm_s24le', 1, 44_100 ],
         [ 'mkv', 'pcm_f64le', 6, 96_000 ],
         [ 'mov', 'pcm_s8', 2, 192_000 ],
+        [ 'mov', 'pcm_s24le', 2, 12_345 ],
         [ 'mov', 'pcm_mulaw', 1, 8_000 ],
         [ 'mov', 'pcm_alaw', 1, 8_000 ]
     ] as const)(
@@ -2350,7 +2392,8 @@ describe('CustomPlaybackEligibility', () => {
         [ 'mkv', 'pcm_f32be', 2, 48_000, 'container-unsupported' ],
         [ 'mp4', 'pcm_alaw', 1, 8_000, 'container-unsupported' ],
         [ 'mov', 'pcm_s24le', 8, 48_000, 'audio-layout-unsupported' ],
-        [ 'mov', 'pcm_s24le', 2, 12_345, 'audio-layout-unsupported' ]
+        [ 'mov', 'pcm_s24le', 2, 2_999, 'audio-layout-unsupported' ],
+        [ 'mov', 'pcm_s24le', 2, 192_001, 'audio-layout-unsupported' ]
     ] as const)(
         'rejects unimplemented PCM route %s/%s/%i/%i',
         (container, codec, channelCount, sampleRate, reason) => {
@@ -2400,6 +2443,32 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
+    it.each([
+        [ undefined, 3_000 ],
+        [ 1, 12_345 ],
+        [ 50_000_000, 96_000 ],
+        [ 1_500_000_000, 192_000 ]
+    ] as const)(
+        'ignores encoded audio bitrate %s at bounded source rate %i',
+        (bitrate, sampleRate) => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[1].BitRate = bitrate;
+            mediaSource.MediaStreams[1].SampleRate = sampleRate;
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                eligible: true
+            });
+        }
+    );
+
     it('does not apply the surround downmix claim without exact output evidence', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
@@ -2417,7 +2486,8 @@ describe('CustomPlaybackEligibility', () => {
 
     it.each([
         [ 6, 48_000 ],
-        [ 2, 44_100 ],
+        [ 2, 2_999 ],
+        [ 2, 192_001 ],
         [ undefined, 48_000 ],
         [ 2, undefined ]
     ])('rejects an unmeasured selected audio layout %#', (channelCount, sampleRate) => {

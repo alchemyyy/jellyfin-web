@@ -11,7 +11,8 @@ import {
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     getCustomAudioChannelLayout,
-    mixCustomAudioToStereo
+    mixCustomAudioToStereo,
+    prepareCustomAudioOutputChannelData
 } from './CustomAudioChannelLayout';
 
 describe('CustomAudioChannelLayout', () => {
@@ -119,5 +120,48 @@ describe('CustomAudioChannelLayout', () => {
             channels.slice(0, 6),
             CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT
         )).toThrow('7.1 audio requires exactly 8 input channels');
+    });
+
+    it.each([
+        { channelCount: 6 as const, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT },
+        { channelCount: 8 as const, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT }
+    ])('preserves exact $channelCount-channel speaker data without another copy', ({
+        channelCount,
+        layout
+    }) => {
+        const channels: Float32Array[] = [];
+        for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+            channels.push(new Float32Array([ channelIndex + 1 ]));
+        }
+
+        const output = prepareCustomAudioOutputChannelData(
+            channels,
+            layout,
+            channelCount
+        );
+
+        expect(output).toBe(channels);
+    });
+
+    it('rejects an output count that does not represent the complete source layout', () => {
+        const fivePointOneChannels = Array.from(
+            { length: 6 },
+            (): Float32Array => new Float32Array(1)
+        );
+        const sevenPointOneChannels = Array.from(
+            { length: 8 },
+            (): Float32Array => new Float32Array(1)
+        );
+
+        expect(() => prepareCustomAudioOutputChannelData(
+            fivePointOneChannels,
+            CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            8
+        )).toThrow('Native 7.1 output requires a 7.1 input layout');
+        expect(() => prepareCustomAudioOutputChannelData(
+            sevenPointOneChannels,
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+            6
+        )).toThrow('Native 5.1 output requires a 5.1 input layout');
     });
 });

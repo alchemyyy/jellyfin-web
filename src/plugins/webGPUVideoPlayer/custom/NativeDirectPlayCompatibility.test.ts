@@ -186,6 +186,41 @@ describe('NativeDirectPlayCompatibility', () => {
     });
 
     it.each([
+        [ 3_000, true ],
+        [ 12_345, true ],
+        [ 96_000, true ],
+        [ 192_000, true ],
+        [ 2_999, false ],
+        [ 192_001, false ]
+    ])('evaluates bounded audio source rate %i as compatible=%s', (sampleRate, compatible) => {
+        const options = createOptions();
+        const audioStream = options.mediaSource.MediaStreams?.find(stream => (
+            stream.Index === options.mediaSource.DefaultAudioStreamIndex
+        ));
+        if (!audioStream) {
+            throw new Error('The selected audio stream fixture is unavailable');
+        }
+        audioStream.SampleRate = sampleRate;
+        const profile = createProfile();
+        profile.CodecProfiles?.[1].Conditions?.push(
+            {
+                Condition: 'GreaterThanEqual',
+                IsRequired: true,
+                Property: 'AudioSampleRate',
+                Value: '3000'
+            },
+            {
+                Condition: 'LessThanEqual',
+                IsRequired: true,
+                Property: 'AudioSampleRate',
+                Value: '192000'
+            }
+        );
+
+        expect(isSameSessionNativePlaybackCompatible(options, profile)).toBe(compatible);
+    });
+
+    it.each([
         [ { AudioCodec: 'flac', Container: 'mp4', Type: 'Video', VideoCodec: 'h264' } ],
         [ { AudioCodec: 'aac', Container: 'webm', Type: 'Video', VideoCodec: 'h264' } ],
         [ { AudioCodec: 'aac', Container: 'mp4', Type: 'Video', VideoCodec: 'vp9' } ]

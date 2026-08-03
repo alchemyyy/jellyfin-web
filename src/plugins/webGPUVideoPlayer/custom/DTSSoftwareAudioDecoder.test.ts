@@ -149,6 +149,21 @@ describe('DTSSoftwareAudioDecoder', () => {
         )).toThrow('Bundled DTS decoder is closed');
     });
 
+    it('accepts a bounded decoder sample rate not represented by a fixture', async () => {
+        const fakeDecoder = createFakeDTSDecoder({
+            jellyfin_dts_get_sample_rate: () => 44_100
+        });
+        const decoder = await DTSSoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        const output = decoder.decode(
+            new Uint8Array([ 1 ]),
+            millisecondsToMicroseconds(0)
+        );
+
+        expect(output.sampleRate).toBe(44_100);
+        decoder.close();
+    });
+
     it.each([
         [ new Uint8Array(), millisecondsToMicroseconds(0), 'packet size' ],
         [ new Uint8Array(2 * 1024 * 1024 + 1), millisecondsToMicroseconds(0), 'packet size' ],
@@ -164,7 +179,7 @@ describe('DTSSoftwareAudioDecoder', () => {
     it.each([
         [ 'jellyfin_dts_decode_packet', () => -5, 'decode failed' ],
         [ 'jellyfin_dts_get_sample_count', () => 16_385, 'frame count' ],
-        [ 'jellyfin_dts_get_sample_rate', () => 44_100, 'unqualified' ],
+        [ 'jellyfin_dts_get_sample_rate', () => 192_001, 'outside the supported range' ],
         [ 'jellyfin_dts_get_bits_per_sample', () => 20, 'unsupported' ],
         [ 'jellyfin_dts_get_profile', () => 0, 'profile' ],
         [ 'jellyfin_dts_get_channel_mask', () => 1, 'channel mask' ],
@@ -211,7 +226,7 @@ describe('DTSSoftwareAudioDecoder', () => {
             expect(() => decoder.decode(
                 new Uint8Array([ 1 ]),
                 millisecondsToMicroseconds(0)
-            )).toThrow('qualified Master Audio envelope');
+            )).toThrow('supported Master Audio envelope');
             decoder.close();
         }
     );

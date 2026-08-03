@@ -9,6 +9,7 @@ import {
 import {
     assertValidRenderSettings,
     createDefaultRenderSettings,
+    type HDR10PlusFrameRenderSettings,
     type HDRToSDRRenderSettings,
     type IdentitySDRRenderSettings,
     type RenderMode,
@@ -38,6 +39,11 @@ import {
     isTransferableDolbyVisionEncodedFrameMetadata,
     type TransferableDolbyVisionEncodedFrameMetadata
 } from './custom/DolbyVisionEncodedMetadataProtocol';
+import {
+    getHDR10PlusSceneLuminance,
+    isHDR10PlusFrameMetadata,
+    type HDR10PlusFrameMetadata
+} from './custom/HDR10PlusMetadata';
 import {
     createRawYUVRenderSettingsUniformBuffer,
     createRawYUVEnhancementUniformBuffer,
@@ -145,6 +151,7 @@ export type PresentationFallbackReason =
     | 'request-video-frame-callback-unavailable';
 
 export type PresentationTelemetry = {
+    appliedHDR10PlusFrameCount: number
     decodedFrameCount: number
     deviceRecoveryCount: number
     dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: number
@@ -156,10 +163,13 @@ export type PresentationTelemetry = {
     lastCallbackTimeMicroseconds: Microseconds | null
     lastExpectedDisplayTimeMicroseconds: Microseconds | null
     lastPresentedMediaTimeMicroseconds: Microseconds | null
+    lastHDR10PlusInputPeakNits: number | null
+    lastHDR10PlusMetadataStatus: HDR10PlusFrameMetadata['status'] | null
     mode: RenderMode
     nativeFrameCount: number
     presentationSource: 'decoded' | 'native' | null
     presentedFrameCount: number
+    staticFallbackHDR10PlusFrameCount: number
     sessionStartedMicroseconds: Microseconds
     state: 'fallback' | 'idle' | 'initializing' | 'presenting'
 };
@@ -167,6 +177,7 @@ export type PresentationTelemetry = {
 export type DecodedVideoPresentationFrame = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata
     frame: VideoFrame
     mediaTimeMicroseconds: Microseconds
     outputMode: 'video-frame'
@@ -175,6 +186,7 @@ export type DecodedVideoPresentationFrame = {
 export type DecodedRawPresentationFrame = {
     durationMicroseconds: Microseconds
     encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    HDR10PlusMetadata?: HDR10PlusFrameMetadata
     enhancementFrame?: TransferableRawVideoFrame | null
     frame: TransferableRawVideoFrame
     mediaTimeMicroseconds: Microseconds
@@ -308,6 +320,7 @@ function getMonotonicMicroseconds(): Microseconds {
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
+        appliedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
         deviceRecoveryCount: 0,
         dolbyVisionProfile7FELBaseFallbackPresentedFrameCount: 0,
@@ -319,11 +332,14 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
         lastCallbackTimeMicroseconds: null,
         lastExpectedDisplayTimeMicroseconds: null,
         lastPresentedMediaTimeMicroseconds: null,
+        lastHDR10PlusInputPeakNits: null,
+        lastHDR10PlusMetadataStatus: null,
         mode: settings.mode,
         nativeFrameCount: 0,
         presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: getMonotonicMicroseconds(),
+        staticFallbackHDR10PlusFrameCount: 0,
         state: 'idle'
     };
 }
@@ -582,6 +598,7 @@ export default class WebGPUPresenter {
     private deviceResourceEpoch = 0;
     private decodedFrameProvider: DecodedFrameProvider | null = null;
     private decodedFramePushActive = false;
+    private dynamicHDR10PlusSettingsActive = false;
     private fallbackLatched = false;
     private dolbyVisionRPUStorageBuffer: GPUBuffer | null = null;
     private dolbyVisionEnhancementUniformBuffer: GPUBuffer | null = null;
@@ -644,6 +661,7 @@ export default class WebGPUPresenter {
         this.decodedFramePushActive = false;
         this.desiredShaderCode = identityShader;
         this.deviceRecoveryAttempts = 0;
+        this.dynamicHDR10PlusSettingsActive = false;
         this.fallbackLatched = false;
         this.pendingColorConfiguration = null;
         this.pendingSubmissionValidation = null;
@@ -684,6 +702,10 @@ export default class WebGPUPresenter {
         this.colorConfigurationRevision += 1;
         this.pendingColorConfiguration = null;
         this.activeGeneration = generation;
+        if (this.settings.mode === 'hdr-to-sdr') {
+            this.writeRenderSettingsUniform(this.settings);
+            this.dynamicHDR10PlusSettingsActive = false;
+        }
         if (this.surface && !this.fallbackLatched) {
             void this.activateSurface(generation);
         }
@@ -718,6 +740,7 @@ export default class WebGPUPresenter {
         this.activeRawFrameFormat = null;
         this.decodedFrameProvider = null;
         this.decodedFramePushActive = false;
+        this.dynamicHDR10PlusSettingsActive = false;
         this.pendingColorConfiguration = null;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
@@ -1022,6 +1045,9 @@ export default class WebGPUPresenter {
             ) {
                 return false;
             }
+            if (!this.applyHDR10PlusFrameMetadata(decodedFrame, generation)) {
+                return false;
+            }
 
             let frameWidth: number;
             let frameHeight: number;
@@ -1125,6 +1151,7 @@ export default class WebGPUPresenter {
             );
             return false;
         }
+        this.dynamicHDR10PlusSettingsActive = false;
         if (isDolbyVisionInputMode(preparedPipeline.inputMode)
             && !this.createDolbyVisionRPUStorageBuffer()) {
             this.failColorConfiguration(
@@ -1167,7 +1194,10 @@ export default class WebGPUPresenter {
         return createRawYUVRenderSettingsUniformBuffer(device);
     }
 
-    private writeRenderSettingsUniform(settings: HDRToSDRRenderSettings): boolean {
+    private writeRenderSettingsUniform(
+        settings: HDRToSDRRenderSettings,
+        dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null
+    ): boolean {
         const device = this.device;
         if (!device) {
             return false;
@@ -1179,7 +1209,8 @@ export default class WebGPUPresenter {
             writeRawYUVRenderSettingsUniform(
                 device,
                 renderSettingsUniformBuffer,
-                settings
+                settings,
+                dynamicFrameSettings
             );
             this.renderSettingsUniformBuffer = renderSettingsUniformBuffer;
             return true;
@@ -1187,6 +1218,64 @@ export default class WebGPUPresenter {
             console.warn('Unable to update WebGPU render settings uniforms', error);
             return false;
         }
+    }
+
+    private applyHDR10PlusFrameMetadata(
+        decodedFrame: DecodedPresentationFrame,
+        generation: number
+    ): boolean {
+        if (!this.isCurrent(generation) || this.settings.mode !== 'hdr-to-sdr') {
+            return true;
+        }
+
+        const frameMetadata = decodedFrame.HDR10PlusMetadata;
+        const status = frameMetadata?.status ?? 'absent';
+        this.telemetry.lastHDR10PlusMetadataStatus = status;
+        let dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null;
+        const supportsHDR10Plus = (
+            this.activeInputMode === 'external-hdr'
+            || this.activeInputMode === 'raw-yuv'
+        ) && this.activeInputColorMetadata?.transfer === 'pq';
+        if (
+            status === 'valid'
+            && supportsHDR10Plus
+            && isHDR10PlusFrameMetadata(frameMetadata)
+            && frameMetadata.metadata
+        ) {
+            const sceneLuminance = getHDR10PlusSceneLuminance(frameMetadata.metadata);
+            const inputPeakNits = Math.max(
+                this.settings.toneMapping.paperWhiteNits,
+                sceneLuminance.peakNits ?? this.settings.toneMapping.inputPeakNits
+            );
+            const averageNits = Math.min(
+                inputPeakNits,
+                Math.max(0, sceneLuminance.averageNits ?? 0)
+            );
+            dynamicFrameSettings = {
+                averageNits,
+                inputPeakNits,
+                targetedSystemDisplayMaximumLuminanceNits:
+                    frameMetadata.metadata.targetedSystemDisplayMaximumLuminanceNits,
+                toneMapping: frameMetadata.metadata.toneMapping
+            };
+        }
+
+        if (dynamicFrameSettings || this.dynamicHDR10PlusSettingsActive) {
+            if (!this.writeRenderSettingsUniform(this.settings, dynamicFrameSettings)) {
+                this.fallback(generation, 'frame-render-failed');
+                return false;
+            }
+            this.dynamicHDR10PlusSettingsActive = dynamicFrameSettings !== null;
+        }
+        if (dynamicFrameSettings) {
+            this.telemetry.appliedHDR10PlusFrameCount += 1;
+            this.telemetry.lastHDR10PlusInputPeakNits =
+                dynamicFrameSettings.inputPeakNits;
+        } else {
+            this.telemetry.staticFallbackHDR10PlusFrameCount += 1;
+            this.telemetry.lastHDR10PlusInputPeakNits = null;
+        }
+        return true;
     }
 
     /** Updates live HDR controls through uniforms without rebuilding the shader. */
@@ -1208,6 +1297,7 @@ export default class WebGPUPresenter {
             if (!this.writeRenderSettingsUniform(settings)) {
                 return false;
             }
+            this.dynamicHDR10PlusSettingsActive = false;
         } catch (error) {
             console.warn('Invalid live WebGPU render settings', error);
             return false;
@@ -2099,6 +2189,7 @@ export default class WebGPUPresenter {
             this.pipelineShaderCode = shaderCode;
             this.presentationUniformBuffer = presentationUniformBuffer;
             this.renderSettingsUniformBuffer = renderSettingsUniformBuffer;
+            this.dynamicHDR10PlusSettingsActive = false;
             this.sampler = sampler;
             void getWebGPUHDRToneMappingEnabled().then((enabled: boolean): void => {
                 if (enabled && this.device === device && this.canvasFormat === canvasFormat) {
@@ -2251,6 +2342,10 @@ export default class WebGPUPresenter {
         }
 
         try {
+            if (decodedFrame
+                && !this.applyHDR10PlusFrameMetadata(decodedFrame, generation)) {
+                return;
+            }
             const submission = this.renderFrameCallbackSource(
                 decodedFrame,
                 video,
@@ -3211,6 +3306,7 @@ export default class WebGPUPresenter {
         this.pipelineShaderCode = null;
         this.presentationUniformBuffer = null;
         this.renderSettingsUniformBuffer = null;
+        this.dynamicHDR10PlusSettingsActive = false;
         this.sampler = null;
         this.submissionValidated = false;
         this.configuredDevice = null;

@@ -357,6 +357,22 @@ describe('parseVideoStreamColorMetadata', () => {
     });
 
     it.each([
+        { Hdr10PlusPresentFlag: true, VideoRangeType: 'HDR10' },
+        { VideoRangeType: 'HDR10Plus' }
+    ])('accepts a PQ-compatible HDR10+ base for dynamic metadata: %o', stream => {
+        expect(parseVideoStreamColorMetadata({
+            ...stream,
+            Type: 'Video'
+        })).toMatchObject({
+            bitDepth: 10,
+            matrix: 'bt2020-ncl',
+            primaries: 'bt2020',
+            range: 'limited',
+            transfer: 'pq'
+        });
+    });
+
+    it.each([
         { Type: 'Video' },
         { Type: 'Video', VideoRange: 'HDR' },
         { Type: 'Video', VideoRangeType: 'Unknown' },
@@ -369,9 +385,7 @@ describe('parseVideoStreamColorMetadata', () => {
         { ColorSpace: 'smpte170m', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorPrimaries: 'display-p3', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorRange: 'unknown', Type: 'Video', VideoRangeType: 'SDR' },
-        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' },
-        { Type: 'Video', VideoRangeType: 'HDR10Plus' },
-        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'HDR10' }
+        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }
     ])('rejects unknown, Dolby Vision, or contradictory metadata: %o', stream => {
         expect(parseVideoStreamColorMetadata(stream)).toBeNull();
     });

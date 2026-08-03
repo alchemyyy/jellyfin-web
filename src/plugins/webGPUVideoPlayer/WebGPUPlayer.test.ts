@@ -19,6 +19,7 @@ import type {
 
 type MockAudioEligibilityOverride = {
     audioOutputMode?: 'native-media'
+    audioSourceChannelCount?: number
     audioTrackIndex?: number
     eligible: boolean
     reason?: string
@@ -57,6 +58,7 @@ const customDecodeMockState = vi.hoisted(() => ({
         eligibilityOptions: MockEligibilityOptions
     ) => MockAudioEligibilityOverride) | null,
     audioOutputMode: 'decoded-pcm' as 'decoded-pcm' | 'native-media',
+    audioSourceChannelCount: 2,
     audioTrackIndex: null as number | null,
     dolbyVision: false,
     dolbyVisionProfile7: false,
@@ -94,11 +96,15 @@ const colorValidationMediaMockState = vi.hoisted(() => ({
 const audioPrewarmMockState = vi.hoisted(() => ({
     factoryLeases: [] as unknown[],
     leases: [] as Array<{
-        audioContext: { sampleRate: number }
+        audioContext: {
+            destination: { maxChannelCount: number }
+            sampleRate: number
+        }
         close: ReturnType<typeof vi.fn>
         resumePromise: Promise<void>
     }>,
     nextClosePromise: null as Promise<void> | null,
+    maximumChannelCount: 2,
     sampleRates: [] as number[]
 }));
 const nativeAudioCapabilityMockState = vi.hoisted(() => ({
@@ -141,6 +147,8 @@ vi.mock('./custom/CustomPlaybackEligibility', () => ({
                 ?? (customDecodeMockState.audioTrackIndex === null ?
                     null :
                     customDecodeMockState.audioOutputMode),
+            audioSourceChannelCount: audioEligibilityOverride?.audioSourceChannelCount
+                ?? customDecodeMockState.audioSourceChannelCount,
             audioTrackIndex: audioEligibilityOverride?.audioTrackIndex
                 ?? customDecodeMockState.audioTrackIndex,
             durationMicroseconds: 60_000_000,
@@ -168,7 +176,12 @@ vi.mock('./custom/CustomPlaybackEligibility', () => ({
 vi.mock('./custom/BrowserAudioContextPrewarm', () => ({
     prewarmBrowserAudioContext: vi.fn((sampleRate: number) => {
         const lease = {
-            audioContext: { sampleRate },
+            audioContext: {
+                destination: {
+                    maxChannelCount: audioPrewarmMockState.maximumChannelCount
+                },
+                sampleRate
+            },
             close: vi.fn(() => (
                 audioPrewarmMockState.nextClosePromise ?? Promise.resolve()
             )),
@@ -1108,6 +1121,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.nativeHDRTransfer = null;
         customDecodeMockState.neutralizeHDRColorMetadata = false;
         customDecodeMockState.audioOutputMode = 'decoded-pcm';
+        customDecodeMockState.audioSourceChannelCount = 2;
         customDecodeMockState.audioTrackIndex = null;
         customDecodeMockState.instances.length = 0;
         customDecodeMockState.startupFallback = false;
@@ -1125,6 +1139,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         audioPrewarmMockState.factoryLeases.length = 0;
         audioPrewarmMockState.leases.length = 0;
         audioPrewarmMockState.nextClosePromise = null;
+        audioPrewarmMockState.maximumChannelCount = 2;
         audioPrewarmMockState.sampleRates.length = 0;
         nativeAudioCapabilityMockState.capabilities = null;
         vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback): number => {
@@ -2047,6 +2062,60 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
     });
 
+    it.each([ 3_000, 12_345, 96_000, 192_000 ])(
+        'prewarms the 48-kHz PCM output for bounded %i-Hz source audio',
+        async sourceSampleRate => {
+            const player = new WebGPUPlayer();
+            const backend = getBackend();
+            const container = document.createElement('div');
+            const video = document.createElement('video');
+            container.appendChild(video);
+            backend.presentationSurface = { container, video };
+            webSettingsMockState.customDecodeEnabled = true;
+            customDecodeMockState.eligible = true;
+            customDecodeMockState.audioTrackIndex = 1;
+
+            const playPromise = player.play(
+                createKnownSDRAudioPlayOptions(sourceSampleRate)
+            );
+            expect(audioPrewarmMockState.sampleRates).toEqual([ 48_000 ]);
+            await playPromise;
+
+            expect(audioPrewarmMockState.factoryLeases).toEqual([
+                audioPrewarmMockState.leases[0]
+            ]);
+        }
+    );
+
+    it.each([
+        { expectedOutput: 6, maximumOutput: 6, sourceChannels: 6 },
+        { expectedOutput: 8, maximumOutput: 8, sourceChannels: 8 },
+        { expectedOutput: 2, maximumOutput: 6, sourceChannels: 8 }
+    ])(
+        'selects $expectedOutput decoded channels for $sourceChannels-channel audio on a $maximumOutput-channel destination',
+        async ({ expectedOutput, maximumOutput, sourceChannels }) => {
+            const player = new WebGPUPlayer();
+            const backend = getBackend();
+            const container = document.createElement('div');
+            const video = document.createElement('video');
+            container.appendChild(video);
+            backend.presentationSurface = { container, video };
+            webSettingsMockState.customDecodeEnabled = true;
+            customDecodeMockState.eligible = true;
+            customDecodeMockState.audioTrackIndex = 1;
+            customDecodeMockState.audioSourceChannelCount = sourceChannels;
+            audioPrewarmMockState.maximumChannelCount = maximumOutput;
+
+            await player.play(createKnownSDRAudioPlayOptions());
+
+            expect(getCustomPlaybackController().play).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    decodedAudioOutputChannelCount: expectedOutput
+                })
+            );
+        }
+    );
+
     it('closes the PCM prewarm before starting exact native media audio', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -2184,7 +2253,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(audioPrewarmMockState.leases[0].close).toHaveBeenCalledOnce();
     });
 
-    it('does not prewarm disabled or unsafe selected audio metadata', async () => {
+    it('does not prewarm disabled, malformed, or out-of-range selected audio metadata', async () => {
         const disabledPlayer = new WebGPUPlayer();
         await disabledPlayer.play(createKnownSDRAudioPlayOptions());
         expect(audioPrewarmMockState.sampleRates).toHaveLength(0);
@@ -2192,6 +2261,10 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.customDecodeEnabled = true;
         const unsafePlayer = new WebGPUPlayer();
         await unsafePlayer.play(createKnownSDRAudioPlayOptions('48000'));
+        expect(audioPrewarmMockState.sampleRates).toHaveLength(0);
+
+        const outOfRangePlayer = new WebGPUPlayer();
+        await outOfRangePlayer.play(createKnownSDRAudioPlayOptions(192_001));
         expect(audioPrewarmMockState.sampleRates).toHaveLength(0);
     });
 
@@ -2708,7 +2781,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         await vi.waitFor(() => (
             expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
                 1,
-                'decoded-pcm'
+                'decoded-pcm',
+                2
             )
         ));
 
@@ -2727,7 +2801,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.setVolume).toHaveBeenLastCalledWith(80);
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
             1,
-            'decoded-pcm'
+            'decoded-pcm',
+            2
         );
         expect(backend.notifyCustomPlaybackVolumeChange).not.toHaveBeenCalled();
         expect(player.getVolume()).toBe(80);
@@ -2802,7 +2877,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledOnce();
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
             1,
-            'decoded-pcm'
+            'decoded-pcm',
+            2
         );
     });
 
@@ -2874,7 +2950,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         await vi.waitFor(() => (
             expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
                 1,
-                'decoded-pcm'
+                'decoded-pcm',
+                2
             )
         ));
         await customPlaybackController.fallbackHook({

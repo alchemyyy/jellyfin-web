@@ -66,7 +66,7 @@ const HDR_COLOR_TRANSFERS = new Set([
     'SMPTEST2084',
     'SMPTE2084'
 ]);
-const PQ_VIDEO_RANGE_TYPES = new Set([ 'HDR10' ]);
+const PQ_VIDEO_RANGE_TYPES = new Set([ 'HDR10', 'HDR10PLUS' ]);
 const HLG_VIDEO_RANGE_TYPES = new Set([ 'HLG' ]);
 const SDR_VIDEO_RANGE_TYPES = new Set([ SDR_VIDEO_RANGE ]);
 const DOLBY_VISION_PREFIX = 'DOVI';
@@ -546,8 +546,8 @@ export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetada
     if (!transfer) {
         return null;
     }
-    // Dynamic HDR10+ metadata is not consumed by the current static tone mapper
-    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag)) {
+    // HDR10+ retains a PQ-compatible static HDR10 base for per-frame metadata
+    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag) && transfer !== 'pq') {
         return null;
     }
 

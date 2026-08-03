@@ -160,6 +160,7 @@ describe('TrueHDSoftwareAudioDecoder', () => {
 
     it.each([
         [ 2, CUSTOM_WAVE_CHANNEL_MASK_STEREO, 48_000 ],
+        [ 2, CUSTOM_WAVE_CHANNEL_MASK_STEREO, 44_100 ],
         [ 6, CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE, 96_000 ],
         [ 8, CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE, 192_000 ]
     ] as const)(
@@ -215,7 +216,7 @@ describe('TrueHDSoftwareAudioDecoder', () => {
     });
 
     it.each([
-        [ { sampleRate: 44_100 }, 'sample rate 44100 Hz is unqualified' ],
+        [ { sampleRate: 192_001 }, 'sample rate 192001 Hz is outside the supported range' ],
         [ { bitsPerSample: 32 }, 'output depth 32 is unsupported' ],
         [ { channelCount: 6, channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO },
             'channel mask 0x3 is unqualified' ],

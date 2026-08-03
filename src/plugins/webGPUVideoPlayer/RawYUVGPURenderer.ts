@@ -1,6 +1,7 @@
 import {
     createRenderSettingsUniformData,
     RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
+    type HDR10PlusFrameRenderSettings,
     type HDRToSDRRenderSettings
 } from './RenderSettings';
 import {
@@ -259,12 +260,13 @@ export function createRawYUVEnhancementUniformBuffer(device: GPUDevice): GPUBuff
 export function writeRawYUVRenderSettingsUniform(
     device: GPUDevice,
     uniformBuffer: GPUBuffer,
-    settings: HDRToSDRRenderSettings
+    settings: HDRToSDRRenderSettings,
+    dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null
 ): void {
     device.queue.writeBuffer(
         uniformBuffer,
         0,
-        createRenderSettingsUniformData(settings)
+        createRenderSettingsUniformData(settings, dynamicFrameSettings)
     );
 }
 

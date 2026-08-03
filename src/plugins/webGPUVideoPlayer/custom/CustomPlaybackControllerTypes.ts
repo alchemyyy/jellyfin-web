@@ -5,6 +5,7 @@ import type {
     AudioWorkletControllerOptions
 } from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
+import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
@@ -55,6 +56,7 @@ export type CustomPlaybackFallbackDisposition =
 export type CustomPlaybackPlayOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
+    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     maximumCodedHeight: number

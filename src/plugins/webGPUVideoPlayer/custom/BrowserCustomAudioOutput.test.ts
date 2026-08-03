@@ -39,11 +39,16 @@ import {
     waitForBrowserAudioOperation
 } from './BrowserAudioOperation';
 
+let fakeMaximumChannelCount = 2;
+
 class FakeAudioContext {
     public static readonly instances: FakeAudioContext[] = [];
     public baseLatency = 0.01;
     public readonly close = vi.fn((): Promise<void> => Promise.resolve());
-    public readonly destination = {} as AudioDestinationNode;
+    public readonly destination = {
+        channelCount: 2,
+        maxChannelCount: fakeMaximumChannelCount
+    } as AudioDestinationNode;
     public readonly getOutputTimestamp = vi.fn((): AudioTimestamp => ({
         contextTime: 9.95,
         performanceTime: 1_000
@@ -131,11 +136,11 @@ function createWorkletControllerDeferred(): WorkletControllerDeferred {
     };
 }
 
-function createWorkletController(): WorkletControllerHarness {
+function createWorkletController(channelCount = 2): WorkletControllerHarness {
     const telemetryListeners = new Set<(telemetry: AudioWorkletTelemetry) => void>();
     return {
         configuration: {
-            channelCount: 2,
+            channelCount,
             maxBufferedFrames: 96_000,
             maxChunks: 1_024,
             sampleRate: 48_000,
@@ -195,6 +200,7 @@ function createTelemetry(
 describe('BrowserCustomAudioOutput', () => {
     beforeEach(() => {
         FakeAudioContext.instances.length = 0;
+        fakeMaximumChannelCount = 2;
         audioWorkletMockState.create.mockReset();
         vi.stubGlobal('AudioContext', FakeAudioContext);
     });
@@ -276,7 +282,7 @@ describe('BrowserCustomAudioOutput', () => {
     });
 
     it.each([
-        { channelCount: 6, sampleRate: 48_000 },
+        { channelCount: 7, sampleRate: 48_000 },
         { channelCount: 2, sampleRate: 44_100 }
     ])('rejects an unmeasured output layout %#', async configuration => {
         const factory = createBrowserCustomAudioOutputFactory();
@@ -284,7 +290,7 @@ describe('BrowserCustomAudioOutput', () => {
         await expect(factory({
             ...configuration,
             codec: 'flac'
-        })).rejects.toThrow('Custom audio output requires 2 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
         expect(FakeAudioContext.instances).toHaveLength(0);
         expect(audioWorkletMockState.create).not.toHaveBeenCalled();
     });
@@ -294,12 +300,46 @@ describe('BrowserCustomAudioOutput', () => {
         const factory = createBrowserCustomAudioOutputFactory(prewarm);
 
         await expect(factory({
-            channelCount: 6,
+            channelCount: 7,
             codec: 'ac3',
             sampleRate: 48_000
-        })).rejects.toThrow('Custom audio output requires 2 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
 
         expect(FakeAudioContext.instances[0].close).not.toHaveBeenCalled();
+        expect(audioWorkletMockState.create).not.toHaveBeenCalled();
+    });
+
+    it.each([ 6, 8 ] as const)(
+        'creates a native $channelCount-channel output only on a matching destination',
+        async channelCount => {
+            fakeMaximumChannelCount = channelCount;
+            const workletController = createWorkletController(channelCount);
+            audioWorkletMockState.create.mockResolvedValue(workletController);
+            const binding = await createBrowserCustomAudioOutputFactory()({
+                channelCount,
+                codec: 'flac',
+                sampleRate: 48_000
+            });
+
+            expect(FakeAudioContext.instances[0].destination.channelCount).toBe(channelCount);
+            expect(audioWorkletMockState.create).toHaveBeenCalledWith(
+                FakeAudioContext.instances[0],
+                expect.objectContaining({ channelCount })
+            );
+
+            await binding.output.destroy();
+        }
+    );
+
+    it('rejects multichannel output when the current destination is stereo', async () => {
+        const factory = createBrowserCustomAudioOutputFactory();
+
+        await expect(factory({
+            channelCount: 6,
+            codec: 'flac',
+            sampleRate: 48_000
+        })).rejects.toThrow('Audio destination exposes 2 channels, not 6');
+
         expect(audioWorkletMockState.create).not.toHaveBeenCalled();
     });
 

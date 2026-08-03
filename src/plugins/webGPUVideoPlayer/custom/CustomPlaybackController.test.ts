@@ -59,6 +59,11 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         receivedDolbyVisionEnhancementFrameCount: 0,
         receivedDolbyVisionFrameCount: 0,
         receivedDolbyVisionRPUCount: 0,
+        receivedHDR10PlusAbsentFrameCount: 0,
+        receivedHDR10PlusConflictingFrameCount: 0,
+        receivedHDR10PlusMalformedFrameCount: 0,
+        receivedHDR10PlusUnsupportedFrameCount: 0,
+        receivedHDR10PlusValidFrameCount: 0,
         receivedFrameCount: 0,
         receivedNativeAudioSegmentCount: 0,
         recycledRawFrameCount: 0,
@@ -549,6 +554,23 @@ describe('CustomPlaybackController', () => {
             status: 'started'
         });
         await harness.controller.destroy();
+    });
+
+    it('forwards the selected decoded multichannel output count', async () => {
+        const harness = createControllerHarness(true);
+        const options = createPlayOptions(0);
+        options.decodedAudioOutputChannelCount = 8;
+
+        const startPromise = harness.controller.play(options);
+        await flushAsyncWork();
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            audioTrackIndex: 0,
+            decodedAudioOutputChannelCount: 8
+        });
+
+        await harness.controller.stop();
+        await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
     });
 
     it('owns decode, PCM output, clock controls, events, and telemetry', async () => {
@@ -1896,10 +1918,10 @@ describe('CustomPlaybackController', () => {
         await flushAsyncWork();
 
         await expect(harness.videoDecodeSession.prepareAudio({
-            channelCount: 6,
+            channelCount: 7,
             codec: 'ac3',
             sampleRate: 48_000
-        })).rejects.toThrow('Custom audio output requires 2 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
         expect(harness.audioOutput.setVolume).not.toHaveBeenCalled();
         expect(harness.audioOutput.setMuted).not.toHaveBeenCalled();
 

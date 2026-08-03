@@ -136,4 +136,56 @@ describe('RenderSettings', () => {
         expect(integerValues[0]).toBe(RENDER_SETTINGS_VERSION);
         expect(integerValues[1]).toBe(2);
     });
+
+    it('serializes per-frame HDR10+ state without mutating persistent settings', () => {
+        const settings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+        const data = createRenderSettingsUniformData(settings, {
+            averageNits: 166.95,
+            inputPeakNits: 834.75,
+            targetedSystemDisplayMaximumLuminanceNits: 1_000,
+            toneMapping: {
+                bezierCurveAnchors: [ 0.25, 0.75 ],
+                kneePointX: 0.5,
+                kneePointY: 0.25
+            }
+        });
+        const integerValues = new Uint32Array(data.buffer);
+        const floatValues = new Float32Array(data.buffer);
+
+        expect(integerValues[3]).toBe(2);
+        expect(floatValues[6]).toBeCloseTo(834.75);
+        expect(floatValues[12]).toBeCloseTo(166.95);
+        expect(floatValues[13]).toBeCloseTo(1_000);
+        expect(floatValues[14]).toBeCloseTo(0.5);
+        expect(floatValues[15]).toBeCloseTo(0.25);
+        expect(integerValues[16]).toBe(2);
+        expect(Array.from(floatValues.slice(20, 22))).toEqual([ 0.25, 0.75 ]);
+        expect(settings.toneMapping.inputPeakNits).toBe(4_000);
+
+        const restored = createRenderSettingsUniformData(settings);
+        expect(new Uint32Array(restored.buffer)[3]).toBe(0);
+        expect(new Float32Array(restored.buffer)[6]).toBe(4_000);
+    });
+
+    it('rejects unsafe per-frame HDR10+ uniforms', () => {
+        const settings = createHDRToSDRRenderSettings();
+        expect(() => createRenderSettingsUniformData(settings, {
+            averageNits: 50,
+            inputPeakNits: 100,
+            targetedSystemDisplayMaximumLuminanceNits: 1_000,
+            toneMapping: null
+        })).toThrow('Dynamic HDR10+');
+        expect(() => createRenderSettingsUniformData(settings, {
+            averageNits: 100,
+            inputPeakNits: 1_000,
+            targetedSystemDisplayMaximumLuminanceNits: 1_000,
+            toneMapping: {
+                bezierCurveAnchors: [],
+                kneePointX: 0.5,
+                kneePointY: 0.5
+            }
+        })).toThrow('Dynamic HDR10+');
+    });
 });

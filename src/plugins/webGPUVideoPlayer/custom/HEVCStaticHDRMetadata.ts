@@ -1,8 +1,5 @@
-import {
-    parseHEVCNALUnits,
-    type HEVCNALFormat,
-    type HEVCNALUnit
-} from './DolbyVisionHEVCSplitter';
+import type { HEVCNALFormat } from './DolbyVisionHEVCSplitter';
+import { parseHEVCSEIMessages } from './HEVCSEI';
 import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     isStaticHDRMetadata,
@@ -10,8 +7,6 @@ import {
     type StaticHDRMetadataScanResult
 } from './StaticHDRMetadata';
 
-const HEVC_PREFIX_SEI_NAL_UNIT_TYPE = 39;
-const HEVC_SUFFIX_SEI_NAL_UNIT_TYPE = 40;
 const MASTERING_DISPLAY_COLOUR_VOLUME_PAYLOAD_TYPE = 137;
 const CONTENT_LIGHT_LEVEL_INFORMATION_PAYLOAD_TYPE = 144;
 const MASTERING_DISPLAY_PAYLOAD_BYTE_LENGTH = 24;
@@ -58,53 +53,6 @@ function readUnsigned32(data: Uint8Array, offset: number): number {
         + (data[offset + 2] * 0x100)
         + data[offset + 3]
     );
-}
-
-function removeEmulationPreventionBytes(data: Uint8Array): Uint8Array {
-    const output: number[] = [];
-    let zeroCount = 0;
-    for (let byteIndex = 0; byteIndex < data.byteLength; byteIndex += 1) {
-        const byteValue = data[byteIndex];
-        if (zeroCount >= 2 && byteValue === 3) {
-            if (byteIndex + 1 >= data.byteLength || data[byteIndex + 1] > 3) {
-                throw new TypeError('The HEVC SEI has an invalid emulation-prevention byte');
-            }
-            zeroCount = 0;
-            continue;
-        }
-        output.push(byteValue);
-        zeroCount = byteValue === 0 ? zeroCount + 1 : 0;
-    }
-    return new Uint8Array(output);
-}
-
-function isRBSPTrailingBits(data: Uint8Array, offset: number): boolean {
-    if (data[offset] !== 0x80) {
-        return false;
-    }
-    for (let byteIndex = offset + 1; byteIndex < data.byteLength; byteIndex += 1) {
-        if (data[byteIndex] !== 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function readExtendedSEIValue(
-    data: Uint8Array,
-    startOffset: number
-): { nextOffset: number, value: number } {
-    let offset = startOffset;
-    let value = 0;
-    while (offset < data.byteLength && data[offset] === 0xFF) {
-        value += 0xFF;
-        offset += 1;
-    }
-    if (offset >= data.byteLength) {
-        throw new TypeError('The HEVC SEI ends inside an extended value');
-    }
-    value += data[offset];
-    return { nextOffset: offset + 1, value };
 }
 
 function mergeMetadataValue(
@@ -173,49 +121,21 @@ function parseContentLightPayload(
     );
 }
 
-function parseSEINALUnit(
-    nalUnit: HEVCNALUnit,
-    metadata: MutableStaticHDRMetadata
-): void {
-    if (nalUnit.data.byteLength < 3) {
-        throw new TypeError('The HEVC SEI NAL unit is truncated');
-    }
-    const RBSP = removeEmulationPreventionBytes(nalUnit.data.subarray(2));
-    let offset = 0;
-    while (offset < RBSP.byteLength) {
-        if (isRBSPTrailingBits(RBSP, offset)) {
-            return;
-        }
-        const payloadType = readExtendedSEIValue(RBSP, offset);
-        const payloadSize = readExtendedSEIValue(RBSP, payloadType.nextOffset);
-        offset = payloadSize.nextOffset;
-        if (payloadSize.value > RBSP.byteLength - offset) {
-            throw new TypeError('The HEVC SEI payload exceeds its NAL unit');
-        }
-        const payload = RBSP.subarray(offset, offset + payloadSize.value);
-        switch (payloadType.value) {
-            case MASTERING_DISPLAY_COLOUR_VOLUME_PAYLOAD_TYPE:
-                parseMasteringDisplayPayload(payload, metadata);
-                break;
-            case CONTENT_LIGHT_LEVEL_INFORMATION_PAYLOAD_TYPE:
-                parseContentLightPayload(payload, metadata);
-                break;
-        }
-        offset += payloadSize.value;
-    }
-}
-
 /** Extracts bounded HDR10 static luminance metadata from one HEVC access unit. */
 export function parseHEVCStaticHDRMetadata(
     accessUnit: Uint8Array,
     format: HEVCNALFormat
 ): StaticHDRMetadata | null {
     const metadata = createEmptyStaticHDRMetadata();
-    const nalUnits = parseHEVCNALUnits(accessUnit, format);
-    for (const nalUnit of nalUnits) {
-        if (nalUnit.type === HEVC_PREFIX_SEI_NAL_UNIT_TYPE
-            || nalUnit.type === HEVC_SUFFIX_SEI_NAL_UNIT_TYPE) {
-            parseSEINALUnit(nalUnit, metadata);
+    const messages = parseHEVCSEIMessages(accessUnit, format);
+    for (const message of messages) {
+        switch (message.payloadType) {
+            case MASTERING_DISPLAY_COLOUR_VOLUME_PAYLOAD_TYPE:
+                parseMasteringDisplayPayload(message.payload, metadata);
+                break;
+            case CONTENT_LIGHT_LEVEL_INFORMATION_PAYLOAD_TYPE:
+                parseContentLightPayload(message.payload, metadata);
+                break;
         }
     }
     const hasMetadata = Object.values(metadata).some((value: number | null): boolean => (

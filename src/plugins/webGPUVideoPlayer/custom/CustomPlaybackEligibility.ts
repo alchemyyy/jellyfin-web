@@ -40,8 +40,8 @@ import {
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
 import {
-    isQualifiedDTSInputRoute,
-    isQualifiedTrueHDInputRoute
+    isSupportedDTSInputRoute,
+    isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import { supportsH264JellyfinProfile } from './H264ProfileCapabilities';
 import {
@@ -309,6 +309,7 @@ type PlaybackAudioSelection =
     | {
         audioCodec: CustomAudioCodec | null
         audioOutputMode: CustomDecodeAudioOutputMode | null
+        audioSourceChannelCount: number | null
         audioTrackIndex: number | null
         status: 'selected'
     }
@@ -360,6 +361,7 @@ export type CustomPlaybackEligibilityOptions = {
 
 export type EligibleCustomPlayback = {
     audioOutputMode: CustomDecodeAudioOutputMode | null
+    audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
     durationMicroseconds: Microseconds
@@ -588,7 +590,7 @@ function hasQualifiedDecodedPCMInputLayout(
             || (profile !== null && !SUPPORTED_DTS_PROFILE_TOKENS.has(profile))) {
             return false;
         }
-        return isQualifiedDTSInputRoute(stream.Channels, stream.SampleRate, profile);
+        return isSupportedDTSInputRoute(stream.Channels, stream.SampleRate, profile);
     }
     if (codec === 'mlp' || codec === 'truehd') {
         const exactCapability = capabilities.bundledTrueHD;
@@ -597,7 +599,7 @@ function hasQualifiedDecodedPCMInputLayout(
             && exactCapability.objectAudioRendered === false
             && exactCapability.passthrough === false
             && exactCapability.codecs.includes(codec)
-            && isQualifiedTrueHDInputRoute(codec, stream.Channels, stream.SampleRate);
+            && isSupportedTrueHDInputRoute(codec, stream.Channels, stream.SampleRate);
     }
     if (stream.Channels !== 6) {
         return true;
@@ -614,8 +616,7 @@ function hasQualifiedDecodedPCMInputLayout(
             const surroundCapability: CustomNativeSurroundAudioCodecCapability | undefined =
                 capabilities.nativeSurroundAudio?.[codec];
             return surroundCapability?.status === 'supported'
-                && surroundCapability.inputChannelCount === stream.Channels
-                && surroundCapability.sampleRate === stream.SampleRate;
+                && surroundCapability.inputChannelCount === stream.Channels;
         }
         case 'mp3':
             return false;
@@ -1349,6 +1350,7 @@ function selectPlaybackAudio(
         return {
             audioCodec: null,
             audioOutputMode: null,
+            audioSourceChannelCount: null,
             audioTrackIndex: null,
             status: 'selected'
         };
@@ -1372,6 +1374,7 @@ function selectPlaybackAudio(
     return {
         audioCodec,
         audioOutputMode: audioOutput.outputMode,
+        audioSourceChannelCount: Number(selectedAudio.stream.Channels),
         audioTrackIndex: selectedAudio.trackOrdinal,
         status: 'selected'
     };
@@ -1428,6 +1431,7 @@ export function getCustomPlaybackEligibility(
         return { eligible: false, reason: audioSelection.reason };
     }
     const audioOutputMode = audioSelection.audioOutputMode;
+    const audioSourceChannelCount = audioSelection.audioSourceChannelCount;
     const audioTrackIndex = audioSelection.audioTrackIndex;
     const selectedAudioCodec = audioSelection.audioCodec;
     if (!supportsContainerCodecCombination(
@@ -1463,6 +1467,7 @@ export function getCustomPlaybackEligibility(
 
     return {
         audioOutputMode,
+        audioSourceChannelCount,
         audioTrackIndex,
         durationMicroseconds: parsedSource.durationMicroseconds,
         eligible: true,
