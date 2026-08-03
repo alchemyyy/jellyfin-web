@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jellyfin.org/schemas/webgpu-validation-baseline-v1.json",
+  "$defs": {
+    "identifier": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    },
+    "identifierArray": {
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "approvedAtUTC": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "cases": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "status": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "baselineDurationMilliseconds": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "maximumDurationMilliseconds": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "baselineDurationMilliseconds",
+          "maximumDurationMilliseconds"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "environment": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "fixtures": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "byteLength": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "id": {
+            "$ref": "#/$defs/identifier"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "status": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "byteLength",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "reviewedBy": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "pattern": "^[a-f0-9]{40,64}$",
+          "type": "string"
+        },
+        "dirty": {
+          "const": false
+        },
+        "manifestSHA256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "overlaySHA256": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            }
+          ]
+        },
+        "matrix": {
+          "$ref": "#/$defs/identifier"
+        },
+        "resultSHA256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "runId": {
+          "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{7,40}$",
+          "type": "string"
+        },
+        "selection": {
+          "additionalProperties": false,
+          "properties": {
+            "caseIds": {
+              "$ref": "#/$defs/identifierArray"
+            },
+            "checkIds": {
+              "$ref": "#/$defs/identifierArray"
+            },
+            "fixtureIds": {
+              "$ref": "#/$defs/identifierArray"
+            },
+            "selectors": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "selectors",
+            "caseIds",
+            "checkIds",
+            "fixtureIds"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "runId",
+        "resultSHA256",
+        "commit",
+        "dirty",
+        "manifestSHA256",
+        "overlaySHA256",
+        "matrix",
+        "selection"
+      ],
+      "type": "object"
+    },
+    "tolerances": {
+      "additionalProperties": false,
+      "properties": {
+        "durationRegressionPercent": {
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "durationRegressionPercent"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "approvedAtUTC",
+    "reviewedBy",
+    "source",
+    "tolerances",
+    "environment",
+    "fixtures",
+    "checks",
+    "cases"
+  ],
+  "type": "object"
+}

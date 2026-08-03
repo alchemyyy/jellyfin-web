@@ -42,6 +42,7 @@ class ManifestTests(unittest.TestCase):
 
     def test_checked_schema_documents_and_manifest_are_current(self) -> None:
         schema_names = (
+            "baseline-schema.json",
             "failure-codes-schema.json",
             "failure-codes.json",
             "overlay-schema.json",
@@ -419,6 +420,7 @@ class AdapterTests(unittest.TestCase):
                 (output_directory / "result.json").read_text(encoding="utf-8")
             )
             self.assertEqual(persisted_result["summary"]["passedCases"], 1)
+            self.assertIsNone(persisted_result["baseline"])
             self.assertEqual(
                 persisted_result["cases"][0]["expectations"]["decoderBackend"],
                 "libdcadec",

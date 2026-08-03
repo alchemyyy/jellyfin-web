@@ -15,6 +15,7 @@ result set.
 | `overlay-schema.json` | Contract for ignored private records appended to the canonical registries. An overlay cannot replace a canonical ID. |
 | `failure-codes.json` | Sole cross-adapter failure vocabulary. Tool-specific diagnostics remain evidence, not new top-level failure codes. |
 | `result-schema.json` | Machine-readable result contract. |
+| `baseline-schema.json` | Immutable reviewed baseline, environment identity, fixture set, and timing-threshold contract. |
 
 The Python validator is authoritative at runtime and rejects unknown keys,
 duplicate IDs, traversal, dangling references, dependency cycles, ambiguous
@@ -226,6 +227,49 @@ Dolby Vision worker smoke, runtime readiness, and mpv/browser A/B capture.
 small adapter-specific option whitelist through `environmentArguments`.
 Arbitrary option names are rejected.
 
+## Reviewed baselines
+
+A normal run never creates or changes a baseline. Approval is a separate command
+that requires all of the following:
+
+- a passing result from a clean worktree;
+- an explicit reviewer label;
+- an explicit integer duration-regression tolerance;
+- `--accept-reviewed-result`;
+- `--replace-existing` when updating an existing valid baseline.
+
+```powershell
+python scripts/webgpu/validation_matrix.py approve-baseline `
+    --result artifacts/webgpu-validation/<clean-run>/result.json `
+    --output artifacts/webgpu-validation/static-baseline.json `
+    --reviewed-by local-validation `
+    --duration-tolerance-percent 25 `
+    --accept-reviewed-result
+```
+
+Use the baseline read-only in a later run:
+
+```powershell
+python scripts/webgpu/validation_matrix.py run `
+    --matrix static `
+    --baseline artifacts/webgpu-validation/static-baseline.json
+```
+
+Comparison requires the same manifest and private-overlay digests, matrix,
+selectors, selected IDs, sanitized host/tool/browser/GPU/server/flag
+environment, fixture byte lengths and hashes, and passing case/check statuses.
+Each check duration must be no greater than its reviewed duration plus the
+explicit percentage tolerance.
+Repository commit and dirty state are recorded in the baseline source but are
+excluded from the reusable environment identity, so a reviewed baseline can
+detect regressions on later commits.
+
+Approval rejects unsanitized URLs and absolute Windows paths in environment
+evidence. Comparison failure is recorded in the normal result and changes the
+run status to `failed`; it never modifies the baseline. The result records only
+the baseline hash, approval time, source run ID, status, failures, and a
+repository-relative or private URI.
+
 ## Current coverage boundary
 
 The canonical v1 registry contains the 15 checked-in exact fixtures/cases for
@@ -236,7 +280,6 @@ Live title, HDR/Dolby Vision, fault, startup, soak, and cross-browser/GPU cases
 must be added as content-addressed records or private overlays before their
 matrix can pass.
 
-Baseline approval/comparison, generator-emitted registry fragments, shared
-case-ID failure injection, server log capture, pairwise matrix generation, and
-manual-observation ingestion remain framework work. Baselines must not be
-implemented as an automatic update after a run.
+Generator-emitted registry fragments, shared case-ID failure injection, server
+log capture, pairwise matrix generation, and manual-observation ingestion
+remain framework work.

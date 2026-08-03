@@ -4,17 +4,17 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `750a47081788c02b196ac38d9ac66f0fc921bff1`
+Parent checkpoint: `3a78936ee551e51198681d663f0d4dfec90ab369`
 
-Checkpoint state: committed and pushed to `origin/webgpu-player`
+Checkpoint state: unified validation foundation committed and pushed; reviewed
+baseline integration verified and ready for its checkpoint commit
 
 ## Current objective
 
-Implement Group B from `webgpu_plan_2.md`: one content-addressed validation
-manifest, fixed adapter runner, shared failure vocabulary, private overlay
-boundary, and sanitized result format. Existing test, build, browser, worker,
-artifact, and mpv tools remain focused adapters rather than being replaced by
-another competing harness.
+Land Group B reviewed-baseline support, then continue with checked registry
+fragments emitted by the fixture generators. Baseline approval is separate,
+explicit, clean-result-only, and non-destructive by default. A validation run
+may compare against a baseline but cannot update one as a side effect.
 
 The current authoritative integration server is a Jellyfin 12 nightly serving
 this repository's current built bundle on `http://localhost:8096`. Jellyfin
@@ -29,10 +29,10 @@ Implemented after checkpoint `750a470817`:
 
 - `scripts/webgpu/validation/manifest.json` registers 15 current exact-codec
   fixtures and 15 stable cases with expected routes and numeric thresholds.
-- Manifest, private-overlay, failure-vocabulary, and result JSON Schemas are
-  checked in. The dependency-free Python validator also rejects unknown keys,
-  duplicate IDs, traversal, dangling references, cycles, unsafe arguments,
-  missing license evidence, and ambiguous supersession.
+- Manifest, private-overlay, failure-vocabulary, result, and reviewed-baseline
+  JSON Schemas are checked in. The dependency-free Python validator also
+  rejects unknown keys, duplicate IDs, traversal, dangling references, cycles,
+  unsafe arguments, missing license evidence, and ambiguous supersession.
 - Every selected fixture is checked for availability, exact byte length, and
   SHA-256 before an adapter runs. Private fixtures use `env://` URIs and still
   require hashes, provenance, generators, and license evidence.
@@ -48,22 +48,28 @@ Implemented after checkpoint `750a470817`:
 - Each run emits JSON, Markdown, standalone HTML, a manual checklist, and
   per-check structured evidence under ignored `/artifacts/`.
 
-The first complete static run passed 15 fixture hashes, 15 cases, 38 Python
-tests, 135 standalone Node tests, 383 focused Vitest tests across 19 files, and
-the TypeScript check. Source feature flags remain false. Static success does
-not claim live Jellyfin DirectPlay; live cases must use exact private overlays
-or later canonical distributable fixtures.
+Reviewed baselines pin the manifest and private-overlay digests, selection,
+sanitized environment, fixture identities, passing records, and explicit
+integer timing thresholds. Approval rejects dirty or failing results and
+requires reviewer acknowledgement; replacement is explicit and validates the
+old baseline first. Comparison is read-only and makes the run fail on drift.
+
+The latest baseline-qualified static run passed 15 fixture hashes, 15 cases,
+43 Python tests, 135 standalone Node tests, 383 focused Vitest tests across 19
+files, and the TypeScript check. The checkpoint matrix then passed all 15
+fixtures and cases plus all 9 required checks, including a development build.
+Source feature flags remain false. Static success does not claim live Jellyfin
+DirectPlay; live cases must use exact private overlays or later canonical
+distributable fixtures.
 
 Remaining Group B work:
 
-1. Add reviewed baseline approval/comparison with explicit tolerances; never
-   update a baseline implicitly.
-2. Make fixture generators emit checked registry fragments.
-3. Move the color/HDR authorization, browser lifecycle, worker, startup,
+1. Make fixture generators emit checked registry fragments.
+2. Move the color/HDR authorization, browser lifecycle, worker, startup,
    retention/soak, and mpv A/B cases into canonical or private records.
-4. Unify failure injection by case ID and add sanitized server API/log capture.
-5. Add manual-observation ingestion and pairwise/boundary matrix generation.
-6. Populate browser, GPU/driver, server version, display state, and active flags
+3. Unify failure injection by case ID and add sanitized server API/log capture.
+4. Add manual-observation ingestion and pairwise/boundary matrix generation.
+5. Populate browser, GPU/driver, server version, display state, and active flags
    from live adapter evidence rather than leaving explicit `not-recorded`
    records.
 

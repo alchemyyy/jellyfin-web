@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import array
+import hashlib
 import json
 import math
 import os
@@ -119,6 +120,22 @@ def write_json(path: Path, value: object) -> None:
         encoding="utf-8",
     )
     temporary_path.replace(path)
+
+
+def calculate_sha256(path: Path) -> str:
+    """Calculates a file digest without loading large artifacts into memory."""
+
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source_file:
+            while True:
+                block = source_file.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError as error:
+        raise HarnessError(f"Unable to hash {path}: {error}") from error
+    return digest.hexdigest()
 
 
 def format_media_seconds(microseconds: int) -> str:

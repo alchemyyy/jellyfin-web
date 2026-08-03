@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import html
 import json
 import os
@@ -21,6 +20,7 @@ from typing import Callable, Mapping, Sequence, cast
 
 from ab_harness import (
     HarnessError,
+    calculate_sha256,
     command_for_report,
     read_json,
     require_integer,
@@ -28,6 +28,12 @@ from ab_harness import (
     require_string,
     run_command,
     write_json,
+)
+from validation_baseline import (
+    approve_baseline,
+    baseline_report_uri,
+    compare_baseline,
+    load_baseline,
 )
 
 
@@ -234,22 +240,6 @@ def require_environment_name(value: object, label: str) -> str:
     if not ENVIRONMENT_NAME_PATTERN.fullmatch(environment_name):
         raise HarnessError(f"{label} is not a valid environment variable name")
     return environment_name
-
-
-def calculate_sha256(path: Path) -> str:
-    """Calculates a file digest without loading large fixtures into memory."""
-
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source_file:
-            while True:
-                block = source_file.read(1024 * 1024)
-                if not block:
-                    break
-                digest.update(block)
-    except OSError as error:
-        raise HarnessError(f"Unable to hash {path}: {error}") from error
-    return digest.hexdigest()
 
 
 def repository_path(relative_path: str, label: str) -> Path:
@@ -1787,11 +1777,29 @@ def markdown_report(result: Mapping[str, object], manifest: ValidationManifest) 
         f"- Status: **{str(result['status']).upper()}**",
         f"- Commit: `{cast(dict[str, object], result['environment'])['repository']['commit']}`",
         "",
-        "## Fixtures",
-        "",
-        "| ID | Status | SHA-256 | License |",
-        "| --- | --- | --- | --- |",
     ]
+    baseline = result.get("baseline")
+    if isinstance(baseline, dict):
+        lines.extend(
+            [
+                "## Reviewed baseline",
+                "",
+                f"- Status: **{str(baseline['status']).upper()}**",
+                f"- Source run: `{baseline['sourceRunId']}`",
+                f"- Approved: `{baseline['approvedAtUTC']}`",
+                f"- SHA-256: `{baseline['sha256']}`",
+                f"- URI: `{baseline['uri']}`",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Fixtures",
+            "",
+            "| ID | Status | SHA-256 | License |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
     for fixture in cast(list[dict[str, object]], result["fixtures"]):
         lines.append(
             f"| `{fixture['id']}` | {fixture['status']} | `{fixture['sha256']}` | "
@@ -1863,6 +1871,17 @@ def html_report(result: Mapping[str, object]) -> str:
     fixtures = cast(list[dict[str, object]], result["fixtures"])
     checks = cast(list[dict[str, object]], result["checks"])
     cases = cast(list[dict[str, object]], result["cases"])
+    baseline = result.get("baseline")
+    baseline_html = ""
+    if isinstance(baseline, dict):
+        baseline_html = (
+            "<h2>Reviewed baseline</h2><dl>"
+            f"<dt>Status</dt><dd>{html.escape(str(baseline['status']))}</dd>"
+            f"<dt>Source run</dt><dd><code>{html.escape(str(baseline['sourceRunId']))}</code></dd>"
+            f"<dt>Approved</dt><dd><code>{html.escape(str(baseline['approvedAtUTC']))}</code></dd>"
+            f"<dt>SHA-256</dt><dd><code>{html.escape(str(baseline['sha256']))}</code></dd>"
+            "</dl>"
+        )
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -1874,6 +1893,7 @@ def html_report(result: Mapping[str, object]) -> str:
         f"<h1>WebGPU validation: {html.escape(str(result['status']))}</h1>"
         f"<p>Run <code>{html.escape(str(result['runId']))}</code>; matrix "
         f"<code>{html.escape(str(result['matrix']))}</code>.</p>"
+        f"{baseline_html}"
         "<h2>Fixtures</h2><table><thead><tr><th>ID</th><th>Status</th><th>License</th>"
         f"</tr></thead><tbody>{rows(fixtures, ('id', 'status', 'license'))}</tbody></table>"
         "<h2>Checks</h2><table><thead><tr><th>ID</th><th>Adapter</th><th>Status</th>"
@@ -1895,6 +1915,18 @@ def manual_checklist(result: Mapping[str, object], manifest: ValidationManifest)
         "feature flags, and fixture hash with every observation.",
         "",
     ]
+    baseline = result.get("baseline")
+    if isinstance(baseline, dict):
+        lines.extend(
+            [
+                "## Baseline",
+                "",
+                f"- Status: **{str(baseline['status']).upper()}**",
+                f"- Source run: `{baseline['sourceRunId']}`",
+                f"- SHA-256: `{baseline['sha256']}`",
+                "",
+            ]
+        )
     step_count = 0
     for case_id_value in cast(dict[str, object], result["selection"])["caseIds"]:
         case_id = cast(str, case_id_value)
@@ -1919,6 +1951,8 @@ def validate_result(result: Mapping[str, object], failure_codes: Mapping[str, st
         raise HarnessError("Result schemaVersion is invalid")
     if result.get("status") not in {"passed", "failed", "incomplete"}:
         raise HarnessError("Result status is invalid")
+    if "baseline" not in result:
+        raise HarnessError("Result baseline record is missing")
     for collection_name in ("fixtures", "checks", "cases", "failures"):
         if not isinstance(result.get(collection_name), list):
             raise HarnessError(f"Result {collection_name} must be an array")
@@ -1935,6 +1969,7 @@ def execute_run(
     output_directory: Path,
     fail_fast: bool,
     started_at: datetime | None = None,
+    baseline_path: Path | None = None,
 ) -> dict[str, object]:
     """Executes one complete selected matrix and writes reproducible reports."""
 
@@ -1985,7 +2020,54 @@ def execute_run(
     )
     summary = create_summary(fixture_results, check_results, case_results)
     failures = aggregate_failures(fixture_results, check_results)
-    if summary["failedFixtures"] or summary["failedChecks"] or summary["failedCases"]:
+    manifest_record: dict[str, object] = {
+        "uri": path_to_repository_uri(manifest.manifest_path),
+        "sha256": manifest.manifest_sha256,
+        "overlaySHA256": manifest.overlay_sha256,
+        "schemaVersion": SCHEMA_VERSION,
+    }
+    selection_result: dict[str, object] = {
+        "selectors": list(selection.selectors),
+        "caseIds": list(selection.case_ids),
+        "checkIds": list(selection.check_ids),
+        "fixtureIds": list(selection.fixture_ids),
+        "supersededChecks": dict(selection.superseded_checks),
+    }
+    baseline_result: dict[str, object] | None = None
+    baseline_failures: list[dict[str, str]] = []
+    if baseline_path is not None:
+        resolved_baseline_path = baseline_path.expanduser().resolve()
+        baseline = load_baseline(resolved_baseline_path)
+        comparison_input: dict[str, object] = {
+            "matrix": selection.matrix_id,
+            "manifest": manifest_record,
+            "selection": selection_result,
+            "environment": environment,
+            "fixtures": fixture_results,
+            "checks": check_results,
+            "cases": case_results,
+        }
+        baseline_failures = compare_baseline(
+            baseline,
+            comparison_input,
+            manifest.failure_codes,
+        )
+        baseline_source = require_mapping(baseline["source"], "Baseline source")
+        baseline_result = {
+            "uri": baseline_report_uri(resolved_baseline_path, REPOSITORY_ROOT),
+            "sha256": calculate_sha256(resolved_baseline_path),
+            "sourceRunId": baseline_source["runId"],
+            "approvedAtUTC": baseline["approvedAtUTC"],
+            "status": "passed" if not baseline_failures else "failed",
+            "failures": baseline_failures,
+        }
+        failures.extend(baseline_failures)
+    if (
+        summary["failedFixtures"]
+        or summary["failedChecks"]
+        or summary["failedCases"]
+        or baseline_failures
+    ):
         status = "failed"
     elif summary["blockedChecks"] or summary["incompleteCases"]:
         status = "incomplete"
@@ -2002,19 +2084,9 @@ def execute_run(
         "completedAtUTC": datetime.now(UTC).isoformat(),
         "status": status,
         "matrix": selection.matrix_id,
-        "manifest": {
-            "uri": path_to_repository_uri(manifest.manifest_path),
-            "sha256": manifest.manifest_sha256,
-            "overlaySHA256": manifest.overlay_sha256,
-            "schemaVersion": SCHEMA_VERSION,
-        },
-        "selection": {
-            "selectors": list(selection.selectors),
-            "caseIds": list(selection.case_ids),
-            "checkIds": list(selection.check_ids),
-            "fixtureIds": list(selection.fixture_ids),
-            "supersededChecks": dict(selection.superseded_checks),
-        },
+        "manifest": manifest_record,
+        "selection": selection_result,
+        "baseline": baseline_result,
         "environment": environment,
         "fixtures": fixture_results,
         "checks": check_results,
@@ -2131,7 +2203,34 @@ def create_argument_parser() -> argparse.ArgumentParser:
     add_manifest_arguments(run_parser)
     add_selection_arguments(run_parser)
     run_parser.add_argument("--output", type=Path, help="Ignored result directory")
+    run_parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="Read-only reviewed baseline used for strict comparison",
+    )
     run_parser.add_argument("--fail-fast", action="store_true")
+    approve_parser = subparsers.add_parser(
+        "approve-baseline",
+        help="Create or explicitly replace a reviewed baseline",
+    )
+    approve_parser.add_argument("--result", required=True, type=Path)
+    approve_parser.add_argument("--output", required=True, type=Path)
+    approve_parser.add_argument("--reviewed-by", required=True)
+    approve_parser.add_argument(
+        "--duration-tolerance-percent",
+        required=True,
+        type=int,
+    )
+    approve_parser.add_argument(
+        "--accept-reviewed-result",
+        action="store_true",
+        help="Required acknowledgement that the source result was reviewed",
+    )
+    approve_parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Explicitly replace an existing reviewed baseline",
+    )
     return parser
 
 
@@ -2140,6 +2239,30 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
 
     arguments = create_argument_parser().parse_args(command_arguments)
     try:
+        if arguments.command == "approve-baseline":
+            if not arguments.accept_reviewed_result:
+                raise HarnessError(
+                    "Baseline approval requires --accept-reviewed-result"
+                )
+            baseline = approve_baseline(
+                result_path=arguments.result,
+                output_path=arguments.output,
+                reviewed_by=arguments.reviewed_by,
+                duration_tolerance_percent=arguments.duration_tolerance_percent,
+                replace_existing=arguments.replace_existing,
+            )
+            print(
+                json.dumps(
+                    {
+                        "output": str(arguments.output.expanduser().resolve()),
+                        "sourceRunId": cast(dict[str, object], baseline["source"])["runId"],
+                        "status": "approved",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
         manifest = load_manifest(arguments.manifest, arguments.overlay)
         if arguments.command == "validate":
             fixture_results: list[dict[str, object]] = []
@@ -2191,6 +2314,7 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
             output_directory=output_directory,
             fail_fast=arguments.fail_fast,
             started_at=run_started_at,
+            baseline_path=arguments.baseline,
         )
         print(
             json.dumps(

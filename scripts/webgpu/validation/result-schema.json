@@ -45,6 +45,54 @@
       },
       "type": "object"
     },
+    "baseline": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "approvedAtUTC": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "failures": {
+              "items": {
+                "$ref": "#/$defs/failure"
+              },
+              "type": "array"
+            },
+            "sha256": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "sourceRunId": {
+              "pattern": "^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{7,40}$",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "failed",
+                "passed"
+              ]
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "uri",
+            "sha256",
+            "sourceRunId",
+            "approvedAtUTC",
+            "status",
+            "failures"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "cases": {
       "items": {
         "additionalProperties": false,
@@ -436,7 +484,8 @@
     "cases",
     "failures",
     "summary",
-    "artifacts"
+    "artifacts",
+    "baseline"
   ],
   "type": "object"
 }

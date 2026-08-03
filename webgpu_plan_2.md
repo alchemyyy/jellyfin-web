@@ -3,12 +3,12 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `750a47081788c02b196ac38d9ac66f0fc921bff1`
+- Parent checkpoint: `3a78936ee551e51198681d663f0d4dfec90ab369`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
-  downmix, artifact-provenance, and HDR checkpoint is committed and pushed.
-  Group B validation-framework integration is active. Per-tuple real-media
-  qualification and long-run resource validation remain before a general
-  rollout.
+  downmix, artifact-provenance, HDR, and unified validation-foundation
+  checkpoints are committed and pushed. Reviewed-baseline integration is
+  active. Per-tuple real-media qualification and long-run resource validation
+  remain before a general rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
@@ -659,16 +659,20 @@ driven by `scripts/webgpu/validation_matrix.py`:
   manual-checklist reports under the ignored artifact root;
 - shared classification for missing inputs, unknown capability, unexpected
   transcode, console error, ownership warning, resource leak, and secret leak.
+- separate reviewed baseline approval and read-only comparison. Approval
+  requires a clean passing result, reviewer acknowledgement, and explicit
+  timing tolerance; a normal run cannot create or update a baseline.
 
-The first static matrix passed all 15 fixture hashes and cases, 38 Python tests,
+The latest baseline-qualified static matrix passed all 15 fixture hashes and
+cases, 43 Python tests,
 135 standalone Node tests, 383 focused Vitest tests, and TypeScript. This is
 static exact-codec evidence, not a substitute for live DirectPlay cases.
 
-Remaining Group B work is baseline approval/comparison, generator-emitted
-registry fragments, one case-ID failure-injection vocabulary across the smoke
-tools, server API/log evidence, manual-observation ingestion, pairwise matrix
-generation, and migration of HDR/color/startup/soak/live cases into canonical
-or private content-addressed records.
+Remaining Group B work is generator-emitted registry fragments, one case-ID
+failure-injection vocabulary across the smoke tools, server API/log evidence,
+manual-observation ingestion, pairwise matrix generation, and migration of
+HDR/color/startup/soak/live cases into canonical or private content-addressed
+records.
 
 ### 7.6 Minimum gates
 
