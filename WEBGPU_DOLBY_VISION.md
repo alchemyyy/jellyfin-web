@@ -139,6 +139,24 @@ envelope. The base route strips RPU and enhancement NAL units, skips the RPU
 parser and enhancement decoder, and uses the ordinary static-HDR pipeline;
 Profile 5 and incompatible Profile 8 descriptors cannot enter it.
 
+The compatibility-ID-6 requirement is an intentionally conservative metadata
+integrity gate, not a fundamental decoder limit. A valid Profile 7 stream has an
+HDR10-compatible base, but a remux may omit or misreport the separate
+compatibility field while retaining a usable base bitstream. Future work may
+admit an absent or noncanonical field only when an encoded-source preflight
+independently proves all of the following:
+
+- Profile 7 BL, EL, and RPU topology;
+- a 10-bit base layer;
+- limited-range BT.2020 non-constant matrix and PQ transfer signaling; and
+- no contradictory container, Jellyfin, DV configuration, SPS, VUI, or SEI
+  metadata.
+
+This would widen metadata recovery, not codec or performance capability. An
+explicitly contradictory compatibility field must remain fail-closed. The
+second number in a UI label such as `Profile 7.6` is the Dolby Vision level; it
+is not evidence that the separate BL signal compatibility ID equals 6.
+
 Five focused suites currently pass 440 tests across presentation metadata,
 device-profile separation, runtime eligibility, player integration, and
 metadata ownership. Manual deployed playback is reported working, while

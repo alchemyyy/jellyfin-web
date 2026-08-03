@@ -425,6 +425,17 @@ mastering-display/content-light metadata may still update the tone-mapping
 peak. Profile 5 and non-HDR10-compatible Profile 8 signals cannot enter this
 route.
 
+Compatibility ID 6 is currently a fail-closed metadata-integrity requirement,
+not a decode-performance requirement. Profile 7 is defined around an HDR10-
+compatible base, so this exact container/API field may be redundant for a valid
+bitstream and may reject an otherwise usable remux when the field is merely
+absent. A future widening may accept missing or noncanonical compatibility
+metadata only after an encoded-source preflight independently proves the
+Profile 7 BL/EL/RPU topology and the base layer's 10-bit limited BT.2020 non-
+constant/PQ signaling. Explicitly contradictory compatibility or color metadata
+must remain rejected. The `.6` shown in a `Profile 7.6` UI label is the Dolby
+Vision level and must not be mistaken for this separate compatibility field.
+
 Custom decoded-PCM profile splitting now removes inherited HTML-player
 `AudioBitDepth` constraints alongside inherited channel, sample-rate, and
 secondary-track constraints. The original restrictions remain attached to
@@ -1219,6 +1230,10 @@ Rules that prevent duplicated work:
   through native HEVC/external PQ when full raw Dolby Vision is outside its
   measured envelope. Preserve full reconstruction when it is qualified, strip
   unused RPU/EL data for base playback, and retain static HDR peak handling.
+- [ ] Evaluate a bitstream-proven Profile 7 HDR10-base route for remuxes with a
+  missing or noncanonical BL compatibility field. Require an encoded preflight
+  to prove Profile 7 BL/EL/RPU topology plus limited 10-bit BT.2020 non-
+  constant/PQ base signaling; continue rejecting contradictory metadata.
 - [x] Complete native external PQ/HLG checkpoint.
 - [x] Pass one real-title Profile 5 DirectPlay lifecycle plus active and paused
   device-loss recovery with decoded 5.1 E-AC-3 and no transcode reasons.
