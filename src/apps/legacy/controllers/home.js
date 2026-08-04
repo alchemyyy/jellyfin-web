@@ -4,6 +4,12 @@ import 'elements/emby-tabs/emby-tabs';
 import 'elements/emby-button/emby-button';
 import 'elements/emby-scroller/emby-scroller';
 import LibraryMenu from 'scripts/libraryMenu';
+import { EventType } from 'constants/eventType';
+import Events from 'utils/events';
+
+function showAbout() {
+    Events.trigger(document, EventType.SHOW_ABOUT);
+}
 
 class HomeView extends TabbedView {
     setTitle() {
@@ -29,6 +35,9 @@ class HomeView extends TabbedView {
             name: globalize.translate('Home')
         }, {
             name: globalize.translate('Favorites')
+        }, {
+            name: globalize.translate('About'),
+            onClick: showAbout
         }];
     }
 
