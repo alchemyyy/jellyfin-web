@@ -5,6 +5,7 @@ import {
     copyVideoFrameToRawPlanes,
     getRawVideoFramePairTransferList,
     getRawVideoFrameTransferList,
+    hasRawVideoFrameResourceBudget,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
     type RawVideoFrameCopyError,
     type SupportedRawVideoFrameFormat
@@ -406,13 +407,9 @@ describe('copyVideoFrameToRawPlanes', () => {
 
     it.each([
         { codedWidth: 0 },
-        { codedWidth: 3_841 },
         { codedHeight: Number.NaN },
-        { codedHeight: 2_161 },
         { displayWidth: Number.POSITIVE_INFINITY },
-        { displayWidth: 3_841 },
         { displayHeight: 0 },
-        { displayHeight: 2_161 },
         { duration: -1 },
         { timestamp: Number.MAX_SAFE_INTEGER + 1 },
         { visibleRectangle: null },
@@ -500,6 +497,44 @@ describe('copyVideoFrameToRawPlanes', () => {
 
         expect(transferList).toEqual([ result.data ]);
         expect(transferList).not.toBe(getRawVideoFrameTransferList(result));
+    });
+});
+
+describe('hasRawVideoFrameResourceBudget', () => {
+    const ultraHD8KGeometry = {
+        codedHeight: 4_320,
+        codedWidth: 7_680,
+        displayHeight: 4_320,
+        displayWidth: 7_680
+    };
+
+    it('accepts one 8K 10-bit frame without treating 4K as a capability ceiling', () => {
+        expect(hasRawVideoFrameResourceBudget(
+            ultraHD8KGeometry,
+            'I420P10'
+        )).toBe(true);
+    });
+
+    it('rejects geometry whose aligned plane allocation exceeds the byte budget', () => {
+        expect(hasRawVideoFrameResourceBudget({
+            codedHeight: 8_640,
+            codedWidth: 15_360,
+            displayHeight: 8_640,
+            displayWidth: 15_360
+        }, 'I420P10')).toBe(false);
+    });
+
+    it('enforces the compound budget for simultaneous Dolby Vision layers', () => {
+        expect(hasRawVideoFrameResourceBudget(
+            ultraHD8KGeometry,
+            'I420P10',
+            1
+        )).toBe(true);
+        expect(hasRawVideoFrameResourceBudget(
+            ultraHD8KGeometry,
+            'I420P10',
+            2
+        )).toBe(false);
     });
 });
 

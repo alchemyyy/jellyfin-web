@@ -4,23 +4,54 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `0a9b489bd4249e5c6b0276f088c68bf6b19ef12c`
+Parent checkpoint: `3cb8f57839cd1361ffe567d3220d9c5ec5ad533f`
 
 Checkpoint state: persistent player selection, runtime-gated native
 multichannel PCM, exact-PTS HEVC HDR10+, the checked cross-browser/GPU hardware
-matrix, and the exact Dolby Vision Profile 7 HDR10-compatible base route are
-committed and pushed. The current worktree closes observed subtitle, audio
-negotiation, unsupported-video selection, Matroska timestamp, and terminal
-fallback defects without widening unmeasured decoder routes.
+matrix, exact Dolby Vision Profile 7 HDR10-compatible base handling, subtitle
+and audio negotiation fixes, unsupported-video routing, Matroska timestamp
+correction, and terminal fallback containment are committed and pushed. The
+current worktree removes representative native fixture dimensions, levels, and
+frame rates as source ceilings while retaining exact source decoder checks,
+runtime GPU limits, byte-bounded raw transfers, and measured software tiers.
 
 ## Current objective
 
-Finish the subtitle and source-selection integration without widening
-unmeasured capability claims. Preserve deterministic stereo fallback, static
-HDR fallback, and explicit failed/not-run matrix cells while qualifying the new
-paths on real media and hardware. In particular, a custom decoder failure must
-never navigate away while an owned audio or native fallback session continues
-in the background.
+The native source-capability and resource policy is implemented without
+converting a representative 1080p/2160p fixture into a browser source limit.
+Exact bundled software tiers, deterministic audio/HDR fallback, and terminal
+cleanup remain intact. The remaining objective is to qualify the policy with
+actual selected-source decoder evidence and a source above 2160p rather than
+treating profile-generation tests as hardware support.
+
+## Current native capability and transfer-resource slice
+
+- Native SDR, native raw HDR, native external HDR, and native Dolby Vision
+  eligibility use the selected source dimensions and do not compare its Width,
+  Height, VideoLevel, or VideoFramerate against representative capability
+  fixture values. The worker still requires the selected Mediabunny track's
+  exact decoder configuration to pass `canDecode()` before producing frames.
+- The absolute 3840x2160 raw-copy rejection is removed. Aligned plane layout is
+  computed first, one transferable is limited to 128 MiB, and the existing two
+  raw credits bound transferred buffers to 256 MiB in flight. Profile 7 counts
+  base and enhancement layers in one compound transferable.
+- WebGPU raw-plane texture creation retains the actual
+  `GPUDevice.limits.maxTextureDimension2D` check. Allocation, copy, decoder,
+  import, or GPU failures remain bounded fallbacks; no encoded bitrate is used
+  to predict malformed media or select a route.
+- Jellyfin profile conditions are split by supported custom versus
+  non-custom containers. Native custom clones remove fixture-derived Width,
+  Height, VideoLevel, and VideoFramerate conditions. Retry and non-custom HTML
+  profiles retain their originals, while measured MPEG-2, JPEG 2000, and
+  bundled HEVC profiles reapply their real software geometry/level/frame-rate
+  bounds.
+- Focused tests cover an ordinary 7680x4320 I420P10 transfer, computed byte
+  overflow, the Profile 7 compound bound, standards-consistent native 8K
+  metadata, preserved software limits, cumulative profile matching, and
+  missing/extreme encoded bitrate invariance. The integrated gates pass: 414
+  focused tests, 1591 tests across the complete 108-file WebGPU suite,
+  TypeScript checking, scoped ESLint, and a development build. Real browser
+  playback above 2160p remains a separate manual qualification requirement.
 
 ## Current subtitle, audio, routing, and fallback integration
 

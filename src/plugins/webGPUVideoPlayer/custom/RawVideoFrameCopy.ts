@@ -1,13 +1,20 @@
 import { type Microseconds } from '../MediaTime';
 
 export const RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT = 256;
-export const MAXIMUM_RAW_VIDEO_CODED_HEIGHT = 2_160;
-export const MAXIMUM_RAW_VIDEO_CODED_WIDTH = 3_840;
 
-// 4K planar 10/12-bit 4:2:0 with each plane row padded for WebGPU upload
-export const MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH = 24_883_200;
+export const RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT = 1;
+export const RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT = 2;
+export const MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT = 2;
+
+// One transferable may contain a frame or an atomic Dolby Vision frame pair
+export const MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH = 128 * 1_024 * 1_024;
 export const MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH =
-    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH * 2;
+    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH;
+
+// This bounds in-flight transferable buffers, not decoder or GPU allocations
+export const MAXIMUM_RAW_FRAME_TRANSFER_WINDOW_BYTE_LENGTH =
+    MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
+    * MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
 
 export type SupportedRawVideoFrameFormat =
     | 'I420'
@@ -318,12 +325,8 @@ function assertValidFrameMetadata(
     if (
         !isPositiveSafeInteger(frame.codedWidth)
         || !isPositiveSafeInteger(frame.codedHeight)
-        || frame.codedWidth > MAXIMUM_RAW_VIDEO_CODED_WIDTH
-        || frame.codedHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
         || !isPositiveSafeInteger(frame.displayWidth)
         || !isPositiveSafeInteger(frame.displayHeight)
-        || frame.displayWidth > MAXIMUM_RAW_VIDEO_CODED_WIDTH
-        || frame.displayHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
         || !Number.isSafeInteger(frame.timestamp)
         || (frame.duration !== null && !isNonNegativeSafeInteger(frame.duration))
     ) {
@@ -588,12 +591,7 @@ function getRawFrameCopyByteLength(
         geometry.displayHeight,
         geometry.displayWidth
     ];
-    if (dimensions.some((dimension: number): boolean => (
-        !isPositiveSafeInteger(dimension)
-        || dimension > MAXIMUM_RAW_VIDEO_CODED_WIDTH
-    ))
-        || geometry.codedHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
-        || geometry.displayHeight > MAXIMUM_RAW_VIDEO_CODED_HEIGHT) {
+    if (dimensions.some((dimension: number): boolean => !isPositiveSafeInteger(dimension))) {
         throw new RawVideoFrameCopyError(
             'invalid-dimensions',
             'The reserved raw VideoFrame geometry is invalid'
@@ -618,6 +616,32 @@ function getRawFrameCopyByteLength(
         );
     }
     return copyByteLength;
+}
+
+/** Returns whether aligned frame copies fit the bounded in-flight raw transfer window. */
+export function hasRawVideoFrameResourceBudget(
+    geometry: RawVideoFrameGeometry,
+    format: SupportedRawVideoFrameFormat,
+    frameLayerCount = RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
+): boolean {
+    if (!isPositiveSafeInteger(frameLayerCount)) {
+        return false;
+    }
+    try {
+        const copyByteLength = getRawFrameCopyByteLength(
+            geometry,
+            getFormatDefinition(format)
+        );
+        const transferByteLength = copyByteLength * frameLayerCount;
+        const transferWindowByteLength = transferByteLength
+            * MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
+        return isPositiveSafeInteger(transferByteLength)
+            && transferByteLength <= MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
+            && isPositiveSafeInteger(transferWindowByteLength)
+            && transferWindowByteLength <= MAXIMUM_RAW_FRAME_TRANSFER_WINDOW_BYTE_LENGTH;
+    } catch {
+        return false;
+    }
 }
 
 /**

@@ -36,8 +36,9 @@ import {
     type DecodeWorkerRequest
 } from './DecodeWorkerProtocol';
 import {
-    MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
-    MAXIMUM_RAW_VIDEO_CODED_WIDTH,
+    hasRawVideoFrameResourceBudget,
+    RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
+    RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoFrameGeometry
 } from './RawVideoFrameCopy';
 import type {
@@ -228,8 +229,8 @@ function isValidGeneration(generation: number): boolean {
     return Number.isSafeInteger(generation) && generation > 0;
 }
 
-function isValidCodedDimension(value: number, maximum: number): boolean {
-    return Number.isSafeInteger(value) && value > 0 && value <= maximum;
+function isValidCodedDimension(value: number): boolean {
+    return Number.isSafeInteger(value) && value > 0;
 }
 
 function isValidTrackIndex(value: number): boolean {
@@ -265,6 +266,26 @@ function hasValidRawVideoFrameFormat(options: CustomDecodeSessionStartOptions): 
                 || options.rawVideoFrameFormat === 'I420P12';
         case 'video-frame':
             return options.rawVideoFrameFormat === null;
+    }
+}
+
+function validateRawVideoFrameResourceBudget(
+    options: CustomDecodeSessionStartOptions
+): void {
+    if (options.videoOutputMode !== 'raw-planes') {
+        return;
+    }
+
+    const rawVideoFrameFormat = options.rawVideoFrameFormat;
+    if (rawVideoFrameFormat === null || !hasRawVideoFrameResourceBudget({
+        codedHeight: options.maximumCodedHeight,
+        codedWidth: options.maximumCodedWidth,
+        displayHeight: options.maximumCodedHeight,
+        displayWidth: options.maximumCodedWidth
+    }, rawVideoFrameFormat, options.dolbyVisionProfile === 7 ?
+        RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT :
+        RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT)) {
+        throw new RangeError('Custom decode raw-frame route exceeds its transfer memory budget');
     }
 }
 
@@ -649,16 +670,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             throw new TypeError('Custom decode URL must be a non-empty string');
         }
         if (
-            !isValidCodedDimension(
-                options.maximumCodedWidth,
-                MAXIMUM_RAW_VIDEO_CODED_WIDTH
-            )
-            || !isValidCodedDimension(
-                options.maximumCodedHeight,
-                MAXIMUM_RAW_VIDEO_CODED_HEIGHT
-            )
+            !isValidCodedDimension(options.maximumCodedWidth)
+            || !isValidCodedDimension(options.maximumCodedHeight)
         ) {
-            throw new RangeError('Custom decode coded dimensions exceed the absolute route bound');
+            throw new RangeError('Custom decode coded dimensions must be positive safe integers');
         }
         if (!isValidTrackIndex(options.videoTrackIndex)) {
             throw new RangeError('Custom decode video track index must be a non-negative safe integer');
@@ -692,6 +707,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 'VideoFrame custom decode cannot request a raw frame format';
             throw new TypeError(message);
         }
+        validateRawVideoFrameResourceBudget(options);
     }
 
     private createWorkerRecord(

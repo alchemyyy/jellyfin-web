@@ -20,7 +20,6 @@ import {
     type CustomDecodeCapabilities,
     type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
-    type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodec,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
@@ -64,11 +63,14 @@ import type {
     CustomDecodeVideoOutputMode
 } from './DecodeWorkerProtocol';
 import { requireMicroseconds } from './TimeMath';
+import {
+    hasRawVideoFrameResourceBudget,
+    RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
+    RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
+    type RawVideoFrameGeometry
+} from './RawVideoFrameCopy';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
-const POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT = 2_160;
-const POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH = 3_840;
-const POTENTIAL_CUSTOM_HDR_MAXIMUM_FRAMES_PER_SECOND = 60;
 const POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT = 540;
 const POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH = 960;
 const POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
@@ -786,34 +788,6 @@ type SDRVideoSelection = {
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
 };
 
-function getNativeSDRVideoDimensions(
-    capabilities: CustomDecodeCapabilities,
-    codec: CustomVideoCodec
-): Readonly<{ maximumCodedHeight: number, maximumCodedWidth: number }> {
-    let maximumCodedHeight: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT;
-    let maximumCodedWidth: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH;
-    switch (codec) {
-        case 'hevc':
-        case 'vp9':
-        case 'av1': {
-            const ultraHDCapability: CustomNativeUltraHDVideoCodecCapability | undefined =
-                capabilities.nativeUltraHDVideo?.[codec];
-            if (ultraHDCapability?.status === 'supported'
-                && ultraHDCapability.bitDepth === CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
-                maximumCodedHeight = ultraHDCapability.maximumCodedHeight;
-                maximumCodedWidth = ultraHDCapability.maximumCodedWidth;
-            }
-            break;
-        }
-        case 'h264':
-        case 'jpeg2000':
-        case 'mpeg2video':
-        case 'vp8':
-            break;
-    }
-    return { maximumCodedHeight, maximumCodedWidth };
-}
-
 function getJPEG2000SDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
     stream: MediaStream,
@@ -835,8 +809,8 @@ function getJPEG2000SDRVideoSelection(
         return null;
     }
     return {
-        maximumCodedHeight: capability.maximumCodedHeight,
-        maximumCodedWidth: capability.maximumCodedWidth,
+        maximumCodedHeight: Number(stream.Height),
+        maximumCodedWidth: Number(stream.Width),
         videoDecoderBackend: 'openjpeg'
     };
 }
@@ -863,8 +837,8 @@ function getLegacyVideoSDRSelection(
         return null;
     }
     return {
-        maximumCodedHeight: capability.maximumCodedHeight,
-        maximumCodedWidth: capability.maximumCodedWidth,
+        maximumCodedHeight: Number(stream.Height),
+        maximumCodedWidth: Number(stream.Width),
         videoDecoderBackend: 'legacy-software'
     };
 }
@@ -884,8 +858,8 @@ function getOrdinarySDRVideoSelection(
     }
 
     let videoDecoderBackend: CustomDecodeVideoDecoderBackend = 'native';
-    let maximumCodedWidth = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH;
-    let maximumCodedHeight = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT;
+    const maximumCodedWidth = stream.Width;
+    const maximumCodedHeight = stream.Height;
     if (codec === 'h264') {
         if (
             !capabilities.h264Profiles
@@ -908,8 +882,6 @@ function getOrdinarySDRVideoSelection(
                 return null;
             }
             videoDecoderBackend = 'bundled-hevc';
-            maximumCodedWidth = bundledMain.maximumCodedWidth;
-            maximumCodedHeight = bundledMain.maximumCodedHeight;
         }
     } else if (
         capabilities.video[codec].status !== 'supported'
@@ -918,19 +890,19 @@ function getOrdinarySDRVideoSelection(
         return null;
     }
 
-    if (videoDecoderBackend === 'native') {
-        const nativeDimensions: Readonly<{
-            maximumCodedHeight: number
-            maximumCodedWidth: number
-        }> = getNativeSDRVideoDimensions(capabilities, codec);
-        maximumCodedWidth = nativeDimensions.maximumCodedWidth;
-        maximumCodedHeight = nativeDimensions.maximumCodedHeight;
-    }
+    return { maximumCodedHeight, maximumCodedWidth, videoDecoderBackend };
+}
 
-    if (stream.Width > maximumCodedWidth || stream.Height > maximumCodedHeight) {
+function getStreamRawVideoGeometry(stream: MediaStream): RawVideoFrameGeometry | null {
+    if (!isPositiveSafeInteger(stream.Width) || !isPositiveSafeInteger(stream.Height)) {
         return null;
     }
-    return { maximumCodedHeight, maximumCodedWidth, videoDecoderBackend };
+    return {
+        codedHeight: stream.Height,
+        codedWidth: stream.Width,
+        displayHeight: stream.Height,
+        displayWidth: stream.Width
+    };
 }
 
 function getSDRVideoSelection(
@@ -952,34 +924,38 @@ function supportsRawHDRVideo(
     capabilities: CustomDecodeCapabilities,
     codec: CustomVideoCodec,
     stream: MediaStream,
-    format: CustomDecodeRawVideoFrameFormat
+    format: CustomDecodeRawVideoFrameFormat,
+    frameLayerCount = RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
 ): boolean {
     if (codec !== 'hevc' && codec !== 'vp9' && codec !== 'av1') {
         return false;
     }
     const capability = capabilities.rawHDRVideo[codec];
-    const frameRate = getEffectiveVideoFrameRate(stream);
     if (capability.status !== 'supported'
         || capability.format !== format
         || capability.bitDepth !== stream.BitDepth
-        || !hasSupportedRawVideoProfile(codec, stream)
         || !isCustomHDRVideoMaximumFramesPerSecond(
             capability.maximumFramesPerSecond
         )
-        || frameRate === null
-        || frameRate > capability.maximumFramesPerSecond
-        || !isPositiveSafeInteger(stream.Width)
-        || !isPositiveSafeInteger(stream.Height)) {
+        || !hasSupportedRawVideoProfile(codec, stream)) {
         return false;
     }
-    if (stream.Width > capability.maximumCodedWidth
-        || stream.Height > capability.maximumCodedHeight) {
+    const geometry = getStreamRawVideoGeometry(stream);
+    if (!geometry || !hasRawVideoFrameResourceBudget(
+        geometry,
+        format,
+        frameLayerCount
+    )) {
         return false;
     }
     if (capability.reason !== 'bundled-software-decoder') {
         return true;
     }
 
+    const frameRate = getEffectiveVideoFrameRate(stream);
+    if (frameRate === null) {
+        return false;
+    }
     const bundledTier = getBundledRawHEVCTier(capabilities, capability);
     return bundledTier !== null && matchesBundledHEVCTier(
         stream,
@@ -994,7 +970,6 @@ function supportsNativeDolbyVisionProfile5(
     stream: MediaStream
 ): boolean {
     const capability = capabilities.nativeDolbyVisionHEVC;
-    const frameRate = getEffectiveVideoFrameRate(stream);
     return videoCodec === 'hevc'
         && capability?.status === 'supported'
         && stream.BitDepth === capability.bitDepth
@@ -1002,14 +977,8 @@ function supportsNativeDolbyVisionProfile5(
         && isCustomHDRVideoMaximumFramesPerSecond(
             capability.maximumFramesPerSecond
         )
-        && frameRate !== null
-        && frameRate <= capability.maximumFramesPerSecond
-        && isPositiveSafeInteger(stream.Level)
-        && stream.Level <= capability.maximumLevel
         && isPositiveSafeInteger(stream.Width)
-        && stream.Width <= capability.maximumCodedWidth
-        && isPositiveSafeInteger(stream.Height)
-        && stream.Height <= capability.maximumCodedHeight;
+        && isPositiveSafeInteger(stream.Height);
 }
 
 function supportsNativeHDRHEVC(
@@ -1017,7 +986,6 @@ function supportsNativeHDRHEVC(
     videoCodec: CustomVideoCodec,
     stream: MediaStream
 ): capability is CustomNativeHDRHEVCCapability {
-    const frameRate = getEffectiveVideoFrameRate(stream);
     return videoCodec === 'hevc'
         && capability?.status === 'supported'
         && stream.BitDepth === capability.bitDepth
@@ -1025,14 +993,8 @@ function supportsNativeHDRHEVC(
         && isCustomHDRVideoMaximumFramesPerSecond(
             capability.maximumFramesPerSecond
         )
-        && frameRate !== null
-        && frameRate <= capability.maximumFramesPerSecond
-        && isPositiveSafeInteger(stream.Level)
-        && stream.Level <= capability.maximumLevel
         && isPositiveSafeInteger(stream.Width)
-        && stream.Width <= capability.maximumCodedWidth
-        && isPositiveSafeInteger(stream.Height)
-        && stream.Height <= capability.maximumCodedHeight;
+        && isPositiveSafeInteger(stream.Height);
 }
 
 type NativeHDRColorDescriptionStream = MediaStream & {
@@ -1091,8 +1053,8 @@ function selectDolbyVisionVideoOutput(
         return {
             dolbyVisionProfile: descriptor.profile,
             hdr: true,
-            maximumCodedHeight: nativeCapability.maximumCodedHeight,
-            maximumCodedWidth: nativeCapability.maximumCodedWidth,
+            maximumCodedHeight: Number(videoStream.Height),
+            maximumCodedWidth: Number(videoStream.Width),
             nativeVideoDecoderRequired: true,
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat: null,
@@ -1112,15 +1074,18 @@ function selectDolbyVisionVideoOutput(
             capabilities,
             videoCodec,
             videoStream,
-            rawVideoFrameFormat
+            rawVideoFrameFormat,
+            descriptor.profile === 7 ?
+                RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT :
+                RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
         )
     ) {
         const rawVideoCapability = capabilities.rawHDRVideo.hevc;
         return {
             dolbyVisionProfile: descriptor.profile,
             hdr: true,
-            maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
-            maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
+            maximumCodedHeight: Number(videoStream.Height),
+            maximumCodedWidth: Number(videoStream.Width),
             nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
             neutralizeHDRColorMetadata: false,
             rawVideoFrameFormat,
@@ -1150,8 +1115,8 @@ function selectDolbyVisionVideoOutput(
     ) {
         return {
             hdr: true,
-            maximumCodedHeight: nativeHDRCapability.maximumCodedHeight,
-            maximumCodedWidth: nativeHDRCapability.maximumCodedWidth,
+            maximumCodedHeight: Number(videoStream.Height),
+            maximumCodedWidth: Number(videoStream.Width),
             nativeHDRTransfer: 'pq',
             nativeVideoDecoderRequired: true,
             neutralizeHDRColorMetadata: true,
@@ -1234,8 +1199,8 @@ function selectVideoOutput(
     ) {
         return {
             hdr: true,
-            maximumCodedHeight: nativeHDRCapability.maximumCodedHeight,
-            maximumCodedWidth: nativeHDRCapability.maximumCodedWidth,
+            maximumCodedHeight: Number(videoStream.Height),
+            maximumCodedWidth: Number(videoStream.Width),
             nativeHDRTransfer,
             nativeVideoDecoderRequired: true,
             neutralizeHDRColorMetadata: true,
@@ -1276,8 +1241,8 @@ function selectVideoOutput(
     ];
     return {
         hdr: true,
-        maximumCodedHeight: rawVideoCapability.maximumCodedHeight,
-        maximumCodedWidth: rawVideoCapability.maximumCodedWidth,
+        maximumCodedHeight: Number(videoStream.Height),
+        maximumCodedWidth: Number(videoStream.Width),
         nativeVideoDecoderRequired: rawVideoCapability.reason !== 'bundled-software-decoder',
         neutralizeHDRColorMetadata: false,
         rawVideoFrameFormat,
@@ -1435,25 +1400,19 @@ function selectPlaybackAudio(
 
 function hasPotentialCustomVideoDimensions(
     stream: MediaStream,
-    maximumCodedWidth: number,
-    maximumCodedHeight: number
+    maximumCodedWidth: number | null = null,
+    maximumCodedHeight: number | null = null
 ): boolean {
     return isPositiveSafeInteger(stream.Width)
-        && stream.Width <= maximumCodedWidth
         && isPositiveSafeInteger(stream.Height)
-        && stream.Height <= maximumCodedHeight;
+        && (maximumCodedWidth === null || stream.Width <= maximumCodedWidth)
+        && (maximumCodedHeight === null || stream.Height <= maximumCodedHeight);
 }
 
 function hasPotentialSoftwareVideoFrameRate(stream: MediaStream): boolean {
     const frameRate = getEffectiveVideoFrameRate(stream);
     return frameRate !== null
         && frameRate <= POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND;
-}
-
-function hasPotentialHDRVideoFrameRate(stream: MediaStream): boolean {
-    const frameRate = getEffectiveVideoFrameRate(stream);
-    return frameRate !== null
-        && frameRate <= POTENTIAL_CUSTOM_HDR_MAXIMUM_FRAMES_PER_SECOND;
 }
 
 function hasPotentialSDRVideoRoute(
@@ -1485,27 +1444,13 @@ function hasPotentialSDRVideoRoute(
                 );
         case 'h264':
             return getH264ProfileFromJellyfinValue(stream.Profile) !== null
-                && hasPotentialCustomVideoDimensions(
-                    stream,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
-                );
-        case 'vp8':
-            return hasSupportedNativeVideoProfile(codec, stream)
-                && hasPotentialCustomVideoDimensions(
-                    stream,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
-                );
+                && hasPotentialCustomVideoDimensions(stream);
         case 'av1':
         case 'hevc':
+        case 'vp8':
         case 'vp9':
             return hasSupportedNativeVideoProfile(codec, stream)
-                && hasPotentialCustomVideoDimensions(
-                    stream,
-                    POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH,
-                    POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT
-                );
+                && hasPotentialCustomVideoDimensions(stream);
     }
 }
 
@@ -1516,12 +1461,7 @@ function hasPotentialHDRVideoRoute(
 ): boolean {
     return (bitDepth === 10 || bitDepth === 12)
         && hasSupportedRawVideoProfile(codec, stream)
-        && hasPotentialHDRVideoFrameRate(stream)
-        && hasPotentialCustomVideoDimensions(
-            stream,
-            POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH,
-            POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT
-        );
+        && hasPotentialCustomVideoDimensions(stream);
 }
 
 function hasCompletePotentialSDRVideoMetadata(
@@ -1547,7 +1487,6 @@ function hasCompletePotentialSDRVideoMetadata(
 
 function hasCompletePotentialHDRVideoMetadata(stream: MediaStream): boolean {
     return normalizeMetadataToken(stream.Profile) !== null
-        && getEffectiveVideoFrameRate(stream) !== null
         && isPositiveSafeInteger(stream.Width)
         && isPositiveSafeInteger(stream.Height);
 }

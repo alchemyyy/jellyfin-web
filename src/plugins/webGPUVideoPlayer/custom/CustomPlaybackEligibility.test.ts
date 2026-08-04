@@ -637,6 +637,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false ],
         [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mkv', true ],
         [ 'excessive width', { AverageFrameRate: 24, Width: 1_921 }, 'mkv', true ],
+        [ 'excessive height', { AverageFrameRate: 24, Height: 1_081 }, 'mkv', true ],
         [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true ],
         [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true ],
         [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true ],
@@ -737,6 +738,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mj2', false ],
         [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mj2', true ],
         [ 'excessive width', { AverageFrameRate: 24, Width: 961 }, 'mj2', true ],
+        [ 'excessive height', { AverageFrameRate: 24, Height: 541 }, 'mj2', true ],
         [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true ],
         [ 'unqualified container', { AverageFrameRate: 24 }, 'mp4', true ]
     ] as const)(
@@ -1231,10 +1233,6 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         { field: 'Profile', label: 'profile', value: 'Main' },
         { field: 'BitDepth', label: 'bit depth', value: 8 },
-        { field: 'Level', label: 'level', value: 154 },
-        { field: 'Width', label: 'width', value: 3_841 },
-        { field: 'Height', label: 'height', value: 2_161 },
-        { field: 'RealFrameRate', label: 'frame rate', value: 60.01 },
         { field: 'ColorTransfer', label: 'transfer authorization', value: 'arib-std-b67' }
     ] as const)(
         'rejects native HDR outside its exact $label bound',
@@ -1290,6 +1288,51 @@ describe('CustomPlaybackEligibility', () => {
             ).eligible).toBe(false);
         }
     );
+
+    it('uses source dimensions beyond the qualification fixture for native HDR', () => {
+        const options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                MediaStreams: [ {
+                    BitDepth: 10,
+                    Codec: 'hevc',
+                    ColorPrimaries: 'bt2020',
+                    ColorRange: 'tv',
+                    ColorSpace: 'bt2020nc',
+                    ColorTransfer: 'smpte2084',
+                    Height: 4_320,
+                    Index: 0,
+                    IsInterlaced: false,
+                    Level: 183,
+                    Profile: 'Main 10',
+                    RealFrameRate: 24,
+                    Type: 'Video',
+                    VideoRangeType: 'HDR10',
+                    Width: 7_680
+                } ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ],
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+    });
 
     it('rejects native HDR when required color metadata is missing', () => {
         const options = createOptions({
@@ -1382,7 +1425,7 @@ describe('CustomPlaybackEligibility', () => {
         )).toMatchObject({
             eligible: true,
             hdr: true,
-            maximumCodedHeight: 2_160,
+            maximumCodedHeight: 2_076,
             maximumCodedWidth: 3_840,
             rawVideoFrameFormat: null,
             videoDecoderBackend: 'native',
@@ -1432,13 +1475,13 @@ describe('CustomPlaybackEligibility', () => {
 
     it.each([
         { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
-        { expectedEligible: false, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
         { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
         { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
-        { expectedEligible: false, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
         { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
     ])(
-        'enforces the native Profile 5 $maximumFramesPerSecond fps tier at $streamFrameRate fps',
+        'does not use the native Profile 5 $maximumFramesPerSecond fps fixture as a $streamFrameRate fps ceiling',
         ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
             const capabilities = createCapabilities();
             const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
@@ -1514,6 +1557,50 @@ describe('CustomPlaybackEligibility', () => {
             }
         }
     );
+
+    it('accepts standards-consistent 8K Level 6.1 native Profile 5 metadata', () => {
+        const options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                MediaStreams: [ {
+                    BitDepth: 10,
+                    BlPresentFlag: true,
+                    Codec: 'hevc',
+                    DvBlSignalCompatibilityId: 0,
+                    DvProfile: 5,
+                    ElPresentFlag: false,
+                    Height: 4_320,
+                    Index: 0,
+                    IsInterlaced: false,
+                    Level: 183,
+                    Profile: 'Main 10',
+                    RealFrameRate: 24,
+                    RpuPresentFlag: true,
+                    Type: 'Video',
+                    VideoRangeType: 'DOVI',
+                    Width: 7_680
+                } ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowDolbyVision: false,
+                allowNativeDolbyVision: true,
+                allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+    });
 
     it('requires the separately authorized Profile 7 presentation route', () => {
         const profile7Options = createOptions({
@@ -1814,7 +1901,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('requires an exact copyable raw HDR codec, format, and resolution capability', () => {
+    it('requires an exact copyable raw HDR codec, format, and transfer byte budget', () => {
         const hdrOptions = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -1857,9 +1944,23 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
 
         const mediaSource = hdrOptions.mediaSource as {
-            MediaStreams: Array<{ Width: number }>
+            MediaStreams: Array<{ Height: number, Width: number }>
         };
         mediaSource.MediaStreams[0].Width = 7_680;
+        mediaSource.MediaStreams[0].Height = 4_320;
+        expect(getCustomPlaybackEligibility(
+            hdrOptions,
+            baseCapabilities,
+            PQ_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            videoOutputMode: 'raw-planes'
+        });
+
+        mediaSource.MediaStreams[0].Width = 15_360;
+        mediaSource.MediaStreams[0].Height = 8_640;
         expect(getCustomPlaybackEligibility(
             hdrOptions,
             baseCapabilities,
@@ -1903,14 +2004,14 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        [ 'missing rate', undefined, undefined, false ],
-        [ 'non-finite real rate', Number.NaN, 24, false ],
-        [ 'excessive real rate', 31, undefined, false ],
+        [ 'missing rate', undefined, undefined, true ],
+        [ 'non-finite real rate', Number.NaN, 24, true ],
+        [ 'rate above the qualification fixture', 31, undefined, true ],
         [ 'numeric average fallback', undefined, 30, true ],
-        [ 'string average fallback', undefined, '24', false ],
+        [ 'string average metadata', undefined, '24', true ],
         [ 'real rate preference', 30, 60, true ]
     ])(
-        'requires bounded numeric raw HDR frame rate: %s',
+        'does not use native raw HDR fixture frame rate as a source ceiling: %s',
         (_label, realFrameRate, averageFrameRate, expectedEligible) => {
             const options = createOptions({
                 mediaSource: {
@@ -1949,13 +2050,13 @@ describe('CustomPlaybackEligibility', () => {
 
     it.each([
         { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
-        { expectedEligible: false, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
         { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
         { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
-        { expectedEligible: false, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
+        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
         { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
     ])(
-        'enforces the qualified $maximumFramesPerSecond fps raw HDR tier at $streamFrameRate fps',
+        'does not use the $maximumFramesPerSecond fps native raw fixture as a $streamFrameRate fps ceiling',
         ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
             const capabilities = createCapabilities();
             capabilities.rawHDRVideo = {
@@ -2077,20 +2178,27 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
     });
 
-    it('bounds native decode to the probed resolution, bit depth, and codec profile', () => {
+    it('uses source dimensions for native decode while retaining bit-depth and profile checks', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
         };
         const videoStream = mediaSource.MediaStreams[0];
 
-        videoStream.Width = 3_840;
+        videoStream.Height = 4_320;
+        videoStream.Width = 7_680;
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            videoOutputMode: 'video-frame'
+        });
 
+        videoStream.Height = 1_080;
         videoStream.Width = 1_920;
         videoStream.Profile = 'Main';
         expect(getCustomPlaybackEligibility(
@@ -2134,7 +2242,7 @@ describe('CustomPlaybackEligibility', () => {
         { codec: 'vp9', profile: 'Profile 0' },
         { codec: 'av1', profile: 'Main' }
     ] as const)(
-        'selects exact native Ultra HD $codec limits',
+        'does not turn the native Ultra HD $codec fixture dimensions into a ceiling',
         ({ codec, profile }) => {
             const baseCapabilities: CustomDecodeCapabilities = createCapabilities();
             const capabilities: CustomDecodeCapabilities = {
@@ -2171,16 +2279,23 @@ describe('CustomPlaybackEligibility', () => {
                 videoOutputMode: 'video-frame'
             });
 
-            mediaSource.MediaStreams[0].Width = 3_841;
+            mediaSource.MediaStreams[0].Height = 4_320;
+            mediaSource.MediaStreams[0].Width = 7_680;
             expect(getCustomPlaybackEligibility(
                 options,
                 capabilities,
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+            )).toMatchObject({
+                eligible: true,
+                maximumCodedHeight: 4_320,
+                maximumCodedWidth: 7_680,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            });
         }
     );
 
-    it('does not widen native SDR limits without exact Ultra HD output', () => {
+    it('does not treat the optional Ultra HD qualification fixture as a native ceiling', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
@@ -2206,7 +2321,13 @@ describe('CustomPlaybackEligibility', () => {
             options,
             capabilities,
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
     });
 
     it('uses only source-path-specific runtime requirements', () => {

@@ -3,7 +3,7 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `0a9b489bd4249e5c6b0276f088c68bf6b19ef12c`
+- Parent checkpoint: `3cb8f57839cd1361ffe567d3220d9c5ec5ad533f`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, normalization, no-bitrate High Tier,
   unified-validation, dynamic-HDR, generalized-audio, hardware-matrix,
@@ -12,7 +12,11 @@
   custom-clock subtitle surfaces, target-neutral bounded audio sample-rate
   negotiation, stereo E-AC-3 authorization, exact unsupported-video routing to
   the HTML player, Matroska DTS timestamp-quantization correction, and terminal
-  fallback containment. Current-host evidence remains fail-closed for Chrome
+  fallback containment. The current capability slice removes representative
+  fixture width, height, level, frame-rate, and encoded-bitrate values as
+  native-route selection ceilings. It retains actual per-source decoder probes,
+  WebGPU device limits, a byte-bounded raw transfer window, and exact bundled
+  software-decoder envelopes. Current-host evidence remains fail-closed for Chrome
   retention and unresolved for Edge live custom-playback entry; AMD and Intel
   were not available. Per-route real-media qualification and long-run resource
   validation remain before a general rollout.
@@ -43,8 +47,11 @@ The finished player must:
 
 1. Direct-play every codec/profile/container combination that has a complete,
    measured, legally distributable client route.
-2. Advertise only capabilities proven on the current browser, GPU, output
-   format, decoder backend, resolution, frame rate, audio layout, and route.
+2. Advertise native codec/profile/output routes only after their representative
+   browser and GPU probes pass, then validate each selected source through its
+   exact decoder configuration and runtime device limits. Keep exact geometry,
+   level, and frame-rate tiers only for bundled software decoders whose
+   implementation and throughput were qualified at those tiers.
 3. Reconstruct HDR10, supported HEVC HDR10+, HLG, and supported Dolby Vision
    profiles before applying configurable WebGPU tone and gamut mapping.
 4. Preserve the existing HTML player as a permanent whole-session fallback.
@@ -57,10 +64,13 @@ The finished player must:
 For WebGPU playback, source, container, audio, and video bitrate are telemetry
 only. They must never select DirectPlay versus DirectStream/transcode, native
 versus bundled decode, HDR presentation route, or decoded output format.
-Capability gating uses explicit codec/profile/tier/level, decoded geometry and
-format, measured decode throughput, memory bounds, and exact presentation
-authorization. A saved network bitrate may size an encoded output only after a
-bitrate-free request has already fixed the session to transcode.
+Capability gating uses explicit codec/profile/decoded format, exact source-track
+decoder checks, runtime GPU limits, bounded transfer memory, and exact
+presentation authorization. Bundled software routes additionally retain their
+measured tier, level, geometry, and throughput bounds. Representative native
+probe dimensions, levels, and frame rates are qualification fixtures, not
+source ceilings. A saved network bitrate may size an encoded output only after
+a bitrate-free request has already fixed the session to transcode.
 
 Decoded audio uses one source-rate rule rather than a list of common rates:
 every safe integer from 3000 through 192000 Hz may enter the shared resampler.
@@ -132,6 +142,43 @@ has not passed. The player remains user-selectable with HTML same-session
 fallback; the validation harness remains disabled by default. See
 `WEBGPU_AUDIO_MULTICHANNEL.md`, `WEBGPU_DYNAMIC_HDR.md`, and
 `WEBGPU_HARDWARE_MATRIX.md`.
+
+### 2.1.1 Current native capability and resource policy
+
+The native path must not convert a representative probe fixture into a source
+limit. A 1920x1080 or 3840x2160 probe proves that the browser can decode and
+deliver that exact codec/output tuple; it does not prove that a larger source is
+unsupported. The selected Mediabunny track still performs its exact
+`canDecode()`/`VideoDecoder` configuration check before playback. Raw-plane
+presentation also checks the actual WebGPU texture limits when resources are
+created. Failure remains generation-safe and requests the existing bounded
+fallback instead of guessing support from metadata magnitude.
+
+The current implementation policy is:
+
+- Native SDR, native raw HDR, native external HDR, and native Dolby Vision
+  routes do not advertise or enforce fixture-derived Width, Height, VideoLevel,
+  or VideoFramerate ceilings.
+- Jellyfin profile conditions are split by container. Supported custom WebGPU
+  container clones remove those native runtime conditions; non-custom and retry
+  profiles retain the original HTML-player conditions.
+- MPEG-2, JPEG 2000, and bundled HEVC measured profiles reapply their exact
+  software-decoder geometry, level, and frame-rate bounds. This change does not
+  widen those implementations.
+- Raw planar copies are bounded by bytes, not a named resolution: one
+  transferable may contain at most 128 MiB and the two-credit window may contain
+  at most 256 MiB. A Dolby Vision Profile 7 base/enhancement pair is charged as
+  one compound transferable. Ordinary 7680x4320 I420P10 fits this transfer
+  contract; a compound pair or geometry exceeding the byte budget fails closed.
+- Encoded source, stream, audio, and video bitrates remain telemetry only and
+  have no relationship to malformed-input validation or route selection.
+
+Validation for this policy must cover a standards-consistent native 8K source,
+missing and extreme encoded bitrates, byte-budget boundaries, a Profile 7
+compound rejection, cumulative Jellyfin profile matching, preserved HTML/retry
+conditions, and preserved software-decoder bounds. Browser validation must
+still prove exact source decoder acceptance and WebGPU resource creation; an
+automated profile test alone is not a hardware-support claim.
 
 ### 2.2 Latest committed PCM normalization checkpoint
 
@@ -519,20 +566,20 @@ decode that codec. The server profile is widened only from measured evidence.
 
 | Codec/profile | Decode and presentation route | Current qualified envelope | Status and remaining limits |
 | --- | --- | --- | --- |
-| H.264/AVC Constrained Baseline, Baseline, Main, High, 8-bit 4:2:0 | Exact-profile native WebCodecs decode -> owned `VideoFrame` -> WebGPU | Each profile is independently output-probed at 1920x1080. | Implemented and runtime-gated. No 4K tier, High 10, 4:2:2, 4:4:4, interlaced-output, or unusual profile claim. |
-| HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p plus a separate exact 3840x2160 tier. Bundled Main is constrained to 1920x1080, Level 120, qualified frame rate, and a passing throughput/fingerprint probe. | Implemented and runtime-gated. Source bitrate is not a route constraint. Bundled distribution still requires HEVC patent/jurisdiction review. |
-| HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Raw capability is probed at 3840x2160 and assigned only a measured 24/30/60 fps tier with 1.25x headroom. Bundled tiers retain independent geometry, level, output-fingerprint, and throughput bounds. | Implemented and runtime-gated. A slow bundled 4K decoder is correctly rejected without consulting source bitrate. |
-| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | 3840x2160, Level 153, and a measured 24/30/60 fps tier. Exact PQ or HLG fixture authorization is scoped to device, target format, and route. | Implemented and live-qualified on generated PQ/HLG fixtures and a local High Tier HDR10 regression source. |
-| Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Up to the exact measured native/bundled HEVC and presentation limits. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. One private 4K real title passes DirectPlay lifecycle plus active/paused device-loss recovery with decoded 5.1 E-AC-3. Broader title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
+| H.264/AVC Constrained Baseline, Baseline, Main, High, 8-bit 4:2:0 | Exact-profile native WebCodecs decode -> owned `VideoFrame` -> WebGPU | Each profile has a representative 1920x1080 output probe; the selected source then runs its exact decoder-configuration check. Probe geometry/level/frame rate are not source ceilings. | Implemented and runtime-gated. High 10, 4:2:2, 4:4:4, interlaced output, and unprobed profiles remain unsupported. |
+| HEVC Main, 8-bit 4:2:0 SDR | Native WebCodecs, or exact-tier `@hevcjs/core` fallback -> `VideoFrame` -> WebGPU | Native 1080p/2160p fixtures qualify codec/output behavior, while exact source configuration and runtime resources decide larger native inputs. Bundled Main remains constrained to 1920x1080, Level 120, qualified frame rate, and its throughput/fingerprint probe. | Implemented and runtime-gated. Source bitrate and representative native fixture dimensions are not route constraints. Bundled distribution still requires HEVC patent/jurisdiction review. |
+| HEVC Main10, 10-bit 4:2:0 PQ/HLG | Native `VideoFrame.copyTo()` or bundled decoder -> I420P10 -> raw YUV WebGPU HDR pipeline | Native raw output uses exact source decoder checks, actual GPU limits, and the 128 MiB transfer/256 MiB two-credit window rather than a 2160p/Level/fps ceiling. Bundled tiers retain independent geometry, level, output-fingerprint, and throughput bounds. | Implemented and runtime-gated. Ordinary 8K I420P10 fits the transfer policy; combined layers or larger allocations fail by computed bytes. |
+| HEVC Main10, 10-bit 4:2:0 PQ/HLG through `GPUExternalTexture` | Owned native decoder with SPS/HVCC color neutralization -> external texture -> code-value recovery shader -> HDR pipeline | Representative fixtures plus exact PQ or HLG presentation authorization are scoped to device, target format, and route. The selected source configuration, not fixture width/height/level/frame rate, determines native decoder acceptance. | Implemented and live-qualified on generated PQ/HLG fixtures and a local High Tier HDR10 regression source. |
+| Dolby Vision Profile 5 | HEVC BL decode + libdovi RPU parse/reconstruction; raw-plane route and an independently authorized native external-texture route | Native decode uses the selected track's exact decoder configuration and runtime presentation limits; bundled decode retains its measured tier. Every selected frame requires matching RPU metadata. | Implemented, fail-closed, and route-authorized. One private 4K real title passes DirectPlay lifecycle plus active/paused device-loss recovery with decoded 5.1 E-AC-3. Broader title/browser/GPU validation remains. No Dolby certification or passthrough is claimed. |
 | Dolby Vision Profile 7 MEL | HEVC base-layer decode + RPU reconstruction on the HDR10-compatible BL | Raw I420P10 route with exact device authorization. | Implemented. Must expand end-to-end disc/container and fallback coverage. |
 | Dolby Vision Profile 7 HDR10-compatible base | Strip RPU/EL NAL units -> owned native HEVC decode -> external PQ recovery -> static HDR WebGPU pipeline | Exact Profile 7 compatibility-ID-6 descriptor with limited BT.2020 non-constant/PQ metadata, native HDR HEVC capability, and exact external-PQ authorization. Full raw Profile 7 remains preferred inside its independently measured envelope. | Implemented and fail-closed. It prevents weaker raw-Dolby-Vision caps from forcing server transcode for a valid higher-tier HDR10 base. Structured real-title DirectPlay and mpv comparison evidence remain. |
 | Dolby Vision Profile 7 FEL | BL and EL decode, exact-PTS pairing, LINEAR_DZ residual composition, then WebGPU tone mapping | Implemented for qualified interleaved EL, Matroska `hvcE`/separate-track, legacy dual-track ISO BMFF, and separate-PID MPEG-TS/M2TS discovery routes. | Partial product qualification. The exact native HDR10-base route is the bounded degradation path when full reconstruction is outside its measured envelope. Dual-decoder performance, BDMV demux behavior, malformed topologies, real-title coverage, and sustained ownership/soak evidence remain. |
 | Dolby Vision Profile 8.x | HEVC BL decode + RPU reconstruction; verified HDR10 or HLG-compatible base fallback where applicable | Raw I420P10 route under the applicable exact authorization. | Implemented for supported single-layer descriptors. Expand the Profile 8.1/8.4 and malformed-metadata matrix before release. |
 | VP8, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact output at up to the ordinary 1920x1080 envelope. | Implemented and runtime-gated. No Ultra HD or higher-bit-depth route. |
-| VP9 Profile 0, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact 1080p output plus independent 3840x2160 output qualification. | Implemented and runtime-gated. |
-| VP9 Profile 2, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Exact 3840x2160 raw-output probe and measured 24/30/60 fps tier. | Implemented and runtime-gated. Profiles 1/3 and 12-bit are not supported. |
-| AV1 Main, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Exact 1080p output plus independent 3840x2160 output qualification. | Implemented and runtime-gated. |
-| AV1 Main, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Exact 3840x2160 raw-output probe and measured 24/30/60 fps tier. | Implemented and runtime-gated. High/Professional, 12-bit, 4:2:2, and 4:4:4 are not supported. |
+| VP9 Profile 0, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Representative 1080p/2160p output qualification plus the selected source's exact decoder configuration and runtime resource checks; no fixture-derived geometry/level/fps ceiling. | Implemented and runtime-gated. |
+| VP9 Profile 2, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Representative raw-output qualification plus exact source decoder support, computed transfer bytes, and actual GPU limits. | Implemented and runtime-gated. Profiles 1/3 and 12-bit are not supported. |
+| AV1 Main, 8-bit 4:2:0 SDR | Native WebCodecs -> `VideoFrame` -> WebGPU | Representative 1080p/2160p output qualification plus the selected source's exact decoder configuration and runtime resource checks; no fixture-derived geometry/level/fps ceiling. | Implemented and runtime-gated. |
+| AV1 Main, 10-bit 4:2:0 PQ/HLG | Native WebCodecs -> exact `copyTo()` fingerprint -> I420P10 WebGPU | Representative raw-output qualification plus exact source decoder support, computed transfer bytes, and actual GPU limits. | Implemented and runtime-gated. High/Professional, 12-bit, 4:2:2, and 4:4:4 are not supported. |
 | MPEG-2 Video Main, 8-bit progressive SDR | Mediabunny unknown Matroska track/packets -> focused MPEG-2-only FFmpeg `libavcodec` WASM -> owned I420 `VideoSample` -> `VideoFrame` -> WebGPU | Exact Matroska, Main Profile, progressive 1920x1080 at up to 24 fps. Runtime must reproduce all 12 reordered qualification frames, 37,324,800 decoded bytes, and the aggregate I420 fingerprint while sustaining at least 30 fps. | Implemented and fail-closed. Source bitrate is irrelevant. Interlaced content, MPEG-TS/M2TS, MPEG-PS/VOB, MPEG-1, non-Main profiles, and dimensions/frame rates above the qualified tier are explicitly out of scope. |
 | JPEG 2000 Part 1, 8-bit progressive sRGB/gray | Mediabunny `mjp2` packets -> pinned OpenJPEG WASM -> owned RGBA `VideoFrame` -> WebGPU | Exact `MJ2`/`MOV`, 960x540, 24 fps route. Runtime must reproduce the qualification RGBA fingerprint and sustain at least 30 decode/output fps. | Implemented and fail-closed. Source bitrate is irrelevant. High bit depth, HDR/XYZ, DCI 2K/4K, MXF, JPX/HTJ2K, alpha, non-zero origins/crops, and ambiguous component/color layouts remain unsupported. See `WEBGPU_JPEG2000.md`. |
 
@@ -736,7 +783,7 @@ a reduced artifact, but they must not redefine the expected color or PCM data.
 | Presentation | Direct HTML reference; HTML decode + WebGPU external texture; custom native `VideoFrame`; custom native raw planes; bundled raw planes; native external HDR; Dolby Vision raw; Dolby Vision external. |
 | Video codec | Every implemented row in section 4, plus one negative fixture for every advertised-nearby unsupported profile. |
 | Container | MP4/MOV, MKV, WebM, TS, M2TS; length-prefixed and Annex B HEVC where applicable; valid and malformed codec private data. |
-| Resolution | 480p, 720p, 1080p, 2160p, odd/cropped dimensions, and the exact maximum of each tier. |
+| Resolution/resource | 480p, 720p, 1080p, 2160p, native 4320p, odd/cropped dimensions, actual GPU texture boundaries, raw-transfer byte boundaries, and the exact maximum of each bundled software tier. Native positives must use standards-consistent codec level metadata and must not inherit representative-fixture ceilings. |
 | Frame rate | 23.976, 24, 25, 29.97, 30, 50, 59.94, 60, plus just-over-limit negative cases. |
 | Color | BT.709 limited/full SDR; BT.2020 limited PQ; BT.2020 limited HLG; metadata missing/conflicting; 8/10/12-bit negatives; chroma siting and crop. |
 | Dolby Vision | Profile 5; 7 MEL; 7 FEL; 8.1; 8.4; interleaved, Matroska dual-track, ISO BMFF dual-track, TS dual-PID, M2TS dependency; absent/corrupt/stale RPU; missing/mismatched EL. |
@@ -938,6 +985,46 @@ after the play method is already fixed.
 
 **Do not combine with:** new codecs, ProRes, broad raw-format expansion, or
 validation-framework refactoring before this real-title gate is closed.
+
+### Group A2: Native source capability and resource bounds
+
+**Owns:** removal of representative native fixture ceilings, exact selected
+track decoder checks, WebGPU resource limits, byte-bounded raw transfers,
+Jellyfin custom/non-custom profile isolation, and regression tests.
+
+**Implementation checklist:**
+
+- [x] Keep encoded bitrate absent from every WebGPU selection condition.
+- [x] Replace the absolute 3840x2160 raw-copy check with aligned byte-layout
+  validation and explicit per-transfer/two-credit bounds.
+- [x] Charge both Profile 7 layers to one compound transfer.
+- [x] Use actual source dimensions as the generation-scoped decoded geometry
+  expectation instead of a representative fixture maximum.
+- [x] Remove fixture Width, Height, VideoLevel, and VideoFramerate ceilings from
+  native SDR, raw HDR, external HDR, and Dolby Vision eligibility.
+- [x] Verify each selected native or bundled-HEVC source reaches Mediabunny's
+  exact `canDecode()` check before the ready event or first decoded frame.
+  Decoder rejection is classified as `source-unsupported` and its bounded
+  error text is sanitized before it leaves the worker. OpenJPEG and MPEG-2 use
+  their owned exact decoder validation instead.
+- [x] Finish and verify cumulative Jellyfin CodecProfile/ContainerProfile
+  splitting so only supported custom containers lose native runtime ceilings.
+- [x] Prove non-custom and retry profiles remain byte-for-byte constrained and
+  all bundled MPEG-2, JPEG 2000, and HEVC software profiles retain their exact
+  geometry/level/frame-rate tiers.
+- [x] Pass focused unit tests, TypeScript, scoped lint, the complete WebGPU test
+  suite, and a development build.
+- [ ] Run a private native source above 2160p through the browser/server harness.
+  A synthetic profile result and transfer-budget test are not hardware decode
+  evidence.
+- [ ] Capture a negative source-specific native decoder result and confirm one
+  bounded server fallback with no navigation, background audio, or duplicate
+  reporting.
+
+**Why grouped:** the same four condition properties can be reintroduced through
+multiple cumulative Jellyfin profiles. Capability, eligibility, profile
+splitting, protocol allocation, and their tests must be reviewed as one policy
+rather than patched independently per observed title.
 
 ### Group B: Unified validation framework
 
@@ -1514,10 +1601,12 @@ Rules that prevent duplicated work:
 
 ## 11. Historical no-bitrate DirectPlay checkpoint checklist
 
-This checkpoint removes bitrate from WebGPU route selection; it does not raise a
-cap. Codec/profile/tier/level, decoded format and geometry, measured throughput,
-and presentation authorization remain mandatory. Raw I420 and new codec work
-follow separately so this negotiation fix cannot hide decoder or renderer work.
+This historical checkpoint removed bitrate without otherwise changing its
+then-current limits. Group A2 supersedes its native width, height, level, and
+frame-rate policy: exact selected-source decoder checks and runtime resources
+now replace representative native fixture ceilings. Codec/profile/decoded
+format and presentation authorization remain mandatory, while bundled software
+routes retain their measured tier, geometry, level, frame rate, and throughput.
 
 ### 11.1 Failure evidence and invariant
 
@@ -1552,9 +1641,10 @@ follow separately so this negotiation fix cannot hide decoder or renderer work.
 - [x] Prefer an authorized native external-HDR route for the exact static HDR
   item; expose the narrower raw route only if native authorization is absent.
 - [x] Prevent non-authorized raw HEVC limits from intersecting the native route.
-- [x] Preserve profile/level, bit depth, chroma, progressive, dimensions, frame
-  rate, decoded-output, throughput, container, audio-route, and presentation
-  checks.
+- [x] Preserve the then-current profile/level, bit depth, chroma, progressive,
+  dimensions, frame-rate, decoded-output, throughput, container, audio-route,
+  and presentation checks. Group A2 later replaces only fixture-derived native
+  level/frame-rate/dimension ceilings with exact runtime validation.
 
 ### 11.3 Automated regression coverage
 

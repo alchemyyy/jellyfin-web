@@ -1,4 +1,5 @@
 import type { CodecProfile } from '@jellyfin/sdk/lib/generated-client/models/codec-profile';
+import type { ContainerProfile } from '@jellyfin/sdk/lib/generated-client/models/container-profile';
 import type { DeviceProfile } from '@jellyfin/sdk/lib/generated-client/models/device-profile';
 import type { DirectPlayProfile } from '@jellyfin/sdk/lib/generated-client/models/direct-play-profile';
 import type { ProfileCondition } from '@jellyfin/sdk/lib/generated-client/models/profile-condition';
@@ -9,8 +10,6 @@ import {
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
-    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
-    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
@@ -19,7 +18,6 @@ import {
     type CustomDecodeCapabilities,
     type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
-    type CustomNativeUltraHDVideoCodecCapability,
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
@@ -265,6 +263,12 @@ const BITRATE_CONDITION_PROPERTIES = new Set<string>([
     AUDIO_BITRATE_PROPERTY,
     VIDEO_BITRATE_PROPERTY
 ]);
+const NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES = new Set<string>([
+    VIDEO_FRAMERATE_PROPERTY,
+    VIDEO_HEIGHT_PROPERTY,
+    VIDEO_LEVEL_PROPERTY,
+    VIDEO_WIDTH_PROPERTY
+]);
 const SUPPORTED_DTS_AUDIO_PROFILES: readonly string[] =
     Object.freeze(Object.values(DTS_PROFILE_VALUE_BY_TOKEN));
 
@@ -360,9 +364,9 @@ type MeasuredVideoRoute = {
     bitDepth: number
     codec: CustomVideoCodec
     maximumFrameRate: number | null
-    maximumHeight: number
+    maximumHeight: number | null
     maximumLevel: number | null
-    maximumWidth: number
+    maximumWidth: number | null
     profiles: readonly string[]
     rangeTypes: readonly string[]
 };
@@ -768,6 +772,275 @@ function getCodecTokens(value: string | null | undefined): string[] {
     return codecs;
 }
 
+type CustomContainerScope = {
+    customContainers: string[]
+    nonCustomContainerValue: string | null
+};
+
+function getUniqueTokens(tokens: readonly string[]): string[] {
+    const uniqueTokens: string[] = [];
+    for (const token of tokens) {
+        if (!uniqueTokens.includes(token)) {
+            uniqueTokens.push(token);
+        }
+    }
+    return uniqueTokens;
+}
+
+function getCustomContainerScope(
+    containerValue: string | null | undefined
+): CustomContainerScope {
+    const normalizedValue = containerValue?.trim().toLowerCase() ?? '';
+    if (!normalizedValue) {
+        return {
+            customContainers: [ ...CUSTOM_VIDEO_CONTAINERS ],
+            nonCustomContainerValue: NON_CUSTOM_VIDEO_CONTAINER_VALUE
+        };
+    }
+
+    if (normalizedValue.startsWith('-')) {
+        const excludedContainers = getCodecTokens(normalizedValue.slice(1));
+        return {
+            customContainers: CUSTOM_VIDEO_CONTAINERS.filter(container => (
+                !excludedContainers.includes(container)
+            )),
+            nonCustomContainerValue: `-${getUniqueTokens([
+                ...excludedContainers,
+                ...CUSTOM_VIDEO_CONTAINERS
+            ]).join(',')}`
+        };
+    }
+
+    const configuredContainers = getCodecTokens(normalizedValue);
+    const nonCustomContainers = configuredContainers.filter(container => (
+        !CUSTOM_VIDEO_CONTAINER_SET.has(container)
+    ));
+    return {
+        customContainers: configuredContainers.filter(container => (
+            CUSTOM_VIDEO_CONTAINER_SET.has(container)
+        )),
+        nonCustomContainerValue: nonCustomContainers.length > 0 ?
+            nonCustomContainers.join(',') :
+            null
+    };
+}
+
+function hasNativeRuntimeConditions(
+    conditions: readonly ProfileCondition[] | null | undefined
+): boolean {
+    return conditions?.some(condition => NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES.has(
+        condition.Property ?? ''
+    )) === true;
+}
+
+function removeNativeRuntimeConditions(
+    conditions: readonly ProfileCondition[] | null | undefined
+): ProfileCondition[] | undefined {
+    if (!conditions) {
+        return undefined;
+    }
+    return conditions.filter(condition => !NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES.has(
+        condition.Property ?? ''
+    ));
+}
+
+function getDeclaredDirectPlayVideoCodecs(profile: DeviceProfile): string[] {
+    const codecs: string[] = [];
+    for (const directPlayProfile of profile.DirectPlayProfiles ?? []) {
+        if (directPlayProfile.Type !== 'Video') {
+            continue;
+        }
+        for (const codec of getCodecTokens(directPlayProfile.VideoCodec)) {
+            if (!codecs.includes(codec)) {
+                codecs.push(codec);
+            }
+        }
+    }
+    return codecs;
+}
+
+function getSupportedProfileVideoCodecs(
+    candidateCodecs: readonly string[],
+    supportedVideoCodecs: readonly CustomVideoCodec[]
+): CustomVideoCodec[] {
+    const supportedProfileCodecs: CustomVideoCodec[] = [];
+    for (const candidateCodec of candidateCodecs) {
+        const supportedCodec = supportedVideoCodecs.find(codec => codec === candidateCodec);
+        if (supportedCodec) {
+            supportedProfileCodecs.push(supportedCodec);
+        }
+    }
+    return supportedProfileCodecs;
+}
+
+function createRuntimeConditionProfile(
+    codecProfile: CodecProfile,
+    codec: CustomVideoCodec,
+    containers: readonly string[]
+): CodecProfile {
+    const runtimeProfile: CodecProfile = {
+        ...codecProfile,
+        Codec: codec,
+        Container: containers.join(',')
+    };
+    if (codecProfile.ApplyConditions) {
+        runtimeProfile.ApplyConditions = removeNativeRuntimeConditions(
+            codecProfile.ApplyConditions
+        );
+    }
+    if (codecProfile.Conditions) {
+        runtimeProfile.Conditions = removeNativeRuntimeConditions(
+            codecProfile.Conditions
+        );
+    }
+    return runtimeProfile;
+}
+
+function createSupportedCodecContainerProfiles(
+    codecProfile: CodecProfile,
+    codec: CustomVideoCodec,
+    customContainers: readonly string[]
+): CodecProfile[] {
+    const profiles: CodecProfile[] = [];
+    const routeContainerSet = new Set(getCustomContainersForVideoCodec(codec));
+    const runtimeContainers = customContainers.filter(container => (
+        routeContainerSet.has(container)
+    ));
+    const preservedContainers = customContainers.filter(container => (
+        !routeContainerSet.has(container)
+    ));
+    if (preservedContainers.length > 0) {
+        profiles.push({
+            ...codecProfile,
+            Codec: codec,
+            Container: preservedContainers.join(',')
+        });
+    }
+    if (runtimeContainers.length > 0) {
+        profiles.push(createRuntimeConditionProfile(
+            codecProfile,
+            codec,
+            runtimeContainers
+        ));
+    }
+    return profiles;
+}
+
+function createScopedVideoRuntimeProfiles(
+    codecProfile: CodecProfile,
+    supportedVideoCodecs: readonly CustomVideoCodec[],
+    declaredVideoCodecs: readonly string[]
+): CodecProfile[] | null {
+    if (
+        codecProfile.Type !== VIDEO_CODEC_PROFILE_TYPE
+        || codecProfile.SubContainer
+        || isMeasuredVideoRouteProfile(codecProfile)
+        || (!hasNativeRuntimeConditions(codecProfile.Conditions)
+            && !hasNativeRuntimeConditions(codecProfile.ApplyConditions))
+    ) {
+        return null;
+    }
+
+    const configuredCodecs = getCodecTokens(codecProfile.Codec);
+    const candidateCodecs = configuredCodecs.length > 0 ?
+        configuredCodecs :
+        declaredVideoCodecs;
+    const supportedProfileCodecs = getSupportedProfileVideoCodecs(
+        candidateCodecs,
+        supportedVideoCodecs
+    );
+    const containerScope = getCustomContainerScope(codecProfile.Container);
+    if (supportedProfileCodecs.length === 0 || containerScope.customContainers.length === 0) {
+        return null;
+    }
+
+    const profiles: CodecProfile[] = [];
+    if (containerScope.nonCustomContainerValue) {
+        profiles.push({
+            ...codecProfile,
+            Container: containerScope.nonCustomContainerValue
+        });
+    }
+    const supportedCodecSet = new Set<string>(supportedVideoCodecs);
+    const unsupportedProfileCodecs = candidateCodecs.filter(codec => (
+        !supportedCodecSet.has(codec)
+    ));
+    if (unsupportedProfileCodecs.length > 0) {
+        profiles.push({
+            ...codecProfile,
+            Codec: unsupportedProfileCodecs.join(','),
+            Container: containerScope.customContainers.join(',')
+        });
+    }
+    for (const supportedProfileCodec of supportedProfileCodecs) {
+        profiles.push(...createSupportedCodecContainerProfiles(
+            codecProfile,
+            supportedProfileCodec,
+            containerScope.customContainers
+        ));
+    }
+    return profiles;
+}
+
+/** Isolates browser-native source checks from cumulative HTML codec ceilings. */
+function scopeOriginalVideoRuntimeConditions(
+    profile: DeviceProfile,
+    supportedVideoCodecs: readonly CustomVideoCodec[]
+): void {
+    if (!profile.CodecProfiles || supportedVideoCodecs.length === 0) {
+        return;
+    }
+
+    const declaredVideoCodecs = getDeclaredDirectPlayVideoCodecs(profile);
+    const scopedProfiles: CodecProfile[] = [];
+    for (const codecProfile of profile.CodecProfiles) {
+        const profileSplits = createScopedVideoRuntimeProfiles(
+            codecProfile,
+            supportedVideoCodecs,
+            declaredVideoCodecs
+        );
+        scopedProfiles.push(...(profileSplits ?? [ codecProfile ]));
+    }
+    profile.CodecProfiles = scopedProfiles;
+}
+
+/** Removes container-level source ceilings only from custom WebGPU containers. */
+function scopeOriginalContainerRuntimeConditions(profile: DeviceProfile): void {
+    if (!profile.ContainerProfiles) {
+        return;
+    }
+
+    const scopedProfiles: ContainerProfile[] = [];
+    for (const containerProfile of profile.ContainerProfiles) {
+        if (
+            containerProfile.Type !== 'Video'
+            || containerProfile.SubContainer
+            || !hasNativeRuntimeConditions(containerProfile.Conditions)
+        ) {
+            scopedProfiles.push(containerProfile);
+            continue;
+        }
+
+        const containerScope = getCustomContainerScope(containerProfile.Container);
+        if (containerScope.customContainers.length === 0) {
+            scopedProfiles.push(containerProfile);
+            continue;
+        }
+        if (containerScope.nonCustomContainerValue) {
+            scopedProfiles.push({
+                ...containerProfile,
+                Container: containerScope.nonCustomContainerValue
+            });
+        }
+        scopedProfiles.push({
+            ...containerProfile,
+            Conditions: removeNativeRuntimeConditions(containerProfile.Conditions),
+            Container: containerScope.customContainers.join(',')
+        });
+    }
+    profile.ContainerProfiles = scopedProfiles;
+}
+
 function getRawHDRVideoRangeTypeValue(
     includeSDR: boolean,
     rawHDRVideoRangeTypes: readonly string[]
@@ -897,16 +1170,44 @@ function widenNumericMaximumCondition(
 }
 
 type RawHDRCapabilityLimits = {
+    dimensionsValidatedAtRuntime: boolean
     maximumCodedHeight: number
     maximumCodedWidth: number
-    maximumFramesPerSecond: number
+    maximumFramesPerSecond: number | null
     maximumLevel: number | null
 };
+
+function getRawHDRVideoProfiles(rawHDRCodecs: readonly string[]): string[] {
+    const profiles: string[] = [];
+    for (const codec of rawHDRCodecs) {
+        let codecProfiles: readonly string[] = [];
+        switch (codec) {
+            case 'av1':
+                codecProfiles = RAW_VIDEO_PROFILES.av1;
+                break;
+            case 'hevc':
+                codecProfiles = RAW_VIDEO_PROFILES.hevc;
+                break;
+            case 'vp9':
+                codecProfiles = RAW_VIDEO_PROFILES.vp9;
+                break;
+            default:
+                continue;
+        }
+        for (const codecProfile of codecProfiles) {
+            if (!profiles.includes(codecProfile)) {
+                profiles.push(codecProfile);
+            }
+        }
+    }
+    return profiles;
+}
 
 function createRawHDRConditions(
     conditions: NonNullable<CodecProfile['Conditions']>,
     includeSDR: boolean,
     limits: RawHDRCapabilityLimits,
+    rawHDRCodecs: readonly string[],
     rawHDRVideoRangeTypes: readonly string[]
 ): NonNullable<CodecProfile['Conditions']> | null {
     if (conditions.some(condition => !bitDepthConditionAllowsTenBit(condition))) {
@@ -919,7 +1220,12 @@ function createRawHDRConditions(
         return null;
     }
 
-    const widenedConditions = conditions.map(condition => {
+    const applicableConditions = conditions.filter(condition => (
+        condition.Property !== VIDEO_PROFILE_PROPERTY
+        && (!limits.dimensionsValidatedAtRuntime
+            || !NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES.has(condition.Property ?? ''))
+    ));
+    const widenedConditions = applicableConditions.map(condition => {
         if (condition.Condition === EQUALS_ANY_CONDITION
             && condition.Property === VIDEO_RANGE_TYPE_PROPERTY) {
             return {
@@ -928,11 +1234,13 @@ function createRawHDRConditions(
             };
         }
 
-        let widenedCondition = widenNumericMaximumCondition(
-            condition,
-            VIDEO_FRAMERATE_PROPERTY,
-            limits.maximumFramesPerSecond
-        );
+        let widenedCondition = limits.maximumFramesPerSecond === null ?
+            condition :
+            widenNumericMaximumCondition(
+                condition,
+                VIDEO_FRAMERATE_PROPERTY,
+                limits.maximumFramesPerSecond
+            );
         if (limits.maximumLevel !== null) {
             widenedCondition = widenNumericMaximumCondition(
                 widenedCondition,
@@ -940,16 +1248,19 @@ function createRawHDRConditions(
                 limits.maximumLevel
             );
         }
-        widenedCondition = widenNumericMaximumCondition(
-            widenedCondition,
-            VIDEO_WIDTH_PROPERTY,
-            limits.maximumCodedWidth
-        );
-        return widenNumericMaximumCondition(
-            widenedCondition,
-            VIDEO_HEIGHT_PROPERTY,
-            limits.maximumCodedHeight
-        );
+        if (!limits.dimensionsValidatedAtRuntime) {
+            widenedCondition = widenNumericMaximumCondition(
+                widenedCondition,
+                VIDEO_WIDTH_PROPERTY,
+                limits.maximumCodedWidth
+            );
+            widenedCondition = widenNumericMaximumCondition(
+                widenedCondition,
+                VIDEO_HEIGHT_PROPERTY,
+                limits.maximumCodedHeight
+            );
+        }
+        return widenedCondition;
     });
     const hasVideoRangeCondition = conditions.some(condition => (
         condition.Property === VIDEO_RANGE_TYPE_PROPERTY
@@ -970,16 +1281,41 @@ function createRawHDRConditions(
             Value: String(MAXIMUM_RAW_HDR_VIDEO_BIT_DEPTH)
         });
     }
-    if (!widenedConditions.some(condition => numericConditionCapsAt(
-        condition,
-        VIDEO_FRAMERATE_PROPERTY,
-        limits.maximumFramesPerSecond
+    const rawVideoProfiles = getRawHDRVideoProfiles(rawHDRCodecs);
+    if (rawVideoProfiles.length > 0) {
+        widenedConditions.push({
+            Condition: EQUALS_ANY_CONDITION,
+            IsRequired: true,
+            Property: VIDEO_PROFILE_PROPERTY,
+            Value: rawVideoProfiles.join('|')
+        });
+    }
+    if (!widenedConditions.some(condition => (
+        condition.IsRequired === true
+        && condition.Property === VIDEO_INTERLACED_PROPERTY
+        && condition.Condition === 'Equals'
+        && condition.Value === 'false'
+    ))) {
+        widenedConditions.push({
+            Condition: 'Equals',
+            IsRequired: true,
+            Property: VIDEO_INTERLACED_PROPERTY,
+            Value: 'false'
+        });
+    }
+    const maximumFramesPerSecond = limits.maximumFramesPerSecond;
+    if (maximumFramesPerSecond !== null && !widenedConditions.some(condition => (
+        numericConditionCapsAt(
+            condition,
+            VIDEO_FRAMERATE_PROPERTY,
+            maximumFramesPerSecond
+        )
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
             IsRequired: true,
             Property: VIDEO_FRAMERATE_PROPERTY,
-            Value: String(limits.maximumFramesPerSecond)
+            Value: String(maximumFramesPerSecond)
         });
     }
     const maximumLevel = limits.maximumLevel;
@@ -995,10 +1331,12 @@ function createRawHDRConditions(
             Value: String(maximumLevel)
         });
     }
-    if (!widenedConditions.some(condition => numericConditionCapsAt(
-        condition,
-        VIDEO_WIDTH_PROPERTY,
-        limits.maximumCodedWidth
+    if (!limits.dimensionsValidatedAtRuntime && !widenedConditions.some(condition => (
+        numericConditionCapsAt(
+            condition,
+            VIDEO_WIDTH_PROPERTY,
+            limits.maximumCodedWidth
+        )
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
@@ -1007,10 +1345,12 @@ function createRawHDRConditions(
             Value: String(limits.maximumCodedWidth)
         });
     }
-    if (!widenedConditions.some(condition => numericConditionCapsAt(
-        condition,
-        VIDEO_HEIGHT_PROPERTY,
-        limits.maximumCodedHeight
+    if (!limits.dimensionsValidatedAtRuntime && !widenedConditions.some(condition => (
+        numericConditionCapsAt(
+            condition,
+            VIDEO_HEIGHT_PROPERTY,
+            limits.maximumCodedHeight
+        )
     ))) {
         widenedConditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
@@ -1023,11 +1363,12 @@ function createRawHDRConditions(
 }
 
 type RawHDRCodecProfilePlan = {
-    customContainers: string[]
-    nonCustomContainers: string[]
-    nonRawHDRCodecs: string[]
-    rawHDRCodecs: string[]
-    widenedConditions: NonNullable<CodecProfile['Conditions']>
+    profiles: CodecProfile[]
+};
+
+type RawHDRCodecRoutePlan = {
+    profiles: CodecProfile[]
+    widened: boolean
 };
 
 function isMeasuredVideoRouteProfile(codecProfile: CodecProfile): boolean {
@@ -1043,9 +1384,10 @@ function getRawHDRCapabilityLimits(
     rawHDRCodecs: readonly string[],
     capabilities: CustomDecodeCapabilities
 ): RawHDRCapabilityLimits | null {
+    let dimensionsValidatedAtRuntime = false;
     let maximumCodedHeight = Number.MAX_SAFE_INTEGER;
     let maximumCodedWidth = Number.MAX_SAFE_INTEGER;
-    let maximumFramesPerSecond = Number.MAX_SAFE_INTEGER;
+    let maximumFramesPerSecond: number | null = null;
     let maximumLevel: number | null = null;
     for (const rawHDRCodec of rawHDRCodecs) {
         const capability = capabilities.rawHDRVideo[
@@ -1064,14 +1406,14 @@ function getRawHDRCapabilityLimits(
             maximumCodedWidth,
             capability.maximumCodedWidth
         );
-        maximumFramesPerSecond = Math.min(
-            maximumFramesPerSecond,
-            capability.maximumFramesPerSecond
-        );
         if (capability.reason !== 'bundled-software-decoder') {
+            dimensionsValidatedAtRuntime = true;
             continue;
         }
 
+        maximumFramesPerSecond = maximumFramesPerSecond === null ?
+            capability.maximumFramesPerSecond :
+            Math.min(maximumFramesPerSecond, capability.maximumFramesPerSecond);
         const bundledTier = getBundledRawHEVCTier(capabilities, capability);
         if (!bundledTier) {
             return null;
@@ -1082,10 +1424,13 @@ function getRawHDRCapabilityLimits(
     }
 
     return {
+        dimensionsValidatedAtRuntime,
         maximumCodedHeight,
         maximumCodedWidth,
-        maximumFramesPerSecond,
-        maximumLevel
+        maximumFramesPerSecond: dimensionsValidatedAtRuntime ?
+            null :
+            maximumFramesPerSecond,
+        maximumLevel: dimensionsValidatedAtRuntime ? null : maximumLevel
     };
 }
 
@@ -1104,10 +1449,11 @@ function getNativeDolbyVisionCapabilityLimits(
         return null;
     }
     return {
+        dimensionsValidatedAtRuntime: true,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
-        maximumFramesPerSecond: capability.maximumFramesPerSecond,
-        maximumLevel: capability.maximumLevel
+        maximumFramesPerSecond: null,
+        maximumLevel: null
     };
 }
 
@@ -1127,10 +1473,11 @@ function getNativeHDRCapabilityLimits(
         return null;
     }
     return {
+        dimensionsValidatedAtRuntime: true,
         maximumCodedHeight: capability.maximumCodedHeight,
         maximumCodedWidth: capability.maximumCodedWidth,
-        maximumFramesPerSecond: capability.maximumFramesPerSecond,
-        maximumLevel: capability.maximumLevel
+        maximumFramesPerSecond: null,
+        maximumLevel: null
     };
 }
 
@@ -1146,6 +1493,8 @@ function createCapabilityEnvelope(
     second: RawHDRCapabilityLimits
 ): RawHDRCapabilityLimits {
     return {
+        dimensionsValidatedAtRuntime: first.dimensionsValidatedAtRuntime
+            || second.dimensionsValidatedAtRuntime,
         maximumCodedHeight: Math.max(
             first.maximumCodedHeight,
             second.maximumCodedHeight
@@ -1154,7 +1503,7 @@ function createCapabilityEnvelope(
             first.maximumCodedWidth,
             second.maximumCodedWidth
         ),
-        maximumFramesPerSecond: Math.max(
+        maximumFramesPerSecond: expandOptionalMaximum(
             first.maximumFramesPerSecond,
             second.maximumFramesPerSecond
         ),
@@ -1176,7 +1525,6 @@ function createRawHDRCodecProfilePlan(
     if (
         codecProfile.Type !== VIDEO_CODEC_PROFILE_TYPE
         || codecProfile.SubContainer
-        || codecProfile.Container?.trim().startsWith('-')
         || isMeasuredVideoRouteProfile(codecProfile)
     ) {
         return null;
@@ -1190,86 +1538,112 @@ function createRawHDRCodecProfilePlan(
         return null;
     }
 
-    const limits = capabilityLimits ?? getRawHDRCapabilityLimits(
-        rawHDRCodecs,
-        capabilities
-    );
-    if (!limits) {
-        return null;
+    const profiles: CodecProfile[] = [];
+    const nonRawHDRCodecs = codecs.filter(codec => !rawHDRCodecs.includes(codec));
+    if (nonRawHDRCodecs.length > 0) {
+        profiles.push({
+            ...codecProfile,
+            Codec: nonRawHDRCodecs.join(',')
+        });
     }
 
-    const conditions = codecProfile.Conditions ?? [];
-    const widenedConditions = createRawHDRConditions(
-        conditions,
-        rawHDRCodecs.every(codec => supportedNativeVideoCodecs.has(codec as CustomVideoCodec)),
-        limits,
-        rawHDRVideoRangeTypes
-    );
-    const conditionsChanged = widenedConditions?.length !== conditions.length
+    const containerScope = getCustomContainerScope(codecProfile.Container);
+    let widened = false;
+    for (const rawHDRCodec of rawHDRCodecs) {
+        const routePlan = createRawHDRCodecRoutePlan(
+            codecProfile,
+            rawHDRCodec as CustomVideoCodec,
+            containerScope,
+            supportedNativeVideoCodecs,
+            capabilities,
+            rawHDRVideoRangeTypes,
+            capabilityLimits
+        );
+        profiles.push(...routePlan.profiles);
+        widened ||= routePlan.widened;
+    }
+    return widened ? { profiles } : null;
+}
+
+function haveProfileConditionsChanged(
+    conditions: readonly ProfileCondition[],
+    widenedConditions: readonly ProfileCondition[]
+): boolean {
+    return widenedConditions.length !== conditions.length
         || conditions.some((condition, conditionIndex) => {
-            const widenedCondition = widenedConditions?.[conditionIndex];
+            const widenedCondition = widenedConditions[conditionIndex];
             return !widenedCondition
                 || condition.Condition !== widenedCondition.Condition
                 || condition.IsRequired !== widenedCondition.IsRequired
                 || condition.Property !== widenedCondition.Property
                 || condition.Value !== widenedCondition.Value;
         });
-    if (!widenedConditions || !conditionsChanged) {
-        return null;
-    }
-
-    const configuredContainers = getCodecTokens(codecProfile.Container);
-    const customContainers = configuredContainers.length === 0 ?
-        [ ...CUSTOM_VIDEO_CONTAINERS ] :
-        configuredContainers.filter(container => CUSTOM_VIDEO_CONTAINER_SET.has(container));
-    if (customContainers.length === 0) {
-        return null;
-    }
-
-    return {
-        customContainers,
-        nonCustomContainers: configuredContainers.filter(container => (
-            !CUSTOM_VIDEO_CONTAINER_SET.has(container)
-        )),
-        nonRawHDRCodecs: codecs.filter(codec => !rawHDRCodecs.includes(codec)),
-        rawHDRCodecs,
-        widenedConditions
-    };
 }
 
-function appendRawHDRCodecProfilePlan(
-    widenedProfiles: CodecProfile[],
+function createRawHDRCodecRoutePlan(
     codecProfile: CodecProfile,
-    plan: RawHDRCodecProfilePlan
-): void {
-    if (plan.nonRawHDRCodecs.length > 0) {
-        widenedProfiles.push({
-            ...codecProfile,
-            Codec: plan.nonRawHDRCodecs.join(',')
-        });
+    codec: CustomVideoCodec,
+    containerScope: CustomContainerScope,
+    supportedNativeVideoCodecs: ReadonlySet<CustomVideoCodec>,
+    capabilities: CustomDecodeCapabilities,
+    rawHDRVideoRangeTypes: readonly string[],
+    capabilityLimits: RawHDRCapabilityLimits | null
+): RawHDRCodecRoutePlan {
+    const limits = capabilityLimits ?? getRawHDRCapabilityLimits(
+        [ codec ],
+        capabilities
+    );
+    const conditions = codecProfile.Conditions ?? [];
+    const widenedConditions = limits ? createRawHDRConditions(
+        conditions,
+        supportedNativeVideoCodecs.has(codec),
+        limits,
+        [ codec ],
+        rawHDRVideoRangeTypes
+    ) : null;
+    const routeContainerSet = new Set(getCustomContainersForVideoCodec(codec));
+    const customContainers = containerScope.customContainers.filter(container => (
+        routeContainerSet.has(container)
+    ));
+    if (
+        !widenedConditions
+        || customContainers.length === 0
+        || !haveProfileConditionsChanged(conditions, widenedConditions)
+    ) {
+        return {
+            profiles: [ {
+                ...codecProfile,
+                Codec: codec
+            } ],
+            widened: false
+        };
     }
 
-    const configuredContainers = getCodecTokens(codecProfile.Container);
-    if (configuredContainers.length === 0) {
-        widenedProfiles.push({
+    const profiles: CodecProfile[] = [];
+    if (containerScope.nonCustomContainerValue) {
+        profiles.push({
             ...codecProfile,
-            Codec: plan.rawHDRCodecs.join(','),
-            Container: NON_CUSTOM_VIDEO_CONTAINER_VALUE
-        });
-    } else if (plan.nonCustomContainers.length > 0) {
-        widenedProfiles.push({
-            ...codecProfile,
-            Codec: plan.rawHDRCodecs.join(','),
-            Container: plan.nonCustomContainers.join(',')
+            Codec: codec,
+            Container: containerScope.nonCustomContainerValue
         });
     }
-
-    widenedProfiles.push({
+    const preservedCustomContainers = containerScope.customContainers.filter(container => (
+        !routeContainerSet.has(container)
+    ));
+    if (preservedCustomContainers.length > 0) {
+        profiles.push({
+            ...codecProfile,
+            Codec: codec,
+            Container: preservedCustomContainers.join(',')
+        });
+    }
+    profiles.push({
         ...codecProfile,
-        Codec: plan.rawHDRCodecs.join(','),
-        Conditions: plan.widenedConditions,
-        Container: plan.customContainers.join(',')
+        Codec: codec,
+        Conditions: widenedConditions,
+        Container: customContainers.join(',')
     });
+    return { profiles, widened: true };
 }
 
 function widenRawHDRCodecProfiles(
@@ -1302,7 +1676,7 @@ function widenRawHDRCodecProfiles(
             continue;
         }
 
-        appendRawHDRCodecProfilePlan(widenedProfiles, codecProfile, plan);
+        widenedProfiles.push(...plan.profiles);
         widenedProfileCount += 1;
     }
 
@@ -1343,18 +1717,20 @@ function createMeasuredRouteConditions(
         Property: VIDEO_BIT_DEPTH_PROPERTY,
         Value: String(route.bitDepth)
     });
-    conditions.push({
-        Condition: LESS_THAN_EQUAL_CONDITION,
-        IsRequired: true,
-        Property: VIDEO_WIDTH_PROPERTY,
-        Value: String(route.maximumWidth)
-    });
-    conditions.push({
-        Condition: LESS_THAN_EQUAL_CONDITION,
-        IsRequired: true,
-        Property: VIDEO_HEIGHT_PROPERTY,
-        Value: String(route.maximumHeight)
-    });
+    if (route.maximumWidth !== null && route.maximumHeight !== null) {
+        conditions.push({
+            Condition: LESS_THAN_EQUAL_CONDITION,
+            IsRequired: true,
+            Property: VIDEO_WIDTH_PROPERTY,
+            Value: String(route.maximumWidth)
+        });
+        conditions.push({
+            Condition: LESS_THAN_EQUAL_CONDITION,
+            IsRequired: true,
+            Property: VIDEO_HEIGHT_PROPERTY,
+            Value: String(route.maximumHeight)
+        });
+    }
     if (route.maximumFrameRate !== null) {
         conditions.push({
             Condition: LESS_THAN_EQUAL_CONDITION,
@@ -1394,34 +1770,6 @@ function createMeasuredRouteApplyConditions(
     return createMeasuredRouteConditions(route).filter(condition => (
         condition.Property === VIDEO_RANGE_TYPE_PROPERTY
     ));
-}
-
-function getNativeMeasuredVideoDimensions(
-    codec: CustomVideoCodec,
-    capabilities: CustomDecodeCapabilities
-): Readonly<{ maximumHeight: number, maximumWidth: number }> {
-    let maximumHeight: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT;
-    let maximumWidth: number = CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH;
-    switch (codec) {
-        case 'hevc':
-        case 'vp9':
-        case 'av1': {
-            const ultraHDCapability: CustomNativeUltraHDVideoCodecCapability | undefined =
-                capabilities.nativeUltraHDVideo?.[codec];
-            if (ultraHDCapability?.status === 'supported'
-                && ultraHDCapability.bitDepth === CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
-                maximumHeight = ultraHDCapability.maximumCodedHeight;
-                maximumWidth = ultraHDCapability.maximumCodedWidth;
-            }
-            break;
-        }
-        case 'h264':
-        case 'jpeg2000':
-        case 'mpeg2video':
-        case 'vp8':
-            break;
-    }
-    return { maximumHeight, maximumWidth };
 }
 
 function createNativeMeasuredVideoRoute(
@@ -1477,19 +1825,15 @@ function createNativeMeasuredVideoRoute(
         const mainTier = capabilities.bundledHEVC?.tiers['main-1080p'];
         bundledMain = mainTier?.status === 'supported' ? mainTier : null;
     }
-    const nativeDimensions: Readonly<{
-        maximumHeight: number
-        maximumWidth: number
-    }> = getNativeMeasuredVideoDimensions(codec, capabilities);
     return {
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec,
         maximumFrameRate: bundledMain ?
             CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND :
             null,
-        maximumHeight: bundledMain?.maximumCodedHeight ?? nativeDimensions.maximumHeight,
+        maximumHeight: bundledMain?.maximumCodedHeight ?? null,
         maximumLevel: bundledMain?.maximumLevel ?? null,
-        maximumWidth: bundledMain?.maximumCodedWidth ?? nativeDimensions.maximumWidth,
+        maximumWidth: bundledMain?.maximumCodedWidth ?? null,
         profiles: getNativeVideoProfiles(codec, capabilities),
         rangeTypes: [ 'SDR' ]
     };
@@ -1521,10 +1865,10 @@ function createRawHDRMeasuredVideoRoute(
     return {
         bitDepth: rawCapability.bitDepth,
         codec,
-        maximumFrameRate: rawCapability.maximumFramesPerSecond,
-        maximumHeight: rawCapability.maximumCodedHeight,
+        maximumFrameRate: bundledTier ? rawCapability.maximumFramesPerSecond : null,
+        maximumHeight: bundledTier?.maximumCodedHeight ?? null,
         maximumLevel: bundledTier?.maximumLevel ?? null,
-        maximumWidth: rawCapability.maximumCodedWidth,
+        maximumWidth: bundledTier?.maximumCodedWidth ?? null,
         profiles: RAW_VIDEO_PROFILES[codec],
         rangeTypes: rawHDRVideoRangeTypes
     };
@@ -1551,10 +1895,10 @@ function createDolbyVisionMeasuredVideoRoute(
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumFrameRate: capability.maximumFramesPerSecond,
-        maximumHeight: capability.maximumCodedHeight,
-        maximumLevel: capability.maximumLevel,
-        maximumWidth: capability.maximumCodedWidth,
+        maximumFrameRate: null,
+        maximumHeight: null,
+        maximumLevel: null,
+        maximumWidth: null,
         profiles: RAW_VIDEO_PROFILES.hevc,
         rangeTypes: dolbyVisionVideoRangeTypes
     };
@@ -1581,10 +1925,10 @@ function createNativeHDRMeasuredVideoRoute(
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumFrameRate: capability.maximumFramesPerSecond,
-        maximumHeight: capability.maximumCodedHeight,
-        maximumLevel: capability.maximumLevel,
-        maximumWidth: capability.maximumCodedWidth,
+        maximumFrameRate: null,
+        maximumHeight: null,
+        maximumLevel: null,
+        maximumWidth: null,
         profiles: RAW_VIDEO_PROFILES.hevc,
         rangeTypes: nativeHDRVideoRangeTypes
     };
@@ -2474,6 +2818,9 @@ export function augmentDeviceProfileForCustomDecode(
         options.subtitleCapabilities
     );
 
+    scopeOriginalVideoRuntimeConditions(clonedProfile, supportedVideoCodecs);
+    scopeOriginalContainerRuntimeConditions(clonedProfile);
+
     const widenedHDRCodecProfileCount = allowRawHDR ?
         widenAuthorizedHDRCodecProfiles(
             clonedProfile,
@@ -2511,7 +2858,6 @@ export function augmentDeviceProfileForCustomDecode(
         options.nativeMediaAudioCapabilities,
         supportedAudioCodecs
     );
-
     const directPlayProfiles = clonedProfile.DirectPlayProfiles ?? [];
     clonedProfile.DirectPlayProfiles = directPlayProfiles;
     const existingProfileKeys = new Set(directPlayProfiles.map(getProfileKey));

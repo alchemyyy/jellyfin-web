@@ -344,6 +344,68 @@ describe('CustomDecodeSession', () => {
         });
     });
 
+    it('accepts one 8K 10-bit raw transfer without imposing a 4K ceiling', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+
+        session.start({
+            dolbyVisionProfile: null,
+            generation: 40,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(0),
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        });
+
+        expect(worker.postedMessages[0]).toMatchObject({
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            videoOutputMode: 'raw-planes'
+        });
+    });
+
+    it('rejects raw geometry only when the transfer byte budget is exceeded', () => {
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => new MockWorker() as unknown as Worker
+        );
+        const startOptions = {
+            dolbyVisionProfile: null,
+            generation: 41,
+            maximumCodedHeight: 8_640,
+            maximumCodedWidth: 15_360,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: secondsToMicroseconds(0),
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(() => session.start(startOptions)).toThrow(
+            'Custom decode raw-frame route exceeds its transfer memory budget'
+        );
+        expect(() => session.start({
+            ...startOptions,
+            dolbyVisionProfile: 7,
+            generation: 42,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680
+        })).toThrow('Custom decode raw-frame route exceeds its transfer memory budget');
+    });
+
     it('records bounded owned-video startup progress without emitting player events', () => {
         const worker = new MockWorker();
         const events: CustomDecodeSessionEvent[] = [];

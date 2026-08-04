@@ -22,8 +22,9 @@ import type {
 } from './DecodeWorkerProtocol';
 import MediaClock from './MediaClock';
 import {
-    MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
-    MAXIMUM_RAW_VIDEO_CODED_WIDTH
+    hasRawVideoFrameResourceBudget,
+    RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
+    RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
 } from './RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from './TimeMath';
 import type {
@@ -136,11 +137,10 @@ function validateTrackIndex(trackIndex: number, label: string): void {
 
 function validateCodedDimension(
     value: number,
-    absoluteMaximum: number,
     label: string
 ): void {
-    if (!Number.isSafeInteger(value) || value <= 0 || value > absoluteMaximum) {
-        throw new RangeError(`${label} exceeds the custom decode route bound`);
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new RangeError(`${label} must be a positive safe integer`);
     }
 }
 
@@ -210,6 +210,28 @@ function validateVideoDecoderRoute(options: CustomPlaybackPlayOptions): void {
     }
 }
 
+function validateRawVideoFrameResourceBudget(options: CustomPlaybackPlayOptions): void {
+    if (options.videoOutputMode !== 'raw-planes') {
+        return;
+    }
+    if (
+        options.rawVideoFrameFormat !== 'I420P10'
+        && options.rawVideoFrameFormat !== 'I420P12'
+    ) {
+        throw new TypeError('Raw custom playback requires a requested raw frame format');
+    }
+    if (!hasRawVideoFrameResourceBudget({
+        codedHeight: options.maximumCodedHeight,
+        codedWidth: options.maximumCodedWidth,
+        displayHeight: options.maximumCodedHeight,
+        displayWidth: options.maximumCodedWidth
+    }, options.rawVideoFrameFormat, options.dolbyVisionProfile === 7 ?
+        RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT :
+        RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT)) {
+        throw new RangeError('Raw custom playback exceeds its transfer memory budget');
+    }
+}
+
 function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     requireMicroseconds(options.startTimeMicroseconds, 'Playback start time');
     if (
@@ -233,24 +255,17 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     validateHDRColorNeutralization(options);
     validateCodedDimension(
         options.maximumCodedWidth,
-        MAXIMUM_RAW_VIDEO_CODED_WIDTH,
         'Maximum coded width'
     );
     validateCodedDimension(
         options.maximumCodedHeight,
-        MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
         'Maximum coded height'
     );
     validateTrackIndex(options.videoTrackIndex, 'Video track index');
     validateAudioPlayOptions(options);
     switch (options.videoOutputMode) {
         case 'raw-planes':
-            if (
-                options.rawVideoFrameFormat !== 'I420P10'
-                && options.rawVideoFrameFormat !== 'I420P12'
-            ) {
-                throw new TypeError('Raw custom playback requires a requested raw frame format');
-            }
+            validateRawVideoFrameResourceBudget(options);
             break;
         case 'video-frame':
             if (options.rawVideoFrameFormat !== null) {

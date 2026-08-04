@@ -884,7 +884,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         { codec: 'vp9', profile: 'profile 0' },
         { codec: 'av1', profile: 'main' }
     ] as const)(
-        'advertises exact native Ultra HD $codec limits',
+        'advertises a dimension-neutral native Ultra HD $codec route',
         ({ codec, profile }) => {
             const capabilities = createCapabilities(
                 [ codec ],
@@ -904,19 +904,19 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     condition.Property === 'VideoRangeType'
                     && condition.Value === 'SDR'
                 ))
-                && codecProfile.Conditions.some(condition => (
-                    condition.Property === 'Width'
-                    && condition.Value === '3840'
-                ))
             ));
 
             expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
                 expect.objectContaining({ Property: 'VideoRangeType', Value: 'SDR' }),
-                expect.objectContaining({ Property: 'Width', Value: '3840' }),
-                expect.objectContaining({ Property: 'Height', Value: '2160' }),
                 expect.objectContaining({ Property: 'VideoProfile', Value: profile })
             ]));
+            expect(measuredProfile?.Conditions?.some(condition => (
+                condition.Property === 'Width'
+                || condition.Property === 'Height'
+                || condition.Property === 'VideoLevel'
+                || condition.Property === 'VideoFramerate'
+            ))).toBe(false);
         }
     );
 
@@ -1116,7 +1116,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         const measuredUltraHDAV1Profile = codecProfiles.find(codecProfile => (
             codecProfile.Codec === 'av1'
             && codecProfile.Conditions?.some(condition => (
-                condition.Property === 'Width' && condition.Value === '3840'
+                condition.Property === 'VideoRangeType' && condition.Value === 'SDR'
             ))
         ));
 
@@ -1784,7 +1784,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Value: 'SDR|HDR10|HLG|HDR10Plus'
                 })
             ]),
-            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+            Container: 'mp4,m4v,mov,mkv,ts,m2ts,mts'
         }));
         expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
             Codec: 'vp9',
@@ -1794,7 +1794,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Value: 'SDR|HDR10|HLG'
                 })
             ]),
-            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+            Container: 'mp4,m4v,mov,mkv,webm'
         }));
         expect(result.profile.CodecProfiles?.some(profile => (
             profile.Codec === 'vp9'
@@ -1803,10 +1803,79 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 && condition.Value?.includes('HDR10Plus')
             ))
         ))).toBe(false);
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'hevc'
+            && profile.Container === 'mj2,webm'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR')
+            ))
+        ))).toBe(false);
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'vp9'
+            && profile.Container === 'mj2,ts,m2ts,mts'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR')
+            ))
+        ))).toBe(false);
         expect(result.telemetry.widenedHDRCodecProfileCount).toBe(2);
     });
 
-    it('replaces narrower HTML video caps with measured authorized HDR limits', () => {
+    it('keeps raw HDR widening route-scoped without source runtime ceilings', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc,vp9',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'hevc', 'vp9' ], [ 'aac' ], [ 'hevc', 'vp9' ]),
+            RAW_HDR_PROFILE_OPTIONS
+        );
+
+        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+            Codec: 'hevc',
+            Conditions: expect.arrayContaining([ expect.objectContaining({
+                Property: 'VideoRangeType',
+                Value: 'SDR|HDR10|HLG|HDR10Plus'
+            }) ]),
+            Container: 'mp4,m4v,mov,mkv,ts,m2ts,mts'
+        }));
+        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+            Codec: 'vp9',
+            Conditions: expect.arrayContaining([ expect.objectContaining({
+                Property: 'VideoRangeType',
+                Value: 'SDR|HDR10|HLG'
+            }) ]),
+            Container: 'mp4,m4v,mov,mkv,webm'
+        }));
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'hevc'
+            && profile.Container === 'mj2,webm'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR')
+            ))
+        ))).toBe(false);
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Codec === 'vp9'
+            && profile.Container === 'mj2,ts,m2ts,mts'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('HDR')
+            ))
+        ))).toBe(false);
+    });
+
+    it('removes narrower HTML dimensions from the authorized native HDR route', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
@@ -1834,6 +1903,18 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     IsRequired: false,
                     Property: 'Height',
                     Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
                 }
             ],
             Type: 'Video'
@@ -1851,11 +1932,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             ))
         ));
 
-        expect(widenedProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' })
-        ]));
+        expect(widenedProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(original.CodecProfiles[0].Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
             expect.objectContaining({ Property: 'Width', Value: '1920' }),
@@ -1864,7 +1946,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
     });
 
     it.each([ 24 as const, 30 as const, 60 as const ])(
-        'advertises the measured %i fps raw HDR tier',
+        'does not export the %i fps native raw HDR fixture as a source ceiling',
         maximumFramesPerSecond => {
             const original = createBaseProfile();
             original.CodecProfiles = [ {
@@ -1897,23 +1979,24 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 RAW_HDR_PROFILE_OPTIONS
             );
 
-            expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
-                Codec: 'vp9',
-                Conditions: expect.arrayContaining([
-                    expect.objectContaining({
-                        Property: 'VideoRangeType',
-                        Value: 'HDR10|HLG'
-                    }),
-                    expect.objectContaining({
-                        Property: 'VideoFramerate',
-                        Value: String(maximumFramesPerSecond)
-                    })
-                ])
-            }));
+            const rawHDRProfile = result.profile.CodecProfiles?.find(profile => (
+                profile.Codec === 'vp9'
+                && profile.Conditions?.some(condition => (
+                    condition.Property === 'VideoRangeType'
+                    && condition.Value === 'HDR10|HLG'
+                ))
+            ));
+            expect(rawHDRProfile).toBeDefined();
+            expect(rawHDRProfile?.Conditions?.some(condition => (
+                condition.Property === 'Width'
+                || condition.Property === 'Height'
+                || condition.Property === 'VideoLevel'
+                || condition.Property === 'VideoFramerate'
+            ))).toBe(false);
         }
     );
 
-    it('does not advertise a supported raw HDR capability with an invalid frame-rate tier', () => {
+    it('rejects malformed native raw HDR qualification evidence', () => {
         const capabilities = createCapabilities([ 'vp9' ], [ 'opus' ], [ 'vp9' ]);
         capabilities.rawHDRVideo = {
             ...capabilities.rawHDRVideo,
@@ -1930,25 +2013,52 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             RAW_HDR_PROFILE_OPTIONS
         );
 
-        expect(result.profile.CodecProfiles?.some(profile => (
+        const rawHDRProfile = result.profile.CodecProfiles?.find(profile => (
             profile.Codec === 'vp9'
             && profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
                 && condition.Value?.includes('HDR10')
             ))
-        ))).toBe(false);
+        ));
+        expect(rawHDRProfile).toBeUndefined();
     });
 
     it('advertises only settled authorized HDR range types and exact progressive metadata', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Width',
+                    Value: '1920'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Height',
+                    Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
+                }
+            ],
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([ 'hevc' ], [ 'aac' ], [ 'hevc' ]);
@@ -1973,12 +2083,29 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 ]
             }
         );
-        expect(pqAuthorization.profile.CodecProfiles?.some(profile => (
+        const authorizedProfile = pqAuthorization.profile.CodecProfiles?.find(profile => (
             profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
                 && condition.Value === 'SDR|HDR10|HDR10Plus'
             ))
-        ))).toBe(true);
+        ));
+        expect(authorizedProfile).toBeDefined();
+        expect(authorizedProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
+        expect(pqAuthorization.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+            Codec: 'hevc',
+            Conditions: expect.arrayContaining([
+                expect.objectContaining({ Property: 'Width', Value: '1920' }),
+                expect.objectContaining({ Property: 'Height', Value: '1080' }),
+                expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
+                expect.objectContaining({ Property: 'VideoFramerate', Value: '30' })
+            ]),
+            Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        }));
         expect(pqAuthorization.profile.CodecProfiles?.some(profile => (
             profile.Conditions?.some(condition => condition.Value?.includes('HLG'))
         ))).toBe(false);
@@ -1991,16 +2118,42 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(true);
     });
 
-    it('advertises exact native Main10 limits only for an authorized external HDR route', () => {
+    it('advertises a dimension-neutral native Main10 route only when authorized', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Width',
+                    Value: '1920'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Height',
+                    Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
+                }
+            ],
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([], [ 'flac' ], [ 'hevc' ]);
@@ -2075,12 +2228,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
 
         expect(nativeHDRProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-            expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' }),
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' })
+            expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
         ]));
+        expect(nativeHDRProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(result.profile.CodecProfiles?.some(profile => (
             profile.Conditions?.some(condition => condition.Value?.includes('HLG'))
         ))).toBe(false);
@@ -2097,7 +2252,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }));
     });
 
-    it('uses a non-blocking shared envelope while retaining exact HDR route limits', () => {
+    it('keeps native HDR dimension-neutral while retaining bundled raw limits', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
@@ -2185,18 +2340,18 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             ))
         ));
 
-        expect(sharedProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '60' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' })
-        ]));
-        expect(nativeHLGProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '60' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' })
-        ]));
+        expect(sharedProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
+        expect(nativeHLGProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(rawPQProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
             expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
@@ -2296,7 +2451,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(rangeValues.some(value => value?.includes('HLG'))).toBe(false);
     });
 
-    it('uses the 4K native HDR envelope for an exact Profile 7 HDR10 base route', () => {
+    it('uses a dimension-neutral native HDR envelope for a Profile 7 HDR10 base', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
@@ -2346,21 +2501,15 @@ describe('augmentDeviceProfileForCustomDecode', () => {
 
         expect(profile7Profiles.length).toBeGreaterThan(0);
         expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
-            condition.Property === 'Width' && condition.Value === '3840'
-        )))).toBe(true);
-        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
-            condition.Property === 'VideoLevel' && condition.Value === '153'
-        )))).toBe(true);
-        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
-            condition.Property === 'Width' && condition.Value === '1920'
-        )))).toBe(false);
-        expect(profile7Profiles.some(profile => profile.Conditions?.some(condition => (
-            condition.Property === 'VideoLevel' && condition.Value === '120'
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
         )))).toBe(false);
     });
 
     it.each([ 24 as const, 30 as const, 60 as const ])(
-        'advertises only the exact native Profile 5 route at %i fps',
+        'does not export the %i fps native Profile 5 fixture as a source ceiling',
         maximumFramesPerSecond => {
             const original = createBaseProfile();
             original.CodecProfiles = [ {
@@ -2407,19 +2556,15 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'VideoRangeType',
                     Value: 'DOVI'
                 }),
-                expect.objectContaining({
-                    Condition: 'LessThanEqual',
-                    Property: 'VideoFramerate',
-                    Value: String(maximumFramesPerSecond)
-                }),
-                expect.objectContaining({
-                    Condition: 'LessThanEqual',
-                    Property: 'VideoLevel',
-                    Value: '153'
-                }),
-                expect.objectContaining({ Property: 'Width', Value: '3840' }),
-                expect.objectContaining({ Property: 'Height', Value: '2160' })
+                expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
+                expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
             ]));
+            expect(nativeProfile?.Conditions?.some(condition => (
+                condition.Property === 'Width'
+                || condition.Property === 'Height'
+                || condition.Property === 'VideoLevel'
+                || condition.Property === 'VideoFramerate'
+            ))).toBe(false);
             expect(result.profile.CodecProfiles?.some(profile => (
                 profile.Conditions?.some(condition => (
                     condition.Value?.includes('DOVIWithHDR10')
@@ -2429,7 +2574,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }
     );
 
-    it('does not advertise native Profile 5 with an invalid frame-rate tier', () => {
+    it('rejects malformed native Profile 5 qualification evidence', () => {
         const capabilities = createCapabilities([], [ 'aac' ], [], true);
         const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
         if (!nativeDolbyVisionHEVC) {
@@ -2447,12 +2592,13 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             { allowNativeDolbyVision: true, allowRawHDR: false }
         );
 
-        expect(result.profile.CodecProfiles?.some(profile => (
+        const nativeProfile = result.profile.CodecProfiles?.find(profile => (
             profile.Conditions?.some(condition => (
                 condition.Property === 'VideoRangeType'
                 && condition.Value?.includes('DOVI')
             ))
-        ))).toBe(false);
+        ));
+        expect(nativeProfile).toBeUndefined();
     });
 
     it('does not leak native Profile 5 support through raw authorization', () => {
@@ -2516,12 +2662,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             ))
         ));
 
-        expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'Width', Value: '3840' }),
-            expect.objectContaining({ Property: 'Height', Value: '2160' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '153' })
-        ]));
+        expect(nativeProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(rawProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'Width', Value: '1920' }),
             expect.objectContaining({ Property: 'Height', Value: '1080' }),
@@ -2534,12 +2680,38 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Width',
+                    Value: '1920'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Height',
+                    Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
+                }
+            ],
             Container: 'mp4,hls',
             Type: 'Video'
         } ];
@@ -2550,63 +2722,71 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             RAW_HDR_PROFILE_OPTIONS
         );
 
-        expect(result.profile.CodecProfiles?.slice(0, 2)).toEqual([
-            {
-                Codec: 'hevc',
-                Conditions: original.CodecProfiles[0].Conditions,
-                Container: 'hls',
-                Type: 'Video'
-            },
-            {
-                Codec: 'hevc',
-                Conditions: [
-                    {
-                        Condition: 'EqualsAny',
-                        IsRequired: false,
-                        Property: 'VideoRangeType',
-                        Value: 'SDR|HDR10|HLG|HDR10Plus'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'VideoBitDepth',
-                        Value: '10'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'VideoFramerate',
-                        Value: '30'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'Width',
-                        Value: '3840'
-                    },
-                    {
-                        Condition: 'LessThanEqual',
-                        IsRequired: true,
-                        Property: 'Height',
-                        Value: '2160'
-                    }
-                ],
-                Container: 'mp4',
-                Type: 'Video'
-            }
-        ]);
+        const [ nonCustomProfile, customProfile ] =
+            result.profile.CodecProfiles?.slice(0, 2) ?? [];
+        expect(nonCustomProfile).toEqual({
+            Codec: 'hevc',
+            Conditions: original.CodecProfiles[0].Conditions,
+            Container: 'hls',
+            Type: 'Video'
+        });
+        expect(customProfile).toMatchObject({
+            Codec: 'hevc',
+            Conditions: expect.arrayContaining([
+                expect.objectContaining({
+                    Property: 'VideoRangeType',
+                    Value: 'SDR|HDR10|HLG|HDR10Plus'
+                }),
+                expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
+                expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
+            ]),
+            Container: 'mp4',
+            Type: 'Video'
+        });
+        expect(customProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
     });
 
     it('does not widen raw HDR ranges when HDR presentation is disabled or on retry', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Width',
+                    Value: '1920'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Height',
+                    Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
+                }
+            ],
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([ 'hevc' ], [ 'aac' ], [ 'hevc' ]);
@@ -2618,16 +2798,32 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             { ...RAW_HDR_PROFILE_OPTIONS, isRetry: true }
         );
 
-        expect(disabledResult.profile.CodecProfiles?.slice(0, original.CodecProfiles?.length ?? 0))
-            .toEqual(original.CodecProfiles);
-        expect(disabledResult.profile.CodecProfiles).toContainEqual(expect.objectContaining({
+        expect(disabledResult.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[0],
+            Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        });
+        expect(disabledResult.profile.CodecProfiles).not.toContainEqual(
+            original.CodecProfiles[0]
+        );
+        const nativeSDRProfile = disabledResult.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Container === 'mp4,m4v,mov,mkv,ts,m2ts,mts'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoBitDepth' && condition.Value === '8'
+            ))
+        ));
+        expect(nativeSDRProfile).toEqual(expect.objectContaining({
             Codec: 'hevc',
             Conditions: expect.arrayContaining([
-                expect.objectContaining({ Property: 'Width', Value: '1920' }),
-                expect.objectContaining({ Property: 'Height', Value: '1080' }),
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' })
             ])
         }));
+        expect(nativeSDRProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(disabledResult.telemetry.widenedHDRCodecProfileCount).toBe(0);
         expect(retryResult.profile.CodecProfiles).toEqual(original.CodecProfiles);
         expect(retryResult.telemetry.widenedHDRCodecProfileCount).toBe(0);
@@ -2637,12 +2833,38 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
-            Conditions: [ {
-                Condition: 'EqualsAny',
-                IsRequired: false,
-                Property: 'VideoRangeType',
-                Value: 'SDR'
-            } ],
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: false,
+                    Property: 'VideoRangeType',
+                    Value: 'SDR'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Width',
+                    Value: '1920'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'Height',
+                    Value: '1080'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoLevel',
+                    Value: '120'
+                },
+                {
+                    Condition: 'LessThanEqual',
+                    IsRequired: false,
+                    Property: 'VideoFramerate',
+                    Value: '30'
+                }
+            ],
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([ 'hevc' ], [ 'aac' ], [ 'hevc' ]);
@@ -2826,7 +3048,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.SubtitleProfiles).not.toBe(original.SubtitleProfiles);
     });
 
-    it('preserves native constraints outside the measured custom audio route', () => {
+    it('preserves unrelated routes while splitting measured video and audio constraints', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [
             {
@@ -2897,8 +3119,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             createCapabilities([ 'h264' ], [ 'aac' ])
         );
 
-        expect(result.profile.CodecProfiles?.slice(0, 4))
-            .toEqual(original.CodecProfiles.slice(0, 4));
+        expect(result.profile.CodecProfiles).toContainEqual(original.CodecProfiles[0]);
+        expect(result.profile.CodecProfiles).toContainEqual(original.CodecProfiles[1]);
+        expect(result.profile.CodecProfiles).toContainEqual(original.CodecProfiles[2]);
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ...original.CodecProfiles[3],
+            Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
+        });
+        expect(result.profile.CodecProfiles).not.toContainEqual(original.CodecProfiles[3]);
         expect(result.profile.CodecProfiles).toContainEqual({
             ...original.CodecProfiles[4],
             Container: '-mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts'
@@ -2912,7 +3140,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.CodecProfiles?.[0].Conditions).not.toBe(
             original.CodecProfiles[0].Conditions
         );
-        expect(result.profile.CodecProfiles?.[3]).not.toHaveProperty('Codec');
     });
 
     it('preserves native video constraints when direct play was already advertised', () => {

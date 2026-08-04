@@ -23,7 +23,12 @@ import {
     DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH
 } from './DolbyVisionRPUParser';
 import { MAXIMUM_NATIVE_AUDIO_SEGMENT_BYTE_LENGTH } from './NativeMediaAudioLimits';
-import type { TransferableRawVideoFrame } from './RawVideoFrameCopy';
+import {
+    MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH,
+    MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT,
+    MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
+    type TransferableRawVideoFrame
+} from './RawVideoFrameCopy';
 import { createDolbyVisionAuthorizationRPUFixture } from '../validation/DolbyVisionAuthorizationFixture';
 import { createHDR10PlusHEVCFixture } from '../validation/HDR10PlusFixture';
 import { parseHEVCHDR10PlusMetadata } from './HDR10PlusMetadata';
@@ -647,7 +652,17 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
-    it('requires the exact raw buffer-pool credit count and bounded layouts', () => {
+    it('requires two in-flight raw transfer credits independently of each transfer byte bound', () => {
+        expect(MAX_DECODED_RAW_FRAME_CREDITS).toBe(2);
+        expect(MAX_DECODED_RAW_FRAME_CREDITS)
+            .toBe(MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT);
+        expect(MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH).toBe(128 * 1_024 * 1_024);
+        expect(MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH)
+            .toBe(MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH);
+        expect(
+            MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH
+            * MAX_DECODED_RAW_FRAME_CREDITS
+        ).toBe(256 * 1_024 * 1_024);
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 0,
             audioTrackIndex: null,
@@ -691,6 +706,57 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
     });
 
+    it('accepts 8K raw geometry within one transfer budget and rejects an oversized transfer', () => {
+        const rawStartRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest(rawStartRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...rawStartRequest,
+            maximumCodedHeight: 8_640,
+            maximumCodedWidth: 15_360
+        })).toBe(false);
+    });
+
+    it('charges both Profile 7 layers to each compound transfer budget', () => {
+        expect(isDecodeWorkerRequest({
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: 7,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: 'I420P10',
+            startTimeMicroseconds: 0,
+            type: 'start',
+            url: 'http://localhost/video.mkv',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        })).toBe(false);
+    });
+
     it('rejects malformed generations, dimensions, and failures', () => {
         expect(isDecodeWorkerRequest({ generation: 0, type: 'stop' })).toBe(false);
         expect(isDecodeWorkerResponse({
@@ -703,26 +769,11 @@ describe('DecodeWorkerProtocol', () => {
             generation: 1,
             type: 'ready'
         })).toBe(false);
-        expect(isDecodeWorkerRequest({
-            audioSampleCredits: 0,
-            audioTrackIndex: null,
-            frameCredits: MAX_DECODED_RAW_FRAME_CREDITS,
-            generation: 1,
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_841,
-            rawVideoFrameFormat: 'I420P10',
-            startTimeMicroseconds: 0,
-            type: 'start',
-            url: 'http://localhost/video.mkv',
-            videoDecoderBackend: 'bundled-hevc',
-            videoOutputMode: 'raw-planes',
-            videoTrackIndex: 0
-        })).toBe(false);
         expect(isDecodeWorkerResponse({
             audio: null,
             codec: 'hvc1.2.4.L153.B0',
-            codedHeight: 2_161,
-            codedWidth: 3_840,
+            codedHeight: Number.NaN,
+            codedWidth: 7_680,
             displayHeight: 2_160,
             displayWidth: 3_840,
             generation: 1,
@@ -731,13 +782,13 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({
             audio: null,
             codec: 'hvc1.2.4.L153.B0',
-            codedHeight: 2_160,
-            codedWidth: 3_840,
+            codedHeight: 4_320,
+            codedWidth: 7_680,
             displayHeight: 2_160,
-            displayWidth: 3_841,
+            displayWidth: 3_840,
             generation: 1,
             type: 'ready'
-        })).toBe(false);
+        })).toBe(true);
         expect(isDecodeWorkerResponse({
             failureKind: 'unknown',
             generation: 1,

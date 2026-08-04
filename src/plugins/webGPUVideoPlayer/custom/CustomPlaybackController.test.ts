@@ -556,6 +556,63 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
+    it('starts one 8K 10-bit raw transfer without imposing a 4K ceiling', async () => {
+        const harness = createControllerHarness(false);
+        const startPromise = harness.controller.play({
+            ...createPlayOptions(),
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0]?.generation;
+        if (!generation) {
+            throw new Error('8K raw decode did not start');
+        }
+
+        expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.6.L183.B0',
+            generation,
+            type: 'ready'
+        });
+        await expect(startPromise).resolves.toMatchObject({
+            generation,
+            status: 'started'
+        });
+        await harness.controller.destroy();
+    });
+
+    it('rejects raw playback only when the transfer byte budget is exceeded', async () => {
+        const harness = createControllerHarness(false);
+        const oversizedOptions: CustomPlaybackPlayOptions = {
+            ...createPlayOptions(),
+            maximumCodedHeight: 8_640,
+            maximumCodedWidth: 15_360,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        };
+
+        expect(() => harness.controller.play(oversizedOptions)).toThrow(
+            'Raw custom playback exceeds its transfer memory budget'
+        );
+        expect(() => harness.controller.play({
+            ...oversizedOptions,
+            dolbyVisionProfile: 7,
+            maximumCodedHeight: 4_320,
+            maximumCodedWidth: 7_680
+        })).toThrow('Raw custom playback exceeds its transfer memory budget');
+        expect(harness.videoDecodeSession.starts).toEqual([]);
+        await harness.controller.destroy();
+    });
+
     it('forwards the selected decoded multichannel output count', async () => {
         const harness = createControllerHarness(true);
         const options = createPlayOptions(0);

@@ -12,11 +12,13 @@ import {
     MAXIMUM_NATIVE_AUDIO_SEGMENT_DURATION_MICROSECONDS
 } from './NativeMediaAudioLimits';
 import {
+    hasRawVideoFrameResourceBudget,
     MAXIMUM_COMPOUND_RAW_FRAME_COPY_BYTE_LENGTH,
+    MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT,
     MAXIMUM_RAW_FRAME_COPY_BYTE_LENGTH,
-    MAXIMUM_RAW_VIDEO_CODED_HEIGHT,
-    MAXIMUM_RAW_VIDEO_CODED_WIDTH,
+    RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
+    RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
     type RawVideoPlaneDescriptor,
     type SupportedRawVideoFrameFormat,
     type TransferableRawVideoFrame
@@ -33,7 +35,8 @@ import {
 } from './CustomAudioSampleRate';
 
 export const MAX_DECODED_FRAME_CREDITS = 4;
-export const MAX_DECODED_RAW_FRAME_CREDITS = 2;
+export const MAX_DECODED_RAW_FRAME_CREDITS =
+    MAXIMUM_OUTSTANDING_RAW_FRAME_TRANSFER_COUNT;
 export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
@@ -303,11 +306,8 @@ function isTrackIndex(value: unknown): value is number {
     return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
-function isCodedDimensionBound(
-    value: unknown,
-    absoluteMaximum: number
-): value is number {
-    return isPositiveInteger(value) && Number(value) <= absoluteMaximum;
+function isCodedDimension(value: unknown): value is number {
+    return isPositiveInteger(value);
 }
 
 function isVideoOutputMode(value: unknown): value is CustomDecodeVideoOutputMode {
@@ -486,8 +486,6 @@ function getTransferableRawVideoFrameEndOffset(
         || !(value.data instanceof ArrayBuffer)
         || !isPositiveInteger(value.codedWidth)
         || !isPositiveInteger(value.codedHeight)
-        || Number(value.codedWidth) > MAXIMUM_RAW_VIDEO_CODED_WIDTH
-        || Number(value.codedHeight) > MAXIMUM_RAW_VIDEO_CODED_HEIGHT
         || !isPositiveInteger(value.displayWidth)
         || !isPositiveInteger(value.displayHeight)
         || value.bitDepth !== formatValidation.bitDepth
@@ -524,6 +522,27 @@ function getTransferableRawVideoFrameEndOffset(
         && expectedByteOffset <= value.data.byteLength ?
         expectedByteOffset :
         null;
+}
+
+function hasValidRawVideoResourceBudget(value: Record<string, unknown>): boolean {
+    if (value.videoOutputMode !== 'raw-planes') {
+        return true;
+    }
+    if (
+        !isRawVideoFrameFormat(value.rawVideoFrameFormat)
+        || !isCodedDimension(value.maximumCodedWidth)
+        || !isCodedDimension(value.maximumCodedHeight)
+    ) {
+        return false;
+    }
+    return hasRawVideoFrameResourceBudget({
+        codedHeight: Number(value.maximumCodedHeight),
+        codedWidth: Number(value.maximumCodedWidth),
+        displayHeight: Number(value.maximumCodedHeight),
+        displayWidth: Number(value.maximumCodedWidth)
+    }, value.rawVideoFrameFormat, value.dolbyVisionProfile === 7 ?
+        RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT :
+        RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT);
 }
 
 function isTransferableRawVideoFramePair(
@@ -681,14 +700,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && isCodecAssetURL(value.dolbyVisionRPUParserWASMURL)
                 && isMicroseconds(value.startTimeMicroseconds)
                 && isTrackIndex(value.videoTrackIndex)
-                && isCodedDimensionBound(
-                    value.maximumCodedWidth,
-                    MAXIMUM_RAW_VIDEO_CODED_WIDTH
-                )
-                && isCodedDimensionBound(
-                    value.maximumCodedHeight,
-                    MAXIMUM_RAW_VIDEO_CODED_HEIGHT
-                )
+                && isCodedDimension(value.maximumCodedWidth)
+                && isCodedDimension(value.maximumCodedHeight)
                 && isVideoOutputMode(value.videoOutputMode)
                 && isVideoDecoderBackend(value.videoDecoderBackend)
                 && isNativeHDRTransfer(value.nativeHDRTransfer)
@@ -700,6 +713,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                         && value.dolbyVisionProfile === null) :
                     value.nativeHDRTransfer === null)
                 && hasValidVideoOutput
+                && hasValidRawVideoResourceBudget(value)
                 && hasValidOpenJPEGRoute
                 && hasValidLegacySoftwareRoute
                 && isFrameCredit(value.frameCredits)
@@ -772,12 +786,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && value.codec.length > 0
                 && isPositiveInteger(value.codedHeight)
                 && isPositiveInteger(value.codedWidth)
-                && Number(value.codedHeight) <= MAXIMUM_RAW_VIDEO_CODED_HEIGHT
-                && Number(value.codedWidth) <= MAXIMUM_RAW_VIDEO_CODED_WIDTH
                 && isPositiveInteger(value.displayHeight)
                 && isPositiveInteger(value.displayWidth)
-                && Number(value.displayHeight) <= MAXIMUM_RAW_VIDEO_CODED_HEIGHT
-                && Number(value.displayWidth) <= MAXIMUM_RAW_VIDEO_CODED_WIDTH
                 && (value.audio === null || isAudioConfiguration(value.audio))
                 && (!Object.prototype.hasOwnProperty.call(value, 'staticHDRMetadataScan')
                     || isStaticHDRMetadataScanResult(value.staticHDRMetadataScan));
