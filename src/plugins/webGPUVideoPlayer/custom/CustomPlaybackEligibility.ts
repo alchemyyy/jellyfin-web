@@ -44,7 +44,10 @@ import {
     isSupportedDTSInputRoute,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
-import { supportsH264JellyfinProfile } from './H264ProfileCapabilities';
+import {
+    getH264ProfileFromJellyfinValue,
+    supportsH264JellyfinProfile
+} from './H264ProfileCapabilities';
 import {
     getExternalHDRAuthorizationRouteKey,
     type ExternalHDRAuthorizationRouteKey
@@ -63,6 +66,12 @@ import type {
 import { requireMicroseconds } from './TimeMath';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
+const POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT = 2_160;
+const POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH = 3_840;
+const POTENTIAL_CUSTOM_HDR_MAXIMUM_FRAMES_PER_SECOND = 60;
+const POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT = 540;
+const POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH = 960;
+const POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
 const BUNDLED_AUDIO_CODEC_SET = new Set<CustomAudioCodec>(CUSTOM_BUNDLED_AUDIO_CODECS);
 const SUPPORTED_DTS_PROFILE_TOKENS = new Set<string>([
     'DTS',
@@ -240,6 +249,7 @@ type MediaStream = {
 type MediaSource = {
     Container?: unknown
     DefaultAudioStreamIndex?: unknown
+    Id?: unknown
     IsInfiniteStream?: unknown
     LiveStreamId?: unknown
     MediaStreams?: unknown
@@ -251,6 +261,14 @@ type PlaybackOptions = {
     playMethod?: unknown
     playerStartPositionTicks?: unknown
     url?: unknown
+};
+
+type PlaybackSelectionItem = MediaSource & {
+    MediaSources?: unknown
+};
+
+type PlaybackSelectionOptions = {
+    mediaSourceId?: unknown
 };
 
 type ParsedPlaybackSource = {
@@ -1413,6 +1431,281 @@ function selectPlaybackAudio(
         audioTrackIndex: selectedAudio.trackOrdinal,
         status: 'selected'
     };
+}
+
+function hasPotentialCustomVideoDimensions(
+    stream: MediaStream,
+    maximumCodedWidth: number,
+    maximumCodedHeight: number
+): boolean {
+    return isPositiveSafeInteger(stream.Width)
+        && stream.Width <= maximumCodedWidth
+        && isPositiveSafeInteger(stream.Height)
+        && stream.Height <= maximumCodedHeight;
+}
+
+function hasPotentialSoftwareVideoFrameRate(stream: MediaStream): boolean {
+    const frameRate = getEffectiveVideoFrameRate(stream);
+    return frameRate !== null
+        && frameRate <= POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND;
+}
+
+function hasPotentialHDRVideoFrameRate(stream: MediaStream): boolean {
+    const frameRate = getEffectiveVideoFrameRate(stream);
+    return frameRate !== null
+        && frameRate <= POTENTIAL_CUSTOM_HDR_MAXIMUM_FRAMES_PER_SECOND;
+}
+
+function hasPotentialSDRVideoRoute(
+    codec: CustomVideoCodec,
+    stream: MediaStream,
+    containerTokens: readonly string[],
+    bitDepth: number
+): boolean {
+    if (bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
+        return false;
+    }
+    switch (codec) {
+        case 'mpeg2video':
+            return containerTokens.some(container => container === 'MKV' || container === 'MATROSKA')
+                && normalizeMetadataToken(stream.Profile) === 'MAIN'
+                && hasPotentialSoftwareVideoFrameRate(stream)
+                && hasPotentialCustomVideoDimensions(
+                    stream,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
+                );
+        case 'jpeg2000':
+            return containerTokens.some(container => container === 'MJ2' || container === 'MOV')
+                && hasPotentialSoftwareVideoFrameRate(stream)
+                && hasPotentialCustomVideoDimensions(
+                    stream,
+                    POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH,
+                    POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT
+                );
+        case 'h264':
+            return getH264ProfileFromJellyfinValue(stream.Profile) !== null
+                && hasPotentialCustomVideoDimensions(
+                    stream,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
+                );
+        case 'vp8':
+            return hasSupportedNativeVideoProfile(codec, stream)
+                && hasPotentialCustomVideoDimensions(
+                    stream,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
+                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
+                );
+        case 'av1':
+        case 'hevc':
+        case 'vp9':
+            return hasSupportedNativeVideoProfile(codec, stream)
+                && hasPotentialCustomVideoDimensions(
+                    stream,
+                    POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH,
+                    POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT
+                );
+    }
+}
+
+function hasPotentialHDRVideoRoute(
+    codec: CustomVideoCodec,
+    stream: MediaStream,
+    bitDepth: number
+): boolean {
+    return (bitDepth === 10 || bitDepth === 12)
+        && hasSupportedRawVideoProfile(codec, stream)
+        && hasPotentialHDRVideoFrameRate(stream)
+        && hasPotentialCustomVideoDimensions(
+            stream,
+            POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_WIDTH,
+            POTENTIAL_CUSTOM_UHD_MAXIMUM_CODED_HEIGHT
+        );
+}
+
+function hasCompletePotentialSDRVideoMetadata(
+    codec: CustomVideoCodec,
+    stream: MediaStream
+): boolean {
+    if (!isPositiveSafeInteger(stream.Width) || !isPositiveSafeInteger(stream.Height)) {
+        return false;
+    }
+    switch (codec) {
+        case 'jpeg2000':
+        case 'mpeg2video':
+            return getEffectiveVideoFrameRate(stream) !== null
+                && (codec !== 'mpeg2video' || normalizeMetadataToken(stream.Profile) !== null);
+        case 'av1':
+        case 'h264':
+        case 'hevc':
+        case 'vp8':
+        case 'vp9':
+            return normalizeMetadataToken(stream.Profile) !== null;
+    }
+}
+
+function hasCompletePotentialHDRVideoMetadata(stream: MediaStream): boolean {
+    return normalizeMetadataToken(stream.Profile) !== null
+        && getEffectiveVideoFrameRate(stream) !== null
+        && isPositiveSafeInteger(stream.Width)
+        && isPositiveSafeInteger(stream.Height);
+}
+
+type PotentialVideoCodecSelection =
+    | { codec: CustomVideoCodec, status: 'selected' }
+    | { status: 'unknown' | 'unsupported' };
+
+function selectPotentialVideoCodec(
+    stream: MediaStream,
+    containerTokens: readonly string[]
+): PotentialVideoCodecSelection {
+    const normalizedCodec: string | null = normalizeMetadataValue(stream.Codec);
+    if (!normalizedCodec) {
+        return { status: 'unknown' };
+    }
+    const codec: CustomVideoCodec | undefined = VIDEO_CODEC_ALIASES[normalizedCodec];
+    if (!codec || !supportsContainerCodecCombination(containerTokens, codec, null)) {
+        return { status: 'unsupported' };
+    }
+    return { codec, status: 'selected' };
+}
+
+function hasPotentialCustomVideoRoute(mediaSource: MediaSource): boolean {
+    const containerTokens = getContainerTokens(mediaSource.Container);
+    if (containerTokens.length === 0) {
+        return true;
+    }
+    if (!containerTokens.some(container => SUPPORTED_VIDEO_CONTAINERS.has(container))) {
+        return false;
+    }
+
+    const playbackOptions = { mediaSource };
+    const selectedVideo = selectVideoStream(playbackOptions, getStreams(mediaSource));
+    if (selectedVideo.status === 'invalid') {
+        return true;
+    }
+
+    const codecSelection: PotentialVideoCodecSelection = selectPotentialVideoCodec(
+        selectedVideo.stream,
+        containerTokens
+    );
+    if (codecSelection.status !== 'selected') {
+        return codecSelection.status === 'unknown';
+    }
+    const codec: CustomVideoCodec = codecSelection.codec;
+    if (selectedVideo.stream.IsInterlaced === true
+        || hasUnsupportedRotation(selectedVideo.stream)) {
+        return false;
+    }
+    if (selectedVideo.stream.IsInterlaced !== false) {
+        return true;
+    }
+
+    const dolbyVisionDescriptor = getDolbyVisionPresentationDescriptor(playbackOptions);
+    if (dolbyVisionDescriptor) {
+        if (!hasCompletePotentialHDRVideoMetadata(selectedVideo.stream)) {
+            return true;
+        }
+        return codec === 'hevc'
+            && selectedVideo.stream.BitDepth === 10
+            && hasPotentialHDRVideoRoute(codec, selectedVideo.stream, 10);
+    }
+
+    const colorMetadata = getPresentationInputColorMetadata(playbackOptions);
+    if (!colorMetadata) {
+        return true;
+    }
+    if (colorMetadata.transfer === 'sdr') {
+        if (!hasCompletePotentialSDRVideoMetadata(codec, selectedVideo.stream)) {
+            return true;
+        }
+        return hasPotentialSDRVideoRoute(
+            codec,
+            selectedVideo.stream,
+            containerTokens,
+            colorMetadata.bitDepth
+        );
+    }
+    if (!hasCompletePotentialHDRVideoMetadata(selectedVideo.stream)) {
+        return true;
+    }
+    return hasPotentialHDRVideoRoute(codec, selectedVideo.stream, colorMetadata.bitDepth);
+}
+
+function getCompletePlaybackSelectionMediaSources(
+    sourceValues: readonly unknown[]
+): MediaSource[] | null {
+    const sources: MediaSource[] = [];
+    for (const sourceValue of sourceValues) {
+        if (!sourceValue || typeof sourceValue !== 'object') {
+            return null;
+        }
+        const source = sourceValue as MediaSource;
+        if (!Array.isArray(source.MediaStreams)) {
+            return null;
+        }
+        sources.push(source);
+    }
+    return sources.length > 0 ? sources : null;
+}
+
+function getRequestedPlaybackSelectionMediaSource(
+    sourceValues: readonly unknown[],
+    requestedMediaSourceId: string
+): MediaSource[] | null {
+    for (const sourceValue of sourceValues) {
+        if (!sourceValue || typeof sourceValue !== 'object') {
+            continue;
+        }
+        const source = sourceValue as MediaSource;
+        if (source.Id !== requestedMediaSourceId) {
+            continue;
+        }
+        return Array.isArray(source.MediaStreams) ? [ source ] : null;
+    }
+    return null;
+}
+
+function getPlaybackSelectionMediaSources(
+    item: unknown,
+    playOptions: unknown
+): MediaSource[] | null {
+    if (!item || typeof item !== 'object') {
+        return null;
+    }
+
+    const selectionItem = item as PlaybackSelectionItem;
+    if (!Array.isArray(selectionItem.MediaSources)) {
+        return Array.isArray(selectionItem.MediaStreams) ? [ selectionItem ] : null;
+    }
+
+    const requestedMediaSourceId = playOptions && typeof playOptions === 'object' ?
+        (playOptions as PlaybackSelectionOptions).mediaSourceId :
+        null;
+    if (typeof requestedMediaSourceId === 'string' && requestedMediaSourceId.length > 0) {
+        return getRequestedPlaybackSelectionMediaSource(
+            selectionItem.MediaSources,
+            requestedMediaSourceId
+        );
+    }
+    return getCompletePlaybackSelectionMediaSources(selectionItem.MediaSources);
+}
+
+/**
+ * Rejects the wrapper only when item metadata proves every candidate video
+ * route is outside the custom decoder's structural envelope. Runtime probes
+ * still make the final capability decision after player selection.
+ */
+export function hasPotentialCustomPlaybackVideoRoute(
+    item: unknown,
+    playOptions?: unknown
+): boolean {
+    const mediaSources = getPlaybackSelectionMediaSources(item, playOptions);
+    if (!mediaSources) {
+        return true;
+    }
+    return mediaSources.some(hasPotentialCustomVideoRoute);
 }
 
 /** Selects only a direct VOD source the complete measured client pipeline can own. */

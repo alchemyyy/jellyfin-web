@@ -15,7 +15,10 @@ import {
     type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
-import { getCustomPlaybackEligibility } from './CustomPlaybackEligibility';
+import {
+    getCustomPlaybackEligibility,
+    hasPotentialCustomPlaybackVideoRoute
+} from './CustomPlaybackEligibility';
 import type { CustomPlaybackRuntimeAvailability } from './CustomPlaybackRuntime';
 import type {
     NativeMediaAudioCapabilities,
@@ -453,7 +456,137 @@ function createOptions(overrides: Record<string, unknown> = {}): Record<string, 
     };
 }
 
+function createPlaybackSelectionItem(
+    videoStream: Record<string, unknown>,
+    container = 'mkv',
+    sourceId = 'source'
+): Record<string, unknown> {
+    return {
+        MediaSources: [{
+            Container: container,
+            Id: sourceId,
+            MediaStreams: [{
+                Height: 1_080,
+                Index: 0,
+                IsInterlaced: false,
+                Type: 'Video',
+                VideoRangeType: 'SDR',
+                Width: 1_920,
+                ...videoStream
+            }]
+        }]
+    };
+}
+
 describe('CustomPlaybackEligibility', () => {
+    it('keeps an exact supported H264 route eligible for wrapper selection', () => {
+        const item = createPlaybackSelectionItem({
+            BitDepth: 8,
+            Codec: 'H264',
+            Profile: 'High'
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
+    });
+
+    it.each([
+        [ 'interlaced MPEG-2', {
+            AverageFrameRate: 29.97003,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 480,
+            IsInterlaced: true,
+            Profile: 'Main',
+            Width: 720
+        } ],
+        [ 'high-frame-rate progressive MPEG-2', {
+            AverageFrameRate: 29.97003,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 540,
+            Profile: 'Main',
+            Width: 720
+        } ],
+        [ 'VC-1', {
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Profile: 'Advanced'
+        } ],
+        [ '10-bit SDR AV1', {
+            AverageFrameRate: 24,
+            BitDepth: 10,
+            Codec: 'AV1',
+            Height: 1_632,
+            Profile: 'Main',
+            Width: 3_840
+        } ]
+    ])('routes exact unsupported %s metadata to the HTML player', (_label, videoStream) => {
+        const item = createPlaybackSelectionItem(videoStream);
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(false);
+    });
+
+    it('uses the requested media source instead of an unrelated supported alternate', () => {
+        const unsupportedSource = (
+            createPlaybackSelectionItem({
+                BitDepth: 8,
+                Codec: 'VC1',
+                Profile: 'Advanced'
+            }, 'mkv', 'unsupported').MediaSources as unknown[]
+        )[0];
+        const supportedSource = (
+            createPlaybackSelectionItem({
+                BitDepth: 8,
+                Codec: 'H264',
+                Profile: 'High'
+            }, 'mkv', 'supported').MediaSources as unknown[]
+        )[0];
+        const item = { MediaSources: [ supportedSource, unsupportedSource ] };
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
+        expect(hasPotentialCustomPlaybackVideoRoute(item, {
+            mediaSourceId: 'unsupported'
+        })).toBe(false);
+    });
+
+    it('does not reject wrapper selection when source metadata is unavailable', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute({ Id: 'metadata-pending' })).toBe(true);
+    });
+
+    it.each([
+        [ 'interlace state', { BitDepth: 8, Codec: 'H264', Profile: 'High' }, {
+            IsInterlaced: undefined
+        } ],
+        [ 'profile', { BitDepth: 8, Codec: 'H264' }, {} ],
+        [ 'dimensions', { BitDepth: 8, Codec: 'H264', Profile: 'High' }, {
+            Width: undefined
+        } ],
+        [ 'frame rate', { BitDepth: 8, Codec: 'MPEG2VIDEO', Profile: 'Main' }, {} ]
+    ])('keeps the wrapper available when %s metadata is incomplete', (
+        _label,
+        videoStream,
+        sourceOverrides
+    ) => {
+        const item = createPlaybackSelectionItem({
+            ...videoStream,
+            ...sourceOverrides
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
+    });
+
+    it('rejects a known unsupported codec even when unrelated metadata is incomplete', () => {
+        const item = createPlaybackSelectionItem({
+            BitDepth: undefined,
+            Codec: 'VC1',
+            IsInterlaced: undefined,
+            Profile: undefined
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(false);
+    });
+
     it.each([ 'MPEG2VIDEO', 'MPEG2', 'MPEG-2' ])(
         'selects the exact progressive MPEG-2 Matroska route for %s metadata',
         (codecName) => {

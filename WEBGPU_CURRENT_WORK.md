@@ -4,19 +4,75 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `32d08222d78a62b617812df87d5b72711cbff53f`
+Parent checkpoint: `0a9b489bd4249e5c6b0276f088c68bf6b19ef12c`
 
 Checkpoint state: persistent player selection, runtime-gated native
-multichannel PCM, exact-PTS HEVC HDR10+, and the checked cross-browser/GPU
-hardware matrix are committed and pushed. The current worktree adds an exact
-Dolby Vision Profile 7 HDR10-compatible base route and hardens custom decoded-
-PCM negotiation against inherited HTML-player bit-depth constraints.
+multichannel PCM, exact-PTS HEVC HDR10+, the checked cross-browser/GPU hardware
+matrix, and the exact Dolby Vision Profile 7 HDR10-compatible base route are
+committed and pushed. The current worktree closes observed subtitle, audio
+negotiation, unsupported-video selection, Matroska timestamp, and terminal
+fallback defects without widening unmeasured decoder routes.
 
 ## Current objective
 
-Finish this integration without widening unmeasured capability claims. Preserve
-deterministic stereo fallback, static HDR fallback, and explicit failed/not-run
-matrix cells while qualifying the new paths on real media and hardware.
+Finish the subtitle and source-selection integration without widening
+unmeasured capability claims. Preserve deterministic stereo fallback, static
+HDR fallback, and explicit failed/not-run matrix cells while qualifying the new
+paths on real media and hardware. In particular, a custom decoder failure must
+never navigate away while an owned audio or native fallback session continues
+in the background.
+
+## Current subtitle, audio, routing, and fallback integration
+
+- Custom playback keeps Jellyfin's text-subtitle layer and now owns dedicated
+  ASS/SSA and PGS canvases above the WebGPU canvas. Their clocks follow the
+  wrapper's millisecond boundary for play, pause, wait, seek, offset, track
+  switch, aspect, resize, stop, and destroy. The native HTML paths are unchanged.
+- The device profile advertises external VTT plus ASS/SSA and PGS only when the
+  corresponding DOM/Worker/WebAssembly renderer environment exists. It retains
+  server Encode profiles, removes unsupported External claims, deduplicates the
+  result, and keeps retry profiles conservative.
+- Stereo 48 kHz E-AC-3 is authorized through the existing bundled decoder.
+  Normal decoded-audio routes advertise a target-neutral nonzero sample rate;
+  complementary profiles reject values below 3000 Hz or above 192000 Hz. This
+  prevents Jellyfin from misreading the route ceiling as a requested 192 kHz AAC
+  transcode output while preserving the exact runtime envelope.
+- Wrapper selection now declines media whose complete item metadata proves the
+  video route is unsupported, including VC-1, interlaced or out-of-envelope
+  MPEG-2, and AV1 Main10 SDR. The separately registered HTML player therefore
+  owns those sessions. Missing selection metadata remains conservative; the
+  negotiated-source gate still performs the exact check later.
+- Matroska may quantize 512-frame, 48 kHz DTS packet timestamps to milliseconds.
+  The resampler now accepts at most that 1 ms container quantization plus one
+  source-sample rounding interval, records each correction, and canonicalizes
+  accepted timestamps onto its integer sample-count clock. A truly missing DTS
+  access unit remains a fatal discontinuity.
+- Mediabunny's `unsupported content encoding; dropping` warnings for unrelated
+  Matroska subtitle/attachment tracks are nonfatal during video/audio track
+  discovery. Custom subtitle selection uses Jellyfin's external subtitle URL;
+  the Archer termination was the separate DTS timestamp discontinuity, not
+  those warnings. Do not suppress the warnings or infer selected-track support
+  from them; the subtitle route still requires its own live evidence.
+- Custom terminal failures first detach and destroy owned decode/audio state.
+  A source incompatibility emits one PlaybackManager renegotiation signal, while
+  a partially started native fallback is explicitly stopped before its error is
+  exposed. Stale decoder errors cannot start another fallback or leave audio
+  playing behind the home screen.
+
+Focused automated coverage exists for all of these contracts. They are not yet
+live-qualified. Required manual cases are: Fight Club PGS direct delivery and
+visible seek/offset/switch behavior; Infinity Train stereo E-AC-3; AV1 Main10
+SDR, VC-1, and interlaced MPEG-2 selection by the HTML player; and Archer DTS
+playback without a resampler error, duplicate HLS request, navigation, or
+background audio.
+
+The existing browser-smoke controller now has a fail-closed subtitle mode. It
+preflights private media/license/sidecar inputs, records only sanitized hashes
+and route/resource evidence, drives cue/pause/seek/offset/switch/deselect and
+delayed-fetch exercises, restores the initial state, and checks post-stop
+surface/worker cleanup. Paired HTML/custom result joining, reviewed visual
+baselines, checked subtitle fault IDs, 30-session retention integration, and
+expected private-input digests remain explicit framework work.
 
 ## Profile 7 and stereo FLAC negotiation checkpoint
 

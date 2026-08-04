@@ -2,6 +2,7 @@ import type { CodecProfile } from '@jellyfin/sdk/lib/generated-client/models/cod
 import type { DeviceProfile } from '@jellyfin/sdk/lib/generated-client/models/device-profile';
 import type { DirectPlayProfile } from '@jellyfin/sdk/lib/generated-client/models/direct-play-profile';
 import type { ProfileCondition } from '@jellyfin/sdk/lib/generated-client/models/profile-condition';
+import type { SubtitleProfile } from '@jellyfin/sdk/lib/generated-client/models/subtitle-profile';
 
 import {
     CUSTOM_AUDIO_CODECS,
@@ -64,7 +65,14 @@ export type CustomDeviceProfileOptions = {
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     isRetry?: boolean
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
+    subtitleCapabilities?: CustomSubtitleCapabilities
 };
+
+export type CustomSubtitleCapabilities = Readonly<{
+    externalASS: boolean
+    externalPGS: boolean
+    externalText: boolean
+}>;
 
 export type CustomDeviceProfileReason =
     | 'already-advertised'
@@ -80,6 +88,7 @@ export type CustomDeviceProfileTelemetry = {
     reason: CustomDeviceProfileReason
     supportedAudioCodecs: readonly CustomAudioCodec[]
     supportedVideoCodecs: readonly CustomVideoCodec[]
+    subtitleProfileChanged: boolean
     widenedHDRCodecProfileCount: number
 };
 
@@ -239,6 +248,11 @@ const AUDIO_SAMPLE_RATE_PROPERTY = 'AudioSampleRate';
 const EQUALS_ANY_CONDITION = 'EqualsAny';
 const GREATER_THAN_EQUAL_CONDITION = 'GreaterThanEqual';
 const LESS_THAN_EQUAL_CONDITION = 'LessThanEqual';
+const NOT_EQUALS_CONDITION = 'NotEquals';
+const EXTERNAL_SUBTITLE_METHOD = 'External';
+const CUSTOM_EXTERNAL_TEXT_SUBTITLE_FORMAT = 'vtt';
+const CUSTOM_EXTERNAL_ASS_SUBTITLE_FORMATS = [ 'ass', 'ssa' ] as const;
+const CUSTOM_EXTERNAL_PGS_SUBTITLE_FORMAT = 'pgssub';
 const DTS_HIGH_SAMPLE_RATE_MINIMUM = 96_001;
 const MAXIMUM_RAW_HDR_VIDEO_BIT_DEPTH = 10;
 const HDR10_PLUS_VIDEO_RANGE_TYPE = 'HDR10Plus';
@@ -459,6 +473,89 @@ function cloneDeviceProfile(profile: DeviceProfile): DeviceProfile {
     return clonedProfile;
 }
 
+function normalizeSubtitleProfileValue(value: string | null | undefined): string {
+    return value?.trim().toLowerCase() ?? '';
+}
+
+function getSubtitleProfileKey(profile: SubtitleProfile): string {
+    return [
+        normalizeSubtitleProfileValue(profile.Method),
+        normalizeSubtitleProfileValue(profile.Format),
+        normalizeSubtitleProfileValue(profile.Container),
+        normalizeSubtitleProfileValue(profile.Language),
+        normalizeSubtitleProfileValue(profile.DidlMode)
+    ].join('|');
+}
+
+function addUniqueSubtitleProfile(
+    profiles: SubtitleProfile[],
+    profileKeys: Set<string>,
+    profile: SubtitleProfile
+): void {
+    const profileKey: string = getSubtitleProfileKey(profile);
+    if (profileKeys.has(profileKey)) {
+        return;
+    }
+    profiles.push({ ...profile });
+    profileKeys.add(profileKey);
+}
+
+/** Restricts custom playback to subtitle formats rendered by its owned HTML layers. */
+function applyCustomSubtitleProfiles(
+    profile: DeviceProfile,
+    capabilities: CustomSubtitleCapabilities
+): boolean {
+    const originalProfiles: readonly SubtitleProfile[] = profile.SubtitleProfiles ?? [];
+    const customProfiles: SubtitleProfile[] = [];
+    const profileKeys = new Set<string>();
+
+    for (const subtitleProfile of originalProfiles) {
+        if (normalizeSubtitleProfileValue(subtitleProfile.Method) === 'external') {
+            continue;
+        }
+        addUniqueSubtitleProfile(customProfiles, profileKeys, subtitleProfile);
+    }
+
+    if (capabilities.externalText) {
+        addUniqueSubtitleProfile(customProfiles, profileKeys, {
+            Format: CUSTOM_EXTERNAL_TEXT_SUBTITLE_FORMAT,
+            Method: EXTERNAL_SUBTITLE_METHOD
+        });
+    }
+    if (capabilities.externalASS) {
+        for (const format of CUSTOM_EXTERNAL_ASS_SUBTITLE_FORMATS) {
+            addUniqueSubtitleProfile(customProfiles, profileKeys, {
+                Format: format,
+                Method: EXTERNAL_SUBTITLE_METHOD
+            });
+        }
+    }
+    if (capabilities.externalPGS) {
+        addUniqueSubtitleProfile(customProfiles, profileKeys, {
+            Format: CUSTOM_EXTERNAL_PGS_SUBTITLE_FORMAT,
+            Method: EXTERNAL_SUBTITLE_METHOD
+        });
+    }
+
+    profile.SubtitleProfiles = customProfiles;
+    if (originalProfiles.length !== customProfiles.length) {
+        return true;
+    }
+    return originalProfiles.some((subtitleProfile: SubtitleProfile, index: number): boolean => (
+        getSubtitleProfileKey(subtitleProfile) !== getSubtitleProfileKey(customProfiles[index])
+    ));
+}
+
+function applyOptionalCustomSubtitleProfiles(
+    profile: DeviceProfile,
+    capabilities: CustomSubtitleCapabilities | undefined
+): boolean {
+    if (!capabilities) {
+        return false;
+    }
+    return applyCustomSubtitleProfiles(profile, capabilities);
+}
+
 function removeBitrateConditions(
     conditions: NonNullable<CodecProfile['Conditions']>
 ): NonNullable<CodecProfile['Conditions']> {
@@ -641,7 +738,8 @@ function createTelemetry(
     supportedVideoCodecs: readonly CustomVideoCodec[],
     supportedAudioCodecs: readonly CustomAudioCodec[],
     addedProfiles: readonly DirectPlayProfile[],
-    widenedHDRCodecProfileCount: number
+    widenedHDRCodecProfileCount: number,
+    subtitleProfileChanged = false
 ): CustomDeviceProfileTelemetry {
     return {
         addedAudioProfileCount: addedProfiles.filter(profile => profile.Type === 'Audio').length,
@@ -650,6 +748,7 @@ function createTelemetry(
         reason,
         supportedAudioCodecs: [ ...supportedAudioCodecs ],
         supportedVideoCodecs: [ ...supportedVideoCodecs ],
+        subtitleProfileChanged,
         widenedHDRCodecProfileCount
     };
 }
@@ -1735,20 +1834,15 @@ function createAudioSampleRateConditions(
 ): ProfileCondition[] {
     switch (constraint.kind) {
         case 'bounded':
-            return [
-                {
-                    Condition: GREATER_THAN_EQUAL_CONDITION,
-                    IsRequired: true,
-                    Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                    Value: String(MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
-                },
-                {
-                    Condition: LESS_THAN_EQUAL_CONDITION,
-                    IsRequired: true,
-                    Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                    Value: String(MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
-                }
-            ];
+            // Jellyfin reuses Equals/LTE conditions as transcode output targets.
+            // Keep the normal source profile target-neutral; complement profiles
+            // below reject rates outside the qualified resampler envelope.
+            return [ {
+                Condition: NOT_EQUALS_CONDITION,
+                IsRequired: true,
+                Property: AUDIO_SAMPLE_RATE_PROPERTY,
+                Value: '0'
+            } ];
         case 'exact':
             return [ {
                 Condition: constraint.sampleRates.length === 1 ? 'Equals' : EQUALS_ANY_CONDITION,
@@ -1757,6 +1851,48 @@ function createAudioSampleRateConditions(
                 Value: constraint.sampleRates.join('|')
             } ];
     }
+}
+
+function createOutOfRangeAudioSampleRateProfiles(
+    codecs: readonly CustomAudioCodec[],
+    container: string
+): CodecProfile[] {
+    return [
+        {
+            ApplyConditions: [ {
+                Condition: LESS_THAN_EQUAL_CONDITION,
+                IsRequired: true,
+                Property: AUDIO_SAMPLE_RATE_PROPERTY,
+                Value: String(MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1)
+            } ],
+            Codec: codecs.join(','),
+            Conditions: [ {
+                Condition: GREATER_THAN_EQUAL_CONDITION,
+                IsRequired: true,
+                Property: AUDIO_SAMPLE_RATE_PROPERTY,
+                Value: String(MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
+            } ],
+            Container: container,
+            Type: 'VideoAudio'
+        },
+        {
+            ApplyConditions: [ {
+                Condition: GREATER_THAN_EQUAL_CONDITION,
+                IsRequired: true,
+                Property: AUDIO_SAMPLE_RATE_PROPERTY,
+                Value: String(MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1)
+            } ],
+            Codec: codecs.join(','),
+            Conditions: [ {
+                Condition: LESS_THAN_EQUAL_CONDITION,
+                IsRequired: true,
+                Property: AUDIO_SAMPLE_RATE_PROPERTY,
+                Value: String(MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
+            } ],
+            Container: container,
+            Type: 'VideoAudio'
+        }
+    ];
 }
 
 function createMeasuredAudioRouteProfile(
@@ -2167,15 +2303,31 @@ function appendMeasuredAudioRouteProfiles(
             routeGroup.channelCounts,
             { kind: 'bounded' }
         ));
+        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
+            routeGroup.codecs,
+            CUSTOM_VIDEO_CONTAINER_VALUE
+        ));
     }
     if (decodedAudioCodecs.includes('dts')) {
         measuredProfiles.push(...createMeasuredDTSRouteProfiles());
+        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
+            [ 'dts' ],
+            MATROSKA_VIDEO_RULE.container
+        ));
     }
     if (decodedAudioCodecs.includes('mlp')) {
         measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('mlp'));
+        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
+            [ 'mlp' ],
+            MATROSKA_VIDEO_RULE.container
+        ));
     }
     if (decodedAudioCodecs.includes('truehd')) {
         measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('truehd'));
+        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
+            [ 'truehd' ],
+            MATROSKA_VIDEO_RULE.container
+        ));
     }
 
     const measuredProfileKeys = new Set(measuredProfiles.map(getCodecProfileKey));
@@ -2317,6 +2469,11 @@ export function augmentDeviceProfileForCustomDecode(
         };
     }
 
+    const subtitleProfileChanged = applyOptionalCustomSubtitleProfiles(
+        clonedProfile,
+        options.subtitleCapabilities
+    );
+
     const widenedHDRCodecProfileCount = allowRawHDR ?
         widenAuthorizedHDRCodecProfiles(
             clonedProfile,
@@ -2372,11 +2529,14 @@ export function augmentDeviceProfileForCustomDecode(
     return {
         profile: clonedProfile,
         telemetry: createTelemetry(
-            addedProfiles.length > 0 ? 'augmented' : 'already-advertised',
+            addedProfiles.length > 0 || subtitleProfileChanged ?
+                'augmented' :
+                'already-advertised',
             supportedVideoCodecs,
             supportedAudioCodecs,
             addedProfiles,
-            widenedHDRCodecProfileCount
+            widenedHDRCodecProfileCount,
+            subtitleProfileChanged
         )
     };
 }

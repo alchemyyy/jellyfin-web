@@ -3,18 +3,19 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `32d08222d78a62b617812df87d5b72711cbff53f`
+- Parent checkpoint: `0a9b489bd4249e5c6b0276f088c68bf6b19ef12c`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, normalization, no-bitrate High Tier,
-  unified-validation, dynamic-HDR, generalized-audio, hardware-matrix, and
-  persistent-player-preference checkpoints are committed and pushed. The
-  current integration adds an exact Dolby Vision Profile 7 HDR10-base route
-  through independently authorized native external-PQ presentation and removes
-  inherited HTML-player bit-depth ceilings from custom decoded-PCM routes.
-  Current-host evidence remains fail-closed for Chrome retention and unresolved
-  for Edge live custom-playback entry; AMD and Intel were not available.
-  Per-route real-media qualification and long-run resource validation remain
-  before a general rollout.
+  unified-validation, dynamic-HDR, generalized-audio, hardware-matrix,
+  persistent-player-preference, and exact Profile 7 HDR10-base checkpoints are
+  committed and pushed. The current integration adds owned ASS/SSA and PGS
+  custom-clock subtitle surfaces, target-neutral bounded audio sample-rate
+  negotiation, stereo E-AC-3 authorization, exact unsupported-video routing to
+  the HTML player, Matroska DTS timestamp-quantization correction, and terminal
+  fallback containment. Current-host evidence remains fail-closed for Chrome
+  retention and unresolved for Edge live custom-playback entry; AMD and Intel
+  were not available. Per-route real-media qualification and long-run resource
+  validation remain before a general rollout.
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
@@ -450,6 +451,45 @@ changes. A user-deployed Jellyfin 12 nightly bundle has been reported as
 playing successfully. That is a manual smoke result; exact client/server
 DirectPlay, selected presentation route, server-log, lifecycle, and mpv frame
 evidence remain required before this checkpoint becomes release qualification.
+
+### 2.12 Current subtitle, selection, and failure-containment checkpoint
+
+The current worktree closes four defects exposed by the library-title matrix:
+
+1. Custom sessions now drive owned ASS/SSA and PGS canvases from Jellyfin's
+   playback clock. Play, pause, wait, seek, offset, selection, aspect, resize,
+   stop, destroy, and generation retirement are covered by focused tests. The
+   existing DOM VTT surface and ordinary HTML renderer paths remain intact.
+2. External VTT, ASS/SSA, and PGS device claims are rebuilt from the renderers
+   available to the custom runtime. Server Encode profiles are preserved,
+   unsupported External entries are removed, duplicates are collapsed, and
+   retry negotiation remains conservative. This removes the obsolete
+   dependency on the HTML player's experimental PGS user checkbox.
+3. Bounded decoded-audio profiles no longer turn their upper source-rate bound
+   into a 192 kHz AAC transcode target. The normal profile is target-neutral,
+   complementary profiles reject rates outside 3000-192000 Hz, and stereo
+   48 kHz E-AC-3 is explicitly authorized through the bundled decoder.
+4. Complete item metadata routes known unsupported video to the separately
+   registered HTML player before negotiation. VC-1, interlaced or
+   out-of-envelope MPEG-2, and AV1 Main10 SDR are current regression cases.
+   Missing initial metadata is left undecided until the exact negotiated-source
+   gate rather than guessed from bitrate or title characteristics.
+
+Archer exposed 512-frame DTS packets at 48 kHz whose Matroska PTS values follow
+the millisecond-quantized sequence `0, 10000, 21000, 31000, 42000, 53000`
+microseconds instead of retaining every fractional 10.666... ms boundary. The
+resampler now accepts at most 1 ms of container quantization plus one source
+sample, records the correction, and emits the exact sample-count timeline. A
+missing access unit remains well outside that envelope and still fails. On any
+real terminal failure, custom decode/audio is retired before one source retry;
+a partially started HTML fallback is stopped before its error is exposed, and
+stale errors cannot leave background audio or start a duplicate session.
+
+These routes are implemented but not live-qualified. The next manual gate must
+capture Fight Club PGS output, Infinity Train stereo E-AC-3, HTML selection for
+the AV1 Main10 SDR/VC-1/interlaced MPEG-2 examples, and Archer DTS playback.
+Archer passes only if it remains on the playback page with one session, no
+resampler discontinuity, no duplicate HLS request, and no background audio.
 
 ## 3. Capability terminology
 
@@ -902,6 +942,14 @@ than competing frameworks.
 **Why grouped:** fixture metadata, environment capture, failure injection, and
 reporting are shared by every codec and should be implemented once.
 
+The current subtitle slice extends the existing browser-smoke controller rather
+than adding another runner. It preflights private inputs, records sanitized
+route/surface/worker evidence, runs media-time cue/pause/seek/offset/switch/
+deselect/delayed-fetch exercises, restores state, and checks post-stop cleanup.
+Remaining shared-framework work is the paired HTML/custom result join, reviewed
+browser/GPU visual baselines and private artifact storage, checked subtitle
+fault IDs, 30-session retention integration, and expected private-input digests.
+
 ### Group C: Shared video decoder and raw-format expansion
 
 **Owns:** decoder adapter contract, packet transforms, frame/sample ownership,
@@ -948,6 +996,13 @@ remaining layouts/codecs -> DTS live seek and long-run qualification -> bounded
 DTS/TrueHD TS/M2TS demux -> TrueHD 7.1 exact fixture -> ALAC -> WMA.
 Separate legal review remains necessary only
 for non-Mediabunny decoder dependencies.
+
+The current DTS hardening also accepts only the measured 1 ms Matroska packet-
+timestamp quantization plus one source-sample rounding interval. Accepted input
+is canonicalized to the sample-count timeline; larger gaps or overlaps still
+fail. Bounded device-profile sample-rate rules are target-neutral and use
+complementary rejection profiles so they cannot accidentally request a 192 kHz
+AAC transcode output.
 
 ### Group E: HDR and Dolby Vision correctness
 
@@ -1054,6 +1109,12 @@ for presentation-only failure.
 **Remaining concentration:** subtitle route qualification, audio switching across
 all backends, non-1.0 rate policy/implementation, next-item reuse, remote/PiP
 policy, and real SyncPlay testing.
+
+Owned custom-clock ASS/SSA and PGS surfaces plus terminal fallback containment
+are implemented in the current worktree. Live visible-output, track-switch,
+offset, seek, cleanup, HTML-parity, and Archer single-session evidence remain
+the integration gate rather than additional renderer architecture. The exact
+matrix and evidence contract are in `WEBGPU_SUBTITLE_VALIDATION.md`.
 
 ### Group H: Resource, performance, and recovery hardening
 
@@ -1282,6 +1343,14 @@ Rules that prevent duplicated work:
   contract across negotiation, eligibility, worker protocol, decoder output,
   telemetry, and resampling. Keep encoded bitrate irrelevant, preserve exact
   codec/profile/layout rules, and retain runtime decoder checks.
+- [x] Keep bounded decoded-audio device profiles target-neutral and reject
+  out-of-envelope source rates with complementary profiles, preventing the
+  upper bound from becoming a requested 192 kHz AAC transcode output.
+- [x] Authorize stereo 48 kHz E-AC-3 through the ordinary bundled-decoder route
+  without consulting encoded bitrate.
+- [x] Accept bounded Matroska millisecond timestamp quantization for compressed
+  audio, canonicalize accepted input to the sample-count timeline, retain
+  correction telemetry, and continue rejecting genuine packet gaps/overlaps.
 - [x] Remove inherited HTML `AudioBitDepth` ceilings only from custom decoded-
   PCM containers and regression-test stereo FLAC at 8/16/20/24/32-bit source
   metadata, unusual bounded rates, and missing/extreme encoded bitrates.
@@ -1338,6 +1407,18 @@ Rules that prevent duplicated work:
 ### Jellyfin behavior
 
 - [x] Stable wrapper identity, HTML fallback, and generation invalidation.
+- [x] Route complete known-unsupported video metadata to the separately
+  registered HTML player before WebGPU negotiation, with regression coverage
+  for VC-1, interlaced/out-of-envelope MPEG-2, and AV1 Main10 SDR. Keep missing
+  selection metadata conservative until exact negotiated-source validation.
+- [x] Tear down custom decode/audio before one renegotiation signal, stop any
+  partially started failed HTML fallback, and ignore stale terminal errors so
+  navigation cannot leave background audio or a duplicate session.
+- [x] Add owned custom-clock ASS/SSA and PGS canvases while preserving forced
+  DOM text subtitles and the ordinary HTML renderer paths.
+- [x] Advertise only the custom runtime's external VTT/ASS/SSA/PGS surfaces,
+  preserve Encode profiles, deduplicate entries, and keep retry profiles
+  conservative.
 - [x] Regression-test the augmented device profile and exact route isolation for
   the local High Tier HDR10 source; no bitrate capability cap was added or raised.
 - [x] Make WebGPU DirectPlay/DirectStream/transcode selection independent of
@@ -1360,6 +1441,9 @@ Rules that prevent duplicated work:
   destroy, and rapid source replacement across all route families.
 - [ ] Validate audio and subtitle track switching, external/text subtitles,
   subtitle offset, and secondary subtitles.
+- [ ] Live-qualify Fight Club PGS, Infinity Train stereo E-AC-3, HTML selection
+  for the AV1 Main10 SDR/VC-1/interlaced MPEG-2 cases, and Archer DTS playback
+  with no resampler error, navigation, duplicate HLS, or background audio.
 - [ ] Validate SyncPlay clock/event semantics and document rate limitations.
 - [ ] Validate OSD stacking, pointer input, accessibility, fullscreen, resize,
   DPR, background/foreground, and screen wake behavior.
@@ -1380,6 +1464,14 @@ Rules that prevent duplicated work:
   ordinary-PQ lifecycle and startup checks.
 - [x] Capture browser, GPU/driver, display HDR, server, and active feature-flag
   evidence from successful live browser adapters.
+- [x] Add the integrated custom-session subtitle browser-smoke adapter with
+  private-input preflight, sanitized route/surface/worker/cue evidence,
+  pause/seek/offset/switch/deselect/delayed-fetch exercises, state restoration,
+  and post-stop cleanup.
+- [ ] Join paired HTML/custom subtitle results, approve browser/GPU visual
+  baselines and private artifact storage, wire checked subtitle fault IDs,
+  integrate the 30-session retention mode, and require expected private-input
+  lengths and hashes in the overlay schema.
 - [ ] Migrate existing color, worker, browser, startup, artifact, and soak tools
   into executed and reviewed shared-framework cases. Adapter/catalog migration
   is complete; exact source records and cross-platform runs remain.

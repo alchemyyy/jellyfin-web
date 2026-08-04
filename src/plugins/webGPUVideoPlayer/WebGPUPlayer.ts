@@ -45,6 +45,7 @@ import { CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE } from './custom/CustomAudioOutputPolic
 import { isSupportedCustomAudioSampleRate } from './custom/CustomAudioSampleRate';
 import {
     getCustomPlaybackEligibility,
+    hasPotentialCustomPlaybackVideoRoute,
     type CustomPlaybackEligibility,
     type CustomPlaybackEligibilityOptions,
     type CustomPlaybackIneligibilityReason,
@@ -84,7 +85,8 @@ import {
     augmentDeviceProfileForCustomDecode,
     createBitrateIndependentDeviceProfile,
     type CustomDeviceProfileOptions,
-    type CustomDeviceProfileTelemetry
+    type CustomDeviceProfileTelemetry,
+    type CustomSubtitleCapabilities
 } from './custom/CustomDeviceProfile';
 import { isSameSessionNativePlaybackCompatible } from './custom/NativeDirectPlayCompatibility';
 import {
@@ -410,6 +412,48 @@ function normalizeStreamType(value: unknown): string | null {
     return normalizedValue || null;
 }
 
+function supportsCustomSubtitleCanvas(): boolean {
+    if (typeof document === 'undefined') {
+        return false;
+    }
+
+    try {
+        return document.createElement('canvas').getContext('2d') !== null;
+    } catch {
+        return false;
+    }
+}
+
+/** Qualifies the locked subtitle renderers without inheriting the HTML PGS experiment flag. */
+function getCustomSubtitleCapabilities(
+    profile: DeviceProfile,
+    runtimeAvailability: CustomPlaybackRuntimeAvailability
+): CustomSubtitleCapabilities | null {
+    if (!profile.SubtitleProfiles) {
+        return null;
+    }
+
+    const externalFormats = new Set<string>();
+    for (const subtitleProfile of profile.SubtitleProfiles) {
+        if (normalizeStreamType(subtitleProfile.Method) !== 'EXTERNAL') {
+            continue;
+        }
+        const format: string | null = normalizeStreamType(subtitleProfile.Format);
+        if (format) {
+            externalFormats.add(format);
+        }
+    }
+    const specializedRendererRuntimeAvailable = runtimeAvailability.environment.worker
+        && typeof WebAssembly === 'object'
+        && typeof WebAssembly.instantiate === 'function'
+        && supportsCustomSubtitleCanvas();
+    return {
+        externalASS: specializedRendererRuntimeAvailable,
+        externalPGS: specializedRendererRuntimeAvailable,
+        externalText: externalFormats.has('VTT')
+    };
+}
+
 function getAudioPrewarmStreams(
     mediaStreamsValue: unknown
 ): Array<{ sampleRate: unknown, streamIndex: number }> | null {
@@ -625,7 +669,11 @@ export default class WebGPUPlayer {
     /** Synchronously preserves the optional HTML backend item check. */
     canPlayItem(item: unknown, playOptions?: unknown): boolean {
         const backend = this.htmlDelegate.player as BackendPlayer & OptionalItemCompatibility;
-        return backend.canPlayItem?.(item, playOptions) ?? true;
+        const backendCanPlay = backend.canPlayItem?.(item, playOptions) ?? true;
+        if (!backendCanPlay || !isWebGPUCustomDecodeEnabled()) {
+            return backendCanPlay;
+        }
+        return hasPotentialCustomPlaybackVideoRoute(item, playOptions);
     }
 
     supportsPlayMethod(playMethod: string, item: unknown): boolean {
@@ -659,6 +707,12 @@ export default class WebGPUPlayer {
             this.lastNativeMediaAudioCapabilities = null;
             return playbackProfile;
         }
+        const subtitleCapabilities = !isRetry && profile && typeof profile === 'object' ?
+            getCustomSubtitleCapabilities(
+                profile as DeviceProfile,
+                runtimeAvailability
+            ) :
+            null;
 
         const [ capabilities, nativeMediaAudioCapabilities ] = await Promise.all([
             probeCustomDecodeCapabilities(),
@@ -671,7 +725,8 @@ export default class WebGPUPlayer {
             {
                 ...HDRDeviceProfileOptions,
                 isRetry,
-                nativeMediaAudioCapabilities
+                nativeMediaAudioCapabilities,
+                ...(subtitleCapabilities ? { subtitleCapabilities } : {})
             }
         );
         this.lastCustomDecodeCapabilities = capabilities;
@@ -680,6 +735,7 @@ export default class WebGPUPlayer {
         if (!isRetry && (
             profileResult.telemetry.addedProfileCount > 0
             || profileResult.telemetry.widenedHDRCodecProfileCount > 0
+            || profileResult.telemetry.subtitleProfileChanged
         )) {
             this.customProfileAugmentationAvailable = true;
         }
@@ -2455,7 +2511,8 @@ export default class WebGPUPlayer {
             case 'error':
                 console.warn('Custom playback pipeline error', event.message);
                 if (!event.recoverable) {
-                    this.emitCustomPlaybackTerminalError(
+                    this.handleCustomPlaybackTerminalFailure(
+                        customPlaybackController,
                         backendGeneration,
                         new Error(event.message)
                     );
@@ -2739,7 +2796,27 @@ export default class WebGPUPlayer {
             request.mediaTimeMicroseconds
         );
         this.currentPlaybackOptions = nativeOptions;
-        return this.htmlDelegate.player.play(nativeOptions);
+        try {
+            return await this.htmlDelegate.player.play(nativeOptions);
+        } catch (error) {
+            await this.stopFailedNativeFallback(backendGeneration);
+            throw error;
+        }
+    }
+
+    /** Stops a partially started HTML fallback before exposing its terminal error. */
+    private async stopFailedNativeFallback(backendGeneration: number): Promise<void> {
+        this.htmlDelegate.endSession(backendGeneration);
+        try {
+            await this.callBackendStop(backendGeneration, false);
+        } catch (error) {
+            console.warn('Unable to stop failed native fallback cleanly', error);
+            this.htmlDelegate.destroy(backendGeneration);
+        } finally {
+            if (this.ownedBackendSessionGeneration === backendGeneration) {
+                this.ownedBackendSessionGeneration = null;
+            }
+        }
     }
 
     private createNativeFallbackOptions(
@@ -2962,6 +3039,28 @@ export default class WebGPUPlayer {
         Events.trigger(this, 'error', [{ type: MediaError.PLAYER_ERROR }]);
     }
 
+    private handleCustomPlaybackTerminalFailure(
+        customPlaybackController: CustomPlaybackController,
+        backendGeneration: number,
+        error: unknown
+    ): void {
+        if (!this.isCustomPlaybackCurrent(customPlaybackController, backendGeneration)) {
+            return;
+        }
+
+        this.webGPUPresentationEnabled = false;
+        const invalidatedGeneration = this.advancePresentationGeneration();
+        this.presenter.endSession(invalidatedGeneration);
+        const customPlaybackStop = this.detachCustomPlaybackController();
+        const audioPrewarmClose = this.closeCustomPlaybackAudioPrewarm(backendGeneration);
+        void Promise.all([
+            customPlaybackStop ?? Promise.resolve(),
+            audioPrewarmClose ?? Promise.resolve()
+        ]).then((): void => {
+            this.emitCustomPlaybackTerminalError(backendGeneration, error);
+        });
+    }
+
     private emitCustomPlaybackRenegotiationRequired(
         backendGeneration: number,
         reason: CustomPlaybackFallbackRequest['reason']
@@ -2973,28 +3072,11 @@ export default class WebGPUPlayer {
             return;
         }
 
-        let mediaError: MediaError;
-        switch (reason) {
-            case 'network-failed':
-                mediaError = MediaError.NETWORK_ERROR;
-                break;
-            case 'range-unsupported':
-            case 'source-unsupported':
-                mediaError = MediaError.MEDIA_NOT_SUPPORTED;
-                break;
-            case 'decode-failed':
-            case 'ended-before-ready':
-            case 'playback-stalled':
-            case 'startup-timeout':
-                mediaError = MediaError.MEDIA_DECODE_ERROR;
-                break;
-            case 'audio-output-failed':
-            case 'audio-output-unavailable':
-            case 'lifecycle-failed':
-            case 'playback-rate-unsupported':
-                mediaError = MediaError.PLAYER_ERROR;
-                break;
-        }
+        // PlaybackManager uses MEDIA_NOT_SUPPORTED to renegotiate a profile-widened
+        // DirectPlay source. The exact custom failure remains available in telemetry.
+        const mediaError = reason === 'network-failed' ?
+            MediaError.NETWORK_ERROR :
+            MediaError.MEDIA_NOT_SUPPORTED;
         this.customPlaybackTerminalErrorGeneration = backendGeneration;
         Events.trigger(this, 'error', [{ type: mediaError }]);
     }

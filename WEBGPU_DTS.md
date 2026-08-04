@@ -91,6 +91,20 @@ profile rules.
 7. DTS:X is reported as decoded MA channel-bed PCM, never object rendering,
    Atmos-style rendering, or passthrough.
 
+### Matroska timestamp quantization
+
+Matroska commonly stores DTS packet timestamps on a 1 ms timecode grid, while
+a 512-frame DTS unit at 48 kHz lasts 10,666.67 microseconds. A valid packet
+sequence can therefore arrive as `0, 10000, 21000, 31000, 42000, 53000`
+microseconds even though the decoded PCM is sample-contiguous.
+
+The shared streaming resampler accepts at most one millisecond of container
+timestamp quantization plus one source sample. Accepted input is canonicalized
+to the decoded sample-count timeline; correction count and maximum deviation
+remain bounded telemetry. A missing DTS unit is still roughly 10.67 ms away
+from the expected timestamp and fails closed. This prevents quantization from
+causing a false custom-decode fallback without concealing real packet loss.
+
 ## Bounds and fail-closed behavior
 
 - Maximum encoded access unit: 2 MiB.
@@ -148,6 +162,8 @@ compile in two isolated directories and reject a different module SHA-256.
   throughput gate.
 - Matroska `A_DTS` track metadata, packet extraction, timestamp, and real WASM
   decode integration.
+- Exact 512-frame/48 kHz Matroska cadence regression accepting 1 ms timestamp
+  quantization while rejecting one missing DTS packet.
 - Eligibility aliases/profiles, MKV-only claim, M2TS negatives, missing exact
   evidence, profile/layout negatives, 3000/192000 bounds, the 96000/96001
   transition, and bundled runtime requirements.

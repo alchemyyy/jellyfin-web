@@ -1870,6 +1870,38 @@ describe('CustomPlaybackController', () => {
         }
     );
 
+    it('latches a recoverable decode fallback and leaves owned audio stopped', async () => {
+        const harness = createControllerHarness(true);
+        const generation = await startReadyPlayback(harness, true);
+        if (!harness.audioOutput) {
+            throw new Error('Expected an audio output');
+        }
+        const decodeFailure: CustomDecodeSessionEvent = {
+            failureKind: 'decode-failed',
+            generation,
+            message: 'simulated bounded decode failure',
+            type: 'error'
+        };
+
+        harness.videoDecodeSession.emit(decodeFailure);
+        await flushAsyncWork();
+        harness.videoDecodeSession.emit(decodeFailure);
+        await flushAsyncWork();
+
+        expect(harness.fallbackRequests).toHaveLength(1);
+        expect(harness.events.filter(event => event.type === 'error')).toEqual([{
+            generation,
+            message: 'simulated bounded decode failure',
+            recoverable: true,
+            type: 'error'
+        }]);
+        expect(harness.audioOutput.setPlaying).toHaveBeenLastCalledWith(false);
+
+        await harness.controller.destroy();
+        expect(harness.audioOutput.destroy).toHaveBeenCalledOnce();
+        expect(harness.audioOutput.setPlaying).toHaveBeenLastCalledWith(false);
+    });
+
     it('does not finish startup until asynchronous audio playback starts', async () => {
         const harness = createControllerHarness(true);
         if (!harness.audioOutput) {

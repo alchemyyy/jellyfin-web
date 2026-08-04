@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLAYBACK_SUPERSEDED } from 'constants/playbackResult';
 import browser from 'scripts/browser';
+import appSettings from 'scripts/settings/appSettings';
 import Events from 'utils/events';
 
 type Deferred<Value> = {
@@ -15,11 +16,48 @@ type SubtitleTrackEvent = {
     Text: string
 };
 
+type SpecializedSubtitleRendererOptions = Record<string, unknown> & {
+    aspectRatio?: string
+    canvas?: HTMLCanvasElement
+    onError?: () => void
+    renderAhead?: number
+    timeOffset?: number
+    video?: EventTarget & { currentTime: number }
+};
+
+type TestMediaStream = {
+    Codec?: string
+    DeliveryMethod?: string
+    DeliveryUrl?: string
+    Index: number
+    IsExternal?: boolean
+    Type: string
+};
+
+type TestPlayOptions = {
+    aspectRatio?: string
+    fullscreen: boolean
+    item: { ServerId: string }
+    mediaSource: {
+        Container: string
+        DefaultAudioStreamIndex: number
+        DefaultSecondarySubtitleStreamIndex: number
+        DefaultSubtitleStreamIndex: number
+        MediaAttachments?: Array<{ DeliveryUrl: string, MimeType: string }>
+        MediaStreams: TestMediaStream[]
+    }
+    playMethod: string
+    playerStartPositionTicks: number
+    transcodingOffsetTicks?: number
+    url: string
+};
+
 type HtmlVideoPlayerTestHarness = {
     _currentPlayOptions: unknown
     cancelPendingPlay: () => void
     createMediaElement: (options: { fullscreen: boolean }, playSessionGeneration?: number) => Promise<HTMLVideoElement | null>
-    currentTime: () => number | undefined
+    _setSubtitleOffset: (offset: number | string) => void
+    currentTime: (timeMilliseconds?: number) => number | undefined
     currentSrc: () => string | undefined
     destroy: () => void
     getPresentationSurface: () => { container: HTMLDivElement, video: HTMLVideoElement } | null
@@ -36,6 +74,7 @@ type HtmlVideoPlayerTestHarness = {
     prepareCustomPlayback: (options: ReturnType<typeof createPlayOptions>) => Promise<
         { container: HTMLDivElement, video: HTMLVideoElement } | string | null
     >
+    setAspectRatio: (aspectRatio: string) => void
     setSubtitleStreamIndex: (index: number) => void
     stop: (destroyPlayer: boolean) => Promise<void>
     updateVideoUrl: (options: ReturnType<typeof createPlayOptions>, playSessionGeneration?: number) => Promise<void>
@@ -107,6 +146,86 @@ const hlsModuleMock = vi.hoisted(() => {
     return { instances, MockHls };
 });
 
+const serverConnectionsMock = vi.hoisted(() => {
+    const apiClient = {
+        accessToken: vi.fn(() => 'test-token'),
+        getJSON: vi.fn(() => Promise.resolve([])),
+        getNamedConfiguration: vi.fn(() => Promise.resolve({ EnableFallbackFont: false })),
+        getUrl: vi.fn((url: string) => url)
+    };
+    return {
+        apiClient,
+        getApiClient: vi.fn(() => apiClient)
+    };
+});
+
+const specializedSubtitleRendererMock = vi.hoisted(() => {
+    const assInstances: Array<{
+        dispose: ReturnType<typeof vi.fn>
+        options: SpecializedSubtitleRendererOptions
+        resetRenderAheadCache: ReturnType<typeof vi.fn>
+        resize: ReturnType<typeof vi.fn>
+        setCurrentTime: ReturnType<typeof vi.fn>
+        setIsPaused: ReturnType<typeof vi.fn>
+        timeOffset: number
+    }> = [];
+    const pgsInstances: Array<{
+        aspectRatio: string
+        dispose: ReturnType<typeof vi.fn>
+        options: SpecializedSubtitleRendererOptions
+        renderAtTimestamp: ReturnType<typeof vi.fn>
+        timeOffset: number
+    }> = [];
+
+    class MockAssRenderer {
+        readonly dispose = vi.fn();
+        readonly options: SpecializedSubtitleRendererOptions;
+        readonly resetRenderAheadCache = vi.fn();
+        readonly resize = vi.fn();
+        readonly setCurrentTime = vi.fn();
+        readonly setIsPaused = vi.fn();
+        timeOffset: number;
+
+        constructor(options: SpecializedSubtitleRendererOptions) {
+            this.options = options;
+            this.timeOffset = options.timeOffset ?? 0;
+            assInstances.push(this);
+        }
+    }
+
+    class MockPgsRenderer {
+        aspectRatio: string;
+        readonly dispose = vi.fn();
+        readonly options: SpecializedSubtitleRendererOptions;
+        readonly renderAtTimestamp = vi.fn();
+        timeOffset: number;
+        readonly timeUpdateListener: () => void;
+
+        constructor(options: SpecializedSubtitleRendererOptions) {
+            this.options = options;
+            this.aspectRatio = options.aspectRatio ?? 'contain';
+            this.timeOffset = options.timeOffset ?? 0;
+            this.timeUpdateListener = () => {
+                if (this.options.video) {
+                    this.renderAtTimestamp(this.options.video.currentTime + this.timeOffset);
+                }
+            };
+            options.video?.addEventListener('timeupdate', this.timeUpdateListener);
+            this.dispose.mockImplementation(() => {
+                options.video?.removeEventListener('timeupdate', this.timeUpdateListener);
+            });
+            pgsInstances.push(this);
+        }
+    }
+
+    return {
+        assInstances,
+        MockAssRenderer,
+        MockPgsRenderer,
+        pgsInstances
+    };
+});
+
 vi.mock('screenfull', () => ({
     default: {
         exit: vi.fn(),
@@ -124,9 +243,15 @@ vi.mock('components/subtitlesettings/subtitleappearancehelper', () => ({
 }));
 
 vi.mock('lib/jellyfin-apiclient', () => ({
-    ServerConnections: {
-        getApiClient: vi.fn()
-    }
+    ServerConnections: serverConnectionsMock
+}));
+
+vi.mock('@jellyfin/libass-wasm', () => ({
+    default: specializedSubtitleRendererMock.MockAssRenderer
+}));
+
+vi.mock('libpgs', () => ({
+    PgsRenderer: specializedSubtitleRendererMock.MockPgsRenderer
 }));
 
 vi.mock('scripts/settings/userSettings', () => ({
@@ -251,7 +376,46 @@ function createTrack(index: number, deliveryUrl: string) {
     };
 }
 
-function createPlayOptions(url: string, container = 'MP4') {
+function createSpecializedTrack(index: number, codec: string, deliveryUrl: string): TestMediaStream {
+    return {
+        Codec: codec,
+        DeliveryMethod: 'External',
+        DeliveryUrl: deliveryUrl,
+        Index: index,
+        IsExternal: true,
+        Type: 'Subtitle'
+    };
+}
+
+function createRectangle(left: number, top: number, width: number, height: number): DOMRect {
+    return {
+        bottom: top + height,
+        height,
+        left,
+        right: left + width,
+        top,
+        width,
+        x: left,
+        y: top,
+        toJSON: () => ({})
+    };
+}
+
+class ImmediateXMLHttpRequest {
+    onerror: (() => void) | null = null;
+    onload: (() => void) | null = null;
+    responseURL = '';
+
+    open(...requestArguments: [string, string, boolean]): void {
+        this.responseURL = requestArguments[1];
+    }
+
+    send(): void {
+        this.onload?.();
+    }
+}
+
+function createPlayOptions(url: string, container = 'MP4'): TestPlayOptions {
     return {
         fullscreen: false,
         item: { ServerId: 'server' },
@@ -296,6 +460,11 @@ beforeEach(() => {
     itemHelperMock.isLocalItem.mockReturnValue(false);
     webSettingsMock.getIncludeCorsCredentials.mockReturnValue(Promise.resolve(false));
     hlsModuleMock.instances.length = 0;
+    specializedSubtitleRendererMock.assInstances.length = 0;
+    specializedSubtitleRendererMock.pgsInstances.length = 0;
+    vi.mocked(appSettings.aspectRatio).mockReturnValue('auto');
+    serverConnectionsMock.apiClient.getNamedConfiguration.mockResolvedValue({ EnableFallbackFont: false });
+    serverConnectionsMock.apiClient.getJSON.mockResolvedValue([]);
 });
 
 describe('HtmlVideoPlayer custom presentation shell', () => {
@@ -382,6 +551,206 @@ describe('HtmlVideoPlayer custom presentation shell', () => {
         player.onPlay();
 
         expect(unpauseListener).toHaveBeenCalledOnce();
+    });
+});
+
+describe('HtmlVideoPlayer specialized subtitle renderers', () => {
+    beforeEach(() => {
+        vi.stubGlobal('XMLHttpRequest', ImmediateXMLHttpRequest);
+    });
+
+    afterEach(() => {
+        document.body.innerHTML = '';
+        vi.unstubAllGlobals();
+    });
+
+    it('owns ASS canvas clocking, pause state, seeking, offsets, resize, and stop cleanup', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/custom.mkv', 'MKV');
+        options.mediaSource.MediaStreams = [
+            createSpecializedTrack(0, 'ass', 'https://example.test/subtitles.ass')
+        ];
+        options.transcodingOffsetTicks = 5_000_000;
+        await player.prepareCustomPlayback(options);
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Custom presentation surface was not created');
+        }
+        vi.spyOn(surface.video, 'pause').mockImplementation(() => undefined);
+
+        Object.defineProperty(surface.container, 'clientWidth', { configurable: true, value: 800 });
+        Object.defineProperty(surface.container, 'clientHeight', { configurable: true, value: 450 });
+        vi.spyOn(surface.container, 'getBoundingClientRect')
+            .mockReturnValue(createRectangle(10, 20, 800, 450));
+        vi.spyOn(surface.video, 'getBoundingClientRect')
+            .mockReturnValue(createRectangle(110, 70, 600, 300));
+
+        player.setSubtitleStreamIndex(0);
+        await vi.waitFor(() => {
+            expect(specializedSubtitleRendererMock.assInstances).toHaveLength(1);
+        });
+        const renderer = specializedSubtitleRendererMock.assInstances[0];
+        const canvas = renderer.options.canvas;
+
+        expect(renderer.options.video).toBeUndefined();
+        expect(renderer.options.timeOffset).toBe(0);
+        expect(renderer.options.renderAhead).toBe(0);
+        expect(canvas).toBeInstanceOf(HTMLCanvasElement);
+        expect(canvas?.style.left).toBe('100px');
+        expect(canvas?.style.top).toBe('50px');
+        expect(canvas?.style.width).toBe('600px');
+        expect(canvas?.style.height).toBe('300px');
+        expect(renderer.resize).toHaveBeenLastCalledWith(600, 300, 0, 0);
+        expect(renderer.setCurrentTime).toHaveBeenLastCalledWith(0.5);
+        expect(renderer.setIsPaused).toHaveBeenLastCalledWith(true, 0.5);
+
+        expect(player.notifyCustomPlaybackPlaying()).toBe(true);
+        expect(renderer.setIsPaused).toHaveBeenLastCalledWith(false, 0.5);
+        expect(player.notifyCustomPlaybackTimeUpdate(2_000)).toBe(true);
+        expect(renderer.setCurrentTime).toHaveBeenLastCalledWith(2.5);
+        expect(player.notifyCustomPlaybackPaused()).toBe(true);
+        expect(renderer.setIsPaused).toHaveBeenLastCalledWith(true, 2.5);
+
+        player.currentTime(6_000);
+        expect(renderer.resetRenderAheadCache).toHaveBeenLastCalledWith(false);
+        expect(renderer.setCurrentTime).toHaveBeenLastCalledWith(6.5);
+        player._setSubtitleOffset(1.25);
+        expect(renderer.setCurrentTime).toHaveBeenLastCalledWith(7.75);
+
+        await player.stop(false);
+        expect(renderer.dispose).toHaveBeenCalledOnce();
+        expect(canvas?.isConnected).toBe(false);
+        expect(document.querySelectorAll('.htmlVideoPlayerCustomSubtitleCanvas')).toHaveLength(0);
+    });
+
+    it('owns PGS timing, offsets, aspect changes, track switching, and cleanup', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/custom.mkv', 'MKV');
+        options.mediaSource.MediaStreams = [
+            createSpecializedTrack(0, 'pgssub', 'https://example.test/first.sup'),
+            createSpecializedTrack(1, 'pgssub', 'https://example.test/second.sup')
+        ];
+        options.transcodingOffsetTicks = 2_500_000;
+        await player.prepareCustomPlayback(options);
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Custom presentation surface was not created');
+        }
+        vi.spyOn(surface.video, 'pause').mockImplementation(() => undefined);
+
+        Object.defineProperty(surface.container, 'clientWidth', { configurable: true, value: 1_000 });
+        Object.defineProperty(surface.container, 'clientHeight', { configurable: true, value: 600 });
+        vi.spyOn(surface.container, 'getBoundingClientRect')
+            .mockReturnValue(createRectangle(0, 0, 1_000, 600));
+        const videoRectangle = vi.spyOn(surface.video, 'getBoundingClientRect')
+            .mockReturnValue(createRectangle(100, 75, 800, 450));
+
+        player.setSubtitleStreamIndex(0);
+        await vi.waitFor(() => {
+            expect(specializedSubtitleRendererMock.pgsInstances).toHaveLength(1);
+        });
+        const firstRenderer = specializedSubtitleRendererMock.pgsInstances[0];
+        const firstCanvas = firstRenderer.options.canvas;
+
+        expect(firstRenderer.options.video).toBeInstanceOf(EventTarget);
+        expect(firstRenderer.options.video).not.toBe(surface.video);
+        expect(firstRenderer.options.timeOffset).toBe(0);
+        expect(firstCanvas?.style.left).toBe('100px');
+        expect(firstCanvas?.style.top).toBe('75px');
+        expect(player.notifyCustomPlaybackTimeUpdate(3_000)).toBe(true);
+        expect(firstRenderer.renderAtTimestamp).toHaveBeenLastCalledWith(3.25);
+        player._setSubtitleOffset(-0.75);
+        expect(firstRenderer.renderAtTimestamp).toHaveBeenLastCalledWith(2.5);
+
+        vi.mocked(appSettings.aspectRatio).mockReturnValue('cover');
+        player.setAspectRatio('cover');
+        expect(firstRenderer.aspectRatio).toBe('cover');
+        videoRectangle.mockReturnValue(createRectangle(200, 150, 600, 300));
+        player.notifyCustomPlaybackTimeUpdate(4_000);
+        expect(firstCanvas?.style.left).toBe('200px');
+        expect(firstCanvas?.style.top).toBe('150px');
+        expect(firstCanvas?.style.width).toBe('600px');
+        expect(firstCanvas?.style.height).toBe('300px');
+
+        player.setSubtitleStreamIndex(1);
+        await vi.waitFor(() => {
+            expect(specializedSubtitleRendererMock.pgsInstances).toHaveLength(2);
+        });
+        const secondRenderer = specializedSubtitleRendererMock.pgsInstances[1];
+        const secondCanvas = secondRenderer.options.canvas;
+        expect(firstRenderer.dispose).toHaveBeenCalledOnce();
+        expect(firstCanvas?.isConnected).toBe(false);
+        expect(secondRenderer.renderAtTimestamp).toHaveBeenLastCalledWith(4.25);
+        expect(document.querySelectorAll('.htmlVideoPlayerCustomSubtitleCanvas')).toHaveLength(1);
+
+        await player.stop(false);
+        expect(secondRenderer.dispose).toHaveBeenCalledOnce();
+        expect(secondCanvas?.isConnected).toBe(false);
+    });
+
+    it('does not install an ASS renderer after its track generation is retired', async () => {
+        const configuration = createDeferred<{ EnableFallbackFont: boolean }>();
+        serverConnectionsMock.apiClient.getNamedConfiguration.mockReturnValueOnce(configuration.promise);
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/custom.mkv', 'MKV');
+        options.mediaSource.MediaStreams = [
+            createSpecializedTrack(0, 'ass', 'https://example.test/subtitles.ass')
+        ];
+        await player.prepareCustomPlayback(options);
+
+        player.setSubtitleStreamIndex(0);
+        await vi.waitFor(() => {
+            expect(serverConnectionsMock.apiClient.getNamedConfiguration).toHaveBeenCalledOnce();
+        });
+        player.setSubtitleStreamIndex(-1);
+        await Promise.resolve();
+        configuration.resolve({ EnableFallbackFont: false });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(specializedSubtitleRendererMock.assInstances).toHaveLength(0);
+        expect(document.querySelectorAll('.htmlVideoPlayerCustomSubtitleCanvas')).toHaveLength(0);
+    });
+
+    it('preserves the native video-coupled specialized renderer paths', async () => {
+        const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+        const options = createPlayOptions('https://example.test/native.mp4');
+        options.mediaSource.MediaStreams = [
+            createSpecializedTrack(0, 'ass', 'https://example.test/subtitles.ass'),
+            createSpecializedTrack(1, 'pgssub', 'https://example.test/subtitles.sup')
+        ];
+        options.transcodingOffsetTicks = 10_000_000;
+        await player.play(options);
+        const nativeVideo = player.getPresentationSurface()?.video;
+        expect(nativeVideo).toBeDefined();
+        vi.spyOn(nativeVideo as HTMLVideoElement, 'pause').mockImplementation(() => undefined);
+
+        player.setSubtitleStreamIndex(0);
+        await vi.waitFor(() => {
+            expect(specializedSubtitleRendererMock.assInstances).toHaveLength(1);
+        });
+        const renderer = specializedSubtitleRendererMock.assInstances[0];
+
+        expect(renderer.options.video).toBe(player.getPresentationSurface()?.video);
+        expect(renderer.options.canvas).toBeUndefined();
+        expect(renderer.options.timeOffset).toBe(1);
+        expect(renderer.options.renderAhead).toBe(90);
+        expect(document.querySelectorAll('.htmlVideoPlayerCustomSubtitleCanvas')).toHaveLength(0);
+
+        player.setSubtitleStreamIndex(1);
+        await vi.waitFor(() => {
+            expect(specializedSubtitleRendererMock.pgsInstances).toHaveLength(1);
+        });
+        const pgsRenderer = specializedSubtitleRendererMock.pgsInstances[0];
+        expect(renderer.dispose).toHaveBeenCalledOnce();
+        expect(pgsRenderer.options.video).toBe(player.getPresentationSurface()?.video);
+        expect(pgsRenderer.options.canvas).toBeUndefined();
+        expect(pgsRenderer.options.timeOffset).toBe(1);
+
+        await player.stop(false);
+        expect(pgsRenderer.dispose).toHaveBeenCalledOnce();
     });
 });
 

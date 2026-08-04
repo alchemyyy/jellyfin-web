@@ -131,6 +131,10 @@ const OPTION_DEFINITIONS = Object.freeze({
         environmentName: 'WEBGPU_SMOKE_STARTUP_SAMPLES',
         name: 'startupSampleCount'
     },
+    '--subtitle-live-spec': {
+        environmentName: 'WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC',
+        name: 'subtitleLiveSpecPath'
+    },
     '--timeout-ms': {
         environmentName: 'WEBGPU_SMOKE_TIMEOUT_MS',
         name: 'timeoutMilliseconds'
@@ -200,6 +204,8 @@ Options:
                           Lean post-stop retention soak; 0 disables it
   --startup-samples <0|10-30>
                          Paired HTML, presentation, and custom startup gate
+  --subtitle-live-spec <path>
+                         Private subtitle case for the integrated lifecycle exercise
   --username <name>      Jellyfin username
   --password <password>  Jellyfin password
   --timeout-ms <number>  Per-phase timeout in milliseconds
@@ -223,6 +229,7 @@ Environment equivalents:
   WEBGPU_SMOKE_REPEAT_SESSIONS, WEBGPU_SMOKE_INJECT_FAILURE,
   WEBGPU_SMOKE_SEEK_STORM_COUNT, WEBGPU_SMOKE_SOAK_SESSIONS,
   WEBGPU_SMOKE_STARTUP_SAMPLES,
+  WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC,
   WEBGPU_SMOKE_USERNAME, WEBGPU_SMOKE_PASSWORD,
   WEBGPU_SMOKE_TIMEOUT_MS`;
 
@@ -467,16 +474,49 @@ function resolveSeekStormCount(
     configuredValue,
     completionMode,
     soakSessionCount,
-    startupSampleCount
+    startupSampleCount,
+    subtitleLiveSpecPath
 ) {
     if (configuredValue !== undefined) {
         return parseSeekStormCount(configuredValue);
     }
     return completionMode === 'natural-end'
         || soakSessionCount > 0
-        || startupSampleCount > 0 ?
+        || startupSampleCount > 0
+        || subtitleLiveSpecPath !== null ?
         0 :
         DEFAULT_SEEK_STORM_COUNT;
+}
+
+function validateSubtitleConfiguration(options) {
+    if (options.subtitleLiveSpecPath === null) {
+        return;
+    }
+    if (options.completionMode !== 'controlled-stop') {
+        throw new TypeError(
+            'Browser smoke subtitle mode requires --completion-mode controlled-stop'
+        );
+    }
+    if (options.repeatSessionCount !== 1) {
+        throw new TypeError(
+            'Browser smoke subtitle mode requires --repeat-sessions 1'
+        );
+    }
+    if (options.failureInjection !== 'none') {
+        throw new TypeError(
+            'Browser smoke subtitle mode requires --inject-failure none'
+        );
+    }
+    if (options.soakSessionCount !== 0 || options.startupSampleCount !== 0) {
+        throw new TypeError(
+            'Browser smoke subtitle mode cannot be combined with soak or startup mode'
+        );
+    }
+    if (options.seekStormCount !== 0) {
+        throw new TypeError(
+            'Browser smoke subtitle mode owns its cue-directed seek storm'
+        );
+    }
 }
 
 function validateNaturalEndConfiguration(options) {
@@ -606,6 +646,10 @@ export function parseSmokeConfiguration(argumentList, environment) {
     const seekStormValue = configuredValue('seekStormCount');
     const audioStreamIndexValue = configuredValue('audioStreamIndex');
     const expectedAudioCodecValue = configuredValue('expectedAudioCodec');
+    const subtitleLiveSpecPath = optionalNonEmptyString(
+        configuredValue('subtitleLiveSpecPath'),
+        '--subtitle-live-spec'
+    );
     const audioStreamIndex = audioStreamIndexValue === undefined ?
         null :
         parseAudioStreamIndex(audioStreamIndexValue);
@@ -714,7 +758,8 @@ export function parseSmokeConfiguration(argumentList, environment) {
         seekStormValue,
         completionMode,
         soakSessionCount,
-        startupSampleCount
+        startupSampleCount,
+        subtitleLiveSpecPath
     );
     validateNaturalEndConfiguration({
         audioStreamIndex,
@@ -741,6 +786,15 @@ export function parseSmokeConfiguration(argumentList, environment) {
         seekStormCount,
         soakSessionCount,
         startupSampleCount
+    });
+    validateSubtitleConfiguration({
+        completionMode,
+        failureInjection,
+        repeatSessionCount,
+        seekStormCount,
+        soakSessionCount,
+        startupSampleCount,
+        subtitleLiveSpecPath
     });
     return {
         audioStreamIndex,
@@ -778,6 +832,7 @@ export function parseSmokeConfiguration(argumentList, environment) {
         ),
         soakSessionCount,
         startupSampleCount,
+        subtitleLiveSpecPath,
         timeoutMilliseconds: timeoutValue ?
             parseTimeoutMilliseconds(timeoutValue) :
             DEFAULT_TIMEOUT_MILLISECONDS,

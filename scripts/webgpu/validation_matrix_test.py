@@ -53,6 +53,8 @@ class ManifestTests(unittest.TestCase):
             "overlay-schema.json",
             "result-schema.json",
             "schema.json",
+            "subtitle-live-spec-schema.json",
+            "subtitle-validation-plan-schema.json",
         )
         for schema_name in schema_names:
             value = json.loads(
@@ -75,6 +77,71 @@ class ManifestTests(unittest.TestCase):
         for fixture in self.manifest.fixtures.values():
             result = verify_fixture(fixture, self.manifest.failure_codes)
             self.assertEqual(result["status"], "passed", result)
+
+    def test_subtitle_validation_plan_is_explicit_and_fail_closed(self) -> None:
+        plan = json.loads(
+            (VALIDATION_DIRECTORY / "subtitle-validation-plan.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        expected_exercise_ids = [
+            "directplay-negotiation",
+            "visible-rendering",
+            "timing-seek-pause",
+            "track-switch",
+            "offset",
+            "style-position",
+            "generation-cleanup",
+            "fallback",
+            "html-parity",
+        ]
+        expected_route_ids = {
+            "ass-external",
+            "broadcast-caption-fallback",
+            "dvb-bitmap-fallback",
+            "dvd-vobsub-fallback",
+            "pgs-sup-external",
+            "server-text-to-vtt",
+            "ssa-external",
+            "webvtt-external",
+            "xsub-bitmap-fallback",
+        }
+        self.assertEqual(plan["exerciseIds"], expected_exercise_ids)
+        routes = plan["routes"]
+        self.assertEqual({route["id"] for route in routes}, expected_route_ids)
+        self.assertEqual(len(routes), len(expected_route_ids))
+
+        source_formats: list[str] = []
+        for route in routes:
+            source_formats.extend(route["sourceFormats"])
+            self.assertTrue(
+                set(route["requiredExerciseIds"]).issubset(expected_exercise_ids)
+            )
+            if route["currentStatus"] == "unsupported-custom":
+                self.assertEqual(route["renderer"], "none")
+                self.assertEqual(route["delivery"], "server-or-html-fallback")
+                self.assertIsNone(route["deliveredFormat"])
+                self.assertEqual(route["primaryPolicy"], "fallback-only")
+            else:
+                self.assertNotEqual(route["renderer"], "none")
+                self.assertIn("visible-rendering", route["requiredExerciseIds"])
+                self.assertIn("html-parity", route["requiredExerciseIds"])
+        self.assertEqual(len(source_formats), len(set(source_formats)))
+
+        live_schema = json.loads(
+            (VALIDATION_DIRECTORY / "subtitle-live-spec-schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        track_properties = live_schema["$defs"]["track"]["properties"]
+        self.assertEqual(
+            track_properties["offsetsMicroseconds"]["const"],
+            [-1_500_000, 0, 1_500_000],
+        )
+        cue_properties = live_schema["$defs"]["cue"]["properties"]
+        self.assertIn("startMicroseconds", cue_properties)
+        self.assertIn("normalizedTextSHA256", cue_properties)
+        self.assertIn("imageSHA256", cue_properties)
 
     def test_effective_manifest_digest_covers_registry_content(self) -> None:
         source_sha256 = "1" * 64

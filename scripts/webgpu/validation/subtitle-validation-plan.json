@@ -1,0 +1,290 @@
+{
+  "$schema": "subtitle-validation-plan-schema.json",
+  "schemaVersion": 1,
+  "exerciseIds": [
+    "directplay-negotiation",
+    "visible-rendering",
+    "timing-seek-pause",
+    "track-switch",
+    "offset",
+    "style-position",
+    "generation-cleanup",
+    "fallback",
+    "html-parity"
+  ],
+  "routes": [
+    {
+      "id": "webvtt-external",
+      "title": "WebVTT delivered as external VTT",
+      "sourceFormats": [
+        "vtt",
+        "webvtt"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "external-original",
+      "deliveredFormat": "vtt",
+      "renderer": "forced-dom-text",
+      "currentStatus": "code-present-unqualified",
+      "primaryPolicy": "qualify",
+      "secondaryPolicy": "qualify",
+      "requirements": [
+        "text-track-support",
+        "compatible-burn-in-policy"
+      ],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "visible-rendering",
+        "timing-seek-pause",
+        "track-switch",
+        "offset",
+        "style-position",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "ass-external",
+      "title": "ASS delivered unchanged to libass",
+      "sourceFormats": [
+        "ass"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "external-original",
+      "deliveredFormat": "ass",
+      "renderer": "libass-canvas",
+      "currentStatus": "code-present-unqualified",
+      "primaryPolicy": "qualify",
+      "secondaryPolicy": "primary-only",
+      "requirements": [
+        "specialized-renderer-runtime",
+        "not-retry",
+        "compatible-burn-in-policy"
+      ],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "visible-rendering",
+        "timing-seek-pause",
+        "track-switch",
+        "offset",
+        "style-position",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "ssa-external",
+      "title": "SSA delivered unchanged to libass",
+      "sourceFormats": [
+        "ssa"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "external-original",
+      "deliveredFormat": "ssa",
+      "renderer": "libass-canvas",
+      "currentStatus": "code-present-unqualified",
+      "primaryPolicy": "qualify",
+      "secondaryPolicy": "primary-only",
+      "requirements": [
+        "specialized-renderer-runtime",
+        "not-retry",
+        "compatible-burn-in-policy"
+      ],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "visible-rendering",
+        "timing-seek-pause",
+        "track-switch",
+        "offset",
+        "style-position",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "pgs-sup-external",
+      "title": "Blu-ray PGS SUP delivered to libpgs",
+      "sourceFormats": [
+        "pgssub",
+        "sup"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "external-original",
+      "deliveredFormat": "pgssub",
+      "renderer": "libpgs-canvas",
+      "currentStatus": "code-present-unqualified",
+      "primaryPolicy": "qualify",
+      "secondaryPolicy": "unresolved",
+      "requirements": [
+        "specialized-renderer-runtime",
+        "not-retry",
+        "compatible-burn-in-policy"
+      ],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "visible-rendering",
+        "timing-seek-pause",
+        "track-switch",
+        "offset",
+        "style-position",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "server-text-to-vtt",
+      "title": "Common text subtitle converted by Jellyfin to external VTT",
+      "sourceFormats": [
+        "microdvd",
+        "mov_text",
+        "mpl2",
+        "sami",
+        "smi",
+        "srt",
+        "subrip",
+        "subviewer",
+        "ttml"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "external-vtt-conversion",
+      "deliveredFormat": "vtt",
+      "renderer": "forced-dom-text",
+      "currentStatus": "server-conversion-unqualified",
+      "primaryPolicy": "qualify",
+      "secondaryPolicy": "qualify",
+      "requirements": [
+        "text-track-support",
+        "compatible-burn-in-policy"
+      ],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "visible-rendering",
+        "timing-seek-pause",
+        "track-switch",
+        "offset",
+        "style-position",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "dvd-vobsub-fallback",
+      "title": "DVD VobSub bitmap fallback",
+      "sourceFormats": [
+        "dvd_subtitle",
+        "dvdsub",
+        "vobsub"
+      ],
+      "sourceKinds": [
+        "embedded",
+        "external"
+      ],
+      "delivery": "server-or-html-fallback",
+      "deliveredFormat": null,
+      "renderer": "none",
+      "currentStatus": "unsupported-custom",
+      "primaryPolicy": "fallback-only",
+      "secondaryPolicy": "fallback-only",
+      "requirements": [],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "dvb-bitmap-fallback",
+      "title": "DVB bitmap subtitle fallback",
+      "sourceFormats": [
+        "dvb_subtitle",
+        "dvbsub"
+      ],
+      "sourceKinds": [
+        "embedded"
+      ],
+      "delivery": "server-or-html-fallback",
+      "deliveredFormat": null,
+      "renderer": "none",
+      "currentStatus": "unsupported-custom",
+      "primaryPolicy": "fallback-only",
+      "secondaryPolicy": "fallback-only",
+      "requirements": [],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "xsub-bitmap-fallback",
+      "title": "DivX XSUB bitmap subtitle fallback",
+      "sourceFormats": [
+        "xsub"
+      ],
+      "sourceKinds": [
+        "embedded"
+      ],
+      "delivery": "server-or-html-fallback",
+      "deliveredFormat": null,
+      "renderer": "none",
+      "currentStatus": "unsupported-custom",
+      "primaryPolicy": "fallback-only",
+      "secondaryPolicy": "fallback-only",
+      "requirements": [],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    },
+    {
+      "id": "broadcast-caption-fallback",
+      "title": "Embedded broadcast caption and teletext fallback",
+      "sourceFormats": [
+        "cea_608",
+        "cea_708",
+        "eia_608",
+        "eia_708",
+        "teletext"
+      ],
+      "sourceKinds": [
+        "embedded"
+      ],
+      "delivery": "server-or-html-fallback",
+      "deliveredFormat": null,
+      "renderer": "none",
+      "currentStatus": "unsupported-custom",
+      "primaryPolicy": "fallback-only",
+      "secondaryPolicy": "fallback-only",
+      "requirements": [],
+      "requiredExerciseIds": [
+        "directplay-negotiation",
+        "generation-cleanup",
+        "fallback",
+        "html-parity"
+      ]
+    }
+  ]
+}

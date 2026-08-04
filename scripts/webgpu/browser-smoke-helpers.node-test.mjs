@@ -213,6 +213,7 @@ test('parses CLI values before environment values', () => {
         serverLogDirectory: 'C:\\validation-logs',
         soakSessionCount: 0,
         startupSampleCount: 0,
+        subtitleLiveSpecPath: null,
         timeoutMilliseconds: 45_000,
         username: 'cli-user'
     });
@@ -249,6 +250,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /--seek-storm-count <0-5>/u);
     assert.match(SMOKE_USAGE, /--soak-sessions <0\|10-100>/u);
     assert.match(SMOKE_USAGE, /--startup-samples <0\|10-30>/u);
+    assert.match(SMOKE_USAGE, /--subtitle-live-spec <path>/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SERVER_LOG_DIRECTORY/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_EXPECTED_VIDEO_DECODER/u);
@@ -268,6 +270,7 @@ test('documents the required output expectations in CLI and environment usage', 
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SEEK_STORM_COUNT/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SOAK_SESSIONS/u);
     assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_STARTUP_SAMPLES/u);
+    assert.match(SMOKE_USAGE, /WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC/u);
 });
 
 test('uses local URL defaults without inventing credentials', () => {
@@ -290,6 +293,7 @@ test('uses local URL defaults without inventing credentials', () => {
     assert.equal(configuration.failureInjection, 'none');
     assert.equal(configuration.soakSessionCount, 0);
     assert.equal(configuration.startupSampleCount, 0);
+    assert.equal(configuration.subtitleLiveSpecPath, null);
     assert.equal(configuration.audioStreamIndex, null);
     assert.equal(configuration.expectedAudioCodec, null);
     assert.equal(configuration.expectedAudioConfiguration, null);
@@ -306,6 +310,42 @@ test('uses local URL defaults without inventing credentials', () => {
             WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame'
         }),
         /--item-id/u
+    );
+});
+
+test('enables one fail-closed subtitle lifecycle without the generic seek storm', () => {
+    const configuration = parseSmokeConfiguration([], {
+        WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+        WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame',
+        WEBGPU_SMOKE_ITEM_ID: 'test-item',
+        WEBGPU_SMOKE_PASSWORD: 'test-password',
+        WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC: 'C:\\private\\subtitle-spec.json',
+        WEBGPU_SMOKE_USERNAME: 'test-user'
+    });
+
+    assert.equal(configuration.subtitleLiveSpecPath, 'C:\\private\\subtitle-spec.json');
+    assert.equal(configuration.seekStormCount, 0);
+    assert.throws(
+        () => parseSmokeConfiguration([ '--repeat-sessions', '2' ], {
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame',
+            WEBGPU_SMOKE_ITEM_ID: 'test-item',
+            WEBGPU_SMOKE_PASSWORD: 'test-password',
+            WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC: 'C:\\private\\subtitle-spec.json',
+            WEBGPU_SMOKE_USERNAME: 'test-user'
+        }),
+        /subtitle mode requires --repeat-sessions 1/u
+    );
+    assert.throws(
+        () => parseSmokeConfiguration([ '--seek-storm-count', '3' ], {
+            WEBGPU_SMOKE_EXPECTED_AUDIO: 'disabled',
+            WEBGPU_SMOKE_EXPECTED_VIDEO_OUTPUT: 'video-frame',
+            WEBGPU_SMOKE_ITEM_ID: 'test-item',
+            WEBGPU_SMOKE_PASSWORD: 'test-password',
+            WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC: 'C:\\private\\subtitle-spec.json',
+            WEBGPU_SMOKE_USERNAME: 'test-user'
+        }),
+        /owns its cue-directed seek storm/u
     );
 });
 

@@ -62,8 +62,10 @@ describe('StreamingAudioResampler', () => {
         expect(resampler.finalize()).toEqual([]);
         expect(resampler.getTelemetry()).toEqual({
             bufferedSourceFrameCount: 0,
+            correctedInputTimestampCount: 0,
             filterLatencySourceFrames: 0,
             finalized: true,
+            maximumInputTimestampDeviationMicroseconds: 0,
             outputFrameCount: 5,
             sourceFrameCount: 5
         });
@@ -178,6 +180,58 @@ describe('StreamingAudioResampler', () => {
             sourceSampleRate: sampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         })).toThrow('Source sample rate must be between 3000 and 192000 Hz');
+    });
+
+    it('canonicalizes bounded Matroska DTS timestamp quantization', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 1_024,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const DTSFrame = new Float32Array(512);
+        const packetTimestamps = [ 0, 10_000, 21_000, 31_000, 42_000, 53_000 ];
+        const output: StreamingAudioResamplerOutput[] = [];
+        for (const packetTimestamp of packetTimestamps) {
+            output.push(...resampler.push({
+                channelData: [ DTSFrame, DTSFrame ],
+                mediaTimeMicroseconds: requireMicroseconds(packetTimestamp)
+            }));
+        }
+
+        expect(output.map(chunk => chunk.mediaTimeMicroseconds)).toEqual([
+            0,
+            10_667,
+            21_333,
+            32_000,
+            42_667,
+            53_333
+        ]);
+        expect(resampler.getTelemetry()).toMatchObject({
+            correctedInputTimestampCount: 5,
+            maximumInputTimestampDeviationMicroseconds: 1_000
+        });
+    });
+
+    it('still rejects a missing DTS packet beyond timestamp quantization', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 1_024,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const DTSFrame = new Float32Array(512);
+        for (const packetTimestamp of [ 0, 10_000 ]) {
+            resampler.push({
+                channelData: [ DTSFrame, DTSFrame ],
+                mediaTimeMicroseconds: requireMicroseconds(packetTimestamp)
+            });
+        }
+
+        expect(() => resampler.push({
+            channelData: [ DTSFrame, DTSFrame ],
+            mediaTimeMicroseconds: requireMicroseconds(32_000)
+        })).toThrow('Resampler input timestamps contain a gap or overlap');
     });
 
     it('bounds retained history and rejects discontinuous input timestamps', () => {

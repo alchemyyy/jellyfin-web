@@ -548,16 +548,10 @@ type AudioRouteFixture = {
 
 const BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS: readonly ProfileCondition[] = [
     {
-        Condition: 'GreaterThanEqual',
+        Condition: 'NotEquals',
         IsRequired: true,
         Property: 'AudioSampleRate',
-        Value: '3000'
-    },
-    {
-        Condition: 'LessThanEqual',
-        IsRequired: true,
-        Property: 'AudioSampleRate',
-        Value: '192000'
+        Value: '0'
     }
 ];
 
@@ -597,6 +591,8 @@ function isAudioRouteConditionSatisfied(
             return Number(currentValue) >= Number(expectedValues[0]);
         case 'LessThanEqual':
             return Number(currentValue) <= Number(expectedValues[0]);
+        case 'NotEquals':
+            return currentValue.toLowerCase() !== expectedValues[0]?.toLowerCase();
         default:
             throw new TypeError(`Unexpected audio route condition: ${condition.Condition}`);
     }
@@ -604,13 +600,13 @@ function isAudioRouteConditionSatisfied(
 
 function acceptsMeasuredAudioRoute(
     codecProfiles: readonly CodecProfile[],
-    codec: 'dts' | 'mlp' | 'truehd',
+    codec: CustomAudioCodec,
     route: AudioRouteFixture
 ): boolean {
     const applicableProfiles: CodecProfile[] = [];
     for (const codecProfile of codecProfiles) {
         if (codecProfile.Type !== 'VideoAudio'
-            || codecProfile.Container !== 'mkv'
+            || !codecProfile.Container?.split(',').includes('mkv')
             || !codecProfile.Codec?.split(',').includes(codec)
             || !(codecProfile.ApplyConditions ?? []).every(condition => (
                 isAudioRouteConditionSatisfied(condition, route)
@@ -627,6 +623,36 @@ function acceptsMeasuredAudioRoute(
         }
     }
     return applicableProfiles.length > 0;
+}
+
+function getAppliedTranscodeAudioSampleRates(
+    codecProfiles: readonly CodecProfile[],
+    targetCodec: CustomAudioCodec,
+    route: AudioRouteFixture
+): number[] {
+    const sampleRates: number[] = [];
+    for (const codecProfile of codecProfiles) {
+        if (codecProfile.Type !== 'VideoAudio'
+            || !codecProfile.Container?.split(',').includes('mkv')
+            || !codecProfile.Codec?.split(',').includes(targetCodec)
+            || !(codecProfile.ApplyConditions ?? []).every(condition => (
+                isAudioRouteConditionSatisfied(condition, route)
+            ))) {
+            continue;
+        }
+        for (const condition of codecProfile.Conditions ?? []) {
+            if (condition.Property !== 'AudioSampleRate'
+                || (condition.Condition !== 'Equals'
+                    && condition.Condition !== 'LessThanEqual')) {
+                continue;
+            }
+            const sampleRate: number = Number(condition.Value);
+            if (Number.isSafeInteger(sampleRate)) {
+                sampleRates.push(sampleRate);
+            }
+        }
+    }
+    return sampleRates;
 }
 
 describe('augmentDeviceProfileForCustomDecode', () => {
@@ -1024,6 +1050,100 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
         });
+    });
+
+    it('direct-authorizes ordinary stereo E-AC-3 independently of source bitrate', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles?.push({
+            Codec: 'eac3',
+            Conditions: [ {
+                Condition: 'LessThanEqual',
+                IsRequired: true,
+                Property: 'AudioBitrate',
+                Value: '128000'
+            } ],
+            Type: 'VideoAudio'
+        });
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'hevc' ], [ 'eac3' ])
+        );
+        const codecProfiles = result.profile.CodecProfiles ?? [];
+
+        expect(result.profile.DirectPlayProfiles).toContainEqual({
+            AudioCodec: 'eac3',
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'hevc'
+        });
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
+            channelCount: 2,
+            profile: null,
+            sampleRate: 48_000
+        })).toBe(true);
+        expect(codecProfiles.some(codecProfile => (
+            codecProfile.Codec?.split(',').includes('eac3') === true
+            && codecProfile.Conditions?.some(condition => (
+                condition.Property === 'AudioBitrate'
+            )) === true
+        ))).toBe(false);
+    });
+
+    it('does not turn valid source sample-rate bounds into a 192-kHz AAC target', () => {
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities(
+                [ 'av1' ],
+                [ 'aac', 'eac3', 'opus' ],
+                [],
+                false,
+                [ 'av1' ],
+                [ 'opus' ]
+            )
+        );
+        const codecProfiles = result.profile.CodecProfiles ?? [];
+        const stereoRoute: AudioRouteFixture = {
+            channelCount: 2,
+            profile: null,
+            sampleRate: 48_000
+        };
+        const surroundRoute: AudioRouteFixture = {
+            channelCount: 6,
+            profile: null,
+            sampleRate: 48_000
+        };
+        const measuredUltraHDAV1Profile = codecProfiles.find(codecProfile => (
+            codecProfile.Codec === 'av1'
+            && codecProfile.Conditions?.some(condition => (
+                condition.Property === 'Width' && condition.Value === '3840'
+            ))
+        ));
+
+        expect(getAppliedTranscodeAudioSampleRates(
+            codecProfiles,
+            'aac',
+            stereoRoute
+        )).toEqual([]);
+        expect(getAppliedTranscodeAudioSampleRates(
+            codecProfiles,
+            'aac',
+            surroundRoute
+        )).toEqual([]);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', stereoRoute)).toBe(true);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'opus', surroundRoute)).toBe(true);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
+            ...stereoRoute,
+            sampleRate: 192_001
+        })).toBe(false);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
+            ...stereoRoute,
+            sampleRate: 2_999
+        })).toBe(false);
+        expect(measuredUltraHDAV1Profile?.Conditions).toContainEqual(expect.objectContaining({
+            Property: 'VideoBitDepth',
+            Value: '8'
+        }));
     });
 
     it('advertises DTS only for Matroska with bounded rates and measured beds', () => {
@@ -2540,6 +2660,131 @@ describe('augmentDeviceProfileForCustomDecode', () => {
 
         expect(secondResult.profile.CodecProfiles).toEqual(firstResult.profile.CodecProfiles);
         expect(secondResult.telemetry.widenedHDRCodecProfileCount).toBe(0);
+    });
+
+    it('advertises only explicitly renderable external subtitle formats', () => {
+        const original = createBaseProfile();
+        original.SubtitleProfiles = [
+            { Container: 'mkv', Format: 'dvdsub', Method: 'Encode' },
+            { Container: 'mkv', Format: 'dvdsub', Method: 'Encode' },
+            { Format: 'srt', Method: 'External' },
+            { Format: 'vtt', Method: 'External' },
+            { Format: 'ass', Method: 'External' },
+            { Format: 'ass', Method: 'External' }
+        ];
+        const originalSnapshot = JSON.stringify(original);
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac' ]),
+            {
+                subtitleCapabilities: {
+                    externalASS: true,
+                    externalPGS: true,
+                    externalText: true
+                }
+            }
+        );
+
+        expect(result.profile.SubtitleProfiles).toEqual([
+            { Container: 'mkv', Format: 'dvdsub', Method: 'Encode' },
+            { Format: 'vtt', Method: 'External' },
+            { Format: 'ass', Method: 'External' },
+            { Format: 'ssa', Method: 'External' },
+            { Format: 'pgssub', Method: 'External' }
+        ]);
+        expect(result.profile.SubtitleProfiles).not.toBe(original.SubtitleProfiles);
+        expect(JSON.stringify(original)).toBe(originalSnapshot);
+        expect(result.telemetry.subtitleProfileChanged).toBe(true);
+    });
+
+    it('removes unsupported external subtitles while preserving Encode routes', () => {
+        const original = createBaseProfile();
+        original.SubtitleProfiles = [
+            { Format: 'dvdsub', Method: 'Encode' },
+            { Format: 'ass', Method: 'External' },
+            { Format: 'pgssub', Method: 'External' },
+            { Format: 'vtt', Method: 'External' }
+        ];
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac' ]),
+            {
+                subtitleCapabilities: {
+                    externalASS: false,
+                    externalPGS: false,
+                    externalText: true
+                }
+            }
+        );
+
+        expect(result.profile.SubtitleProfiles).toEqual([
+            { Format: 'dvdsub', Method: 'Encode' },
+            { Format: 'vtt', Method: 'External' }
+        ]);
+    });
+
+    it('keeps subtitle negotiation conservative on retry and incompatible routes', () => {
+        const original = createBaseProfile();
+        original.SubtitleProfiles = [
+            { Format: 'srt', Method: 'External' },
+            { Format: 'dvdsub', Method: 'Encode' }
+        ];
+        const subtitleCapabilities = {
+            externalASS: true,
+            externalPGS: true,
+            externalText: true
+        } as const;
+
+        const retryResult = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'h264' ], [ 'aac' ]),
+            { isRetry: true, subtitleCapabilities }
+        );
+        const incompatibleResult = augmentDeviceProfileForCustomDecode(
+            original,
+            createCapabilities([ 'av1' ], []),
+            { subtitleCapabilities }
+        );
+
+        expect(retryResult.profile.SubtitleProfiles).toEqual(original.SubtitleProfiles);
+        expect(retryResult.telemetry).toMatchObject({
+            reason: 'retry-not-widened',
+            subtitleProfileChanged: false
+        });
+        expect(incompatibleResult.profile.SubtitleProfiles).toEqual(original.SubtitleProfiles);
+        expect(incompatibleResult.telemetry).toMatchObject({
+            reason: 'no-compatible-combinations',
+            subtitleProfileChanged: false
+        });
+    });
+
+    it('keeps custom subtitle profiles deduplicated and idempotent', () => {
+        const capabilities = createCapabilities([ 'h264' ], [ 'aac' ]);
+        const options = {
+            subtitleCapabilities: {
+                externalASS: true,
+                externalPGS: true,
+                externalText: true
+            }
+        } as const;
+        const firstResult = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            capabilities,
+            options
+        );
+        const secondResult = augmentDeviceProfileForCustomDecode(
+            firstResult.profile,
+            capabilities,
+            options
+        );
+
+        expect(secondResult.profile.SubtitleProfiles).toEqual(firstResult.profile.SubtitleProfiles);
+        expect(new Set(secondResult.profile.SubtitleProfiles?.map(subtitleProfile => (
+            `${subtitleProfile.Method}|${subtitleProfile.Format}`
+        ))).size).toBe(secondResult.profile.SubtitleProfiles?.length);
+        expect(secondResult.telemetry.subtitleProfileChanged).toBe(false);
     });
 
     it('never widens a retry profile', () => {

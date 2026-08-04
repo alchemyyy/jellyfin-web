@@ -466,11 +466,18 @@ $env:WEBGPU_SMOKE_REPEAT_SESSIONS = '1' # optional, 1 through 5
 $env:WEBGPU_SMOKE_SEEK_STORM_COUNT = '3' # optional, 0 through 5
 $env:WEBGPU_SMOKE_SOAK_SESSIONS = '0' # optional, 0 or 10 through 100
 $env:WEBGPU_SMOKE_STARTUP_SAMPLES = '0' # optional, 0 or 10 through 30
+$env:WEBGPU_SMOKE_SUBTITLE_LIVE_SPEC = '<private subtitle live spec>' # optional
 $env:WEBGPU_SMOKE_INJECT_FAILURE = 'none' # presentation, device-loss, paused-device-loss
 $env:WEBGPU_SMOKE_USERNAME = '<username>'
 $env:WEBGPU_SMOKE_PASSWORD = '<password>'
 node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
+
+The optional subtitle mode reuses this controller and replaces the generic
+seek storm with cue-directed selection, timing, pause, seek, offset, switch,
+deselect, delayed-fetch, sanitized visual-evidence, and cleanup actions. See
+[`SUBTITLE_SMOKE_ADAPTER.md`](SUBTITLE_SMOKE_ADAPTER.md) for its evidence
+contract and explicit remaining automation boundary.
 
 Equivalent CLI flags are available through `--help`, but the username and
 password flags expose those values to the local process list. Item ID and

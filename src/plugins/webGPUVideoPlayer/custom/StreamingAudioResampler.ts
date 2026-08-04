@@ -10,6 +10,7 @@ const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
 const FILTER_RADIUS = 32;
 const FILTER_TAP_COUNT = FILTER_RADIUS * 2;
+const MAXIMUM_CONTAINER_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
 export type StreamingAudioResamplerOptions = {
@@ -34,8 +35,10 @@ export type StreamingAudioResamplerOutput = {
 
 export type StreamingAudioResamplerTelemetry = {
     bufferedSourceFrameCount: number
+    correctedInputTimestampCount: number
     filterLatencySourceFrames: number
     finalized: boolean
+    maximumInputTimestampDeviationMicroseconds: number
     outputFrameCount: number
     sourceFrameCount: number
 };
@@ -104,10 +107,12 @@ export default class StreamingAudioResampler {
     private anchorMediaTimeMicroseconds: Microseconds | null = null;
     private bufferStartSourceFrame = 0;
     private readonly channelBuffers: Float32Array[] = [];
+    private correctedInputTimestampCount = 0;
     private readonly filterTable: Float64Array | null;
     private finalized = false;
     private readonly firstSourceValues: number[] = [];
     private readonly lastSourceValues: number[] = [];
+    private maximumInputTimestampDeviationMicroseconds = 0;
     private nextOutputFrame = 0;
     private totalSourceFrames = 0;
 
@@ -186,8 +191,11 @@ export default class StreamingAudioResampler {
     public getTelemetry(): StreamingAudioResamplerTelemetry {
         return {
             bufferedSourceFrameCount: this.channelBuffers[0]?.length ?? 0,
+            correctedInputTimestampCount: this.correctedInputTimestampCount,
             filterLatencySourceFrames: this.filterTable === null ? 0 : FILTER_RADIUS,
             finalized: this.finalized,
+            maximumInputTimestampDeviationMicroseconds:
+                this.maximumInputTimestampDeviationMicroseconds,
             outputFrameCount: this.nextOutputFrame,
             sourceFrameCount: this.totalSourceFrames
         };
@@ -219,12 +227,23 @@ export default class StreamingAudioResampler {
             this.anchorMediaTimeMicroseconds,
             audioFramesToMicroseconds(this.totalSourceFrames, this.sourceSampleRate)
         );
-        const timestampToleranceMicroseconds = Math.ceil(
-            MICROSECONDS_PER_SECOND / this.sourceSampleRate
-        ) + 1;
-        if (Math.abs(mediaTimeMicroseconds - expectedMediaTimeMicroseconds)
-            > timestampToleranceMicroseconds) {
+        const timestampDeviationMicroseconds = Math.abs(
+            mediaTimeMicroseconds - expectedMediaTimeMicroseconds
+        );
+        const timestampToleranceMicroseconds =
+            MAXIMUM_CONTAINER_TIMESTAMP_QUANTIZATION_MICROSECONDS
+            + Math.ceil(MICROSECONDS_PER_SECOND / this.sourceSampleRate);
+        if (timestampDeviationMicroseconds > timestampToleranceMicroseconds) {
             throw new RangeError('Resampler input timestamps contain a gap or overlap');
+        }
+        if (timestampDeviationMicroseconds > 0) {
+            // Matroska commonly quantizes compressed-audio PTS to 1 ms. Keep
+            // accepted chunks on the sample-count timeline so output stays contiguous.
+            this.correctedInputTimestampCount += 1;
+            this.maximumInputTimestampDeviationMicroseconds = Math.max(
+                this.maximumInputTimestampDeviationMicroseconds,
+                timestampDeviationMicroseconds
+            );
         }
     }
 

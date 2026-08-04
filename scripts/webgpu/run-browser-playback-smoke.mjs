@@ -1,5 +1,6 @@
 /* eslint-disable compat/compat -- This local harness targets Node 24 and a current Chromium browser */
 
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -55,11 +56,22 @@ import {
     ServerLogEvidenceError,
     validateServerLogEvidence
 } from './server-log-evidence.mjs';
+import {
+    countSubtitleWorkerTargets,
+    createSubtitleCueEvidenceExpression,
+    isSubtitleResourceURL,
+    loadSubtitleValidationCase,
+    validateSubtitleCueProbe,
+    validateSubtitlePauseProbes,
+    validateSubtitleRouteSnapshot
+} from './subtitle-smoke-adapter.mjs';
 
 const COMMAND_TIMEOUT_MILLISECONDS = 15_000;
 const INPUT_CONTROL_MODIFIER = 2;
 const PAGE_POLL_INTERVAL_MILLISECONDS = 100;
 const PAUSE_OBSERVATION_MILLISECONDS = 900;
+const SUBTITLE_PAUSE_OBSERVATION_MILLISECONDS = 2_100;
+const SUBTITLE_SETTLE_OBSERVATION_MILLISECONDS = 250;
 const PLAYBACK_OBSERVATION_MILLISECONDS = 750;
 const RESUME_OBSERVATION_MILLISECONDS = 750;
 const MINIMUM_RESUME_CLOCK_ADVANCE_MICROSECONDS = 250_000;
@@ -309,7 +321,8 @@ async function getBrowserPageTarget(configuration) {
 }
 
 async function getRetentionWorkerTargetScope(client, pageTarget, configuration) {
-    if (configuration.soakSessionCount === 0) {
+    if (configuration.soakSessionCount === 0
+        && configuration.subtitleLiveSpecPath === null) {
         return null;
     }
     const pageTargetID = pageTarget.id ?? pageTarget.targetId;
@@ -1096,6 +1109,9 @@ function createPlayerCaptureHookExpression(
         };
         const cleanupCallbacks = [];
         const observedVideos = new Set();
+        let subtitleSelectionInitialized = false;
+        let primarySubtitleStreamIndex = -1;
+        let secondarySubtitleStreamIndex = -1;
         const originalAppendChild = Node.prototype.appendChild;
         const appendChildWrapper = function(child) {
             if (captureStartupMilestones
@@ -1203,12 +1219,36 @@ function createPlayerCaptureHookExpression(
                 && milestones.playInvokedAtMilliseconds === null) {
                 milestones.playInvokedAtMilliseconds = command.playInvokedAtMilliseconds;
             }
+            if (!subtitleSelectionInitialized && capturedPlayer) {
+                const mediaSource = capturedPlayer.streamInfo?.mediaSource;
+                primarySubtitleStreamIndex = Number.isSafeInteger(
+                    mediaSource?.DefaultSubtitleStreamIndex
+                ) ? mediaSource.DefaultSubtitleStreamIndex : -1;
+                secondarySubtitleStreamIndex = Number.isSafeInteger(
+                    mediaSource?.DefaultSecondarySubtitleStreamIndex
+                ) ? mediaSource.DefaultSecondarySubtitleStreamIndex : -1;
+                subtitleSelectionInitialized = true;
+            }
+            if (command?.subtitleSelection?.role === 'primary'
+                && Number.isSafeInteger(command.subtitleSelection.streamIndex)) {
+                primarySubtitleStreamIndex = command.subtitleSelection.streamIndex;
+                subtitleSelectionInitialized = true;
+            } else if (command?.subtitleSelection?.role === 'secondary'
+                && Number.isSafeInteger(command.subtitleSelection.streamIndex)) {
+                secondarySubtitleStreamIndex = command.subtitleSelection.streamIndex;
+                subtitleSelectionInitialized = true;
+            }
             return {
                 eventCounts: { ...eventCounts },
                 eventSequence: [ ...controlEventSequence ],
                 hookActive: events.trigger === wrapper,
                 milestones: { ...milestones },
-                player: capturedPlayer
+                player: capturedPlayer,
+                subtitleSelection: {
+                    initialized: subtitleSelectionInitialized,
+                    primaryStreamIndex: primarySubtitleStreamIndex,
+                    secondaryStreamIndex: secondarySubtitleStreamIndex
+                }
             };
         };
         window[restoreStateKey] = () => {
@@ -1357,6 +1397,80 @@ function createPlayerSnapshotExpression(accessKey) {
             : player.isFetching;
         const playbackStreamInfo = player.streamInfo ?? null;
         const playbackMediaSource = playbackStreamInfo?.mediaSource ?? null;
+        const subtitleSelection = capture.subtitleSelection ?? {
+            initialized: false,
+            primaryStreamIndex: -1,
+            secondaryStreamIndex: -1
+        };
+        const subtitleStreams = Array.isArray(playbackMediaSource?.MediaStreams)
+            ? playbackMediaSource.MediaStreams.filter(stream => stream?.Type === 'Subtitle')
+            : [];
+        const normalizeSubtitleCodec = value => {
+            const normalizedValue = String(value ?? '').trim().toLowerCase();
+            switch (normalizedValue) {
+                case 'webvtt':
+                    return 'vtt';
+                case 'pgs':
+                case 'sup':
+                    return 'pgssub';
+                case 'subrip':
+                    return 'srt';
+                default:
+                    return /^[a-z0-9][a-z0-9._-]{0,63}$/u.test(normalizedValue)
+                        ? normalizedValue
+                        : null;
+            }
+        };
+        const readDeliveredFormat = stream => {
+            if (typeof stream?.DeliveryUrl === 'string') {
+                try {
+                    const pathname = new URL(stream.DeliveryUrl, location.href).pathname;
+                    const extensionMatch = /\\.([a-z0-9_-]{1,16})$/iu.exec(pathname);
+                    const extension = normalizeSubtitleCodec(extensionMatch?.[1]);
+                    if (extension !== null) {
+                        return extension;
+                    }
+                } catch {
+                    // Fall through to the bounded stream codec
+                }
+            }
+            return normalizeSubtitleCodec(stream?.Codec);
+        };
+        const createSelectedSubtitle = streamIndex => {
+            if (!Number.isSafeInteger(streamIndex) || streamIndex < 0) {
+                return null;
+            }
+            const stream = subtitleStreams.find(candidate => candidate?.Index === streamIndex);
+            if (!stream) {
+                return { streamIndex };
+            }
+            return {
+                codec: normalizeSubtitleCodec(stream.Codec),
+                deliveredFormat: readDeliveredFormat(stream),
+                deliveryMethod: typeof stream.DeliveryMethod === 'string'
+                    ? stream.DeliveryMethod
+                    : null,
+                sourceKind: stream.IsExternal === true ? 'external' : 'embedded',
+                streamIndex
+            };
+        };
+        const primarySubtitleElements = Array.from(document.querySelectorAll(
+            '.videoPlayerContainer .videoSubtitlesInner'
+        ));
+        const secondarySubtitleElements = Array.from(document.querySelectorAll(
+            '.videoPlayerContainer .videoSecondarySubtitlesInner'
+        ));
+        const specializedSubtitleCanvases = Array.from(new Set(
+            document.querySelectorAll(
+                '.videoPlayerContainer canvas.htmlVideoPlayerCustomSubtitleCanvas, '
+                    + '.videoPlayerContainer .libassjs-canvas'
+            )
+        ));
+        const nativeShowingSubtitleTrackCount = videos.reduce(
+            (count, video) => count + Array.from(video.textTracks ?? [])
+                .filter(track => track.mode === 'showing').length,
+            0
+        );
         return {
             captured: true,
             customPlayback: custom ? {
@@ -1663,6 +1777,27 @@ function createPlayerSnapshotExpression(accessKey) {
                 status: settledRawDolbyVisionAuthorization.status,
                 targetFormat: settledRawDolbyVisionAuthorization.targetFormat
             } : null,
+            subtitle: {
+                offsetSeconds: typeof player.getSubtitleOffset === 'function'
+                    ? player.getSubtitleOffset()
+                    : null,
+                primary: createSelectedSubtitle(subtitleSelection.primaryStreamIndex),
+                secondary: createSelectedSubtitle(subtitleSelection.secondaryStreamIndex),
+                selectionInitialized: subtitleSelection.initialized === true,
+                surfaceCounts: {
+                    nativeShowingTrackCount: nativeShowingSubtitleTrackCount,
+                    primaryTextSurfaceCount: primarySubtitleElements.length,
+                    secondaryTextSurfaceCount: secondarySubtitleElements.length,
+                    specializedCanvasCount: specializedSubtitleCanvases.length,
+                    visiblePrimaryTextSurfaceCount:
+                        primarySubtitleElements.filter(isVisible).length,
+                    visibleSecondaryTextSurfaceCount:
+                        secondarySubtitleElements.filter(isVisible).length,
+                    visibleSpecializedCanvasCount:
+                        specializedSubtitleCanvases.filter(isVisible).length
+                },
+                workerCounts: null
+            },
             rawHDRValidation: rawHDRAuthorization ? {
                 authorizedRouteKeys: [ ...rawHDRAuthorization.authorizedRouteKeys ],
                 failureReasons: { ...rawHDRAuthorization.failureReasons },
@@ -1704,6 +1839,761 @@ function createPlayerOperationExpression(accessKey, operation) {
 
 async function getPlayerSnapshot(client, accessKey) {
     return evaluateValue(client, createPlayerSnapshotExpression(accessKey));
+}
+
+async function getSubtitlePlayerSnapshot(client, accessKey, workerTargetScope) {
+    const [ snapshot, targetData ] = await Promise.all([
+        getPlayerSnapshot(client, accessKey),
+        client.send('Target.getTargets')
+    ]);
+    if (snapshot?.subtitle) {
+        snapshot.subtitle.workerCounts = countSubtitleWorkerTargets(
+            targetData,
+            workerTargetScope
+        );
+    }
+    return snapshot;
+}
+
+function createSubtitleSelectionExpression(accessKey, role, streamIndex) {
+    const methodName = role === 'secondary' ?
+        'setSecondarySubtitleStreamIndex' :
+        'setSubtitleStreamIndex';
+    return `(async () => {
+        const readCapture = window[${JSON.stringify(accessKey)}];
+        if (typeof readCapture !== 'function') {
+            return false;
+        }
+        const capture = readCapture({
+            subtitleSelection: {
+                role: ${JSON.stringify(role)},
+                streamIndex: ${JSON.stringify(streamIndex)}
+            }
+        });
+        const player = capture?.player;
+        if (!player || typeof player[${JSON.stringify(methodName)}] !== 'function') {
+            return false;
+        }
+        await Promise.resolve(player[${JSON.stringify(methodName)}](
+            ${JSON.stringify(streamIndex)}
+        ));
+        return true;
+    })()`;
+}
+
+async function selectSubtitleTrack(
+    client,
+    accessKey,
+    configuration,
+    workerTargetScope,
+    role,
+    streamIndex,
+    expectedRenderer
+) {
+    const selected = await evaluateValue(
+        client,
+        createSubtitleSelectionExpression(accessKey, role, streamIndex)
+    );
+    if (!selected) {
+        throw new SmokeHarnessError(
+            'subtitle-selection-failed',
+            `Unable to select the ${role} subtitle stream`
+        );
+    }
+    return waitForValue({
+        accept: snapshot => {
+            const selectedTrack = role === 'secondary' ?
+                snapshot?.subtitle?.secondary :
+                snapshot?.subtitle?.primary;
+            if (streamIndex < 0) {
+                return selectedTrack === null
+                    && (role !== 'primary'
+                        || snapshot.subtitle.surfaceCounts.specializedCanvasCount === 0);
+            }
+            if (selectedTrack?.streamIndex !== streamIndex) {
+                return false;
+            }
+            switch (expectedRenderer) {
+                case 'forced-dom-text':
+                    return role === 'secondary' ?
+                        snapshot.subtitle.surfaceCounts.secondaryTextSurfaceCount === 1 :
+                        snapshot.subtitle.surfaceCounts.primaryTextSurfaceCount === 1;
+                case 'libass-canvas':
+                case 'libpgs-canvas':
+                    return snapshot.subtitle.surfaceCounts.specializedCanvasCount === 1;
+                case 'none':
+                    return true;
+                default:
+                    return false;
+            }
+        },
+        description: `the selected ${role} subtitle renderer`,
+        errorCode: 'subtitle-selection-timeout',
+        read: () => getSubtitlePlayerSnapshot(client, accessKey, workerTargetScope),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+}
+
+async function setSubtitleOffset(
+    client,
+    accessKey,
+    configuration,
+    workerTargetScope,
+    offsetMicroseconds
+) {
+    const offsetSeconds = offsetMicroseconds / MICROSECONDS_PER_SECOND;
+    const applied = await evaluateValue(
+        client,
+        createPlayerOperationExpression(
+            accessKey,
+            `player.setSubtitleOffset(${JSON.stringify(offsetSeconds)});`
+        )
+    );
+    if (!applied) {
+        throw new SmokeHarnessError(
+            'subtitle-offset-failed',
+            'Unable to set the subtitle offset'
+        );
+    }
+    return waitForValue({
+        accept: snapshot => Number.isFinite(snapshot?.subtitle?.offsetSeconds)
+            && Math.abs(snapshot.subtitle.offsetSeconds - offsetSeconds) <= 0.001,
+        description: 'the selected subtitle offset',
+        errorCode: 'subtitle-offset-timeout',
+        read: () => getSubtitlePlayerSnapshot(client, accessKey, workerTargetScope),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+}
+
+async function seekSubtitleTime(
+    client,
+    accessKey,
+    configuration,
+    workerTargetScope,
+    targetMicroseconds,
+    timingToleranceMicroseconds
+) {
+    const targetMilliseconds = Math.floor(
+        targetMicroseconds / MICROSECONDS_PER_MILLISECOND
+    );
+    const seeked = await evaluateValue(
+        client,
+        createPlayerOperationExpression(
+            accessKey,
+            `player.currentTime(${targetMilliseconds});`
+        )
+    );
+    if (!seeked) {
+        throw new SmokeHarnessError(
+            'subtitle-seek-failed',
+            'Unable to seek to a subtitle cue probe'
+        );
+    }
+    return waitForValue({
+        accept: snapshot => Number.isSafeInteger(
+            snapshot?.customPlayback?.currentTimeMicroseconds
+        ) && Math.abs(
+            snapshot.customPlayback.currentTimeMicroseconds - targetMicroseconds
+        ) <= timingToleranceMicroseconds,
+        description: 'the subtitle cue media time',
+        errorCode: 'subtitle-seek-timeout',
+        read: () => getSubtitlePlayerSnapshot(client, accessKey, workerTargetScope),
+        timeoutMilliseconds: configuration.timeoutMilliseconds
+    });
+}
+
+async function captureSubtitleScreenshotEvidence(client, expectedBounds) {
+    const clip = await evaluateValue(client, `(() => {
+        const container = document.querySelector('.videoPlayerContainer');
+        if (!container) {
+            return null;
+        }
+        const rectangle = container.getBoundingClientRect();
+        const expectedBounds = ${JSON.stringify(expectedBounds)};
+        const padding = Math.max(expectedBounds.tolerance, 0.02);
+        const left = Math.max(0, expectedBounds.x - padding);
+        const top = Math.max(0, expectedBounds.y - padding);
+        const right = Math.min(1, expectedBounds.x + expectedBounds.width + padding);
+        const bottom = Math.min(1, expectedBounds.y + expectedBounds.height + padding);
+        return {
+            height: Math.max(1, rectangle.height * (bottom - top)),
+            scale: 1,
+            width: Math.max(1, rectangle.width * (right - left)),
+            x: Math.max(0, rectangle.left + rectangle.width * left),
+            y: Math.max(0, rectangle.top + rectangle.height * top)
+        };
+    })()`);
+    if (!clip) {
+        return { status: 'unavailable' };
+    }
+    try {
+        const screenshot = await client.send('Page.captureScreenshot', {
+            captureBeyondViewport: false,
+            clip,
+            format: 'png',
+            fromSurface: true
+        });
+        if (typeof screenshot?.data !== 'string') {
+            return { status: 'unavailable' };
+        }
+        const screenshotBytes = Buffer.from(screenshot.data, 'base64');
+        return {
+            byteLength: screenshotBytes.byteLength,
+            height: Math.round(clip.height),
+            sha256: createHash('sha256').update(screenshotBytes).digest('hex'),
+            status: 'captured',
+            width: Math.round(clip.width)
+        };
+    } catch {
+        return { status: 'unavailable' };
+    }
+}
+
+async function captureSubtitleCueProbe(client, accessKey, cue) {
+    await sleep(SUBTITLE_SETTLE_OBSERVATION_MILLISECONDS);
+    const [ probe, screenshot ] = await Promise.all([
+        evaluateValue(client, createSubtitleCueEvidenceExpression(accessKey)),
+        captureSubtitleScreenshotEvidence(client, cue.expectedBounds)
+    ]);
+    return {
+        ...probe,
+        screenshot
+    };
+}
+
+function appendSubtitleFailures(failures, phase, phaseFailures) {
+    for (const failure of phaseFailures) {
+        failures.push(`subtitle-${phase}:${failure}`);
+    }
+}
+
+function getCueHash(cue) {
+    return cue.normalizedTextSHA256 ?? cue.imageSHA256;
+}
+
+// eslint-disable-next-line sonarjs/cognitive-complexity -- This is one ordered lifecycle transaction
+async function runSubtitleValidationExercise(options, initialSnapshot) {
+    const subtitleCase = options.configuration.subtitleValidation?.case;
+    if (!subtitleCase) {
+        return null;
+    }
+    const failures = [];
+    const observations = {
+        cueProbes: [],
+        delayedFetch: null,
+        deselection: null,
+        offsets: [],
+        pause: null,
+        route: null,
+        secondary: null,
+        switch: null
+    };
+    const primaryTracks = subtitleCase.tracks.filter(track => track.role === 'primary');
+    const secondaryTracks = subtitleCase.tracks.filter(track => track.role === 'secondary');
+    const primaryTrack = primaryTracks[0];
+    const initialPrimaryIndex = initialSnapshot.subtitle?.primary?.streamIndex ?? -1;
+    const initialSecondaryIndex = initialSnapshot.subtitle?.secondary?.streamIndex ?? -1;
+    const initialPrimaryTrack = subtitleCase.tracks.find(track => (
+        track.streamIndex === initialPrimaryIndex
+    ));
+    const initialSecondaryTrack = subtitleCase.tracks.find(track => (
+        track.streamIndex === initialSecondaryIndex
+    ));
+    const initialOffsetMicroseconds = Number.isFinite(initialSnapshot.subtitle?.offsetSeconds) ?
+        Math.round(initialSnapshot.subtitle.offsetSeconds * MICROSECONDS_PER_SECOND) :
+        0;
+    const timingToleranceMicroseconds =
+        (subtitleCase.frameDurationMicroseconds ?? 42_000) + 20_000;
+    let playbackPaused = false;
+    try {
+        const routeSnapshot = await selectSubtitleTrack(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            'primary',
+            primaryTrack.streamIndex,
+            primaryTrack.expectedRenderer
+        );
+        observations.route = routeSnapshot.subtitle;
+        appendSubtitleFailures(
+            failures,
+            'route',
+            validateSubtitleRouteSnapshot(routeSnapshot.subtitle, primaryTrack)
+        );
+
+        const paused = await evaluateValue(
+            options.client,
+            createPlayerOperationExpression(options.accessKey, 'player.pause();')
+        );
+        if (!paused) {
+            throw new SmokeHarnessError(
+                'subtitle-pause-failed',
+                'Unable to pause for media-time-directed subtitle probes'
+            );
+        }
+        await waitForPlayerSnapshot({
+            accept: snapshot => snapshot?.customPlayback?.state === 'paused',
+            accessKey: options.accessKey,
+            client: options.client,
+            description: 'the paused subtitle validation clock',
+            errorCode: 'subtitle-pause-timeout',
+            timeoutMilliseconds: options.configuration.timeoutMilliseconds
+        });
+        playbackPaused = true;
+
+        for (const cue of primaryTrack.cueAssertions) {
+            for (const phase of [ 'before', 'active', 'after' ]) {
+                const targetMicroseconds = cue[`${phase}ProbeMicroseconds`];
+                await seekSubtitleTime(
+                    options.client,
+                    options.accessKey,
+                    options.configuration,
+                    options.workerTargetScope,
+                    targetMicroseconds,
+                    timingToleranceMicroseconds
+                );
+                const probe = await captureSubtitleCueProbe(
+                    options.client,
+                    options.accessKey,
+                    cue
+                );
+                appendSubtitleFailures(
+                    failures,
+                    `${cue.id}-${phase}`,
+                    validateSubtitleCueProbe(
+                        probe,
+                        cue,
+                        phase,
+                        primaryTrack.expectedRenderer,
+                        timingToleranceMicroseconds
+                    )
+                );
+                observations.cueProbes.push({ cueID: cue.id, phase, probe });
+            }
+        }
+
+        const pauseCue = primaryTrack.cueAssertions[0];
+        await seekSubtitleTime(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            pauseCue.activeProbeMicroseconds,
+            timingToleranceMicroseconds
+        );
+        const pauseInitial = await captureSubtitleCueProbe(
+            options.client,
+            options.accessKey,
+            pauseCue
+        );
+        await sleep(SUBTITLE_PAUSE_OBSERVATION_MILLISECONDS);
+        const pauseLater = await captureSubtitleCueProbe(
+            options.client,
+            options.accessKey,
+            pauseCue
+        );
+        appendSubtitleFailures(
+            failures,
+            'pause',
+            validateSubtitlePauseProbes(
+                pauseInitial,
+                pauseLater,
+                timingToleranceMicroseconds
+            )
+        );
+        observations.pause = { initial: pauseInitial, later: pauseLater };
+
+        for (const offsetMicroseconds of primaryTrack.offsetsMicroseconds) {
+            const offsetSnapshot = await setSubtitleOffset(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                offsetMicroseconds
+            );
+            const targetMicroseconds = Math.max(
+                0,
+                pauseCue.activeProbeMicroseconds - offsetMicroseconds
+            );
+            await seekSubtitleTime(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                targetMicroseconds,
+                timingToleranceMicroseconds
+            );
+            const probe = await captureSubtitleCueProbe(
+                options.client,
+                options.accessKey,
+                pauseCue
+            );
+            const adjustedCue = {
+                ...pauseCue,
+                activeProbeMicroseconds: targetMicroseconds
+            };
+            appendSubtitleFailures(
+                failures,
+                `offset-${offsetMicroseconds}`,
+                validateSubtitleCueProbe(
+                    probe,
+                    adjustedCue,
+                    'active',
+                    primaryTrack.expectedRenderer,
+                    timingToleranceMicroseconds
+                )
+            );
+            observations.offsets.push({
+                observedSeconds: offsetSnapshot.subtitle.offsetSeconds,
+                offsetMicroseconds,
+                probe
+            });
+        }
+        await setSubtitleOffset(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            0
+        );
+
+        const switchTrack = primaryTracks[1] ?? null;
+        if (switchTrack) {
+            const switchCue = switchTrack.cueAssertions[0];
+            await selectSubtitleTrack(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                'primary',
+                switchTrack.streamIndex,
+                switchTrack.expectedRenderer
+            );
+            await seekSubtitleTime(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                switchCue.activeProbeMicroseconds,
+                timingToleranceMicroseconds
+            );
+            const switchProbe = await captureSubtitleCueProbe(
+                options.client,
+                options.accessKey,
+                switchCue
+            );
+            appendSubtitleFailures(
+                failures,
+                'switch',
+                validateSubtitleCueProbe(
+                    switchProbe,
+                    switchCue,
+                    'active',
+                    switchTrack.expectedRenderer,
+                    timingToleranceMicroseconds
+                )
+            );
+            if ([
+                ...switchProbe.textSurfaces,
+                ...switchProbe.nativeCueSurfaces,
+                ...switchProbe.canvasSurfaces
+            ].some(surface => surface.sha256 === getCueHash(pauseCue))) {
+                failures.push('subtitle-switch:old-track-cue-retained');
+            }
+            observations.switch = {
+                fromStreamIndex: primaryTrack.streamIndex,
+                probe: switchProbe,
+                toStreamIndex: switchTrack.streamIndex
+            };
+        } else {
+            observations.switch = { status: 'not-applicable-single-primary-track' };
+        }
+
+        await selectSubtitleTrack(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            'primary',
+            -1,
+            'none'
+        );
+        await seekSubtitleTime(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            pauseCue.activeProbeMicroseconds,
+            timingToleranceMicroseconds
+        );
+        const deselectedProbe = await captureSubtitleCueProbe(
+            options.client,
+            options.accessKey,
+            pauseCue
+        );
+        appendSubtitleFailures(
+            failures,
+            'deselect',
+            validateSubtitleCueProbe(
+                deselectedProbe,
+                pauseCue,
+                'active',
+                'none',
+                timingToleranceMicroseconds
+            )
+        );
+        observations.deselection = deselectedProbe;
+
+        await selectSubtitleTrack(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            'primary',
+            primaryTrack.streamIndex,
+            primaryTrack.expectedRenderer
+        );
+        if (secondaryTracks.length > 0) {
+            const secondaryTrack = secondaryTracks[0];
+            const secondaryCue = secondaryTrack.cueAssertions[0];
+            await selectSubtitleTrack(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                'secondary',
+                secondaryTrack.streamIndex,
+                secondaryTrack.expectedRenderer
+            );
+            await seekSubtitleTime(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                secondaryCue.activeProbeMicroseconds,
+                timingToleranceMicroseconds
+            );
+            const secondaryProbe = await captureSubtitleCueProbe(
+                options.client,
+                options.accessKey,
+                secondaryCue
+            );
+            appendSubtitleFailures(
+                failures,
+                'secondary',
+                validateSubtitleCueProbe(
+                    secondaryProbe,
+                    secondaryCue,
+                    'active',
+                    secondaryTrack.expectedRenderer,
+                    timingToleranceMicroseconds
+                )
+            );
+            observations.secondary = secondaryProbe;
+            await selectSubtitleTrack(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                'secondary',
+                -1,
+                'none'
+            );
+        } else {
+            observations.secondary = { status: 'not-applicable' };
+        }
+
+        const stormTargetsMilliseconds = [
+            pauseCue.beforeProbeMicroseconds,
+            pauseCue.activeProbeMicroseconds,
+            pauseCue.afterProbeMicroseconds
+        ].map(targetMicroseconds => Math.floor(
+            targetMicroseconds / MICROSECONDS_PER_MILLISECOND
+        ));
+        const stormIssued = await evaluateValue(
+            options.client,
+            createPlayerOperationExpression(
+                options.accessKey,
+                `for (const targetMilliseconds of ${JSON.stringify(stormTargetsMilliseconds)}) {
+                    player.currentTime(targetMilliseconds);
+                }`
+            )
+        );
+        if (!stormIssued) {
+            failures.push('subtitle-seek-storm:operation-failed');
+        } else {
+            await seekSubtitleTime(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                pauseCue.afterProbeMicroseconds,
+                timingToleranceMicroseconds
+            );
+            const stormProbe = await captureSubtitleCueProbe(
+                options.client,
+                options.accessKey,
+                pauseCue
+            );
+            appendSubtitleFailures(
+                failures,
+                'seek-storm',
+                validateSubtitleCueProbe(
+                    stormProbe,
+                    pauseCue,
+                    'after',
+                    primaryTrack.expectedRenderer,
+                    timingToleranceMicroseconds
+                )
+            );
+            observations.seekStorm = {
+                probe: stormProbe,
+                targetCount: stormTargetsMilliseconds.length
+            };
+        }
+
+        if (switchTrack && options.configurationInterceptor) {
+            await selectSubtitleTrack(
+                options.client,
+                options.accessKey,
+                options.configuration,
+                options.workerTargetScope,
+                'primary',
+                -1,
+                'none'
+            );
+            options.configurationInterceptor.beginSubtitleDelay();
+            const delayedSelectionIssued = await evaluateValue(
+                options.client,
+                createSubtitleSelectionExpression(
+                    options.accessKey,
+                    'primary',
+                    primaryTrack.streamIndex
+                )
+            );
+            if (!delayedSelectionIssued) {
+                failures.push('subtitle-delayed-fetch:selection-failed');
+            }
+            const delayedRequestObserved =
+                await options.configurationInterceptor.waitForDelayedSubtitleRequest();
+            if (!delayedRequestObserved) {
+                failures.push('subtitle-delayed-fetch:request-not-observed');
+                await options.configurationInterceptor.releaseSubtitleDelay();
+            } else {
+                const replacementSelectionPromise = selectSubtitleTrack(
+                    options.client,
+                    options.accessKey,
+                    options.configuration,
+                    options.workerTargetScope,
+                    'primary',
+                    switchTrack.streamIndex,
+                    switchTrack.expectedRenderer
+                );
+                const released = await options.configurationInterceptor.releaseSubtitleDelay();
+                await replacementSelectionPromise;
+                await seekSubtitleTime(
+                    options.client,
+                    options.accessKey,
+                    options.configuration,
+                    options.workerTargetScope,
+                    switchTrack.cueAssertions[0].activeProbeMicroseconds,
+                    timingToleranceMicroseconds
+                );
+                const delayedFetchProbe = await captureSubtitleCueProbe(
+                    options.client,
+                    options.accessKey,
+                    switchTrack.cueAssertions[0]
+                );
+                appendSubtitleFailures(
+                    failures,
+                    'delayed-fetch',
+                    validateSubtitleCueProbe(
+                        delayedFetchProbe,
+                        switchTrack.cueAssertions[0],
+                        'active',
+                        switchTrack.expectedRenderer,
+                        timingToleranceMicroseconds
+                    )
+                );
+                if ([
+                    ...delayedFetchProbe.textSurfaces,
+                    ...delayedFetchProbe.nativeCueSurfaces,
+                    ...delayedFetchProbe.canvasSurfaces
+                ].some(surface => surface.sha256 === getCueHash(pauseCue))) {
+                    failures.push('subtitle-delayed-fetch:stale-track-cue-retained');
+                }
+                observations.delayedFetch = {
+                    probe: delayedFetchProbe,
+                    released,
+                    requestObserved: true
+                };
+            }
+        } else {
+            observations.delayedFetch = {
+                status: switchTrack ? 'interceptor-unavailable' : 'not-applicable-single-primary-track'
+            };
+        }
+    } finally {
+        await options.configurationInterceptor?.releaseSubtitleDelay().catch(() => {
+            failures.push('subtitle-restore:delayed-fetch-release-failed');
+        });
+        await selectSubtitleTrack(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            'primary',
+            initialPrimaryIndex,
+            initialPrimaryIndex < 0 ?
+                'none' :
+                initialPrimaryTrack?.expectedRenderer ?? primaryTrack.expectedRenderer
+        ).catch(() => {
+            failures.push('subtitle-restore:primary-selection-failed');
+        });
+        await selectSubtitleTrack(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            'secondary',
+            initialSecondaryIndex,
+            initialSecondaryIndex < 0 ?
+                'none' :
+                initialSecondaryTrack?.expectedRenderer ?? 'forced-dom-text'
+        ).catch(() => {
+            failures.push('subtitle-restore:secondary-selection-failed');
+        });
+        await setSubtitleOffset(
+            options.client,
+            options.accessKey,
+            options.configuration,
+            options.workerTargetScope,
+            initialOffsetMicroseconds
+        ).catch(() => {
+            failures.push('subtitle-restore:offset-failed');
+        });
+        if (playbackPaused) {
+            const resumed = await evaluateValue(
+                options.client,
+                createPlayerOperationExpression(options.accessKey, 'player.resume();')
+            ).catch(() => false);
+            if (!resumed) {
+                failures.push('subtitle-restore:resume-failed');
+            }
+        }
+    }
+    const restoredSnapshot = await getSubtitlePlayerSnapshot(
+        options.client,
+        options.accessKey,
+        options.workerTargetScope
+    );
+    observations.restored = {
+        offsetSeconds: restoredSnapshot.subtitle?.offsetSeconds ?? null,
+        primaryStreamIndex: restoredSnapshot.subtitle?.primary?.streamIndex ?? -1,
+        secondaryStreamIndex: restoredSnapshot.subtitle?.secondary?.streamIndex ?? -1
+    };
+    return { failures, observations };
 }
 
 async function runVolumeExercise(client, accessKey, configuration, initialSnapshot) {
@@ -2486,8 +3376,24 @@ async function createStartupConfigurationInterceptor(client, configuration) {
     let fetchEnabled = false;
     let interceptionFailure = null;
     const pendingOperations = new Set();
+    let delayedSubtitleRequest = null;
+    let subtitleDelayActive = false;
+    const subtitleDelayWaiters = new Set();
+    const notifySubtitleDelayWaiters = () => {
+        for (const waiter of subtitleDelayWaiters) {
+            waiter();
+        }
+        subtitleDelayWaiters.clear();
+    };
     const removeListener = client.on('Fetch.requestPaused', parameters => {
         const operation = (async () => {
+            if (subtitleDelayActive
+                && delayedSubtitleRequest === null
+                && isSubtitleResourceURL(parameters.request?.url)) {
+                delayedSubtitleRequest = parameters.requestId;
+                notifySubtitleDelayWaiters();
+                return;
+            }
             if (parameters.request?.url !== frontendConfiguration.url || activeMode === null) {
                 await client.send('Fetch.continueRequest', {
                     requestId: parameters.requestId
@@ -2529,11 +3435,18 @@ async function createStartupConfigurationInterceptor(client, configuration) {
         pendingOperations.add(operation);
     });
     try {
+        const patterns = [ {
+            requestStage: 'Request',
+            urlPattern: frontendConfiguration.url
+        } ];
+        if (configuration.subtitleLiveSpecPath !== null) {
+            patterns.push(
+                { requestStage: 'Request', urlPattern: '*Subtitles*' },
+                { requestStage: 'Request', urlPattern: '*subtitles*' }
+            );
+        }
         await client.send('Fetch.enable', {
-            patterns: [ {
-                requestStage: 'Request',
-                urlPattern: frontendConfiguration.url
-            } ]
+            patterns
         });
         fetchEnabled = true;
     } catch (error) {
@@ -2547,6 +3460,18 @@ async function createStartupConfigurationInterceptor(client, configuration) {
             }
             activeMode = null;
             closed = true;
+            subtitleDelayActive = false;
+            notifySubtitleDelayWaiters();
+            if (delayedSubtitleRequest !== null) {
+                try {
+                    await client.send('Fetch.continueRequest', {
+                        requestId: delayedSubtitleRequest
+                    });
+                } catch {
+                    // The request may have been canceled with its playback generation
+                }
+                delayedSubtitleRequest = null;
+            }
             removeListener();
             closePromise = (async () => {
                 // No operation can be added after listener removal, so this
@@ -2575,6 +3500,33 @@ async function createStartupConfigurationInterceptor(client, configuration) {
                 throw interceptionFailure;
             }
         },
+        beginSubtitleDelay() {
+            if (configuration.subtitleLiveSpecPath === null) {
+                throw new SmokeHarnessError(
+                    'subtitle-delay-not-configured',
+                    'Subtitle fetch delay requires a live subtitle specification'
+                );
+            }
+            if (closed || delayedSubtitleRequest !== null) {
+                throw new SmokeHarnessError(
+                    'subtitle-delay-state-invalid',
+                    'Subtitle fetch delay is already pending or the interceptor is closed'
+                );
+            }
+            subtitleDelayActive = true;
+        },
+        async releaseSubtitleDelay() {
+            subtitleDelayActive = false;
+            if (delayedSubtitleRequest === null) {
+                return false;
+            }
+            const requestIdentifier = delayedSubtitleRequest;
+            delayedSubtitleRequest = null;
+            await client.send('Fetch.continueRequest', {
+                requestId: requestIdentifier
+            });
+            return true;
+        },
         setMode(mode) {
             getStartupModeFeatureFlags(mode);
             if (closed) {
@@ -2587,6 +3539,27 @@ async function createStartupConfigurationInterceptor(client, configuration) {
                 throw interceptionFailure;
             }
             activeMode = mode;
+        },
+        async waitForDelayedSubtitleRequest() {
+            if (delayedSubtitleRequest !== null) {
+                return true;
+            }
+            if (!subtitleDelayActive) {
+                return false;
+            }
+            let timeoutIdentifier;
+            const observed = await new Promise(resolve => {
+                const notify = () => {
+                    clearTimeout(timeoutIdentifier);
+                    resolve(delayedSubtitleRequest !== null);
+                };
+                subtitleDelayWaiters.add(notify);
+                timeoutIdentifier = setTimeout(() => {
+                    subtitleDelayWaiters.delete(notify);
+                    resolve(false);
+                }, configuration.timeoutMilliseconds);
+            });
+            return observed;
         }
     };
 }
@@ -4637,11 +5610,13 @@ async function runConfiguredFailureInjection(options) {
     }
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- This coordinates bounded independent checks
 async function runPlaybackExercise(
     client,
     configuration,
     browserErrorMonitor,
-    workerTargetScope
+    workerTargetScope,
+    configurationInterceptor
 ) {
     const serverID = await waitForValue({
         accept: value => typeof value === 'string' && value.length > 0,
@@ -4761,6 +5736,16 @@ async function runPlaybackExercise(
             activeLater
         );
         const failures = [];
+        const subtitleValidation = await runSubtitleValidationExercise({
+            accessKey,
+            client,
+            configuration,
+            configurationInterceptor,
+            workerTargetScope
+        }, audioSwitchSnapshot ?? activeLater);
+        if (subtitleValidation) {
+            failures.push(...subtitleValidation.failures);
+        }
         const surfaceObservation = await runPresentationSurfaceExercise({
             accessKey,
             client,
@@ -4871,6 +5856,22 @@ async function runPlaybackExercise(
             'stop-failed'
         );
         cleanupState.required = false;
+        let subtitlePostStopWorkerCounts = null;
+        if (subtitleValidation) {
+            const targetData = await client.send('Target.getTargets');
+            subtitlePostStopWorkerCounts = countSubtitleWorkerTargets(
+                targetData,
+                workerTargetScope
+            );
+            if (subtitlePostStopWorkerCounts.subtitleWorkerCount !== 0) {
+                failures.push('subtitle-stop:worker-retained');
+            }
+            if (stopSnapshot.subtitle?.surfaceCounts?.specializedCanvasCount !== 0
+                || stopSnapshot.subtitle?.surfaceCounts?.primaryTextSurfaceCount !== 0
+                || stopSnapshot.subtitle?.surfaceCounts?.secondaryTextSurfaceCount !== 0) {
+                failures.push('subtitle-stop:surface-retained');
+            }
+        }
 
         appendFailures(
             failures,
@@ -5002,6 +6003,11 @@ async function runPlaybackExercise(
                 },
                 seekStorm: seekStormResult.observation,
                 stop: latestStopSnapshot,
+                subtitle: subtitleValidation ? {
+                    ...subtitleValidation.observations,
+                    postStopWorkerCounts: subtitlePostStopWorkerCounts,
+                    preflight: configuration.subtitleValidation.preflightEvidence
+                } : null,
                 surface: surfaceObservation,
                 volume: volumeObservation
             }
@@ -5042,7 +6048,8 @@ async function runConfiguredPlayback(
     client,
     configuration,
     browserErrorMonitor,
-    workerTargetScope
+    workerTargetScope,
+    configurationInterceptor
 ) {
     let configuredServerLogCapture = null;
     const beginConfiguredCapture = async () => {
@@ -5066,7 +6073,8 @@ async function runConfiguredPlayback(
             client,
             configuration,
             browserErrorMonitor,
-            workerTargetScope
+            workerTargetScope,
+            configurationInterceptor
         ),
         serverLogCapture: configuredServerLogCapture
     };
@@ -5127,7 +6135,8 @@ async function runSmoke(configuration) {
                 client,
                 configuration,
                 browserErrorMonitor,
-                workerTargetScope
+                workerTargetScope,
+                configurationInterceptor
             );
         } catch (error) {
             attachBrowserDiagnostics(error, browserErrorMonitor);
@@ -5170,6 +6179,8 @@ async function runSmoke(configuration) {
                 serverLogEvidence: configuration.serverLogDirectory !== null,
                 soakSessionCount: configuration.soakSessionCount,
                 startupSampleCount: configuration.startupSampleCount,
+                subtitleSourceID:
+                    configuration.subtitleValidation?.case.sourceID ?? null,
                 videoDecoderBackend: configuration.expectedVideoDecoderBackend,
                 videoOutputMode: configuration.expectedVideoOutputMode
             },
@@ -5204,6 +6215,23 @@ function createFailureReport(error) {
         schemaVersion: 1,
         status: 'failed'
     };
+}
+
+function getConfigurationSecrets(configuration) {
+    if (configuration?.help === true || !configuration) {
+        return [];
+    }
+    return [
+        configuration.debugURL,
+        configuration.frontendURL,
+        configuration.itemID,
+        configuration.password,
+        configuration.serverLogDirectory,
+        configuration.serverURL,
+        configuration.subtitleLiveSpecPath,
+        ...(configuration.subtitleValidation?.privateValues ?? []),
+        configuration.username
+    ];
 }
 
 export {
@@ -5245,30 +6273,37 @@ export async function runSmokeCLI(
             return;
         }
 
+        if (configuration.subtitleLiveSpecPath !== null) {
+            const subtitleValidation = await loadSubtitleValidationCase(
+                configuration.subtitleLiveSpecPath,
+                environment,
+                configuration.itemID
+            );
+            if (configuration.expectedPlayMethod !== null
+                && configuration.expectedPlayMethod
+                    !== subtitleValidation.case.expectedPlayMethod) {
+                throw new SmokeHarnessError(
+                    'subtitle-play-method-mismatch',
+                    'Subtitle live specification disagrees with --expected-play-method'
+                );
+            }
+            configuration = {
+                ...configuration,
+                expectedPlayMethod: subtitleValidation.case.expectedPlayMethod,
+                subtitleValidation
+            };
+        } else {
+            configuration = { ...configuration, subtitleValidation: null };
+        }
+
         const report = await runSmoke(configuration);
-        const sanitizedReport = sanitizeReport(report, [
-            configuration.debugURL,
-            configuration.frontendURL,
-            configuration.itemID,
-            configuration.password,
-            configuration.serverLogDirectory,
-            configuration.serverURL,
-            configuration.username
-        ]);
+        const sanitizedReport = sanitizeReport(report, getConfigurationSecrets(configuration));
         process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
         if (report.status !== 'passed') {
             process.exitCode = 1;
         }
     } catch (error) {
-        const secrets = configuration?.help === true || !configuration ? [] : [
-            configuration.debugURL,
-            configuration.frontendURL,
-            configuration.itemID,
-            configuration.password,
-            configuration.serverLogDirectory,
-            configuration.serverURL,
-            configuration.username
-        ];
+        const secrets = getConfigurationSecrets(configuration);
         const sanitizedReport = sanitizeReport(createFailureReport(error), secrets);
         process.stdout.write(`${JSON.stringify(sanitizedReport, null, 2)}\n`);
         process.exitCode = 1;
