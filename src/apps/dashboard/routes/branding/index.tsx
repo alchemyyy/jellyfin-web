@@ -1,4 +1,3 @@
-import type { BrandingOptionsDto } from '@jellyfin/sdk/lib/generated-client/models/branding-options-dto';
 import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api';
 import { getImageApi } from '@jellyfin/sdk/lib/utils/api/image-api';
 import Delete from '@mui/icons-material/Delete';
@@ -14,7 +13,7 @@ import Typography from '@mui/material/Typography';
 import React, { useCallback, useEffect, useState } from 'react';
 import { type ActionFunctionArgs, Form, useActionData, useNavigation } from 'react-router-dom';
 
-import { getBrandingOptionsQuery, QUERY_KEY, useBrandingOptions } from 'apps/dashboard/features/branding/api/useBrandingOptions';
+import { type BrandingOptions, getBrandingOptionsQuery, QUERY_KEY, useBrandingOptions } from 'apps/dashboard/features/branding/api/useBrandingOptions';
 import Loading from 'components/loading/LoadingComponent';
 import Image from 'components/Image';
 import Page from 'components/Page';
@@ -27,6 +26,7 @@ import { ActionData } from 'types/actionData';
 
 const BRANDING_CONFIG_KEY = 'branding';
 const BrandingOption = {
+    About: 'About',
     CustomCss: 'CustomCss',
     LoginDisclaimer: 'LoginDisclaimer',
     SplashscreenEnabled: 'SplashscreenEnabled'
@@ -39,7 +39,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const formData = await request.formData();
     const data = Object.fromEntries(formData);
 
-    const brandingOptions: BrandingOptionsDto = {
+    const brandingOptions: BrandingOptions = {
+        About: data.About?.toString(),
         CustomCss: data.CustomCss?.toString(),
         LoginDisclaimer: data.LoginDisclaimer?.toString(),
         SplashscreenEnabled: data.SplashscreenEnabled?.toString() === 'on'
@@ -79,7 +80,7 @@ export const Component = () => {
         isPending,
         isError
     } = useBrandingOptions();
-    const [ brandingOptions, setBrandingOptions ] = useState(defaultBrandingOptions || {});
+    const [ brandingOptions, setBrandingOptions ] = useState<BrandingOptions>(defaultBrandingOptions || {});
 
     const [ error, setError ] = useState<string>();
 
@@ -277,12 +278,24 @@ export const Component = () => {
                             <TextField
                                 fullWidth
                                 multiline
+                                minRows={8}
+                                maxRows={30}
+                                name={BrandingOption.About}
+                                label={globalize.translate('LabelAbout')}
+                                helperText={globalize.translate('LabelAboutHelp')}
+                                value={brandingOptions.About ?? ''}
+                                onChange={setBrandingOption}
+                            />
+
+                            <TextField
+                                fullWidth
+                                multiline
                                 minRows={5}
                                 maxRows={5}
                                 name={BrandingOption.LoginDisclaimer}
                                 label={globalize.translate('LabelLoginDisclaimer')}
                                 helperText={globalize.translate('LabelLoginDisclaimerHelp')}
-                                value={brandingOptions?.LoginDisclaimer}
+                                value={brandingOptions.LoginDisclaimer ?? ''}
                                 onChange={setBrandingOption}
                                 slotProps={{
                                     input: {
@@ -300,7 +313,7 @@ export const Component = () => {
                                 label={globalize.translate('LabelCustomCss')}
                                 helperText={globalize.translate('LabelCustomCssHelp')}
                                 spellCheck={false}
-                                value={brandingOptions?.CustomCss}
+                                value={brandingOptions.CustomCss ?? ''}
                                 onChange={setBrandingOption}
                                 slotProps={{
                                     input: {

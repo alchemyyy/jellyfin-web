@@ -6,6 +6,7 @@ export enum EventType {
     /** Items have been updated/deleted and the UI should refresh. */
     REFRESH_NEEDED = 'REFRESH_NEEDED',
     SET_TABS = 'SET_TABS',
+    SHOW_ABOUT = 'SHOW_ABOUT',
     SHOW_VIDEO_OSD = 'SHOW_VIDEO_OSD',
     THEME_CHANGE = 'THEME_CHANGE',
     VIDEO_TITLE_CHANGE = 'VIDEO_TITLE_CHANGE'

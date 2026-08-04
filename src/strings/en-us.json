@@ -1,5 +1,8 @@
 {
     "Absolute": "Absolute",
+    "About": "About",
+    "AboutLoadError": "Failed to load About information",
+    "AboutNotConfigured": "No About information has been provided.",
     "AccessRestrictedTryAgainLater": "Access is currently restricted. Please try again later.",
     "Actor": "Actor",
     "ActivitiesLoadError": "Failed to load activities",
@@ -711,6 +714,8 @@
     "LabelCurrentStatus": "Current status",
     "LabelCustomCertificatePath": "Custom SSL certificate path",
     "LabelCustomCertificatePathHelp": "Path to a PKCS #12 file containing a certificate and private key to enable TLS support on a custom domain.",
+    "LabelAbout": "About",
+    "LabelAboutHelp": "Markdown content displayed in the About dialog on the home screen.",
     "LabelCustomCss": "Custom CSS code",
     "LabelCustomCssHelp": "Apply your custom CSS code for theming/branding on the web interface.",
     "LabelCustomDeviceDisplayNameHelp": "Supply a custom display name or leave empty to use the name reported by the device.",
