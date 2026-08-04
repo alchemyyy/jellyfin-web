@@ -9,7 +9,7 @@ type PlayerIdentity = {
 };
 
 const HTML_VIDEO_PLAYER_ID = 'htmlvideoplayer';
-const WEBGPU_VIDEO_PLAYER_ID = 'webgpuvideoplayer';
+const WEBGPU_VIDEO_PLAYER_ID = 'webgpuplayer';
 
 /** Converts persisted or external values to a supported player preference. */
 export function normalizeVideoPlayerPreference(value: unknown): VideoPlayerPreference {

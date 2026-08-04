@@ -124,7 +124,7 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=(
             repository_root
-            / "src/plugins/webGPUVideoPlayer/custom/DTSExactCapabilityFixtures.ts"
+            / "src/plugins/webGPUPlayer/custom/DTSExactCapabilityFixtures.ts"
         ),
     )
     parser.add_argument(

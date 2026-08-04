@@ -80,8 +80,8 @@ import {
 } from './validation/RawHDRPresentationAuthorization';
 import identityShader from './shaders/identity.wgsl';
 
-const CANVAS_CLASS = 'webgpuVideoPlayerCanvas';
-const CANVAS_VISIBLE_CLASS = 'webgpuVideoPlayerCanvas-visible';
+const CANVAS_CLASS = 'webgpuPlayerCanvas';
+const CANVAS_VISIBLE_CLASS = 'webgpuPlayerCanvas-visible';
 const FLOATS_PER_PRESENTATION_UNIFORM = 4;
 const MAX_DEVICE_RECOVERY_ATTEMPTS = 1;
 const MIN_CANVAS_DIMENSION = 1;

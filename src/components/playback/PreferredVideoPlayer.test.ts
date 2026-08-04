@@ -11,7 +11,7 @@ type TestPlayer = {
 };
 
 const PLAYERS: readonly TestPlayer[] = [
-    { id: 'webgpuvideoplayer' },
+    { id: 'webgpuplayer' },
     { id: 'htmlvideoplayer' },
     { id: 'youtubeplayer' }
 ];
@@ -48,7 +48,7 @@ describe('PreferredVideoPlayer', () => {
             VideoPlayerPreference.HTML
         ).map(player => player.id)).toEqual([
             'htmlvideoplayer',
-            'webgpuvideoplayer',
+            'webgpuplayer',
             'youtubeplayer'
         ]);
     });
@@ -61,7 +61,7 @@ describe('PreferredVideoPlayer', () => {
             'Video',
             VideoPlayerPreference.WEBGPU
         ).map(player => player.id)).toEqual([
-            'webgpuvideoplayer',
+            'webgpuplayer',
             'htmlvideoplayer',
             'youtubeplayer'
         ]);
@@ -77,7 +77,7 @@ describe('PreferredVideoPlayer', () => {
 
     it('retains normal fallbacks when the preferred player is unavailable', () => {
         const playersWithoutWebGPU = PLAYERS.filter(player => (
-            player.id !== 'webgpuvideoplayer'
+            player.id !== 'webgpuplayer'
         ));
 
         expect(orderVideoPlayersByPreference(

@@ -111,9 +111,9 @@ Build and verify:
 python scripts/webgpu/build_truehd_decoder.py --verify-reproducible
 python scripts/webgpu/generate_truehd_capability_fixtures.py
 node scripts/webgpu/verify-truehd-decoder-artifacts.mjs
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts
 ```
 
 ## Remaining expansion procedures

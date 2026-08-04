@@ -671,7 +671,7 @@ describe('WebGPUPresenter', () => {
 
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'insecure-context');
-        expect(document.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(document.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -759,7 +759,7 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'canvas-configuration-failed');
         expect(contextHarness.unconfigure).toHaveBeenCalledOnce();
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -783,7 +783,7 @@ describe('WebGPUPresenter', () => {
             1,
             'request-video-frame-callback-unavailable'
         );
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -812,7 +812,7 @@ describe('WebGPUPresenter', () => {
             'request-video-frame-callback-unavailable'
         );
         expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -828,9 +828,9 @@ describe('WebGPUPresenter', () => {
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
 
-        const canvas = surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas');
+        const canvas = surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas');
         expect(canvas).toBeInstanceOf(HTMLCanvasElement);
-        expect(canvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(false);
+        expect(canvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
 
         const callback = surfaceHarness.callbacks.get(1);
         expect(callback).toBeDefined();
@@ -845,12 +845,12 @@ describe('WebGPUPresenter', () => {
         expect(deviceHarness.queueSubmit).toHaveBeenCalledOnce();
         expect(deviceHarness.pushErrorScope).toHaveBeenCalledWith('validation');
         expect(deviceHarness.popErrorScope).toHaveBeenCalledOnce();
-        expect(canvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(false);
+        expect(canvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
         expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
 
         await vi.waitFor(() => {
-            expect(canvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(true);
+            expect(canvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(true);
             expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
         });
         expect(presenter.getTelemetry()).toMatchObject({
@@ -920,7 +920,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
 
         const submitted = presenter.presentDecodedFrame({
@@ -963,7 +963,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'external-hdr',
@@ -1013,7 +1013,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         expect(presenter.presentDecodedFrame({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
@@ -1063,7 +1063,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         expect(presenter.presentDecodedFrame({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
@@ -1128,7 +1128,7 @@ describe('WebGPUPresenter', () => {
             presenter.setDecodedFramePushMode(true, 1);
             presenter.attach(surfaceHarness.surface, 1);
             await vi.waitFor(() => expect(
-                surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+                surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
             ).toBeInstanceOf(HTMLCanvasElement));
             await expect(presenter.configureColorPipeline({
                 inputMode: 'raw-yuv',
@@ -1193,7 +1193,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -1285,7 +1285,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -1364,7 +1364,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-dolby-vision',
@@ -1437,7 +1437,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-dolby-vision',
@@ -1509,7 +1509,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-dolby-vision',
@@ -1626,7 +1626,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-dolby-vision',
@@ -1666,7 +1666,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -1705,7 +1705,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -1744,7 +1744,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -1804,7 +1804,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'external-hdr',
@@ -1864,7 +1864,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-dolby-vision',
@@ -1966,7 +1966,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
 
         const configured = await presenter.configureColorPipeline({
@@ -2002,7 +2002,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
 
         await expect(presenter.configureColorPipeline({
@@ -2034,7 +2034,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         const configured = await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2096,7 +2096,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2150,7 +2150,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2213,7 +2213,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2250,7 +2250,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2280,7 +2280,7 @@ describe('WebGPUPresenter', () => {
         presenter.setDecodedFramePushMode(true, 1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(
-            surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         const configuration = presenter.configureColorPipeline({
             inputMode: 'raw-yuv',
@@ -2312,12 +2312,12 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
-        const canvas = surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas');
+        const canvas = surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas');
 
         surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
 
         expect(deviceHarness.queueSubmit).toHaveBeenCalledOnce();
-        expect(canvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(false);
+        expect(canvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
         expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
@@ -2352,7 +2352,7 @@ describe('WebGPUPresenter', () => {
         );
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry()).toMatchObject({
             fallbackReason: 'frame-render-failed',
             presentedFrameCount: 0,
@@ -2396,7 +2396,7 @@ describe('WebGPUPresenter', () => {
         expect(wasNotCancelled).toBe(false);
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-render-failed');
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('fallback');
     });
 
@@ -2438,7 +2438,7 @@ describe('WebGPUPresenter', () => {
         presenter.startSession(1);
         presenter.attach(surfaceHarness.surface, 1);
         await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
-        const canvas = surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas');
+        const canvas = surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas');
         surfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
 
@@ -2447,7 +2447,7 @@ describe('WebGPUPresenter', () => {
         staleValidation.resolve(null);
         await staleValidation.promise;
         await Promise.resolve();
-        expect(canvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(false);
+        expect(canvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
         expect(presenter.getTelemetry().presentedFrameCount).toBe(0);
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
 
@@ -2475,7 +2475,7 @@ describe('WebGPUPresenter', () => {
 
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'frame-import-failed');
         expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce();
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().fallbackReason).toBe('frame-import-failed');
     });
 
@@ -2497,7 +2497,7 @@ describe('WebGPUPresenter', () => {
 
         expect(surfaceHarness.cancelVideoFrameCallback).toHaveBeenCalledWith(1);
         expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
     });
 
     it('recovers one lost device and falls back after a second loss', async () => {
@@ -2531,7 +2531,7 @@ describe('WebGPUPresenter', () => {
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
     });
 
     it('bounds a device recovery request that never settles', async () => {
@@ -2564,7 +2564,7 @@ describe('WebGPUPresenter', () => {
 
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed');
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
     });
 
     it('reveals direct video and rejects stale work while device recovery is pending', async () => {
@@ -2585,7 +2585,7 @@ describe('WebGPUPresenter', () => {
         });
         const callbackFromLostDevice = surfaceHarness.callbacks.get(2);
         const visibleCanvas = surfaceHarness.surface.container.querySelector(
-            '.webgpuVideoPlayerCanvas-visible'
+            '.webgpuPlayerCanvas-visible'
         );
         expect(visibleCanvas).toBeInstanceOf(HTMLCanvasElement);
 
@@ -2597,7 +2597,7 @@ describe('WebGPUPresenter', () => {
         } as GPUDeviceLostInfo);
 
         await vi.waitFor(() => expect(gpuHarness.requestDevice).toHaveBeenCalledTimes(2));
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('initializing');
 
         window.dispatchEvent(new Event('resize'));
@@ -2610,15 +2610,15 @@ describe('WebGPUPresenter', () => {
             expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledTimes(3);
         });
         const recoveredCanvas = surfaceHarness.surface.container.querySelector(
-            '.webgpuVideoPlayerCanvas'
+            '.webgpuPlayerCanvas'
         );
         expect(recoveredCanvas).toBeInstanceOf(HTMLCanvasElement);
-        expect(recoveredCanvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(false);
+        expect(recoveredCanvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(false);
 
         surfaceHarness.callbacks.get(3)?.(performance.now(), createFrameMetadata(3));
         expect(gpuHarness.devices[1].importExternalTexture).toHaveBeenCalledOnce();
         await vi.waitFor(() => {
-            expect(recoveredCanvas?.classList.contains('webgpuVideoPlayerCanvas-visible')).toBe(true);
+            expect(recoveredCanvas?.classList.contains('webgpuPlayerCanvas-visible')).toBe(true);
         });
         expect(presenter.getTelemetry().state).toBe('presenting');
         expect(fallbackHandler).not.toHaveBeenCalled();
@@ -2750,7 +2750,7 @@ describe('WebGPUPresenter', () => {
         presenter.destroy();
 
         expect(gpuHarness.devices[0].destroy).toHaveBeenCalledOnce();
-        expect(surfaceHarness.surface.container.querySelector('.webgpuVideoPlayerCanvas')).toBeNull();
+        expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
         expect(presenter.getTelemetry().state).toBe('idle');
 
         presenter.startSession(3);

@@ -88,9 +88,9 @@ node_modules\.bin\vite-node.cmd --script `
     scripts/webgpu/report_dts_downmix_reference.ts --check
 
 npm test -- `
-    src/plugins/webGPUVideoPlayer/custom/CustomAudioDownmix.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/SevenPointOneDownmixReference.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts
+    src/plugins/webGPUPlayer/custom/CustomAudioDownmix.test.ts `
+    src/plugins/webGPUPlayer/custom/SevenPointOneDownmixReference.test.ts `
+    src/plugins/webGPUPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts
 ```
 
 The browser capability probe now verifies exact stereo float fingerprints for

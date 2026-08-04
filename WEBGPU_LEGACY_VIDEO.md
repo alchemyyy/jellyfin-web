@@ -42,12 +42,12 @@ Main Profile Matroska. Source bitrate is not a capability or selection input.
 | Focused C decoder bridge | `scripts/webgpu/legacy-video-decoder/bridge.c` |
 | Reproducible focused build | `scripts/webgpu/legacy-video-decoder/build_legacy_video_decoder.py` |
 | Pinned artifacts and hashes | `scripts/webgpu/legacy-video-decoder/artifacts/` |
-| Decoder adapter and ownership | `src/plugins/webGPUVideoPlayer/custom/LegacySoftwareVideoDecoder.ts` |
-| Exact browser capability gate | `src/plugins/webGPUVideoPlayer/custom/LegacyVideoExactCapabilityProbe.ts` |
-| Full demux/decode worker probe | `src/plugins/webGPUVideoPlayer/custom/LegacyVideoExactCapabilityProbe.worker.ts` |
-| Runtime worker route | `src/plugins/webGPUVideoPlayer/custom/CustomDecode.worker.ts` |
-| Server negotiation | `src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts` |
-| Client route validation | `src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.ts` |
+| Decoder adapter and ownership | `src/plugins/webGPUPlayer/custom/LegacySoftwareVideoDecoder.ts` |
+| Exact browser capability gate | `src/plugins/webGPUPlayer/custom/LegacyVideoExactCapabilityProbe.ts` |
+| Full demux/decode worker probe | `src/plugins/webGPUPlayer/custom/LegacyVideoExactCapabilityProbe.worker.ts` |
+| Runtime worker route | `src/plugins/webGPUPlayer/custom/CustomDecode.worker.ts` |
+| Server negotiation | `src/plugins/webGPUPlayer/custom/CustomDeviceProfile.ts` |
+| Client route validation | `src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.ts` |
 | Artifact packaging and verification | `webpack.common.js`, `scripts/webgpu/verify-custom-codec-artifacts.mjs` |
 
 ## Verification
@@ -56,11 +56,11 @@ Main Profile Matroska. Source bitrate is not a capability or selection input.
 python scripts/webgpu/generate_legacy_video_capability_fixture.py
 python scripts/webgpu/legacy-video-decoder/build_legacy_video_decoder.py --verify-reproducible
 node scripts/webgpu/verify-legacy-video-decoder-artifacts.mjs
-npm test -- src/plugins/webGPUVideoPlayer/custom/LegacySoftwareVideoDecoder.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/LegacyVideoDecoderIntegration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/LegacyVideoExactCapabilityProbe.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/LegacySoftwareVideoDecoder.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/LegacyVideoDecoderIntegration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/LegacyVideoExactCapabilityProbe.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/CustomDeviceProfile.test.ts
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 npm run build:check
 npm run build:development

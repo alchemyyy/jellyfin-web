@@ -1,6 +1,6 @@
-import { createPQColorMetadata } from '../../src/plugins/webGPUVideoPlayer/color/ColorMetadata';
-import { createRawYUVColorPipelineWGSL } from '../../src/plugins/webGPUVideoPlayer/color/ColorPipelineShader';
-import { createHDRToSDRRenderSettings } from '../../src/plugins/webGPUVideoPlayer/RenderSettings';
+import { createPQColorMetadata } from '../../src/plugins/webGPUPlayer/color/ColorMetadata';
+import { createRawYUVColorPipelineWGSL } from '../../src/plugins/webGPUPlayer/color/ColorPipelineShader';
+import { createHDRToSDRRenderSettings } from '../../src/plugins/webGPUPlayer/RenderSettings';
 
 const shaderCode = createRawYUVColorPipelineWGSL(
     createPQColorMetadata(),

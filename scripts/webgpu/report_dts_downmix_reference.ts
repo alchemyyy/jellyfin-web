@@ -1,16 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { Microseconds } from '../../src/plugins/webGPUVideoPlayer/MediaTime';
+import type { Microseconds } from '../../src/plugins/webGPUPlayer/MediaTime';
 import {
     CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY,
     getStereoChannelDataFingerprint,
     type StereoChannelData
-} from '../../src/plugins/webGPUVideoPlayer/custom/CustomAudioDownmix';
-import { mixCustomAudioToStereo } from '../../src/plugins/webGPUVideoPlayer/custom/CustomAudioChannelLayout';
+} from '../../src/plugins/webGPUPlayer/custom/CustomAudioDownmix';
+import { mixCustomAudioToStereo } from '../../src/plugins/webGPUPlayer/custom/CustomAudioChannelLayout';
 import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
-} from '../../src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder';
+} from '../../src/plugins/webGPUPlayer/custom/DTSSoftwareAudioDecoder';
 
 type DTSFixtureDefinition = {
     expectedChannelMask: number

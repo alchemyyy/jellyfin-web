@@ -494,7 +494,7 @@ unavailable.
 
 Acceptance requires all of the following on `http://localhost:8096`:
 
-1. PlaybackInfo reports `WebGPU Video Player (Direct Play)` and no HLS target,
+1. PlaybackInfo reports `WebGPU Player (Direct Play)` and no HLS target,
    FFmpeg transcode, or level/resolution/bitrate transcode reason.
 2. Network evidence shows range reads from the original MKV source rather than
    generated HLS playlists or fragments.
@@ -1804,7 +1804,7 @@ as a separate checkpoint to preserve review and live-validation isolation.
 
 - [x] Run `npm run build:check` again from the final diff.
 - [x] Run all affected WebGPU Vitest files, not only the newly added tests.
-- [x] Run the complete `src/plugins/webGPUVideoPlayer` Vitest suite.
+- [x] Run the complete `src/plugins/webGPUPlayer` Vitest suite.
 - [x] Run ESLint on every changed TypeScript/JavaScript file; it reports zero
   errors and only four pre-existing HTML-player warnings.
 - [x] Confirm stylelint is not applicable because no SCSS/CSS changed.
@@ -1831,7 +1831,7 @@ as a separate checkpoint to preserve review and live-validation isolation.
 - [x] Confirm the exact external HLG authorization independently passes.
 - [x] Play the local High Tier Main10/FLAC case and require Jellyfin `DirectPlay`,
   not HLS transcoding or a false "codec/level/resolution/bitrate/range" reason.
-- [x] Confirm PlaybackInfo identifies `WebGPU Video Player` and the telemetry
+- [x] Confirm PlaybackInfo identifies `WebGPU Player` and the telemetry
   identifies native video-frame/external-HDR plus owned FLAC audio.
 - [ ] Visually compare representative dark, bright, saturated, skin-tone, and
   gradient scenes against the raw-HDR/reference path; capture screenshots and

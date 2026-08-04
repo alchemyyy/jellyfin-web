@@ -880,14 +880,14 @@ export function getStartupModeFeatureFlags(mode) {
                 enableWebGPUCustomDecode: false,
                 enableWebGPUHDRToneMapping: false,
                 enableWebGPUValidationHarness: false,
-                enableWebGPUVideoPlayer: true
+                enableWebGPUPlayer: true
             };
         case 'custom':
             return {
                 enableWebGPUCustomDecode: true,
                 enableWebGPUHDRToneMapping: true,
                 enableWebGPUValidationHarness: true,
-                enableWebGPUVideoPlayer: true
+                enableWebGPUPlayer: true
             };
         default:
             throw new TypeError('Unknown startup comparison mode');
@@ -1715,7 +1715,7 @@ export function validateActivePlaybackSnapshot(
     const presentationTelemetry = laterSnapshot.presentation;
 
     addFailure(failures, laterSnapshot.captured === true, 'player-not-captured');
-    addFailure(failures, laterSnapshot.playerID === 'webgpuvideoplayer', 'wrong-player');
+    addFailure(failures, laterSnapshot.playerID === 'webgpuplayer', 'wrong-player');
     addFailure(failures, laterSnapshot.terminalErrorCount === 0, 'player-error-event');
     addFailure(failures, customTelemetry !== null, 'custom-telemetry-missing');
     addFailure(

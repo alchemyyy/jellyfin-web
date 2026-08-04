@@ -1072,7 +1072,7 @@ function createPlayerCaptureHookExpression(
     accessKey,
     restoreKey,
     captureStartupMilestones = false,
-    expectedPlayerID = 'webgpuvideoplayer'
+    expectedPlayerID = 'webgpuplayer'
 ) {
     return `(() => {
         const events = window.Events;
@@ -1117,7 +1117,7 @@ function createPlayerCaptureHookExpression(
             if (captureStartupMilestones
                 && milestones.canvasAttachedAtMilliseconds === null
                 && child instanceof Element
-                && child.matches('.webgpuVideoPlayerCanvas')) {
+                && child.matches('.webgpuPlayerCanvas')) {
                 milestones.canvasAttachedAtMilliseconds = performance.now();
             }
             return Reflect.apply(originalAppendChild, this, [ child ]);
@@ -1157,7 +1157,7 @@ function createPlayerCaptureHookExpression(
             }
             if (milestones.canvasAttachedAtMilliseconds === null
                 && document.querySelector(
-                    '.videoPlayerContainer .webgpuVideoPlayerCanvas'
+                    '.videoPlayerContainer .webgpuPlayerCanvas'
                 )) {
                 milestones.canvasAttachedAtMilliseconds = performance.now();
             }
@@ -1372,7 +1372,7 @@ function createPlayerSnapshotExpression(accessKey) {
             'audio.webgpuOwnedNativeAudio'
         ));
         const canvases = Array.from(document.querySelectorAll(
-            '.videoPlayerContainer .webgpuVideoPlayerCanvas'
+            '.videoPlayerContainer .webgpuPlayerCanvas'
         ));
         const isVisible = element => {
             const rectangle = element.getBoundingClientRect();
@@ -2919,7 +2919,7 @@ async function attachPlaybackDecisionFailureDiagnostics(
 async function capturePresentedFrameEvidence(client) {
     const captureRectangle = await evaluateValue(client, `(() => {
         const canvases = Array.from(document.querySelectorAll(
-            '.videoPlayerContainer .webgpuVideoPlayerCanvas'
+            '.videoPlayerContainer .webgpuPlayerCanvas'
         ));
         const canvas = canvases.find(candidate => {
             const rectangle = candidate.getBoundingClientRect();
@@ -3586,7 +3586,7 @@ function isExpectedCustomPlaybackActive(snapshot, configuration, previousGenerat
         || (Number.isSafeInteger(snapshot?.sessionGeneration)
             && snapshot.sessionGeneration > previousGeneration);
     return snapshot?.captured === true
-        && snapshot.playerID === 'webgpuvideoplayer'
+        && snapshot.playerID === 'webgpuplayer'
         && generationAdvanced
         && snapshot.customPlayback?.state === 'playing'
         && hasExpectedCustomAudio(snapshot, configuration.expectedAudioPath)
@@ -3689,7 +3689,7 @@ async function runFullscreenExercise(options, initialSnapshot) {
         options.client,
         `(async () => {
             const canvas = document.querySelector(
-                '.videoPlayerContainer .webgpuVideoPlayerCanvas-visible'
+                '.videoPlayerContainer .webgpuPlayerCanvas-visible'
             );
             const container = canvas?.closest('.videoPlayerContainer') ?? null;
             if (!container || typeof container.requestFullscreen !== 'function') {
@@ -4025,7 +4025,7 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                         snapshot.milestones.nativeMediaPlayingAtMilliseconds
                     ));
         case 'presentation':
-            return snapshot.playerID === 'webgpuvideoplayer'
+            return snapshot.playerID === 'webgpuplayer'
                 && snapshot.customPlayback === null
                 && snapshot.presentation?.state === 'presenting'
                 && snapshot.presentation.fallbackReason === null
@@ -4044,7 +4044,7 @@ function isExpectedStartupModeActive(snapshot, mode, configuration) {
                         snapshot.milestones.nativeMediaPlayingAtMilliseconds
                     ));
         case 'custom':
-            return snapshot.playerID === 'webgpuvideoplayer'
+            return snapshot.playerID === 'webgpuplayer'
                 && snapshot.customPlayback?.state === 'playing'
                 && snapshot.customPlayback.audioPath
                     === getExpectedControllerAudioPath(configuration.expectedAudioPath)
@@ -4394,7 +4394,7 @@ async function runStartupModeSample(options) {
                 accessKey,
                 restoreKey,
                 true,
-                options.mode === 'html' ? 'htmlvideoplayer' : 'webgpuvideoplayer'
+                options.mode === 'html' ? 'htmlvideoplayer' : 'webgpuplayer'
             )
         );
         if (!hookInstalled) {

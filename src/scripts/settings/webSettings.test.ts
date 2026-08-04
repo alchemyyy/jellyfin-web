@@ -6,10 +6,10 @@ vi.mock('../../utils/fetchLocal', () => ({
     default: fetchLocalMock
 }));
 
-function createConfigResponse(enableWebGPUVideoPlayer: boolean): Pick<Response, 'json' | 'ok'> {
+function createConfigResponse(enableWebGPUPlayer: boolean): Pick<Response, 'json' | 'ok'> {
     return {
         json: () => Promise.resolve({
-            enableWebGPUVideoPlayer,
+            enableWebGPUPlayer,
             plugins: [
                 'htmlAudioPlayer/plugin',
                 'htmlVideoPlayer/plugin',
@@ -32,7 +32,7 @@ describe('webSettings player registration', () => {
 
         await expect(getPlugins()).resolves.toEqual([
             'htmlAudioPlayer/plugin',
-            'webGPUVideoPlayer/plugin',
+            'webGPUPlayer/plugin',
             'htmlVideoPlayer/plugin',
             'photoPlayer/plugin'
         ]);
@@ -44,7 +44,7 @@ describe('webSettings player registration', () => {
 
         await expect(getPlugins()).resolves.toEqual([
             'htmlAudioPlayer/plugin',
-            'webGPUVideoPlayer/plugin',
+            'webGPUPlayer/plugin',
             'htmlVideoPlayer/plugin',
             'photoPlayer/plugin'
         ]);
@@ -53,15 +53,15 @@ describe('webSettings player registration', () => {
     it('normalizes an explicitly listed WebGPU plugin', async () => {
         fetchLocalMock.mockResolvedValue({
             json: () => Promise.resolve({
-                enableWebGPUVideoPlayer: false,
-                plugins: ['webGPUVideoPlayer/plugin', 'htmlVideoPlayer/plugin']
+                enableWebGPUPlayer: false,
+                plugins: ['webGPUPlayer/plugin', 'htmlVideoPlayer/plugin']
             }),
             ok: true
         });
         const { getPlugins } = await import('./webSettings');
 
         await expect(getPlugins()).resolves.toEqual([
-            'webGPUVideoPlayer/plugin',
+            'webGPUPlayer/plugin',
             'htmlVideoPlayer/plugin'
         ]);
     });

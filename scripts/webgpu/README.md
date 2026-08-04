@@ -92,12 +92,12 @@ index 0. For other clips, the index is the position returned by
 import {
     MICROSECONDS_PER_MILLISECOND,
     millisecondsToMicroseconds
-} from 'plugins/webGPUVideoPlayer/MediaTime';
-import { createPQColorMetadata } from 'plugins/webGPUVideoPlayer/color';
+} from 'plugins/webGPUPlayer/MediaTime';
+import { createPQColorMetadata } from 'plugins/webGPUPlayer/color';
 import {
     WebGPUExternalTextureValidationRunner,
     validateMediabunnyExternalTextureReferenceFrames
-} from 'plugins/webGPUVideoPlayer/validation';
+} from 'plugins/webGPUPlayer/validation';
 
 const timestampsMicroseconds = manifest.timestampsMicroseconds.map(
     (timestampMicroseconds: number) => millisecondsToMicroseconds(
@@ -1031,7 +1031,7 @@ Regenerate, rebuild, and verify it with:
 python scripts/webgpu/generate_legacy_video_capability_fixture.py
 python scripts/webgpu/legacy-video-decoder/build_legacy_video_decoder.py --verify-reproducible
 node scripts/webgpu/verify-legacy-video-decoder-artifacts.mjs
-npm test -- src/plugins/webGPUVideoPlayer/custom/LegacyVideoDecoderIntegration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/LegacyVideoDecoderIntegration.test.ts
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 ```
 
@@ -1053,9 +1053,9 @@ the embedded deterministic packet/PCM records, and verify exact bytes with:
 python scripts/webgpu/build_truehd_decoder.py --verify-reproducible
 python scripts/webgpu/generate_truehd_capability_fixtures.py
 node scripts/webgpu/verify-truehd-decoder-artifacts.mjs
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDSoftwareAudioDecoder.integration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDExactCapabilityRunner.integration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/TrueHDMediabunnyDemuxIntegration.test.ts
 ```
 
 The browser exact-capability worker requires lossless PCM fingerprints for
@@ -1082,8 +1082,8 @@ python scripts/webgpu/generate_dts_capability_fixtures.py --check
 python scripts/webgpu/generate_seven_point_one_downmix_reference.py --check
 node scripts/webgpu/verify-dts-decoder-artifacts.mjs
 npx vite-node --script scripts/webgpu/report_dts_downmix_reference.ts --check
-npm test -- src/plugins/webGPUVideoPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts
-npm test -- src/plugins/webGPUVideoPlayer/custom/DTSMediabunnyDemuxIntegration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/DTSSoftwareAudioDecoder.integration.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/DTSMediabunnyDemuxIntegration.test.ts
 ```
 
 The seven exact fixtures authorize only the profile/layout pairs recorded in

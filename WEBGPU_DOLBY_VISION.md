@@ -410,16 +410,16 @@ presentation route to fail closed.
 
 ### Dolby Vision routes are separately modeled and authorized
 
-[`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)
+[`PresentationInput.ts`](./src/plugins/webGPUPlayer/PresentationInput.ts)
 returns dedicated descriptors for 10-bit Profile 5, Profile 7 with its required
 enhancement layer, and supported single-layer Profile 8 compatibility IDs.
 Ordinary color metadata remains limited to `sdr`, `pq`, and `hlg`; Dolby Vision
 is not misrepresented as one of those standard transfers.
 
-[`CustomPlaybackEligibility.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.ts)
+[`CustomPlaybackEligibility.ts`](./src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.ts)
 selects native `VideoFrame` output for Profile 5 only when its external-texture
 authorization is active, and selects raw I420P10 output only when the exact raw
-Dolby Vision route is authorized. [`CustomDeviceProfile.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.ts)
+Dolby Vision route is authorized. [`CustomDeviceProfile.ts`](./src/plugins/webGPUPlayer/custom/CustomDeviceProfile.ts)
 then exposes `DOVI`, `DOVIWithHDR10`, and `DOVIWithHLG` only on the applicable
 single-layer HEVC routes. Separately authorized Profile 7 support exposes only
 `DOVIWithEL` and remains bounded by the measured raw HEVC limits. It does not
@@ -430,7 +430,7 @@ and an exact two-track Profile 7 topology, `WebGPUPlayer` additionally permits
 that label in only that item-scoped profile request. It does not globally
 authorize unrelated HDR10 content.
 
-[`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/DolbyVisionPresentationAuthorization.ts)
+[`DolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUPlayer/validation/DolbyVisionPresentationAuthorization.ts)
 runs bounded exact-device shader fixtures and records authorization telemetry.
 The Profile 7 base route validates MEL reconstruction and explicit FEL
 HDR10-base fallback in 18 readback samples. The independent full-FEL route
@@ -485,7 +485,7 @@ natural EOF, and acknowledged shutdown.
 Jellyfin 10.11.6 indexed the generated MP4 as an HDR10 HEVC BL followed by a
 Profile 7 `dvh1` HEVC EL with RPU/EL enabled and BL disabled. It indexed the
 equivalent Matroska pair with the same geometry and frame rate but reported BL
-enabled on the EL. [`PresentationInput.ts`](./src/plugins/webGPUVideoPlayer/PresentationInput.ts)
+enabled on the EL. [`PresentationInput.ts`](./src/plugins/webGPUPlayer/PresentationInput.ts)
 therefore recognizes both server representations only when there are exactly
 two HEVC video tracks, one is an unambiguous 10-bit PQ BL, the other is an exact
 Profile 7.6 RPU-bearing EL, and their frame rates and expected full- or
@@ -545,7 +545,7 @@ track selection, dual decode, ownership, RPU association, WebGPU presentation,
 and lifecycle behavior only. Color fidelity still requires an unmodified
 licensed reference and comparison against the pinned mpv/libplacebo pipeline.
 
-[`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUVideoPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
+[`ExternalDolbyVisionPresentationAuthorization.ts`](./src/plugins/webGPUPlayer/validation/ExternalDolbyVisionPresentationAuthorization.ts)
 constructs a software-backed 16x8 limited-range BT.709 I420P10 `VideoFrame`,
 imports it through `GPUExternalTexture`, executes the production Profile 5 RPU
 shader and bindings, and reads back nine output samples. Its route signature
@@ -575,7 +575,7 @@ F16 high-bit-depth copy path or broader multiplanar zero-copy support.
 
 ### The HEVC decode path now exposes parsed Dolby Vision data
 
-[`CustomDecode.worker.ts`](./src/plugins/webGPUVideoPlayer/custom/CustomDecode.worker.ts)
+[`CustomDecode.worker.ts`](./src/plugins/webGPUPlayer/custom/CustomDecode.worker.ts)
 uses `EncodedPacketSink` for every HEVC route. The worker splits RPU NAL type 62
 and enhancement-layer NAL type 63 before dispatching the cleaned base-layer
 packet to either `OwnedNativeHEVCVideoDecoder` or the bundled software decoder.
@@ -594,14 +594,14 @@ same parse, association, and transfer behavior.
 
 ### The frame protocol carries parsed Dolby Vision metadata
 
-[`RawVideoFrameCopy.ts`](./src/plugins/webGPUVideoPlayer/custom/RawVideoFrameCopy.ts)
+[`RawVideoFrameCopy.ts`](./src/plugins/webGPUPlayer/custom/RawVideoFrameCopy.ts)
 defines `TransferableRawVideoFrame` at lines 58-71. It carries raw planes,
 geometry, standard `VideoColorSpace`, and timestamps. The surrounding worker
 frame response now carries schema-versioned packed RPU reconstruction snapshots
 and the parsed EL disposition with explicit transfer ownership. Compressed EL
 buffers and raw RPU bytes never cross this boundary.
 
-[`WebGPUPresenter.ts`](./src/plugins/webGPUVideoPlayer/WebGPUPresenter.ts)
+[`WebGPUPresenter.ts`](./src/plugins/webGPUPlayer/WebGPUPresenter.ts)
 defines `DecodedRawPresentationFrame` at lines 142-147 and requires standard
 raw-frame color fields to equal `InputColorMetadata` in `rawFrameColorMatches`,
 lines 289-310. WebCodecs cannot represent Profile 5 semantics through those
@@ -617,9 +617,9 @@ not trust `VideoFrame.colorSpace` to describe the RPU representation.
 
 ### The shader reconstructs before the ordinary HDR pipeline
 
-[`DolbyVisionColorTransform.ts`](./src/plugins/webGPUVideoPlayer/color/DolbyVisionColorTransform.ts)
+[`DolbyVisionColorTransform.ts`](./src/plugins/webGPUPlayer/color/DolbyVisionColorTransform.ts)
 implements the fixed-schema CPU reference and equivalent WGSL reconstruction.
-[`ColorPipelineShader.ts`](./src/plugins/webGPUVideoPlayer/color/ColorPipelineShader.ts)
+[`ColorPipelineShader.ts`](./src/plugins/webGPUPlayer/color/ColorPipelineShader.ts)
 branches before the conventional YUV matrix for raw Dolby Vision, reconstructs
 BT.2020/PQ, and then reuses the existing linear-nits, gamut mapping, tone map,
 display controls, and dither stages.
@@ -638,7 +638,7 @@ FFmpeg's reference Matroska handling parses `dvcC`/`dvvC` and `hvcE`, storing
 the latter as EL HEVC configuration:
 [FFmpeg matroskadec.c](https://github.com/FFmpeg/FFmpeg/blob/406c5a37aa666d648928a142d367483fe1acdd17/libavformat/matroskadec.c#L2507-L2571).
 
-[`MatroskaDolbyVisionHVCE.ts`](./src/plugins/webGPUVideoPlayer/custom/MatroskaDolbyVisionHVCE.ts)
+[`MatroskaDolbyVisionHVCE.ts`](./src/plugins/webGPUPlayer/custom/MatroskaDolbyVisionHVCE.ts)
 works around the missing `dvcC`, `dvvC`, and `hvcE` boundaries. It performs
 bounded random-access EBML reads, limits `Tracks` metadata to 4 MiB, matches the
 selected Mediabunny `TrackNumber`, and requires HEVC video tracks. It copies one
@@ -647,7 +647,7 @@ only when there are exactly two HEVC video tracks, exactly one other track has
 Profile 7 with RPU and EL flags, and the selected track is the remaining BL.
 Duplicate track numbers and ambiguous topologies fail closed.
 
-[`ISOBaseMediaDolbyVisionConfiguration.ts`](./src/plugins/webGPUVideoPlayer/custom/ISOBaseMediaDolbyVisionConfiguration.ts)
+[`ISOBaseMediaDolbyVisionConfiguration.ts`](./src/plugins/webGPUPlayer/custom/ISOBaseMediaDolbyVisionConfiguration.ts)
 provides the corresponding bounded legacy ISO BMFF boundary. It limits `moov`
 to 16 MiB, validates compact box nesting and unique track IDs, selects an
 ordinary `hvc1`/`hev1` HEVC BL, and accepts exactly one Profile 7
@@ -655,7 +655,7 @@ ordinary `hvc1`/`hev1` HEVC BL, and accepts exactly one Profile 7
 bounded Main10 `hvcC` record and `dvcC`/`dvvC` metadata with RPU and EL enabled
 and BL disabled. Mediabunny remains responsible for samples and packet timing.
 
-[`MPEGTransportStreamDolbyVisionConfiguration.ts`](./src/plugins/webGPUVideoPlayer/custom/MPEGTransportStreamDolbyVisionConfiguration.ts)
+[`MPEGTransportStreamDolbyVisionConfiguration.ts`](./src/plugins/webGPUPlayer/custom/MPEGTransportStreamDolbyVisionConfiguration.ts)
 provides the transport-stream boundary. It recognizes 188-byte MPEG-TS and
 192-byte M2TS packets, reads at most 1 MiB, reassembles bounded PAT and PMT PSI
 sections across continuity-checked packets, validates MPEG-2 CRCs, and requires

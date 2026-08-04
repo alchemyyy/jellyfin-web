@@ -84,15 +84,15 @@ a release-matrix qualification claim.
 
 ```powershell
 npm test -- `
-    src/plugins/webGPUVideoPlayer/custom/NativeMultichannelAudioOutput.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/CustomAudioChannelLayout.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/CustomAudioOutputPolicy.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/BrowserCustomAudioOutput.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/DecodeWorkerProtocol.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/CustomDecodeSession.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/CustomPlaybackController.test.ts `
-    src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.test.ts `
-    src/plugins/webGPUVideoPlayer/WebGPUPlayer.test.ts
+    src/plugins/webGPUPlayer/custom/NativeMultichannelAudioOutput.test.ts `
+    src/plugins/webGPUPlayer/custom/CustomAudioChannelLayout.test.ts `
+    src/plugins/webGPUPlayer/custom/CustomAudioOutputPolicy.test.ts `
+    src/plugins/webGPUPlayer/custom/BrowserCustomAudioOutput.test.ts `
+    src/plugins/webGPUPlayer/custom/DecodeWorkerProtocol.test.ts `
+    src/plugins/webGPUPlayer/custom/CustomDecodeSession.test.ts `
+    src/plugins/webGPUPlayer/custom/CustomPlaybackController.test.ts `
+    src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.test.ts `
+    src/plugins/webGPUPlayer/WebGPUPlayer.test.ts
 
 npm run build:check
 ```

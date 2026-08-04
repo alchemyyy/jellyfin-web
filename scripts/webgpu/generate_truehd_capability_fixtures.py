@@ -509,7 +509,7 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=(
             repository_root
-            / "src/plugins/webGPUVideoPlayer/custom/TrueHDExactCapabilityFixtures.ts"
+            / "src/plugins/webGPUPlayer/custom/TrueHDExactCapabilityFixtures.ts"
         ),
     )
     parser.add_argument(

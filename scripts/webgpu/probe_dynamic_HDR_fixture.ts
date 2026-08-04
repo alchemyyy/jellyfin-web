@@ -7,14 +7,14 @@ import {
     Input
 } from 'mediabunny';
 
-import { secondsToMicroseconds } from '../../src/plugins/webGPUVideoPlayer/MediaTime';
-import { getHEVCNALFormat } from '../../src/plugins/webGPUVideoPlayer/custom/DolbyVisionEncodedMetadata';
+import { secondsToMicroseconds } from '../../src/plugins/webGPUPlayer/MediaTime';
+import { getHEVCNALFormat } from '../../src/plugins/webGPUPlayer/custom/DolbyVisionEncodedMetadata';
 import {
     getHDR10PlusSceneLuminance,
     parseHEVCHDR10PlusMetadata,
     type HDR10PlusFrameMetadataStatus,
     type HDR10PlusMetadata
-} from '../../src/plugins/webGPUVideoPlayer/custom/HDR10PlusMetadata';
+} from '../../src/plugins/webGPUPlayer/custom/HDR10PlusMetadata';
 
 const DEFAULT_MAXIMUM_ACCESS_UNIT_COUNT = 100_000;
 const MAXIMUM_RECORDED_STATUS_TRANSITION_COUNT = 256;

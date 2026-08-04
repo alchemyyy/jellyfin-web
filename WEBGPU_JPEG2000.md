@@ -88,7 +88,7 @@ provider serves it as an ordinary binary asset.
 ## Validation commands
 
 ```powershell
-npm test -- --run src/plugins/webGPUVideoPlayer/custom/JPEG2000SoftwareVideoDecoder.test.ts src/plugins/webGPUVideoPlayer/custom/JPEG2000ExactCapabilityProbe.test.ts src/plugins/webGPUVideoPlayer/custom/CustomDecodeCapabilities.test.ts src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.test.ts src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.test.ts src/plugins/webGPUVideoPlayer/custom/DecodeWorkerProtocol.test.ts
+npm test -- --run src/plugins/webGPUPlayer/custom/JPEG2000SoftwareVideoDecoder.test.ts src/plugins/webGPUPlayer/custom/JPEG2000ExactCapabilityProbe.test.ts src/plugins/webGPUPlayer/custom/CustomDecodeCapabilities.test.ts src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.test.ts src/plugins/webGPUPlayer/custom/CustomDeviceProfile.test.ts src/plugins/webGPUPlayer/custom/DecodeWorkerProtocol.test.ts
 node --test scripts/webgpu/verify-custom-codec-artifacts.node-test.mjs
 python scripts/webgpu/generate_jpeg2000_capability_fixture.py
 npm run build:check

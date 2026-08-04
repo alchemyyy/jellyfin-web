@@ -139,7 +139,7 @@ function createActiveSnapshot(overrides = {}) {
             supportsDirectStream: true,
             supportsTranscoding: true
         },
-        playerID: 'webgpuvideoplayer',
+        playerID: 'webgpuplayer',
         presentation: {
             decodedFrameCount: 10,
             deviceRecoveryCount: 0,
@@ -593,19 +593,19 @@ test('defines isolated feature overlays for every startup mode', () => {
         enableWebGPUCustomDecode: false,
         enableWebGPUHDRToneMapping: false,
         enableWebGPUValidationHarness: false,
-        enableWebGPUVideoPlayer: true
+        enableWebGPUPlayer: true
     });
     assert.deepEqual(getStartupModeFeatureFlags('presentation'), {
         enableWebGPUCustomDecode: false,
         enableWebGPUHDRToneMapping: false,
         enableWebGPUValidationHarness: false,
-        enableWebGPUVideoPlayer: true
+        enableWebGPUPlayer: true
     });
     assert.deepEqual(getStartupModeFeatureFlags('custom'), {
         enableWebGPUCustomDecode: true,
         enableWebGPUHDRToneMapping: true,
         enableWebGPUValidationHarness: true,
-        enableWebGPUVideoPlayer: true
+        enableWebGPUPlayer: true
     });
     assert.throws(() => getStartupModeFeatureFlags('invalid'), /Unknown startup/u);
 });

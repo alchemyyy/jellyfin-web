@@ -147,17 +147,17 @@ Deterministic HEVC access-unit fixtures cover:
 Run the focused validation:
 
 ```bash
-npm test -- src/plugins/webGPUVideoPlayer/custom/HDR10PlusMetadata.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/HEVCSEI.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/HEVCDynamicHDRMetadataQueue.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/CustomDeviceProfile.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/CustomPlaybackEligibility.test.ts \
-  src/plugins/webGPUVideoPlayer/PresentationInput.test.ts \
-  src/plugins/webGPUVideoPlayer/RenderSettings.test.ts \
-  src/plugins/webGPUVideoPlayer/color/ColorPipelineShader.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/DecodeWorkerProtocol.test.ts \
-  src/plugins/webGPUVideoPlayer/custom/CustomDecodeSession.test.ts \
-  src/plugins/webGPUVideoPlayer/WebGPUPresenter.test.ts
+npm test -- src/plugins/webGPUPlayer/custom/HDR10PlusMetadata.test.ts \
+  src/plugins/webGPUPlayer/custom/HEVCSEI.test.ts \
+  src/plugins/webGPUPlayer/custom/HEVCDynamicHDRMetadataQueue.test.ts \
+  src/plugins/webGPUPlayer/custom/CustomDeviceProfile.test.ts \
+  src/plugins/webGPUPlayer/custom/CustomPlaybackEligibility.test.ts \
+  src/plugins/webGPUPlayer/PresentationInput.test.ts \
+  src/plugins/webGPUPlayer/RenderSettings.test.ts \
+  src/plugins/webGPUPlayer/color/ColorPipelineShader.test.ts \
+  src/plugins/webGPUPlayer/custom/DecodeWorkerProtocol.test.ts \
+  src/plugins/webGPUPlayer/custom/CustomDecodeSession.test.ts \
+  src/plugins/webGPUPlayer/WebGPUPresenter.test.ts
 npm run build:check
 python scripts/webgpu/probe_dynamic_HDR_shader.py
 ```

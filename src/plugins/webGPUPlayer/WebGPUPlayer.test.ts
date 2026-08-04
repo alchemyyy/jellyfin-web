@@ -1234,7 +1234,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(htmlPlayerMockState.instances).toHaveLength(1);
         expect(htmlPlayerMockState.owners).toEqual([player]);
-        expect(player.id).toBe('webgpuvideoplayer');
+        expect(player.id).toBe('webgpuplayer');
         expect(player.syncPlayWrapAs).toBe('htmlvideoplayer');
         expect(player.priority).toBe(0);
         expect(player.getMaxStreamingBitrate()).toBeNull();

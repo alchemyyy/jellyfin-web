@@ -8,9 +8,9 @@ import {
     Input
 } from 'mediabunny';
 
-import { getHEVCNALFormat } from '../../src/plugins/webGPUVideoPlayer/custom/DolbyVisionEncodedMetadata';
-import { scanHEVCStaticHDRMetadata } from '../../src/plugins/webGPUVideoPlayer/custom/HEVCStaticHDRMetadata';
-import { MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT } from '../../src/plugins/webGPUVideoPlayer/custom/StaticHDRMetadata';
+import { getHEVCNALFormat } from '../../src/plugins/webGPUPlayer/custom/DolbyVisionEncodedMetadata';
+import { scanHEVCStaticHDRMetadata } from '../../src/plugins/webGPUPlayer/custom/HEVCStaticHDRMetadata';
+import { MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT } from '../../src/plugins/webGPUPlayer/custom/StaticHDRMetadata';
 
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
 const fixtureArgument = process.argv[2];

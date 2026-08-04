@@ -465,7 +465,7 @@ class AdapterTests(unittest.TestCase):
             browser_check,
             {
                 "browser": {"product": "Chrome/151"},
-                "featureFlags": {"enableWebGPUVideoPlayer": True},
+                "featureFlags": {"enableWebGPUPlayer": True},
                 "gpu": {
                     "adapter": {"vendor": "example"},
                     "display": {"HDRDynamicRange": False},
@@ -475,7 +475,7 @@ class AdapterTests(unittest.TestCase):
             {},
         )
         self.assertEqual(environment["browser"]["product"], "Chrome/151")
-        self.assertTrue(environment["featureFlags"]["enableWebGPUVideoPlayer"])
+        self.assertTrue(environment["featureFlags"]["enableWebGPUPlayer"])
         self.assertEqual(environment["gpu"]["adapter"]["vendor"], "example")
         self.assertEqual(environment["server"]["version"], "12.0")
 

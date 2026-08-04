@@ -564,9 +564,9 @@ function selectDecodedAudioOutputChannelCount(
  * WebGPU presentation is optional and must never replace backend playback.
  */
 export default class WebGPUPlayer {
-    name = 'WebGPU Video Player';
+    name = 'WebGPU Player';
     type = PluginType.MediaPlayer;
-    id = 'webgpuvideoplayer';
+    id = 'webgpuplayer';
     // The wrapper preserves the HTML player's SyncPlay timing, rate, and events.
     syncPlayWrapAs = 'htmlvideoplayer';
     priority = 0;

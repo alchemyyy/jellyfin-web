@@ -2,7 +2,7 @@ import DefaultConfig from '../../config.json';
 import fetchLocal from '../../utils/fetchLocal.ts';
 
 const HTML_VIDEO_PLAYER_PLUGIN = 'htmlVideoPlayer/plugin';
-const WEBGPU_VIDEO_PLAYER_PLUGIN = 'webGPUVideoPlayer/plugin';
+const WEBGPU_VIDEO_PLAYER_PLUGIN = 'webGPUPlayer/plugin';
 
 let data;
 

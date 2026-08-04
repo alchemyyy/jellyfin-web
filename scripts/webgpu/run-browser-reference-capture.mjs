@@ -75,7 +75,7 @@ async function installCaptureStyle(client) {
         const style = document.createElement('style');
         style.setAttribute('${CAPTURE_STYLE_ATTRIBUTE}', 'true');
         style.textContent = [
-            '.webgpuVideoPlayerCanvas {',
+            '.webgpuPlayerCanvas {',
             '  z-index: 2147483647 !important;',
             '  background: #000 !important;',
             '}',
@@ -98,7 +98,7 @@ async function removeCaptureStyle(client) {
 async function captureCanvasRectangle(client) {
     return evaluateValue(client, `(() => {
         const canvases = Array.from(document.querySelectorAll(
-            '.videoPlayerContainer .webgpuVideoPlayerCanvas'
+            '.videoPlayerContainer .webgpuPlayerCanvas'
         ));
         const canvas = canvases.find(candidate => {
             const rectangle = candidate.getBoundingClientRect();

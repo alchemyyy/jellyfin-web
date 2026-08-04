@@ -1,4 +1,4 @@
-# WebGPU video player
+# WebGPU Player
 
 This plugin keeps the Jellyfin HTML video player as the permanent fallback and
 adds two optional layers:
@@ -17,7 +17,7 @@ implemented.
 
 `src/config.json` enables WebGPU custom decode and HDR presentation by default.
 The validation harness remains separately gated for diagnostic use. The legacy
-`enableWebGPUVideoPlayer` value no longer controls plugin registration.
+`enableWebGPUPlayer` value no longer controls plugin registration.
 
 Dolby Vision support, mpv/libplacebo parity targets, profile-specific fallback
 rules, and the required RPU/EL ownership changes are specified in
@@ -413,8 +413,8 @@ Run the source checks and focused harness tests:
 
 ```powershell
 npm run build:check
-npm test -- src/plugins/webGPUVideoPlayer
-npm run lint -- src/plugins/webGPUVideoPlayer scripts/webgpu
+npm test -- src/plugins/webGPUPlayer
+npm run lint -- src/plugins/webGPUPlayer scripts/webgpu
 node --test scripts/webgpu/browser-smoke-helpers.node-test.mjs
 node --test scripts/webgpu/cdp-retention-snapshot.node-test.mjs
 node --test scripts/webgpu/worker-artifact-name.node-test.mjs
@@ -611,7 +611,7 @@ $env:WEBGPU_SMOKE_EXPECTED_AUDIO = 'ready'
 node scripts/webgpu/run-browser-playback-smoke.mjs
 ```
 
-Require Jellyfin Playback Info to report `WebGPU Video Player` and Direct Play,
+Require Jellyfin Playback Info to report `WebGPU Player` and Direct Play,
 not HLS transcoding. In DevTools, require the custom playback result to report
 native `video-frame` output with `neutralizeHDRColorMetadata: true`, and require
 external-HDR telemetry to contain the exact PQ or HLG route for the current
