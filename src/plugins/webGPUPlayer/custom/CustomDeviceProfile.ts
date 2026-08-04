@@ -29,10 +29,6 @@ import {
     isCustomMediabunnyPCMAudioCodec
 } from './CustomAudioOutputPolicy';
 import {
-    MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
-    MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE
-} from './CustomAudioSampleRate';
-import {
     DTS_CAPABILITY_FIXTURE_ROUTES,
     DTS_PROFILE_VALUE_BY_TOKEN,
     TRUEHD_CAPABILITY_FIXTURE_ROUTES,
@@ -2182,8 +2178,9 @@ function createAudioSampleRateConditions(
     switch (constraint.kind) {
         case 'bounded':
             // Jellyfin reuses Equals/LTE conditions as transcode output targets.
-            // Keep the normal source profile target-neutral; complement profiles
-            // below reject rates outside the qualified resampler envelope.
+            // Paired complement profiles also reject valid in-range routes on
+            // Jellyfin 12. Keep negotiation target-neutral and let runtime
+            // eligibility enforce the qualified resampler envelope.
             return [ {
                 Condition: NOT_EQUALS_CONDITION,
                 IsRequired: true,
@@ -2198,48 +2195,6 @@ function createAudioSampleRateConditions(
                 Value: constraint.sampleRates.join('|')
             } ];
     }
-}
-
-function createOutOfRangeAudioSampleRateProfiles(
-    codecs: readonly CustomAudioCodec[],
-    container: string
-): CodecProfile[] {
-    return [
-        {
-            ApplyConditions: [ {
-                Condition: LESS_THAN_EQUAL_CONDITION,
-                IsRequired: true,
-                Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE - 1)
-            } ],
-            Codec: codecs.join(','),
-            Conditions: [ {
-                Condition: GREATER_THAN_EQUAL_CONDITION,
-                IsRequired: true,
-                Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
-            } ],
-            Container: container,
-            Type: 'VideoAudio'
-        },
-        {
-            ApplyConditions: [ {
-                Condition: GREATER_THAN_EQUAL_CONDITION,
-                IsRequired: true,
-                Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE + 1)
-            } ],
-            Codec: codecs.join(','),
-            Conditions: [ {
-                Condition: LESS_THAN_EQUAL_CONDITION,
-                IsRequired: true,
-                Property: AUDIO_SAMPLE_RATE_PROPERTY,
-                Value: String(MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE)
-            } ],
-            Container: container,
-            Type: 'VideoAudio'
-        }
-    ];
 }
 
 function createMeasuredAudioRouteProfile(
@@ -2650,31 +2605,15 @@ function appendMeasuredAudioRouteProfiles(
             routeGroup.channelCounts,
             { kind: 'bounded' }
         ));
-        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
-            routeGroup.codecs,
-            CUSTOM_VIDEO_CONTAINER_VALUE
-        ));
     }
     if (decodedAudioCodecs.includes('dts')) {
         measuredProfiles.push(...createMeasuredDTSRouteProfiles());
-        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
-            [ 'dts' ],
-            MATROSKA_VIDEO_RULE.container
-        ));
     }
     if (decodedAudioCodecs.includes('mlp')) {
         measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('mlp'));
-        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
-            [ 'mlp' ],
-            MATROSKA_VIDEO_RULE.container
-        ));
     }
     if (decodedAudioCodecs.includes('truehd')) {
         measuredProfiles.push(...createMeasuredTrueHDRouteProfiles('truehd'));
-        measuredProfiles.push(...createOutOfRangeAudioSampleRateProfiles(
-            [ 'truehd' ],
-            MATROSKA_VIDEO_RULE.container
-        ));
     }
 
     const measuredProfileKeys = new Set(measuredProfiles.map(getCodecProfileKey));

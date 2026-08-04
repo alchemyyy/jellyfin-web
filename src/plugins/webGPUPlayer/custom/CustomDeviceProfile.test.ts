@@ -546,7 +546,7 @@ type AudioRouteFixture = {
     sampleRate: number
 };
 
-const BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS: readonly ProfileCondition[] = [
+const TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS: readonly ProfileCondition[] = [
     {
         Condition: 'NotEquals',
         IsRequired: true,
@@ -1022,7 +1022,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1030,7 +1030,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
     });
 
     it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
-        'advertises bounded decoded-PCM sample rates for qualified native 5.1 %s',
+        'advertises target-neutral sample rates for qualified native 5.1 %s',
         codec => {
             const result = augmentDeviceProfileForCustomDecode(
                 createBaseProfile(),
@@ -1055,7 +1055,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                 Value: '2|6'
             });
             expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining(
-                [ ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS ]
+                [ ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS ]
             ));
         }
     );
@@ -1096,7 +1096,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2|6'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1141,7 +1141,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('does not turn valid source sample-rate bounds into a 192-kHz AAC target', () => {
+    it('keeps sample-rate validation target-neutral for server negotiation', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities(
@@ -1186,18 +1186,22 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
             ...stereoRoute,
             sampleRate: 192_001
-        })).toBe(false);
+        })).toBe(true);
         expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
             ...stereoRoute,
             sampleRate: 2_999
-        })).toBe(false);
+        })).toBe(true);
+        expect(codecProfiles.filter(codecProfile => (
+            codecProfile.Type === 'VideoAudio'
+            && codecProfile.Codec?.split(',').includes('eac3') === true
+        ))).toHaveLength(1);
         expect(measuredUltraHDAV1Profile?.Conditions).toContainEqual(expect.objectContaining({
             Property: 'VideoBitDepth',
             Value: '8'
         }));
     });
 
-    it('advertises DTS only for Matroska with bounded rates and measured beds', () => {
+    it('advertises DTS only for Matroska with measured beds and runtime rate validation', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities([ 'h264' ], [ 'dts' ])
@@ -1223,7 +1227,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '6|7|8'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS,
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS,
                 {
                     Condition: 'EqualsAny',
                     IsRequired: true,
@@ -1288,7 +1292,8 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             { channelCount: 6, profile: 'DTS-HD MA', sampleRate: 96_001 },
             { channelCount: 6, profile: 'DTS-HD MA + DTS:X', sampleRate: 192_000 },
             { channelCount: 6, profile: 'DTS', sampleRate: 12_345 },
-            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 }
+            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 },
+            { channelCount: 6, profile: 'DTS', sampleRate: 2_999 }
         ]) {
             expect(acceptsMeasuredAudioRoute(codecProfiles, 'dts', route)).toBe(true);
         }
@@ -1300,8 +1305,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             { channelCount: 8, profile: 'DTS', sampleRate: 48_000 },
             { channelCount: 6, profile: null, sampleRate: 96_000 },
             { channelCount: 6, profile: 'DTS', sampleRate: 192_000 },
-            { channelCount: 6, profile: 'DTS', sampleRate: 192_001 },
-            { channelCount: 6, profile: 'DTS', sampleRate: 2_999 }
+            { channelCount: 6, profile: 'DTS', sampleRate: 192_001 }
         ]) {
             expect(acceptsMeasuredAudioRoute(codecProfiles, 'dts', route)).toBe(false);
         }
@@ -1333,7 +1337,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('advertises TrueHD only for Matroska with bounded rates and measured beds', () => {
+    it('advertises TrueHD only for Matroska with measured beds and runtime rate validation', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
             createCapabilities([ 'h264' ], [ 'truehd' ])
@@ -1359,7 +1363,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2|6'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mkv',
             Type: 'VideoAudio'
@@ -1394,7 +1398,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             channelCount: 6,
             profile: null,
             sampleRate: 192_001
-        })).toBe(false);
+        })).toBe(true);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'truehd' ]);
     });
 
@@ -1496,7 +1500,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '1|2|6'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1619,7 +1623,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1669,7 +1673,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
@@ -1786,7 +1790,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Property: 'AudioChannels',
                     Value: '2|6'
                 },
-                ...BOUNDED_AUDIO_SAMPLE_RATE_CONDITIONS
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
