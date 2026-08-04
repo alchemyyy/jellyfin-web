@@ -105,6 +105,11 @@ the current worktree. Local installation paths, account values, media item IDs,
 and authenticated URLs must remain outside repository documentation and
 reports.
 
+`src/config.json` currently enables WebGPU player registration, custom decode,
+and HDR tone mapping. The persistent playback setting selects Auto, HTML, or
+WebGPU for the next session, and HTML remains the same-session fallback. The
+validation harness remains disabled by default.
+
 ## Unified validation framework foundation
 
 Implemented after checkpoint `750a470817`:
@@ -148,10 +153,10 @@ The baseline checkpoint's qualified static run passed 15 fixture hashes, 15
 cases, 43 Python tests, 135 standalone Node tests, 383 focused Vitest tests
 across 19 files, and the TypeScript check. The generated-registry checkpoint
 matrix passes the same fixtures and cases plus all 10 required checks,
-including 50 Python tests and a development build.
-Source feature flags remain false. Static success does not claim live Jellyfin
-DirectPlay; live cases must use exact private overlays or later canonical
-distributable fixtures.
+including 50 Python tests and a development build. At those baseline
+checkpoints the source feature flags were false. Static success does not claim
+live Jellyfin DirectPlay; live cases must use exact private overlays or later
+canonical distributable fixtures.
 
 The live integration slice now adds a checked catalog of 18 exact SDR/HDR/
 Dolby Vision presentation routes and eight lifecycle/fault/startup/retention
@@ -195,8 +200,8 @@ client/server DirectPlay without retaining private values.
 
 The server-log checkpoint matrix passes all 15 fixtures/cases and all 10
 required checks: 57 Python tests, 143 standalone Node tests, 383 focused Vitest
-tests, TypeScript, runtime-toolchain readiness, and a development build. Source
-feature flags remain disabled.
+tests, TypeScript, runtime-toolchain readiness, and a development build. At
+that checkpoint the source feature flags were disabled.
 
 The generated High Tier HDR startup gate now excludes the color-invalid
 presentation-only mode by exact route, while SDR identity retains all three
@@ -435,8 +440,8 @@ output remains the lossless channel bed.
   Vitest tests across 108 files, 147 standalone Node harness tests, 96 Python
   harness tests, full WebGPU plugin plus changed-script ESLint, development and
   production builds, and ordinary codec artifact verification. Jellyfin 12
-  nightly is serving that production bundle on port 8096 with the ignored local
-  feature overlay enabled; source feature flags remain false.
+  nightly served that production bundle on port 8096 with the ignored local
+  feature overlay enabled; source feature flags were false at that checkpoint.
 - The generated native High Tier fixture passed one live lifecycle case and
   both required checks on Jellyfin 12 nightly and Chrome 151: client/server
   DirectPlay, native HEVC `VideoFrame`, external HDR, decoded FLAC, valid static
@@ -499,9 +504,9 @@ output remains the lossless channel bed.
   with byte-identical runtime output. Standalone and central artifact verifiers
   accepted the source, license, bridge, toolchain, revision, fixture, and
   runtime hashes.
-- Development and production Webpack builds passed. The production bundle is
-  served by Jellyfin 12 nightly on port 8096; source feature flags remain false
-  while the ignored local production config enables manual validation.
+- Development and production Webpack builds passed. The current production
+  bundle served by Jellyfin 12 nightly on port 8096 enables the WebGPU player,
+  custom decode, and HDR tone mapping; the validation harness stays disabled.
 - Chrome 151 completed pause/resume, fullscreen, resize, primary seek, a
   three-seek storm, FLAC stream selection, exact stop, and a two-session replay
   through the custom DirectPlay route with no fallback, browser error, stale
@@ -545,8 +550,10 @@ output remains the lossless channel bed.
    warnings, but that does not prove leak-free soak behavior; do not suppress
    its console assertion or make a leak-free claim until the ownership boundary
    is fixed and retention evidence passes.
-9. Keep all WebGPU feature flags disabled in source until the supported browser,
-   GPU, output, and server matrix is complete.
+9. Keep the player available through the persistent user preference and retain
+   HTML same-session fallback. Keep the validation harness disabled outside
+   intentional test runs, and do not widen runtime capability probes before the
+   supported browser/GPU/output/server matrix passes.
 10. Physically verify 5.1 and 7.1 channel isolation, ordering, output-device
    changes, mute, volume, normalization, seeking, and fallback in Chrome and
    Edge. Automated channel-array tests do not prove speaker wiring.

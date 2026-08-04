@@ -19,6 +19,10 @@
 - Authoritative current integration runtime: Jellyfin 12 nightly serving this
   repository's current built bundle on port 8096. Jellyfin 10.11.6 evidence in
   sections explicitly labeled historical does not qualify the current worktree.
+- Current source configuration registers the WebGPU player and enables custom
+  decode and HDR tone mapping. Users choose Auto, HTML, or WebGPU persistently
+  for subsequent sessions; HTML remains the same-session fallback. Only the
+  validation-harness flag remains disabled by default.
 
 ## 1. Product target
 
@@ -121,11 +125,13 @@ that a source used the owned custom decode route.
 - Documentation of the unresolved intermittent Mediabunny `VideoSample`
   ownership warning.
 
-The new output and metadata routes are implemented but remain disabled by the
-source feature flags. Native 5.1/7.1 requires physical speaker qualification,
-HDR10+ requires real-media mpv/libplacebo temporal comparison, and the complete
-hardware release matrix has not passed. See `WEBGPU_AUDIO_MULTICHANNEL.md`,
-`WEBGPU_DYNAMIC_HDR.md`, and `WEBGPU_HARDWARE_MATRIX.md`.
+The new output and metadata routes are implemented and runtime-gated. Native
+5.1/7.1 requires physical speaker qualification, HDR10+ requires real-media
+mpv/libplacebo temporal comparison, and the complete hardware release matrix
+has not passed. The player remains user-selectable with HTML same-session
+fallback; the validation harness remains disabled by default. See
+`WEBGPU_AUDIO_MULTICHANNEL.md`, `WEBGPU_DYNAMIC_HDR.md`, and
+`WEBGPU_HARDWARE_MATRIX.md`.
 
 ### 2.2 Latest committed PCM normalization checkpoint
 
@@ -309,10 +315,13 @@ These restrictions apply even where a codec row below says "implemented":
 - Playback rate other than 1.0 is rejected while custom decoded audio is active.
 - PiP, AirPlay, Remote Playback, DRM, and SyncPlay rate control are not claimed
   for custom decode.
-- Subtitles remain on Jellyfin's existing DOM/HTML surface. Custom-decode
-  subtitle selection and timing still require full end-to-end qualification.
+- Text subtitles remain on Jellyfin's DOM surface; custom sessions now own
+  clocked ASS/SSA and PGS canvases. Live selection, timing, and visual parity
+  still require the subtitle matrix.
 - The source and all selected tracks must satisfy one implemented container rule.
-- Feature flags remain disabled in source `src/config.json`.
+- `src/config.json` enables the player, custom decode, and HDR tone mapping so
+  the persistent playback preference can select it. The validation harness
+  remains disabled unless an intentional test run enables it.
 
 ### 2.8 Known `VideoSample` ownership defect
 
@@ -1496,7 +1505,10 @@ Rules that prevent duplicated work:
   conflicts with focused tests.
 - [ ] Define dependency update, decoder-fixture regeneration, and browser
   regression procedures.
-- [ ] Keep source feature flags disabled until the release matrix passes.
+- [x] Keep the WebGPU player available as a persistent user preference while
+  retaining HTML as the same-session fallback.
+- [ ] Keep the validation harness disabled outside intentional test runs and
+  define a staged capability rollout/rollback policy before broad release.
 - [ ] Define staged browser/GPU rollout, telemetry privacy, rollback, and support
   documentation.
 
