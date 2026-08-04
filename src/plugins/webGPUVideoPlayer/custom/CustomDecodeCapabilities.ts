@@ -180,6 +180,15 @@ export type CustomNativeUltraHDVideoCodecCapability =
         maximumCodedWidth: typeof NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODED_WIDTH
     };
 
+/** Returns whether an exact SDR output fixture qualified the native codec route. */
+export function hasSupportedNativeSDRVideoCodec(
+    codec: CustomNativeUltraHDVideoCodec,
+    capabilities: Pick<CustomDecodeCapabilities, 'nativeUltraHDVideo' | 'video'>
+): boolean {
+    return capabilities.video[codec].status === 'supported'
+        || capabilities.nativeUltraHDVideo?.[codec].status === 'supported';
+}
+
 export type CustomNativeDolbyVisionHEVCCapability =
     CustomDecodeCodecCapability<'hevc'> & {
         bitDepth: 10
@@ -2253,7 +2262,7 @@ function getProbeReason(
 }
 
 function getSupportedVideoCodecCount(
-    video: Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>>,
+    capabilities: Pick<CustomDecodeCapabilities, 'nativeUltraHDVideo' | 'video'>,
     h264Profiles: H264ProfileCapabilities,
     bundledHEVC: BundledHEVCExactCapabilities | null
 ): number {
@@ -2270,14 +2279,20 @@ function getSupportedVideoCodecCount(
                 break;
             case 'hevc':
                 if (
-                    video.hevc.status === 'supported'
+                    hasSupportedNativeSDRVideoCodec(codec, capabilities)
                     || bundledHEVC?.tiers['main-1080p'].status === 'supported'
                 ) {
                     supportedCount += 1;
                 }
                 break;
+            case 'av1':
+            case 'vp9':
+                if (hasSupportedNativeSDRVideoCodec(codec, capabilities)) {
+                    supportedCount += 1;
+                }
+                break;
             default:
-                if (video[codec].status === 'supported') {
+                if (capabilities.video[codec].status === 'supported') {
                     supportedCount += 1;
                 }
                 break;
@@ -2452,7 +2467,7 @@ export default class CustomDecodeCapabilityProbe {
                 capability.status === 'supported'
             )).length,
             supportedVideoCodecCount: getSupportedVideoCodecCount(
-                video,
+                { nativeUltraHDVideo, video },
                 h264Profiles,
                 bundledHEVC
             ),

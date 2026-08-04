@@ -1393,7 +1393,7 @@ describe('CustomDecodeSession', () => {
         expect(worker.terminate).toHaveBeenCalledOnce();
     });
 
-    it('waits for decoded video and accepted PCM before reporting audio media ready', () => {
+    it('waits for decoded video and a bounded PCM prebuffer before reporting ready', () => {
         const worker = new MockWorker();
         const audioBridge = {
             enqueue: vi.fn(() => ({ frameCount: 1_024, status: 'submitted' as const })),
@@ -1450,17 +1450,24 @@ describe('CustomDecodeSession', () => {
         expect(session.getTelemetry().state).toBe('configured');
         expect(events).toHaveLength(1);
 
-        worker.emitMessage({
-            channelCount: 2,
-            channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
-            durationMicroseconds: 21_333,
-            frameCount: 1_024,
-            generation: 9,
-            mediaTimeMicroseconds: 1_000_000,
-            sampleRate: 48_000,
-            type: 'audio'
-        });
-        expect(audioBridge.enqueue).toHaveBeenCalledOnce();
+        for (let sampleIndex = 0; sampleIndex < 5; sampleIndex += 1) {
+            worker.emitMessage({
+                channelCount: 2,
+                channelData: [ new Float32Array(1_024), new Float32Array(1_024) ],
+                durationMicroseconds: 21_333,
+                frameCount: 1_024,
+                generation: 9,
+                mediaTimeMicroseconds: 1_000_000 + Math.round(
+                    sampleIndex * 1_024 * 1_000_000 / 48_000
+                ),
+                sampleRate: 48_000,
+                type: 'audio'
+            });
+            if (sampleIndex < 4) {
+                expect(session.getTelemetry().state).toBe('configured');
+            }
+        }
+        expect(audioBridge.enqueue).toHaveBeenCalledTimes(5);
         expect(events.at(-1)).toEqual({
             audio: audioConfiguration,
             codec: 'hev1.2.4.L153.B0',
@@ -1473,10 +1480,10 @@ describe('CustomDecodeSession', () => {
             audioSampleRate: 48_000,
             audioSourceChannelCount: 1,
             audioSourceSampleRate: 12_345,
-            receivedAudioFrameCount: 1_024,
-            receivedAudioSampleCount: 1,
-            submittedAudioFrameCount: 1_024,
-            submittedAudioSampleCount: 1
+            receivedAudioFrameCount: 5_120,
+            receivedAudioSampleCount: 5,
+            submittedAudioFrameCount: 5_120,
+            submittedAudioSampleCount: 5
         });
 
         const bridgeStartOptions = vi.mocked(audioBridge.start).mock.calls[0][0];
@@ -1495,6 +1502,103 @@ describe('CustomDecodeSession', () => {
         expect(worker.postedMessages.at(-1)).toEqual({ generation: 9, type: 'stop' });
         expect(audioBridge.stop).toHaveBeenCalledWith(9);
         worker.emitMessage({ generation: 9, type: 'stopped' });
+    });
+
+    it('requires a fresh PCM prebuffer after replacing the decode generation', async () => {
+        const workers = [ new MockWorker(), new MockWorker() ];
+        let workerIndex = 0;
+        const audioBridge = {
+            enqueue: vi.fn(() => ({ frameCount: 1_920, status: 'submitted' as const })),
+            initialAudioSampleCredits: 3,
+            start: vi.fn(),
+            stop: vi.fn()
+        } as unknown as CustomDecodeAudioBridge;
+        const events: CustomDecodeSessionEvent[] = [];
+        const session = new CustomDecodeSession(
+            event => events.push(event),
+            () => workers[workerIndex++] as unknown as Worker,
+            audioBridge
+        );
+        const audioConfiguration = {
+            channelCount: 2,
+            codec: 'pcm-s24',
+            sampleRate: 48_000,
+            sourceChannelCount: 2,
+            sourceSampleRate: 48_000
+        };
+        const emitAudioPrebuffer = (worker: MockWorker, generation: number): void => {
+            for (let sampleIndex = 0; sampleIndex < 3; sampleIndex += 1) {
+                worker.emitMessage({
+                    channelCount: 2,
+                    channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
+                    durationMicroseconds: 40_000,
+                    frameCount: 1_920,
+                    generation,
+                    mediaTimeMicroseconds: 1_000_000 + sampleIndex * 40_000,
+                    sampleRate: 48_000,
+                    type: 'audio'
+                });
+            }
+        };
+
+        startSession(session, 40, 1);
+        workers[0].emitMessage({
+            audio: audioConfiguration,
+            codec: 'avc1.640029',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 40,
+            type: 'ready'
+        });
+        emitFrame(workers[0], 40, 1_000_000);
+        emitAudioPrebuffer(workers[0], 40);
+        expect(events.filter(event => event.type === 'ready')).toHaveLength(1);
+
+        startSession(session, 41, 1);
+        workers[0].emitMessage({ generation: 40, type: 'stopped' });
+        workers[1].emitMessage({
+            audio: audioConfiguration,
+            codec: 'avc1.640029',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 41,
+            type: 'ready'
+        });
+        emitFrame(workers[1], 41, 1_000_000);
+        for (let sampleIndex = 0; sampleIndex < 2; sampleIndex += 1) {
+            workers[1].emitMessage({
+                channelCount: 2,
+                channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
+                durationMicroseconds: 40_000,
+                frameCount: 1_920,
+                generation: 41,
+                mediaTimeMicroseconds: 1_000_000 + sampleIndex * 40_000,
+                sampleRate: 48_000,
+                type: 'audio'
+            });
+        }
+        expect(events.filter(event => event.type === 'ready')).toHaveLength(1);
+
+        workers[1].emitMessage({
+            channelCount: 2,
+            channelData: [ new Float32Array(1_920), new Float32Array(1_920) ],
+            durationMicroseconds: 40_000,
+            frameCount: 1_920,
+            generation: 41,
+            mediaTimeMicroseconds: 1_080_000,
+            sampleRate: 48_000,
+            type: 'audio'
+        });
+        expect(events.filter(event => event.type === 'ready')).toHaveLength(2);
+        expect(session.getTelemetry().submittedAudioFrameCount).toBe(5_760);
+
+        const stopPromise = session.stop();
+        workers[1].emitMessage({ generation: 41, type: 'stopped' });
+        await stopPromise;
     });
 
     it('feeds native fMP4 audio through one owned backend before clock handoff', async () => {

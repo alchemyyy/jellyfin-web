@@ -1,5 +1,6 @@
 import type { DeviceProfile } from '@jellyfin/sdk/lib/generated-client/models/device-profile';
 
+import { PlayerEvent } from 'apps/legacy/features/playback/constants/playerEvent';
 import { PluginType } from 'constants/pluginType';
 import { PLAYBACK_SUPERSEDED } from 'constants/playbackResult';
 import {
@@ -362,6 +363,12 @@ type CustomPlaybackAttemptResult =
     | { status: 'native-required' }
     | { result: unknown, status: 'handled' }
     | { status: 'superseded' };
+
+type SourceRenegotiationRequest = {
+    accept: () => void
+    errorType: MediaError
+    reason: CustomPlaybackFallbackRequest['reason']
+};
 
 type PendingPausedPresentationRefresh = {
     backendGeneration: number
@@ -974,12 +981,20 @@ export default class WebGPUPlayer {
                         break;
                 }
             }
-            if (this.renegotiateCustomOnlySourceWhenDisabled(
+            const disabledCustomSourceResult = this.renegotiateCustomOnlySourceWhenDisabled(
                 customDecodeEnabled,
                 options,
                 generation
-            )) {
-                return PLAYBACK_SUPERSEDED;
+            );
+            if (disabledCustomSourceResult) {
+                switch (disabledCustomSourceResult.status) {
+                    case 'handled':
+                        return disabledCustomSourceResult.result;
+                    case 'native-required':
+                        break;
+                    case 'superseded':
+                        return PLAYBACK_SUPERSEDED;
+                }
             }
 
             this.beginCustomPlaybackAudioPrewarmClose(generation);
@@ -2243,8 +2258,14 @@ export default class WebGPUPlayer {
         this.beginCustomPlaybackAudioPrewarmClose(backendGeneration);
         const invalidatedGeneration = this.advancePresentationGeneration();
         this.presenter.endSession(invalidatedGeneration);
-        this.emitCustomPlaybackRenegotiationRequired(backendGeneration, reason);
-        return { result: PLAYBACK_SUPERSEDED, status: 'handled' };
+        const accepted = this.emitCustomPlaybackRenegotiationRequired(
+            backendGeneration,
+            reason
+        );
+        return {
+            result: accepted ? undefined : PLAYBACK_SUPERSEDED,
+            status: 'handled'
+        };
     }
 
     /** Renegotiates a source widened before custom decode became unavailable. */
@@ -2252,16 +2273,15 @@ export default class WebGPUPlayer {
         customDecodeEnabled: boolean,
         options: unknown,
         backendGeneration: number
-    ): boolean {
+    ): CustomPlaybackAttemptResult | null {
         if (customDecodeEnabled || !this.currentPlaybackRequiresSourceRenegotiation) {
-            return false;
+            return null;
         }
-        this.getCustomPlaybackUnavailableResult(
+        return this.getCustomPlaybackUnavailableResult(
             backendGeneration,
             'source-unsupported',
             getPlaybackStartTimeMicroseconds(options)
         );
-        return true;
     }
 
     private async getCustomPlaybackEligibilityForOptions(
@@ -2784,11 +2804,11 @@ export default class WebGPUPlayer {
             || this.currentPlaybackRequiresSourceRenegotiation
         ) {
             this.customPlaybackRecoveryTimeMicroseconds = request.mediaTimeMicroseconds;
-            this.emitCustomPlaybackRenegotiationRequired(
+            const accepted = this.emitCustomPlaybackRenegotiationRequired(
                 backendGeneration,
                 request.reason
             );
-            return PLAYBACK_SUPERSEDED;
+            return accepted ? undefined : PLAYBACK_SUPERSEDED;
         }
 
         this.customPlaybackRecoveryTimeMicroseconds = null;
@@ -3036,7 +3056,7 @@ export default class WebGPUPlayer {
         }
         this.customPlaybackTerminalErrorGeneration = backendGeneration;
         console.warn('WebGPU playback fallback failed', error);
-        Events.trigger(this, 'error', [{ type: MediaError.PLAYER_ERROR }]);
+        Events.trigger(this, PlayerEvent.Error, [{ type: MediaError.PLAYER_ERROR }]);
     }
 
     private handleCustomPlaybackTerminalFailure(
@@ -3064,21 +3084,39 @@ export default class WebGPUPlayer {
     private emitCustomPlaybackRenegotiationRequired(
         backendGeneration: number,
         reason: CustomPlaybackFallbackRequest['reason']
-    ): void {
+    ): boolean {
         if (
             !this.isRequestedSessionCurrent(backendGeneration)
             || this.customPlaybackTerminalErrorGeneration === backendGeneration
         ) {
-            return;
+            return false;
         }
 
-        // PlaybackManager uses MEDIA_NOT_SUPPORTED to renegotiate a profile-widened
-        // DirectPlay source. The exact custom failure remains available in telemetry.
         const mediaError = reason === 'network-failed' ?
             MediaError.NETWORK_ERROR :
             MediaError.MEDIA_NOT_SUPPORTED;
+        let accepting = true;
+        let accepted = false;
+        const request: SourceRenegotiationRequest = {
+            accept: (): void => {
+                if (accepting) {
+                    accepted = true;
+                }
+            },
+            errorType: mediaError,
+            reason
+        };
+
+        Events.trigger(this, PlayerEvent.SourceRenegotiationRequired, [request]);
+        accepting = false;
         this.customPlaybackTerminalErrorGeneration = backendGeneration;
-        Events.trigger(this, 'error', [{ type: mediaError }]);
+        if (accepted) {
+            return true;
+        }
+
+        // Older controllers use the generic error contract for source retries.
+        Events.trigger(this, PlayerEvent.Error, [{ type: mediaError }]);
+        return false;
     }
 
     private readonly handlePresentationFallback = (

@@ -3,7 +3,7 @@
 - Status: active implementation plan
 - Recorded: 2026-08-03
 - Branch: `webgpu-player`
-- Parent checkpoint: `3cb8f57839cd1361ffe567d3220d9c5ec5ad533f`
+- Parent checkpoint: `a25eb6188aa5822cd9a8bf9efbeb1427da574a4b`
 - Current state: the JPEG 2000, progressive MPEG-2 Matroska, DTS, TrueHD/MLP,
   downmix, artifact-provenance, HDR, normalization, no-bitrate High Tier,
   unified-validation, dynamic-HDR, generalized-audio, hardware-matrix,
@@ -12,11 +12,16 @@
   custom-clock subtitle surfaces, target-neutral bounded audio sample-rate
   negotiation, stereo E-AC-3 authorization, exact unsupported-video routing to
   the HTML player, Matroska DTS timestamp-quantization correction, and terminal
-  fallback containment. The current capability slice removes representative
-  fixture width, height, level, frame-rate, and encoded-bitrate values as
-  native-route selection ceilings. It retains actual per-source decoder probes,
-  WebGPU device limits, a byte-bounded raw transfer window, and exact bundled
-  software-decoder envelopes. Current-host evidence remains fail-closed for Chrome
+  fallback containment. Representative fixture width, height, level, frame-rate,
+  and encoded-bitrate values have been removed as native-route selection
+  ceilings. The current integration batches small PCM packets, requires a
+  bounded decoded-audio startup buffer, preserves the PlaybackManager session
+  during accepted source renegotiation, selects ordinary independent video
+  tracks without requiring Dolby Vision topology, and lets exact Ultra HD native
+  evidence qualify native HEVC independently of the baseline fixture. It retains
+  actual per-source decoder probes, WebGPU device limits, a byte-bounded raw
+  transfer window, and exact bundled software-decoder envelopes. Current-host
+  evidence remains fail-closed for Chrome
   retention and unresolved for Edge live custom-playback entry; AMD and Intel
   were not available. Per-route real-media qualification and long-run resource
   validation remain before a general rollout.
@@ -179,6 +184,49 @@ compound rejection, cumulative Jellyfin profile matching, preserved HTML/retry
 conditions, and preserved software-decoder bounds. Browser validation must
 still prove exact source decoder acceptance and WebGPU resource creation; an
 automated profile test alone is not a hardware-support claim.
+
+### 2.1.2 Current PCM cadence and source-renegotiation integration
+
+The timing regression source exposes 48 kHz PCM in 240-frame packets: one packet
+every 5 ms, or 200 worker-to-main audio messages per second. A credit window of
+eight such packets represented only 40 ms of queued audio, and playback could
+start after the first packet. Main-thread scheduling jitter could therefore
+drain the AudioWorklet queue repeatedly and suspend/reanchor the audio-master
+clock.
+
+The current worktree:
+
+- batches decoded PCM into at least 40 ms/1920-frame output chunks while
+  preserving signed-microsecond timestamps and the existing maximum chunk size;
+- returns a reserved worker credit when an input packet produces no output, so
+  batching cannot deadlock the demux loop;
+- requires at least 100 ms of submitted PCM before the session reports ready;
+- flushes only the bounded terminal tail below the minimum chunk size;
+- reapplies the startup threshold after every generation replacement;
+- accepts two independently rounded 1 ms Matroska timestamps plus one source
+  sample, while continuing to reject a missing DTS access unit; and
+- uses a synchronous `sourcerenegotiationrequired` acceptance request so the
+  wrapper can distinguish a handled retry from a genuinely superseded session.
+
+PlaybackManager stores one accepted request during initial startup, emits the
+original `playbackstart` exactly once, and then starts the replacement source.
+Established playback starts the replacement immediately. Duplicate or already-
+changing requests are accepted without scheduling a second retry. If no viable
+transcoding retry accepts the request, the existing generic terminal error path
+remains intact.
+
+Checkpoint gate:
+
+- [x] Cover 5 ms PCM packet batching and terminal-tail flushing.
+- [x] Cover the 100 ms media-ready threshold and generation replacement.
+- [x] Cover accepted startup/established renegotiation and asynchronous rejection.
+- [x] Preserve missing-packet rejection beyond Matroska timestamp quantization.
+- [x] Pass the complete 108-file WebGPU Vitest suite.
+- [ ] Run the supplied PCM timing source for startup, five minutes, pause/resume,
+  three seeks, and stop with zero post-start underflows or audible discontinuity.
+- [ ] Exercise initial and established source renegotiation in the browser and
+  confirm one `playbackstart`, one replacement request, retained video UI, and no
+  background playback after stop or failure.
 
 ### 2.2 Latest committed PCM normalization checkpoint
 

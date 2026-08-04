@@ -155,6 +155,15 @@ const LEGACY_VIDEO_PACKET_OPTIONS = {
 } as const;
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
 const TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS = 1_000_000;
+const MICROSECONDS_PER_SECOND = 1_000_000;
+const DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
+const DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS = 2_000;
+const MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS = 40_000;
+const MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = Math.ceil(
+    CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+        * MINIMUM_AUDIO_OUTPUT_CHUNK_DURATION_MICROSECONDS
+        / MICROSECONDS_PER_SECOND
+);
 
 type MediaSampleIterator<Sample> = {
     next: () => Promise<IteratorResult<Sample>>
@@ -3003,6 +3012,9 @@ async function streamAudioSamples(
     const resampler = new StreamingAudioResampler({
         channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        maximumTimestampQuantizationMicroseconds:
+            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
     });
@@ -3050,6 +3062,9 @@ async function streamDTSAudioPackets(
     const resampler = new StreamingAudioResampler({
         channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        maximumTimestampQuantizationMicroseconds:
+            DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
     });
@@ -3111,6 +3126,9 @@ async function streamTrueHDAudioPackets(
     const resampler = new StreamingAudioResampler({
         channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        maximumTimestampQuantizationMicroseconds:
+            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
     });

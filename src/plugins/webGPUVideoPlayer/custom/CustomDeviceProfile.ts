@@ -13,6 +13,7 @@ import {
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    hasSupportedNativeSDRVideoCodec,
     isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
@@ -418,20 +419,22 @@ function supportsNativeVideoCodec(
     codec: CustomVideoCodec,
     capabilities: CustomDecodeCapabilities
 ): boolean {
-    if (codec === 'h264') {
-        return getNativeVideoProfiles(codec, capabilities).length > 0;
+    switch (codec) {
+        case 'h264':
+            return getNativeVideoProfiles(codec, capabilities).length > 0;
+        case 'hevc':
+            return hasSupportedNativeSDRVideoCodec(codec, capabilities)
+                || capabilities.bundledHEVC?.tiers['main-1080p'].status === 'supported';
+        case 'av1':
+        case 'vp9':
+            return hasSupportedNativeSDRVideoCodec(codec, capabilities);
+        case 'jpeg2000':
+            return capabilities.bundledJPEG2000?.status === 'supported';
+        case 'mpeg2video':
+            return capabilities.bundledLegacyVideo?.status === 'supported';
+        case 'vp8':
+            return capabilities.video[codec].status === 'supported';
     }
-    if (codec === 'hevc') {
-        return capabilities.video.hevc.status === 'supported'
-            || capabilities.bundledHEVC?.tiers['main-1080p'].status === 'supported';
-    }
-    if (codec === 'jpeg2000') {
-        return capabilities.bundledJPEG2000?.status === 'supported';
-    }
-    if (codec === 'mpeg2video') {
-        return capabilities.bundledLegacyVideo?.status === 'supported';
-    }
-    return capabilities.video[codec].status === 'supported';
 }
 const RAW_VIDEO_PROFILES: Readonly<Record<'av1' | 'hevc' | 'vp9', readonly string[]>> = {
     av1: [ 'main' ],
@@ -1821,7 +1824,7 @@ function createNativeMeasuredVideoRoute(
     }
 
     let bundledMain: BundledHEVCExactTierCapability | null = null;
-    if (codec === 'hevc' && capabilities.video.hevc.status !== 'supported') {
+    if (codec === 'hevc' && !hasSupportedNativeSDRVideoCodec(codec, capabilities)) {
         const mainTier = capabilities.bundledHEVC?.tiers['main-1080p'];
         bundledMain = mainTier?.status === 'supported' ? mainTier : null;
     }

@@ -771,6 +771,7 @@ export class PlaybackManager {
 
         const players = [];
         const retiredStreamInfos = new WeakSet();
+        const pendingSourceRenegotiationRetries = new WeakMap();
         const playbackRequestGate = this.#playbackRequestGate;
         const streamChangeRequestGate = this.#streamChangeRequestGate;
         let currentTargetInfo;
@@ -1880,6 +1881,7 @@ export class PlaybackManager {
         }
 
         function beginStreamChangeRequest(player) {
+            pendingSourceRenegotiationRetries.delete(player);
             const streamChangeRequestGeneration = streamChangeRequestGate.beginRequest();
             player.streamChangeRequestGeneration = streamChangeRequestGeneration;
             return streamChangeRequestGeneration;
@@ -2439,6 +2441,7 @@ export class PlaybackManager {
 
                 player.isChangingStream = false;
                 player.streamChangeRequestGeneration = null;
+                pendingSourceRenegotiationRetries.delete(player);
                 player.cancelPendingPlay?.();
             }
         }
@@ -3937,6 +3940,7 @@ export class PlaybackManager {
             streamInfo.started = true;
 
             startPlaybackProgressTimer(player);
+            completePendingSourceRenegotiation(player, streamInfo);
         }
 
         function onPlaybackStartedFromSelfManagingPlayer(e, item, mediaSource) {
@@ -4026,6 +4030,97 @@ export class PlaybackManager {
                 && (!currentlyPreventsVideoStreamCopy || !currentlyPreventsAudioStreamCopy);
         }
 
+        function createPlaybackRetryWithTranscoding(player, streamInfo, errorType) {
+            if (!streamInfo?.url) {
+                return null;
+            }
+
+            const sourceUrl = streamInfo.url.toLowerCase();
+            const isAlreadyFallbacking = sourceUrl.includes('transcodereasons');
+            const currentlyPreventsVideoStreamCopy = sourceUrl.includes('allowvideostreamcopy=false');
+            const currentlyPreventsAudioStreamCopy = sourceUrl.includes('allowaudiostreamcopy=false');
+            if (!enablePlaybackRetryWithTranscoding(
+                streamInfo,
+                errorType,
+                currentlyPreventsVideoStreamCopy,
+                currentlyPreventsAudioStreamCopy
+            )) {
+                return null;
+            }
+
+            const startTime = getCurrentTicks(player) || streamInfo.playerStartPositionTicks;
+            const isRemoteSource = streamInfo.item.LocationType === 'Remote';
+            const tryVideoStreamCopy = isRemoteSource && !isAlreadyFallbacking;
+            return {
+                params: {
+                    EnableDirectPlay: false,
+                    EnableDirectStream: tryVideoStreamCopy,
+                    AllowVideoStreamCopy: tryVideoStreamCopy,
+                    AllowAudioStreamCopy: currentlyPreventsAudioStreamCopy
+                        || currentlyPreventsVideoStreamCopy ? false : null,
+                    IsPlaybackErrorRecovery: true,
+                    PlaybackErrorType: errorType
+                },
+                startTime
+            };
+        }
+
+        function executePlaybackRetryWithTranscoding(player, retry) {
+            changeStream(player, retry.startTime, retry.params);
+        }
+
+        function completePendingSourceRenegotiation(player, streamInfo) {
+            const pendingRetry = pendingSourceRenegotiationRetries.get(player);
+            if (!pendingRetry) {
+                return;
+            }
+
+            pendingSourceRenegotiationRetries.delete(player);
+            if (
+                pendingRetry.streamInfo !== streamInfo
+                || getPlayerData(player).streamInfo !== streamInfo
+            ) {
+                return;
+            }
+
+            executePlaybackRetryWithTranscoding(player, pendingRetry.retry);
+        }
+
+        function onSourceRenegotiationRequired(event, request) {
+            if (!request || typeof request.accept !== 'function') {
+                return;
+            }
+
+            const player = this;
+            const playerData = getPlayerData(player);
+            const streamInfo = playerData.streamInfo;
+            const pendingRetry = pendingSourceRenegotiationRetries.get(player);
+            if (
+                playerData.isChangingStream
+                || pendingRetry?.streamInfo === streamInfo
+            ) {
+                request.accept();
+                return;
+            }
+
+            const retry = createPlaybackRetryWithTranscoding(
+                player,
+                streamInfo,
+                request.errorType
+            );
+            if (!retry) {
+                return;
+            }
+
+            request.accept();
+            if (streamInfo.started) {
+                executePlaybackRetryWithTranscoding(player, retry);
+                return;
+            }
+
+            pendingSourceRenegotiationRetries.set(player, { retry, streamInfo });
+        }
+
         /**
          * Playback error handler.
          * @param {Error} e
@@ -4043,31 +4138,13 @@ export class PlaybackManager {
 
             const streamInfo = error.streamInfo || getPlayerData(player).streamInfo;
 
-            if (streamInfo?.url) {
-                const isAlreadyFallbacking = streamInfo.url.toLowerCase().includes('transcodereasons');
-                const currentlyPreventsVideoStreamCopy = streamInfo.url.toLowerCase().indexOf('allowvideostreamcopy=false') !== -1;
-                const currentlyPreventsAudioStreamCopy = streamInfo.url.toLowerCase().indexOf('allowaudiostreamcopy=false') !== -1;
-
-                // Auto switch to transcoding
-                if (enablePlaybackRetryWithTranscoding(streamInfo, errorType, currentlyPreventsVideoStreamCopy, currentlyPreventsAudioStreamCopy)) {
-                    const startTime = getCurrentTicks(player) || streamInfo.playerStartPositionTicks;
-                    const isRemoteSource = streamInfo.item.LocationType === 'Remote';
-                    // force transcoding and only allow remuxing for remote source like liveTV, but only for initial trial
-                    const tryVideoStreamCopy = isRemoteSource && !isAlreadyFallbacking;
-
-                    changeStream(player, startTime, {
-                        EnableDirectPlay: false,
-                        EnableDirectStream: tryVideoStreamCopy,
-                        AllowVideoStreamCopy: tryVideoStreamCopy,
-                        AllowAudioStreamCopy: currentlyPreventsAudioStreamCopy || currentlyPreventsVideoStreamCopy ? false : null,
-                        IsPlaybackErrorRecovery: true,
-                        PlaybackErrorType: errorType
-                    });
-
-                    return;
-                }
+            const retry = createPlaybackRetryWithTranscoding(player, streamInfo, errorType);
+            if (retry) {
+                executePlaybackRetryWithTranscoding(player, retry);
+                return;
             }
 
+            pendingSourceRenegotiationRetries.delete(player);
             const playerData = getPlayerData(player);
             if (playerData.isChangingStream) {
                 clearStreamChangeState(playerData, playerData.streamChangeRequestGeneration);
@@ -4080,6 +4157,8 @@ export class PlaybackManager {
 
         function onPlaybackStopped(e, displayErrorCode, suppressErrorMessage = false) {
             const player = this;
+
+            pendingSourceRenegotiationRetries.delete(player);
 
             if (getPlayerData(player).isChangingStream) {
                 return;
@@ -4322,6 +4401,11 @@ export class PlaybackManager {
 
             if (enableLocalPlaylistManagement(player)) {
                 Events.on(player, 'error', onPlaybackError);
+                Events.on(
+                    player,
+                    PlayerEvent.SourceRenegotiationRequired,
+                    onSourceRenegotiationRequired
+                );
                 Events.on(player, 'timeupdate', onPlaybackTimeUpdate);
                 Events.on(player, 'pause', onPlaybackPause);
                 Events.on(player, 'unpause', onPlaybackUnpause);

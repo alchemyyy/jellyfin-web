@@ -26,7 +26,12 @@ advertised until those profile-specific routes pass their production probes.
 
 Failure during capability probing, demux, decode, audio output, WebGPU setup,
 presentation, or device recovery falls back to the owned HTML player. The
-custom path does not recursively request another player.
+custom path does not recursively request another player. A custom-only source
+that requires new server negotiation emits a synchronous acceptance request to
+PlaybackManager. Accepted initial requests are deferred until the original UI
+session starts; accepted established requests replace the source immediately.
+This preserves one player identity and prevents replacement audio or video from
+continuing behind a stopped or navigated-away UI.
 
 ## Bitrate-independent WebGPU negotiation
 
@@ -302,6 +307,28 @@ the exact cubic controller value, verifies mute, requires the normalization
 gain to remain unchanged throughout, and restores the original state. A
 non-unity live-title track/album-gain A/B remains part of the broader audio
 release matrix.
+
+## Custom audio packet cadence
+
+The decoded-audio worker batches output by media duration, not codec name,
+encoded bitrate, or a list of expected packet sizes. At 48 kHz it accumulates at
+least 1920 frames, or 40 ms, before posting an ordinary PCM chunk. This converts
+a source with 240-frame packets from 200 cross-thread messages per second to
+about 25 while preserving exact sample order and signed-microsecond timestamps.
+The existing maximum output size remains the upper bound, and finalization may
+emit one smaller terminal tail.
+
+The decode session does not report media ready until at least 100 ms of decoded
+PCM has entered the AudioWorklet bridge. With the fixed eight-credit window and
+40 ms chunks, up to about 320 ms can be queued without enlarging the existing
+credit or worklet capacity bounds. Every new generation resets this readiness
+state, so seek and source replacement receive a fresh prebuffer.
+
+Matroska DTS timestamps are compared with the integer sample-count clock. The
+bounded tolerance covers two independently rounded 1 ms container timestamps
+plus one source sample; it does not conceal a missing access unit. Corrections
+are counted in telemetry and accepted timestamps are canonicalized to the
+sample-count clock.
 
 ## Bundled codec licensing and distribution
 

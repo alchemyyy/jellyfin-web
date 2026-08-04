@@ -2628,6 +2628,44 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.currentTime()).toBe(2_500);
     });
 
+    it('lets PlaybackManager accept established source renegotiation synchronously', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        const errorListener = vi.fn();
+        const renegotiationListener = vi.fn((
+            _event: unknown,
+            request: { accept: () => void }
+        ): void => {
+            request.accept();
+        });
+        Events.on(player, 'error', errorListener);
+        Events.on(player, 'sourcerenegotiationrequired', renegotiationListener);
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        await expect(customPlaybackController.fallbackHook({
+            disposition: 'renegotiate-source',
+            generation: 1,
+            mediaTimeMicroseconds: 2_500_000,
+            preserveHTMLSession: true,
+            reason: 'source-unsupported'
+        })).resolves.toBeUndefined();
+
+        expect(renegotiationListener).toHaveBeenCalledOnce();
+        expect(renegotiationListener.mock.calls[0][1]).toEqual(expect.objectContaining({
+            errorType: MediaError.MEDIA_NOT_SUPPORTED,
+            reason: 'source-unsupported'
+        }));
+        expect(errorListener).not.toHaveBeenCalled();
+        expect(backend.play).not.toHaveBeenCalled();
+    });
+
     it('tears down owned audio before one server renegotiation signal', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -3428,6 +3466,62 @@ describe('WebGPUPlayer HTML delegation', () => {
             type: MediaError.MEDIA_NOT_SUPPORTED
         });
         expect(player.currentTime()).toBe(1_000);
+    });
+
+    it('completes accepted startup renegotiation without superseding the UI session', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.startupFallback = true;
+        const errorListener = vi.fn();
+        const renegotiationListener = vi.fn((
+            _event: unknown,
+            request: { accept: () => void }
+        ): void => {
+            request.accept();
+        });
+        Events.on(player, 'error', errorListener);
+        Events.on(player, 'sourcerenegotiationrequired', renegotiationListener);
+
+        await expect(player.play(
+            createKnownSDRPlayOptions({ playMethod: 'DirectPlay' })
+        )).resolves.toBeUndefined();
+
+        expect(renegotiationListener).toHaveBeenCalledOnce();
+        expect(errorListener).not.toHaveBeenCalled();
+        expect(backend.play).not.toHaveBeenCalled();
+    });
+
+    it('rejects asynchronous source-renegotiation acceptance', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.startupFallback = true;
+        const errorListener = vi.fn();
+        Events.on(player, 'error', errorListener);
+        Events.on(player, 'sourcerenegotiationrequired', (
+            _event: unknown,
+            request: { accept: () => void }
+        ): void => {
+            void Promise.resolve().then(request.accept);
+        });
+
+        await expect(player.play(
+            createKnownSDRPlayOptions({ playMethod: 'DirectPlay' })
+        )).resolves.toBe(PLAYBACK_SUPERSEDED);
+        await Promise.resolve();
+
+        expect(errorListener).toHaveBeenCalledOnce();
     });
 
     it('uses native playback when the custom presentation cannot initialize', async () => {

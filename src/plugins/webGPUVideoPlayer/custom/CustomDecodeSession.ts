@@ -12,7 +12,7 @@ import {
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
 import { resolveDolbyVisionRPUParserWASMURL } from './DolbyVisionRPUParser';
-import { requireMicroseconds } from './TimeMath';
+import { audioFramesToMicroseconds, requireMicroseconds } from './TimeMath';
 import {
     isDecodeWorkerResponse,
     MAX_DECODED_FRAME_CREDITS,
@@ -47,6 +47,7 @@ import type {
 } from './StaticHDRMetadata';
 
 const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
+const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 
 export type CustomDecodeSessionStartOptions = {
     audioOutputMode?: CustomDecodeAudioOutputMode
@@ -1323,7 +1324,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             case 'submitted':
                 this.telemetry.submittedAudioFrameCount += enqueueResult.frameCount;
                 this.telemetry.submittedAudioSampleCount += 1;
-                workerRecord.audioMediaReady = true;
+                workerRecord.audioMediaReady = audioFramesToMicroseconds(
+                    this.telemetry.submittedAudioFrameCount,
+                    message.sampleRate
+                ) >= MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS;
                 this.emitReadyEventIfMediaReady(workerRecord);
                 break;
             case 'stale-generation':

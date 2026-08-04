@@ -887,12 +887,15 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         'advertises a dimension-neutral native Ultra HD $codec route',
         ({ codec, profile }) => {
             const capabilities = createCapabilities(
-                [ codec ],
+                [],
                 [ 'aac' ],
                 [],
                 false,
                 [ codec ]
             );
+            if (codec === 'hevc') {
+                capabilities.bundledHEVC = createBundledHEVCCapabilities();
+            }
 
             const result = augmentDeviceProfileForCustomDecode(
                 createBaseProfile(),
@@ -919,6 +922,54 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             ))).toBe(false);
         }
     );
+
+    it('advertises 4K HEVC Main with six-channel E-AC-3 from Ultra HD evidence', () => {
+        const capabilities = createCapabilities(
+            [],
+            [ 'eac3' ],
+            [],
+            false,
+            [ 'hevc' ]
+        );
+
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            capabilities
+        );
+        const codecProfiles = result.profile.CodecProfiles ?? [];
+        const measuredHEVCProfile = codecProfiles.find(codecProfile => (
+            codecProfile.Codec === 'hevc'
+            && codecProfile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'SDR'
+            ))
+        ));
+
+        expect(result.telemetry.supportedVideoCodecs).toEqual([ 'hevc' ]);
+        expect(result.telemetry.supportedAudioCodecs).toEqual([ 'eac3' ]);
+        expect(result.profile.DirectPlayProfiles).toContainEqual({
+            AudioCodec: 'eac3',
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'hevc'
+        });
+        expect(measuredHEVCProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
+            expect.objectContaining({ Property: 'VideoProfile', Value: 'main' }),
+            expect.objectContaining({ Property: 'VideoRangeType', Value: 'SDR' })
+        ]));
+        expect(measuredHEVCProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'eac3', {
+            channelCount: 6,
+            profile: 'Dolby Digital Plus + Dolby Atmos',
+            sampleRate: 48_000
+        })).toBe(true);
+    });
 
     it('adds only compatible Mediabunny container and codec combinations', () => {
         const result = augmentDeviceProfileForCustomDecode(

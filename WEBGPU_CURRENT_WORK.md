@@ -4,25 +4,26 @@ Status recorded: 2026-08-03
 
 Branch: `webgpu-player`
 
-Parent checkpoint: `3cb8f57839cd1361ffe567d3220d9c5ec5ad533f`
+Parent checkpoint: `a25eb6188aa5822cd9a8bf9efbeb1427da574a4b`
 
 Checkpoint state: persistent player selection, runtime-gated native
 multichannel PCM, exact-PTS HEVC HDR10+, the checked cross-browser/GPU hardware
 matrix, exact Dolby Vision Profile 7 HDR10-compatible base handling, subtitle
 and audio negotiation fixes, unsupported-video routing, Matroska timestamp
-correction, and terminal fallback containment are committed and pushed. The
-current worktree removes representative native fixture dimensions, levels, and
-frame rates as source ceilings while retaining exact source decoder checks,
-runtime GPU limits, byte-bounded raw transfers, and measured software tiers.
+correction, terminal fallback containment, and removal of representative native
+source ceilings are committed and pushed. The current worktree adds bounded PCM
+packet batching and startup buffering, independent multi-video-track selection,
+exact Ultra HD native capability precedence, and an accepted source-
+renegotiation lifecycle that preserves the original PlaybackManager session.
 
 ## Current objective
 
-The native source-capability and resource policy is implemented without
-converting a representative 1080p/2160p fixture into a browser source limit.
-Exact bundled software tiers, deterministic audio/HDR fallback, and terminal
-cleanup remain intact. The remaining objective is to qualify the policy with
-actual selected-source decoder evidence and a source above 2160p rather than
-treating profile-generation tests as hardware support.
+Remove scheduler-dependent audio starvation from small decoded-PCM packets and
+prevent custom-source renegotiation from detaching Jellyfin's UI session. The
+remaining objective is live qualification of the supplied timing case, initial
+and established renegotiation, exact Ultra HD source decoding, and ordinary
+multi-video sources. Automated tests are necessary but do not replace these
+browser exercises.
 
 ## Current native capability and transfer-resource slice
 
@@ -73,11 +74,18 @@ treating profile-generation tests as hardware support.
   MPEG-2, and AV1 Main10 SDR. The separately registered HTML player therefore
   owns those sessions. Missing selection metadata remains conservative; the
   negotiated-source gate still performs the exact check later.
-- Matroska may quantize 512-frame, 48 kHz DTS packet timestamps to milliseconds.
-  The resampler now accepts at most that 1 ms container quantization plus one
-  source-sample rounding interval, records each correction, and canonicalizes
-  accepted timestamps onto its integer sample-count clock. A truly missing DTS
-  access unit remains a fatal discontinuity.
+- Matroska may independently quantize the anchor and current DTS packet
+  timestamps to milliseconds. The resampler accepts at most those two 1 ms
+  quantization errors plus one source-sample rounding interval, records each
+  correction, and canonicalizes accepted timestamps onto its integer sample-
+  count clock. A truly missing DTS access unit remains a fatal discontinuity.
+- Small passthrough PCM packets are accumulated into at least 40 ms output
+  chunks before crossing the worker boundary. The session requires at least
+  100 ms of submitted decoded PCM before declaring media ready. At the normal
+  eight-credit limit this permits about 320 ms of queued output instead of only
+  40 ms for a 5 ms-packet source, and cuts its message cadence from 200 to about
+  25 audio chunks per second. Finalization still emits the bounded terminal
+  tail, and each new generation resets and requalifies its startup buffer.
 - Mediabunny's `unsupported content encoding; dropping` warnings for unrelated
   Matroska subtitle/attachment tracks are nonfatal during video/audio track
   discovery. Custom subtitle selection uses Jellyfin's external subtitle URL;
@@ -85,10 +93,13 @@ treating profile-generation tests as hardware support.
   those warnings. Do not suppress the warnings or infer selected-track support
   from them; the subtitle route still requires its own live evidence.
 - Custom terminal failures first detach and destroy owned decode/audio state.
-  A source incompatibility emits one PlaybackManager renegotiation signal, while
-  a partially started native fallback is explicitly stopped before its error is
-  exposed. Stale decoder errors cannot start another fallback or leave audio
-  playing behind the home screen.
+  A source incompatibility now emits a synchronous, explicitly accepted
+  PlaybackManager renegotiation request. Initial startup defers the accepted
+  retry until the original session has emitted `playbackstart`; established
+  playback retries immediately. An accepted request does not return
+  `PLAYBACK_SUPERSEDED` or emit the generic terminal error, preventing a
+  replacement source from playing behind the home screen. A partially started
+  native fallback is still stopped before its error is exposed.
 
 Focused automated coverage exists for all of these contracts. They are not yet
 live-qualified. Required manual cases are: Fight Club PGS direct delivery and

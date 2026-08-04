@@ -133,6 +133,8 @@ function resampleStereo(
     const resampler = new StreamingAudioResampler({
         channelCount: 2,
         maximumOutputFrameCount: 4_096,
+        maximumTimestampQuantizationMicroseconds: 2_000,
+        minimumOutputFrameCount: 1,
         sourceSampleRate,
         targetSampleRate: 48_000
     });

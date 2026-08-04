@@ -1,8 +1,8 @@
 import {
     getDolbyVisionPresentationDescriptor,
-    getDolbyVisionPresentationSelection,
     getDolbyVisionProfile7HDR10BaseColorMetadata,
-    getPresentationInputColorMetadata
+    getPresentationInputColorMetadata,
+    getPresentationVideoTrackOrdinal
 } from '../PresentationInput';
 import {
     jellyfinTicksToMicroseconds,
@@ -15,6 +15,7 @@ import {
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
+    hasSupportedNativeSDRVideoCodec,
     isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
@@ -860,34 +861,49 @@ function getOrdinarySDRVideoSelection(
     let videoDecoderBackend: CustomDecodeVideoDecoderBackend = 'native';
     const maximumCodedWidth = stream.Width;
     const maximumCodedHeight = stream.Height;
-    if (codec === 'h264') {
-        if (
-            !capabilities.h264Profiles
-            || !supportsH264JellyfinProfile(capabilities.h264Profiles, stream.Profile)
-        ) {
-            return null;
-        }
-    } else if (codec === 'hevc') {
-        if (!hasSupportedNativeVideoProfile(codec, stream)) {
-            return null;
-        }
-        if (capabilities.video.hevc.status !== 'supported') {
-            const bundledMain = capabilities.bundledHEVC?.tiers['main-1080p'];
-            if (bundledMain?.status !== 'supported'
-                || !matchesBundledHEVCTier(
-                    stream,
-                    bundledMain,
-                    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND
-                )) {
+    switch (codec) {
+        case 'h264':
+            if (
+                !capabilities.h264Profiles
+                || !supportsH264JellyfinProfile(capabilities.h264Profiles, stream.Profile)
+            ) {
                 return null;
             }
-            videoDecoderBackend = 'bundled-hevc';
-        }
-    } else if (
-        capabilities.video[codec].status !== 'supported'
-        || !hasSupportedNativeVideoProfile(codec, stream)
-    ) {
-        return null;
+            break;
+        case 'hevc':
+            if (!hasSupportedNativeVideoProfile(codec, stream)) {
+                return null;
+            }
+            if (!hasSupportedNativeSDRVideoCodec(codec, capabilities)) {
+                const bundledMain = capabilities.bundledHEVC?.tiers['main-1080p'];
+                if (bundledMain?.status !== 'supported'
+                    || !matchesBundledHEVCTier(
+                        stream,
+                        bundledMain,
+                        CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND
+                    )) {
+                    return null;
+                }
+                videoDecoderBackend = 'bundled-hevc';
+            }
+            break;
+        case 'av1':
+        case 'vp9':
+            if (
+                !hasSupportedNativeSDRVideoCodec(codec, capabilities)
+                || !hasSupportedNativeVideoProfile(codec, stream)
+            ) {
+                return null;
+            }
+            break;
+        case 'vp8':
+            if (
+                capabilities.video[codec].status !== 'supported'
+                || !hasSupportedNativeVideoProfile(codec, stream)
+            ) {
+                return null;
+            }
+            break;
     }
 
     return { maximumCodedHeight, maximumCodedWidth, videoDecoderBackend };
@@ -1331,26 +1347,15 @@ function selectVideoStream(
         });
     }
 
-    if (videoStreams.length === 1) {
-        return {
-            status: 'selected',
-            stream: videoStreams[0].stream,
-            trackOrdinal: 0
-        };
-    }
-
-    const dolbyVisionSelection = getDolbyVisionPresentationSelection(options);
-    if (
-        !dolbyVisionSelection
-        || dolbyVisionSelection.baseLayerVideoTrackOrdinal >= videoStreams.length
-    ) {
+    const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
+    if (videoTrackOrdinal === null || videoTrackOrdinal >= videoStreams.length) {
         return { status: 'invalid' };
     }
 
     return {
         status: 'selected',
-        stream: videoStreams[dolbyVisionSelection.baseLayerVideoTrackOrdinal].stream,
-        trackOrdinal: dolbyVisionSelection.baseLayerVideoTrackOrdinal
+        stream: videoStreams[videoTrackOrdinal].stream,
+        trackOrdinal: videoTrackOrdinal
     };
 }
 

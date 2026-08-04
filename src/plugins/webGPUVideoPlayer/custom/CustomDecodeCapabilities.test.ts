@@ -325,7 +325,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         const harness = createEnvironment(
             new Set([
                 'avc1.640028',
-                'vp09.00.10.08',
                 'vp09.00.51.08',
                 'vp09.02.10.10'
             ]),
@@ -377,6 +376,10 @@ describe('CustomDecodeCapabilityProbe', () => {
             status: 'supported'
         });
         expect(capabilities.video.hevc).toMatchObject({
+            reason: 'config-unsupported',
+            status: 'unsupported'
+        });
+        expect(capabilities.video.vp9).toMatchObject({
             reason: 'config-unsupported',
             status: 'unsupported'
         });

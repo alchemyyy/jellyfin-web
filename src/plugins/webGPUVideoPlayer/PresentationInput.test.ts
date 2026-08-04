@@ -300,12 +300,12 @@ describe('isKnownSDRPresentationInput', () => {
         })).toBe(true);
     });
 
-    it('accepts multiple video streams only when every stream is known SDR', () => {
+    it('uses Jellyfin\'s first independent video track for SDR presentation', () => {
         expect(isKnownSDRPresentationInput({
             mediaSource: {
                 MediaStreams: [
                     { Type: 'Video', VideoRangeType: 'SDR' },
-                    { Type: 'Video', VideoRange: 'SDR' }
+                    { Type: 'Video', VideoRangeType: 'HDR10' }
                 ]
             }
         })).toBe(true);
@@ -347,17 +347,15 @@ describe('isKnownSDRPresentationInput', () => {
         })).toBe(false);
     });
 
-    it.each([
-        [
-            { Type: 'Video', VideoRangeType: 'SDR' },
-            { Type: 'Video', VideoRangeType: 'HDR10' }
-        ],
-        [
-            { Type: 'Video', VideoRangeType: 'HDR10' },
-            { Type: 'Video', VideoRangeType: 'SDR' }
-        ]
-    ])('rejects ambiguous mixed-range video streams: %o', MediaStreams => {
-        expect(isKnownSDRPresentationInput({ mediaSource: { MediaStreams } })).toBe(false);
+    it('does not substitute a later SDR track for the first HDR track', () => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [
+                    { Type: 'Video', VideoRangeType: 'HDR10' },
+                    { Type: 'Video', VideoRangeType: 'SDR' }
+                ]
+            }
+        })).toBe(false);
     });
 });
 
@@ -460,15 +458,44 @@ describe('getPresentationInputColorMetadata', () => {
         })?.transfer).toBe('sdr');
     });
 
-    it('rejects missing and ambiguous multiple video streams', () => {
+    it('rejects missing video streams', () => {
         expect(getPresentationInputColorMetadata({ mediaSource: { MediaStreams: [] } }))
             .toBeNull();
+    });
+
+    it('extracts metadata from Jellyfin\'s first independent video track', () => {
         expect(getPresentationInputColorMetadata({
             mediaSource: {
                 MediaStreams: [
-                    { Type: 'Video', VideoRangeType: 'SDR' },
-                    { Type: 'Video', VideoRangeType: 'HDR10' }
+                    {
+                        BitDepth: 10,
+                        ColorPrimaries: 'bt2020',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    },
+                    {
+                        Height: 1_080,
+                        Type: 'Video',
+                        VideoRangeType: 'SDR',
+                        Width: 1_920
+                    }
                 ]
+            }
+        })).toMatchObject({
+            bitDepth: 10,
+            transfer: 'pq'
+        });
+    });
+
+    it('rejects unrecognized multi-track Dolby Vision topology', () => {
+        expect(getPresentationInputColorMetadata({
+            mediaSource: {
+                MediaStreams: createSeparateProfile7Streams({}, { Width: 1_918 })
             }
         })).toBeNull();
     });

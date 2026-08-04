@@ -6,6 +6,8 @@ import StreamingAudioResampler, {
 } from './StreamingAudioResampler';
 
 const TARGET_SAMPLE_RATE = 48_000;
+const DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
+const DTS_TIMESTAMP_QUANTIZATION_MICROSECONDS = 2_000;
 
 function concatenateOutput(
     output: readonly StreamingAudioResamplerOutput[],
@@ -44,6 +46,9 @@ describe('StreamingAudioResampler', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 2,
             maximumOutputFrameCount: 3,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate: TARGET_SAMPLE_RATE,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -71,12 +76,63 @@ describe('StreamingAudioResampler', () => {
         });
     });
 
+    it('batches tiny passthrough packets into scheduler-safe output chunks', () => {
+        const minimumOutputFrameCount = 1_920;
+        const packetFrameCount = 240;
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 65_536,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const output: StreamingAudioResamplerOutput[] = [];
+
+        for (let packetIndex = 0; packetIndex < 10; packetIndex += 1) {
+            const packetOutput = resampler.push({
+                channelData: [
+                    new Float32Array(packetFrameCount).fill(packetIndex),
+                    new Float32Array(packetFrameCount).fill(-packetIndex)
+                ],
+                mediaTimeMicroseconds: requireMicroseconds(packetIndex * 5_000)
+            });
+            if (packetIndex < 7) {
+                expect(packetOutput).toEqual([]);
+            }
+            output.push(...packetOutput);
+        }
+
+        expect(output).toHaveLength(1);
+        expect(output[0]).toMatchObject({
+            durationMicroseconds: 40_000,
+            frameCount: minimumOutputFrameCount,
+            mediaTimeMicroseconds: 0
+        });
+        const terminalOutput = resampler.finalize();
+        expect(terminalOutput).toHaveLength(1);
+        expect(terminalOutput[0]).toMatchObject({
+            durationMicroseconds: 10_000,
+            frameCount: 480,
+            mediaTimeMicroseconds: 40_000
+        });
+        expect(resampler.getTelemetry()).toMatchObject({
+            bufferedSourceFrameCount: 0,
+            outputFrameCount: 2_400,
+            sourceFrameCount: 2_400
+        });
+    });
+
     it('produces identical 44.1 kHz output across arbitrary input boundaries', () => {
         const sourceSampleRate = 44_100;
         const source = createSine(sourceSampleRate, 1_000, sourceSampleRate / 5);
         const createResampler = (): StreamingAudioResampler => new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 65_536,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -119,12 +175,18 @@ describe('StreamingAudioResampler', () => {
         const passbandResampler = new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 65_536,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
         const stopbandResampler = new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 65_536,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -158,6 +220,9 @@ describe('StreamingAudioResampler', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 65_536,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -177,6 +242,9 @@ describe('StreamingAudioResampler', () => {
         expect(() => new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate: sampleRate,
             targetSampleRate: TARGET_SAMPLE_RATE
         })).toThrow('Source sample rate must be between 3000 and 192000 Hz');
@@ -186,6 +254,9 @@ describe('StreamingAudioResampler', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 2,
             maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds:
+                DTS_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate: TARGET_SAMPLE_RATE,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -213,10 +284,69 @@ describe('StreamingAudioResampler', () => {
         });
     });
 
+    it('accounts for independent Matroska anchor and packet quantization', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds:
+                DTS_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const DTSFrame = new Float32Array(512);
+        const packetTimestamps = [
+            0, 10_000, 21_000, 31_000, 42_000, 53_000, 63_000, 74_000,
+            86_000, 96_000, 107_000, 117_000, 128_000, 139_000, 149_000,
+            160_000, 171_000, 181_000, 192_000, 202_000, 213_000, 224_000,
+            234_000, 245_000, 256_000, 266_000, 277_000, 287_000, 298_000,
+            308_000
+        ];
+        const output: StreamingAudioResamplerOutput[] = [];
+        for (const packetTimestamp of packetTimestamps) {
+            output.push(...resampler.push({
+                channelData: [ DTSFrame, DTSFrame ],
+                mediaTimeMicroseconds: requireMicroseconds(packetTimestamp)
+            }));
+        }
+
+        expect(output).toHaveLength(packetTimestamps.length);
+        expect(output.at(-1)?.mediaTimeMicroseconds).toBe(309_333);
+        expect(resampler.getTelemetry()).toMatchObject({
+            correctedInputTimestampCount: 23,
+            maximumInputTimestampDeviationMicroseconds: 1_333
+        });
+    });
+
+    it('does not apply the wider DTS tolerance to ordinary audio routes', () => {
+        const resampler = new StreamingAudioResampler({
+            channelCount: 2,
+            maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
+            sourceSampleRate: TARGET_SAMPLE_RATE,
+            targetSampleRate: TARGET_SAMPLE_RATE
+        });
+        const frame = new Float32Array(512);
+        resampler.push({
+            channelData: [ frame, frame ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+
+        expect(() => resampler.push({
+            channelData: [ frame, frame ],
+            mediaTimeMicroseconds: requireMicroseconds(12_000)
+        })).toThrow('Resampler input timestamps contain a gap or overlap');
+    });
+
     it('still rejects a missing DTS packet beyond timestamp quantization', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 2,
             maximumOutputFrameCount: 1_024,
+            maximumTimestampQuantizationMicroseconds:
+                DTS_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate: TARGET_SAMPLE_RATE,
             targetSampleRate: TARGET_SAMPLE_RATE
         });
@@ -238,6 +368,9 @@ describe('StreamingAudioResampler', () => {
         const resampler = new StreamingAudioResampler({
             channelCount: 1,
             maximumOutputFrameCount: 4_096,
+            maximumTimestampQuantizationMicroseconds:
+                DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+            minimumOutputFrameCount: 1,
             sourceSampleRate: 192_000,
             targetSampleRate: TARGET_SAMPLE_RATE
         });

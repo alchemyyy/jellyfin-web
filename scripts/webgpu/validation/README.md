@@ -375,6 +375,36 @@ written. A reviewed baseline therefore compares the actual browser, GPU,
 driver, display, server, and active feature configuration instead of
 `not-recorded` placeholders.
 
+## Timing and source-renegotiation cases
+
+A decoded-audio timing case must declare its private media through the ignored
+overlay and resolve item/account/server values only from environment variables.
+Do not place a title, item ID, server address, media path, or authenticated URL
+in the repository manifest or generated evidence.
+
+The small-packet PCM regression procedure is:
+
+1. Assert the expected custom DirectPlay route and decoded-PCM audio mode.
+2. Record the source sample rate and packet-frame count as sanitized numeric
+   evidence; the current regression shape is 48 kHz and 240 frames per packet.
+3. Run startup, five continuous minutes, pause/resume, three separated seeks,
+   and explicit stop.
+4. Require at least 100 ms of submitted PCM before each generation becomes
+   ready, bounded audio credits/queue depth, monotonically advancing signed-
+   microsecond media time, and zero post-start underflow or overflow events.
+5. Require bounded A/V drift, no repeated clock suspension/reanchor cycle, no
+   fallback, no duplicate server session, and no audio after stop.
+6. Compare the same intervals against mpv using the existing `mpv-ab` adapter;
+   retain only numeric timing/drift summaries and content-addressed evidence.
+
+Source-renegotiation validation must cover both an incompatibility discovered
+during initial `play()` and one discovered after playback is established. Each
+case requires one accepted request, one replacement stream query, one
+`playbackstart`, retained video-route UI, no generic terminal error before the
+retry, and exact terminal cleanup if the replacement fails. A duplicate signal,
+superseded generation, or stop before deferred consumption must not start a
+second or stale replacement.
+
 ## Reviewed baselines
 
 A normal run never creates or changes a baseline. Approval is a separate command

@@ -1829,7 +1829,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('rejects multiple independent video tracks', () => {
+    it('selects Jellyfin\'s first independent video track', () => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             MediaStreams: Array<Record<string, unknown>>
@@ -1851,7 +1851,97 @@ describe('CustomPlaybackEligibility', () => {
             options,
             createCapabilities(),
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'video-track-unavailable' });
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            videoTrackIndex: 0
+        });
+    });
+
+    it('direct plays the first independent 4K HDR10 track with selected AC3 audio', () => {
+        const options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 7,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 23.976025,
+                        BitDepth: 10,
+                        BitRate: 49_800_000,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 2_160,
+                        Index: 3,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 23.976025,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 3_840
+                    },
+                    {
+                        AverageFrameRate: 23.976025,
+                        BitDepth: 10,
+                        BitRate: 6_500_000,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        Height: 1_080,
+                        Index: 4,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 23.976025,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'HDR10',
+                        Width: 1_920
+                    },
+                    {
+                        Channels: 2,
+                        Codec: 'flac',
+                        Index: 5,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    },
+                    {
+                        Channels: 6,
+                        Codec: 'ac3',
+                        Index: 7,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 82_800_000_000
+            },
+            url: '/Videos/item/stream.mkv?api_key=secret'
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            PQ_AUTHORIZATION
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 6,
+            audioTrackIndex: 1,
+            eligible: true,
+            hdr: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'raw-planes',
+            videoTrackIndex: 0
+        });
     });
 
     it.each([
@@ -2249,7 +2339,11 @@ describe('CustomPlaybackEligibility', () => {
                 ...baseCapabilities,
                 nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(
                     new Set([ codec ])
-                )
+                ),
+                video: {
+                    ...baseCapabilities.video,
+                    [codec]: createCapability(codec, false)
+                }
             };
             const options = createOptions();
             const mediaSource = options.mediaSource as {
@@ -2294,6 +2388,72 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     );
+
+    it('selects 4K HEVC Main with six-channel E-AC-3 from Ultra HD evidence', () => {
+        const baseCapabilities: CustomDecodeCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(new Set([ 'hevc' ])),
+            video: {
+                ...baseCapabilities.video,
+                hevc: createCapability('hevc', false)
+            }
+        };
+        const options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 23.98,
+                        BitDepth: 8,
+                        BitRate: 15_500_000,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt709',
+                        ColorSpace: 'bt709',
+                        ColorTransfer: 'bt709',
+                        Height: 1_920,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 150,
+                        Profile: 'Main',
+                        RealFrameRate: 23.98,
+                        Type: 'Video',
+                        VideoRangeType: 'SDR',
+                        Width: 3_840
+                    },
+                    {
+                        BitRate: 640_000,
+                        Channels: 6,
+                        Codec: 'eac3',
+                        Index: 1,
+                        Profile: 'Dolby Digital Plus + Dolby Atmos',
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 36_000_000_000
+            },
+            url: '/Videos/item/stream.mkv'
+        });
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 6,
+            audioTrackIndex: 0,
+            eligible: true,
+            hdr: false,
+            maximumCodedHeight: 1_920,
+            maximumCodedWidth: 3_840,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+    });
 
     it('does not treat the optional Ultra HD qualification fixture as a native ceiling', () => {
         const options = createOptions();

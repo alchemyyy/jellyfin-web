@@ -542,6 +542,28 @@ export function getDolbyVisionPresentationDescriptor(
     return getDolbyVisionPresentationSelection(options)?.descriptor ?? null;
 }
 
+/**
+ * Returns the video-track ordinal Jellyfin presents. Independent video tracks
+ * follow Jellyfin's first-track selection; Dolby Vision remains fail-closed
+ * unless its exact single-stream or separate-track topology is recognized.
+ */
+export function getPresentationVideoTrackOrdinal(options: unknown): number | null {
+    const videoStreams = getPlaybackVideoStreams(options);
+    if (!videoStreams || videoStreams.length === 0) {
+        return null;
+    }
+
+    const dolbyVisionSelection = getDolbyVisionPresentationSelection(options);
+    if (dolbyVisionSelection) {
+        return dolbyVisionSelection.baseLayerVideoTrackOrdinal;
+    }
+    if (videoStreams.some(hasDolbyVisionMetadata)) {
+        return null;
+    }
+
+    return 0;
+}
+
 /** Returns exact BT.2020 PQ metadata for a Profile 7 HDR10-compatible base. */
 export function getDolbyVisionProfile7HDR10BaseColorMetadata(
     options: unknown
@@ -628,36 +650,15 @@ export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetada
     }
 }
 
-/**
- * Returns renderer metadata only when playback options contain exactly one
- * unambiguous video stream.
- */
+/** Returns renderer metadata for Jellyfin's selected presentation video track. */
 export function getPresentationInputColorMetadata(options: unknown): InputColorMetadata | null {
-    if (!options || typeof options !== 'object') {
+    const videoStreams = getPlaybackVideoStreams(options);
+    const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
+    if (!videoStreams || videoTrackOrdinal === null) {
         return null;
     }
 
-    const playbackOptions = options as PlaybackOptions;
-    const mediaStreams = playbackOptions.mediaSource?.MediaStreams;
-    if (!Array.isArray(mediaStreams)) {
-        return null;
-    }
-
-    const videoStreams: unknown[] = [];
-    for (const stream of mediaStreams) {
-        if (
-            stream
-            && typeof stream === 'object'
-            && normalizeMetadataValue((stream as MediaStreamMetadata).Type) === 'VIDEO'
-        ) {
-            videoStreams.push(stream);
-        }
-    }
-    if (videoStreams.length !== 1) {
-        return null;
-    }
-
-    return parseVideoStreamColorMetadata(videoStreams[0]);
+    return parseVideoStreamColorMetadata(videoStreams[videoTrackOrdinal]);
 }
 
 function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
@@ -693,28 +694,9 @@ function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
  * external-texture color path has been validated for them.
  */
 export function isKnownSDRPresentationInput(options: unknown): boolean {
-    if (!options || typeof options !== 'object') {
-        return false;
-    }
-
-    const playbackOptions = options as PlaybackOptions;
-    const mediaStreams = playbackOptions.mediaSource?.MediaStreams;
-    if (!Array.isArray(mediaStreams)) {
-        return false;
-    }
-
-    const videoStreams: MediaStreamMetadata[] = [];
-    for (const stream of mediaStreams) {
-        if (!stream || typeof stream !== 'object') {
-            continue;
-        }
-
-        const streamMetadata = stream as MediaStreamMetadata;
-        if (normalizeMetadataValue(streamMetadata.Type) === 'VIDEO') {
-            videoStreams.push(streamMetadata);
-        }
-    }
-
-    return videoStreams.length > 0
-        && videoStreams.every(isKnownSDRVideoStream);
+    const videoStreams = getPlaybackVideoStreams(options);
+    const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
+    return videoStreams !== null
+        && videoTrackOrdinal !== null
+        && isKnownSDRVideoStream(videoStreams[videoTrackOrdinal]);
 }

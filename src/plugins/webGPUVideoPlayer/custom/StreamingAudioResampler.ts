@@ -10,12 +10,13 @@ const FILTER_CUTOFF_HEADROOM = 0.94;
 const FILTER_PHASE_COUNT = 2_048;
 const FILTER_RADIUS = 32;
 const FILTER_TAP_COUNT = FILTER_RADIUS * 2;
-const MAXIMUM_CONTAINER_TIMESTAMP_QUANTIZATION_MICROSECONDS = 1_000;
 const MICROSECONDS_PER_SECOND = 1_000_000;
 
 export type StreamingAudioResamplerOptions = {
     channelCount: number
     maximumOutputFrameCount: number
+    maximumTimestampQuantizationMicroseconds: number
+    minimumOutputFrameCount: number
     sourceSampleRate: number
     targetSampleRate: number
 };
@@ -46,6 +47,13 @@ export type StreamingAudioResamplerTelemetry = {
 function requirePositiveSafeInteger(value: number, name: string): number {
     if (!Number.isSafeInteger(value) || value <= 0) {
         throw new RangeError(`${name} must be a positive safe integer`);
+    }
+    return value;
+}
+
+function requireNonNegativeSafeInteger(value: number, name: string): number {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(`${name} must be a non-negative safe integer`);
     }
     return value;
 }
@@ -101,6 +109,8 @@ function createFilterTable(sourceSampleRate: number, targetSampleRate: number): 
 export default class StreamingAudioResampler {
     public readonly channelCount: number;
     public readonly maximumOutputFrameCount: number;
+    public readonly maximumTimestampQuantizationMicroseconds: number;
+    public readonly minimumOutputFrameCount: number;
     public readonly sourceSampleRate: number;
     public readonly targetSampleRate: number;
 
@@ -122,6 +132,19 @@ export default class StreamingAudioResampler {
             options.maximumOutputFrameCount,
             'Maximum output frame count'
         );
+        this.maximumTimestampQuantizationMicroseconds = requireNonNegativeSafeInteger(
+            options.maximumTimestampQuantizationMicroseconds,
+            'Maximum timestamp quantization'
+        );
+        this.minimumOutputFrameCount = requirePositiveSafeInteger(
+            options.minimumOutputFrameCount,
+            'Minimum output frame count'
+        );
+        if (this.minimumOutputFrameCount > this.maximumOutputFrameCount) {
+            throw new RangeError(
+                'Minimum output frame count cannot exceed maximum output frame count'
+            );
+        }
         this.sourceSampleRate = requireSupportedCustomAudioSampleRate(
             options.sourceSampleRate,
             'Source sample rate'
@@ -158,15 +181,11 @@ export default class StreamingAudioResampler {
             this.lastSourceValues[channelIndex] = input.channelData[channelIndex][frameCount - 1];
         }
 
-        if (this.filterTable === null) {
-            const outputStartFrame = this.nextOutputFrame;
-            this.totalSourceFrames += frameCount;
-            this.nextOutputFrame += frameCount;
-            return this.splitPassthroughOutput(input.channelData, outputStartFrame, frameCount);
-        }
-
         this.appendInput(input.channelData, frameCount);
         this.totalSourceFrames += frameCount;
+        if (this.filterTable === null) {
+            return this.renderPassthroughAvailable(false);
+        }
         return this.renderAvailable(false);
     }
 
@@ -176,10 +195,12 @@ export default class StreamingAudioResampler {
             return [];
         }
         this.finalized = true;
-        if (this.filterTable === null || this.totalSourceFrames === 0) {
+        if (this.totalSourceFrames === 0) {
             return [];
         }
-        const output = this.renderAvailable(true);
+        const output = this.filterTable === null ?
+            this.renderPassthroughAvailable(true) :
+            this.renderAvailable(true);
         for (let channelIndex = 0; channelIndex < this.channelBuffers.length; channelIndex += 1) {
             this.channelBuffers[channelIndex] = new Float32Array(0);
         }
@@ -231,14 +252,13 @@ export default class StreamingAudioResampler {
             mediaTimeMicroseconds - expectedMediaTimeMicroseconds
         );
         const timestampToleranceMicroseconds =
-            MAXIMUM_CONTAINER_TIMESTAMP_QUANTIZATION_MICROSECONDS
+            this.maximumTimestampQuantizationMicroseconds
             + Math.ceil(MICROSECONDS_PER_SECOND / this.sourceSampleRate);
         if (timestampDeviationMicroseconds > timestampToleranceMicroseconds) {
             throw new RangeError('Resampler input timestamps contain a gap or overlap');
         }
         if (timestampDeviationMicroseconds > 0) {
-            // Matroska commonly quantizes compressed-audio PTS to 1 ms. Keep
-            // accepted chunks on the sample-count timeline so output stays contiguous.
+            // The anchor and current Matroska timestamps are independently quantized
             this.correctedInputTimestampCount += 1;
             this.maximumInputTimestampDeviationMicroseconds = Math.max(
                 this.maximumInputTimestampDeviationMicroseconds,
@@ -257,38 +277,66 @@ export default class StreamingAudioResampler {
         }
     }
 
-    private splitPassthroughOutput(
-        channelData: readonly Float32Array[],
-        outputStartFrame: number,
-        frameCount: number
+    private renderPassthroughAvailable(
+        finalizing: boolean
     ): StreamingAudioResamplerOutput[] {
+        const availableFrameCount = this.totalSourceFrames - this.nextOutputFrame;
+        const emittableFrameCount = this.getEmittableOutputFrameCount(
+            availableFrameCount,
+            finalizing
+        );
+        if (emittableFrameCount === 0) {
+            return [];
+        }
+
         const output: StreamingAudioResamplerOutput[] = [];
-        let frameOffset = 0;
-        while (frameOffset < frameCount) {
+        let remainingFrameCount = emittableFrameCount;
+        while (remainingFrameCount > 0) {
             const chunkFrameCount = Math.min(
                 this.maximumOutputFrameCount,
-                frameCount - frameOffset
+                remainingFrameCount
             );
+            const outputStartFrame = this.nextOutputFrame;
+            const localFrameOffset = outputStartFrame - this.bufferStartSourceFrame;
             const chunkChannels: Float32Array[] = [];
-            for (const channel of channelData) {
-                chunkChannels.push(frameOffset === 0 && chunkFrameCount === frameCount ?
-                    channel :
-                    channel.slice(frameOffset, frameOffset + chunkFrameCount));
+            for (const channel of this.channelBuffers) {
+                chunkChannels.push(channel.slice(
+                    localFrameOffset,
+                    localFrameOffset + chunkFrameCount
+                ));
             }
             output.push(this.createOutput(
                 chunkChannels,
-                outputStartFrame + frameOffset,
+                outputStartFrame,
                 chunkFrameCount
             ));
-            frameOffset += chunkFrameCount;
+            this.nextOutputFrame += chunkFrameCount;
+            remainingFrameCount -= chunkFrameCount;
+        }
+
+        const consumedFrameCount = this.nextOutputFrame - this.bufferStartSourceFrame;
+        if (consumedFrameCount > 0) {
+            for (let channelIndex = 0; channelIndex < this.channelCount; channelIndex += 1) {
+                this.channelBuffers[channelIndex] = this.channelBuffers[channelIndex].slice(
+                    consumedFrameCount
+                );
+            }
+            this.bufferStartSourceFrame = this.nextOutputFrame;
         }
         return output;
     }
 
     private renderAvailable(finalizing: boolean): StreamingAudioResamplerOutput[] {
         const availableOutputFrameCount = this.getAvailableOutputFrameCount(finalizing);
+        const emittableOutputFrameCount = this.getEmittableOutputFrameCount(
+            availableOutputFrameCount,
+            finalizing
+        );
+        if (emittableOutputFrameCount === 0) {
+            return [];
+        }
         const output: StreamingAudioResamplerOutput[] = [];
-        let remainingFrameCount = availableOutputFrameCount;
+        let remainingFrameCount = emittableOutputFrameCount;
         while (remainingFrameCount > 0) {
             const chunkFrameCount = Math.min(
                 remainingFrameCount,
@@ -308,6 +356,26 @@ export default class StreamingAudioResampler {
         }
         this.trimConsumedInput(finalizing);
         return output;
+    }
+
+    private getEmittableOutputFrameCount(
+        availableFrameCount: number,
+        finalizing: boolean
+    ): number {
+        if (finalizing) {
+            return availableFrameCount;
+        }
+        if (availableFrameCount < this.minimumOutputFrameCount) {
+            return 0;
+        }
+
+        const trailingFrameCount = availableFrameCount % this.maximumOutputFrameCount;
+        if (trailingFrameCount === 0
+            || trailingFrameCount >= this.minimumOutputFrameCount
+            || availableFrameCount <= this.maximumOutputFrameCount) {
+            return availableFrameCount;
+        }
+        return availableFrameCount - trailingFrameCount;
     }
 
     private getAvailableOutputFrameCount(finalizing: boolean): number {
