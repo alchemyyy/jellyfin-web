@@ -48,6 +48,9 @@ const Home = () => {
             name: globalize.translate('Home')
         }, {
             name: globalize.translate('Favorites')
+        }, {
+            name: globalize.translate('About'),
+            onClick: () => Events.trigger(document, EventType.SHOW_ABOUT)
         }];
     };
 

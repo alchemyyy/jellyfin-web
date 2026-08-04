@@ -102,9 +102,23 @@ export function setTabs(view, selectedIndex, getTabsFn, getTabContainersFn, onBe
 
     if (tabOwnerView !== view) {
         let index = 0;
+        const tabActions = [];
+        const tabs = getTabsFn();
 
         const indexAttribute = selectedIndex == null ? '' : (' data-index="' + selectedIndex + '"');
-        const tabsHtml = '<div is="emby-tabs"' + indexAttribute + ' class="tabs-viewmenubar"><div class="emby-tabs-slider" style="white-space:nowrap;">' + getTabsFn().map(function (t) {
+        const tabsHtml = '<div is="emby-tabs"' + indexAttribute + ' class="tabs-viewmenubar"><div class="emby-tabs-slider" style="white-space:nowrap;">' + tabs.map(function (t) {
+            if (t.onClick) {
+                const actionIndex = tabActions.length;
+                tabActions.push(t.onClick);
+
+                let actionClass = 'emby-tab-action';
+                if (t.cssClass) {
+                    actionClass += ' ' + t.cssClass;
+                }
+
+                return '<button type="button" is="emby-button" class="' + actionClass + '" data-action-index="' + actionIndex + '"><div class="emby-button-foreground">' + t.name + '</div></button>';
+            }
+
             let tabClass = 'emby-tab-button';
 
             if (t.enabled === false) {
@@ -134,6 +148,12 @@ export function setTabs(view, selectedIndex, getTabsFn, getTabContainersFn, onBe
         tabOwnerView = view;
 
         tabsElem = tabsContainerElem.querySelector('[is="emby-tabs"]');
+
+        const actionButtons = tabsContainerElem.querySelectorAll('.emby-tab-action');
+        for (const actionButton of actionButtons) {
+            const actionIndex = parseInt(actionButton.getAttribute('data-action-index'), 10);
+            actionButton.addEventListener('click', tabActions[actionIndex]);
+        }
 
         configureSwipeTabs(view, tabsElem);
 
