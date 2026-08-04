@@ -54,7 +54,7 @@ export class HTMLPlayerDelegate {
         this.eventTarget = eventTarget;
         this.backendStoppedHandler = backendStoppedHandler;
         this.backendErrorHandler = backendErrorHandler;
-        this.player = new HtmlVideoPlayer(eventTarget, true);
+        this.player = new HtmlVideoPlayer(eventTarget, true, true);
     }
 
     /** Starts event forwarding for a new backend playback session. */

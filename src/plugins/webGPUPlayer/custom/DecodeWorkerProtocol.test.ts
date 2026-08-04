@@ -114,7 +114,7 @@ function createCompoundRawFrames(): {
 
 describe('DecodeWorkerProtocol', () => {
     it('selects acceleration for native raw output and the bundled HEVC backend', () => {
-        expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('no-preference');
         expect(getCustomDecodeHardwareAcceleration('video-frame')).toBe('prefer-hardware');
         expect(getCustomDecodeHardwareAcceleration('video-frame', 'bundled-hevc'))
             .toBe('prefer-software');

@@ -1755,6 +1755,113 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
+    it('falls back from bounded raw Profile 8.1 to its authorized 4K HDR10 base', () => {
+        const profile8Options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 23.976025,
+                        BitDepth: 10,
+                        BitRate: 91_000_000,
+                        BlPresentFlag: true,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        DvBlSignalCompatibilityId: 1,
+                        DvProfile: 8,
+                        ElPresentFlag: false,
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 23.976025,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithHDR10',
+                        Width: 3_840
+                    },
+                    {
+                        BitDepth: 24,
+                        Channels: 2,
+                        Codec: 'flac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+        const capabilities = createCapabilities();
+        capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
+        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
+        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
+        const eligibilityOptions = {
+            allowDolbyVision: true,
+            allowNativeDolbyVisionProfile8HDR10Base: true,
+            allowNativeHDR: true,
+            allowRawHDR: false,
+            authorizedExternalHDRRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1'
+            ] as const,
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+
+        expect(getCustomPlaybackEligibility(
+            profile8Options,
+            capabilities,
+            eligibilityOptions
+        )).toMatchObject({
+            dolbyVisionProfile: null,
+            eligible: true,
+            hdr: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+
+        const mediaSource = profile8Options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[0].Height = 1_080;
+        mediaSource.MediaStreams[0].Level = 120;
+        mediaSource.MediaStreams[0].Width = 1_920;
+        expect(getCustomPlaybackEligibility(
+            profile8Options,
+            capabilities,
+            eligibilityOptions
+        )).toMatchObject({
+            dolbyVisionProfile: 8,
+            eligible: true,
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
+        });
+
+        mediaSource.MediaStreams[0].Height = 2_160;
+        mediaSource.MediaStreams[0].Level = 153;
+        mediaSource.MediaStreams[0].Width = 3_840;
+        mediaSource.MediaStreams[0].DvBlSignalCompatibilityId = 4;
+        mediaSource.MediaStreams[0].VideoRangeType = 'DOVIWithHLG';
+        expect(getCustomPlaybackEligibility(
+            profile8Options,
+            capabilities,
+            eligibilityOptions
+        )).toEqual({
+            eligible: false,
+            reason: 'hdr-codec-unsupported'
+        });
+    });
+
     it('selects the base track from Jellyfin separate-track Profile 7 metadata', () => {
         const profile7Options = createOptions({
             mediaSource: {

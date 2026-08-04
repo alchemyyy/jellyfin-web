@@ -11,7 +11,11 @@ import {
     type BundledHEVCExactCapabilities
 } from './HEVCExactCapabilityProbe';
 import { createHEVCExactCapabilityAccessUnit } from './HEVCExactCapabilityFixtures';
-import { getCustomDecodeHardwareAcceleration } from './DecodeWorkerProtocol';
+import {
+    getCustomDecodeHardwareAcceleration,
+    MAX_DECODED_FRAME_CREDITS,
+    MAX_DECODED_RAW_FRAME_CREDITS
+} from './DecodeWorkerProtocol';
 import {
     createNativeAudioCapabilityFixture,
     type NativeAudioCapabilityFixture
@@ -446,6 +450,24 @@ const defaultBundledLegacyVideoExactProbe = {
     probe: probeLegacyVideoExactCapability
 };
 
+type ScheduledCapabilityProbePump = {
+    scheduled: boolean
+};
+
+function scheduleCapabilityProbePump(
+    state: ScheduledCapabilityProbePump,
+    pump: () => void
+): void {
+    if (state.scheduled) {
+        return;
+    }
+    state.scheduled = true;
+    void Promise.resolve().then((): void => {
+        state.scheduled = false;
+        pump();
+    });
+}
+
 /** Returns whether a value is one of the measured HDR playback tiers. */
 export function isCustomHDRVideoMaximumFramesPerSecond(
     value: unknown
@@ -500,6 +522,52 @@ function waitForCapabilityProbe<Value>(
             reject(error);
         });
     });
+}
+
+/** Runs decoder-backed capability probes without competing for decode resources. */
+class SerializedHeavyCapabilityProbeScheduler {
+    private probeChain: Promise<void> = Promise.resolve();
+    private timedOut = false;
+
+    /** Enqueues a probe which provides its own bounded completion. */
+    public run<Value>(
+        probe: () => Promise<Value>
+    ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+        return this.enqueue(probe, false);
+    }
+
+    /** Enqueues a probe with the common output-probe timeout. */
+    public runTimed<Value>(
+        probe: () => Promise<Value>
+    ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+        return this.enqueue(probe, true);
+    }
+
+    private enqueue<Value>(
+        probe: () => Promise<Value>,
+        useTimeout: boolean
+    ): Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT> {
+        const resultPromise = this.probeChain.then(async () => {
+            if (this.timedOut) {
+                return CAPABILITY_PROBE_TIMEOUT;
+            }
+            if (!useTimeout) {
+                return probe();
+            }
+
+            const result = await waitForCapabilityProbe(probe());
+            if (result === CAPABILITY_PROBE_TIMEOUT) {
+                // Do not start another decoder while the timed-out work may still be active
+                this.timedOut = true;
+            }
+            return result;
+        });
+        this.probeChain = resultPromise.then(
+            (): void => undefined,
+            (): void => undefined
+        );
+        return resultPromise;
+    }
 }
 const VIDEO_PROBE_DEFINITIONS: readonly VideoProbeDefinition[] = [
     {
@@ -908,101 +976,256 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
             outputCopySupported: false
         });
         let acceptingFrame = true;
-        let pendingFrameReject: ((reason: unknown) => void) | null = null;
-        let pendingFrameResolve: ((frame: VideoFrame) => void) | null = null;
+        let decoderError: DOMException | null = null;
+        let destination: Uint8Array | null = null;
+        let measuredFrameCount = 0;
+        let measuredOutstandingFrameCount = 0;
+        let measuredSubmittedFrameCount = 0;
+        let outputMatches = true;
+        const pendingPhase: { resolve: (() => void) | null } = { resolve: null };
+        let phase: 'draining' | 'measured' | 'warmup' = 'warmup';
+        let processedWarmupFrameCount = 0;
+        let processingTail: Promise<void> = Promise.resolve();
+        const pumpState: ScheduledCapabilityProbePump = { scheduled: false };
+        let warmupFrameCount = 0;
+        const measuredTimestamps = new Set<number>();
+        const ownedFrames = new Set<VideoFrame>();
+        const submittedMeasuredTimestamps = new Set<number>();
+        let qualifiedResult: RawHDRVideoOutputProbeResult | null = null;
+
+        const closeOwnedFrame = (frame: VideoFrame): void => {
+            if (!ownedFrames.delete(frame)) {
+                return;
+            }
+            frame.close();
+        };
+
+        const settlePendingPhase = (): void => {
+            if (!pendingPhase.resolve) {
+                return;
+            }
+            const phaseComplete = phase === 'warmup' ?
+                processedWarmupFrameCount >= VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT :
+                measuredFrameCount >= VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT;
+            if (decoderError === null && outputMatches && !phaseComplete) {
+                return;
+            }
+            const resolve = pendingPhase.resolve;
+            pendingPhase.resolve = null;
+            resolve();
+        };
+
+        const pumpMeasuredFrames = (): void => {
+            while (
+                acceptingFrame
+                && phase === 'measured'
+                && decoderError === null
+                && outputMatches
+                && measuredSubmittedFrameCount < VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT
+                && measuredOutstandingFrameCount < MAX_DECODED_RAW_FRAME_CREDITS
+            ) {
+                const frameIndex = VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT
+                    + measuredSubmittedFrameCount;
+                const timestamp = frameIndex
+                    * VIDEO_THROUGHPUT_PROBE_FRAME_INTERVAL_MICROSECONDS;
+                measuredSubmittedFrameCount += 1;
+                measuredOutstandingFrameCount += 1;
+                submittedMeasuredTimestamps.add(timestamp);
+                try {
+                    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+                    decoder.decode(new EncodedVideoChunk({
+                        data: probeRequest.encodedKeyFrame,
+                        timestamp,
+                        type: 'key'
+                    }));
+                } catch {
+                    outputMatches = false;
+                    settlePendingPhase();
+                    return;
+                }
+            }
+        };
+
+        const processFrame = async (
+            frame: VideoFrame,
+            framePhase: 'measured' | 'warmup'
+        ): Promise<void> => {
+            try {
+                if (!acceptingFrame) {
+                    return;
+                }
+                const timestamp = frame.timestamp;
+                if (frame.codedHeight !== probeRequest.expectedCodedHeight
+                    || frame.codedWidth !== probeRequest.expectedCodedWidth
+                    || (framePhase === 'warmup' && timestamp !== 0)
+                    || (framePhase === 'measured' && (
+                        !submittedMeasuredTimestamps.has(timestamp)
+                        || measuredTimestamps.has(timestamp)
+                    ))) {
+                    outputMatches = false;
+                    return;
+                }
+                if (framePhase === 'measured') {
+                    measuredTimestamps.add(timestamp);
+                }
+                const copiedFrame = await copyDecodedRawHDRFrame(
+                    frame,
+                    probeRequest.expectedFormat,
+                    destination
+                );
+                if (!copiedFrame) {
+                    outputMatches = false;
+                    return;
+                }
+                destination = copiedFrame.destination;
+                if (createRawHDRFrameFingerprint(
+                    destination,
+                    copiedFrame.layouts,
+                    probeRequest.expectedCodedWidth,
+                    probeRequest.expectedCodedHeight
+                ) !== probeRequest.expectedDecodedFrameFingerprint) {
+                    outputMatches = false;
+                }
+            } catch {
+                outputMatches = false;
+            } finally {
+                closeOwnedFrame(frame);
+                if (framePhase === 'warmup') {
+                    processedWarmupFrameCount += 1;
+                } else {
+                    measuredFrameCount += 1;
+                    measuredOutstandingFrameCount = Math.max(
+                        0,
+                        measuredOutstandingFrameCount - 1
+                    );
+                }
+                settlePendingPhase();
+                if (framePhase === 'measured' && outputMatches) {
+                    scheduleCapabilityProbePump(pumpState, pumpMeasuredFrames);
+                }
+            }
+        };
+
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         const decoder = new VideoDecoder({
-            error: (error: DOMException): void => pendingFrameReject?.(error),
+            error: (error: DOMException): void => {
+                decoderError = error;
+                settlePendingPhase();
+            },
             output: (frame: VideoFrame): void => {
-                const resolveFrame = pendingFrameResolve;
-                if (!acceptingFrame || !resolveFrame) {
+                if (!acceptingFrame || phase === 'draining') {
+                    outputMatches &&= phase !== 'draining';
                     frame.close();
                     return;
                 }
-                pendingFrameReject = null;
-                pendingFrameResolve = null;
-                resolveFrame(frame);
+                ownedFrames.add(frame);
+                const framePhase = phase;
+                if (framePhase === 'warmup') {
+                    warmupFrameCount += 1;
+                    outputMatches = outputMatches
+                        && warmupFrameCount
+                            <= VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT;
+                }
+                processingTail = processingTail.then(() => (
+                    processFrame(frame, framePhase)
+                ));
             }
         });
         let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
         try {
             decoder.configure({ ...probeRequest.configuration });
             const runThroughputProbe = async (): Promise<RawHDRVideoOutputProbeResult> => {
-                const totalFrameCount = VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT
-                    + VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT;
-                let destination: Uint8Array | null = null;
-                let measurementStartMilliseconds = 0;
-                for (let frameIndex = 0; frameIndex < totalFrameCount; frameIndex += 1) {
-                    const framePromise = new Promise<VideoFrame>((resolve, reject) => {
-                        pendingFrameReject = reject;
-                        pendingFrameResolve = resolve;
-                    });
-                    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-                    decoder.decode(new EncodedVideoChunk({
-                        data: probeRequest.encodedKeyFrame,
-                        timestamp: frameIndex * VIDEO_THROUGHPUT_PROBE_FRAME_INTERVAL_MICROSECONDS,
-                        type: 'key'
-                    }));
-                    await decoder.flush();
-                    const decodedFrame = await framePromise;
+                const warmupPromise = new Promise<void>(resolve => {
+                    pendingPhase.resolve = resolve;
+                });
+                for (
+                    let frameIndex = 0;
+                    frameIndex < VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT;
+                    frameIndex += 1
+                ) {
                     try {
-                        if (
-                            decodedFrame.codedHeight !== probeRequest.expectedCodedHeight
-                            || decodedFrame.codedWidth !== probeRequest.expectedCodedWidth
-                        ) {
-                            return unsupportedResult;
-                        }
-                        const copiedFrame = await copyDecodedRawHDRFrame(
-                            decodedFrame,
-                            probeRequest.expectedFormat,
-                            destination
-                        );
-                        if (!copiedFrame) {
-                            return unsupportedResult;
-                        }
-                        destination = copiedFrame.destination;
-                        if (createRawHDRFrameFingerprint(
-                            destination,
-                            copiedFrame.layouts,
-                            probeRequest.expectedCodedWidth,
-                            probeRequest.expectedCodedHeight
-                        ) !== probeRequest.expectedDecodedFrameFingerprint) {
-                            return unsupportedResult;
-                        }
-                    } finally {
-                        decodedFrame.close();
-                    }
-                    if (frameIndex + 1 === VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT) {
-                        measurementStartMilliseconds = globalThis.performance.now();
+                        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+                        decoder.decode(new EncodedVideoChunk({
+                            data: probeRequest.encodedKeyFrame,
+                            timestamp: frameIndex
+                                * VIDEO_THROUGHPUT_PROBE_FRAME_INTERVAL_MICROSECONDS,
+                            type: 'key'
+                        }));
+                    } catch {
+                        outputMatches = false;
+                        settlePendingPhase();
+                        return unsupportedResult;
                     }
                 }
+                await warmupPromise;
+                await processingTail;
+                if (decoderError !== null
+                    || !outputMatches
+                    || processedWarmupFrameCount
+                        !== VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT) {
+                    return unsupportedResult;
+                }
+
+                phase = 'measured';
+                const measuredPromise = new Promise<void>(resolve => {
+                    pendingPhase.resolve = resolve;
+                });
+                const measurementStartMilliseconds = globalThis.performance.now();
+                pumpMeasuredFrames();
+                await measuredPromise;
+                await processingTail;
                 const measuredMilliseconds = globalThis.performance.now()
                     - measurementStartMilliseconds;
+                if (decoderError !== null
+                    || !outputMatches
+                    || measuredFrameCount !== VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT
+                    || measuredTimestamps.size
+                        !== VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT) {
+                    return unsupportedResult;
+                }
+
                 const measuredFramesPerSecond = measuredMilliseconds > 0 ?
                     (VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT * 1_000)
                         / measuredMilliseconds :
                     null;
-                return Object.freeze({
+                qualifiedResult = Object.freeze({
                     maximumFramesPerSecond: getQualifiedHDRMaximumFramesPerSecond(
                         measuredFramesPerSecond
                     ),
                     measuredFramesPerSecond,
                     outputCopySupported: true
                 });
+
+                // Prompt drain validates delayed duplicates without timing EOS work
+                phase = 'draining';
+                try {
+                    await decoder.flush();
+                } catch {
+                    return unsupportedResult;
+                }
+                await processingTail;
+                if (decoderError !== null || !outputMatches) {
+                    return unsupportedResult;
+                }
+                return qualifiedResult ?? unsupportedResult;
             };
             return await Promise.race([
                 runThroughputProbe(),
                 new Promise<RawHDRVideoOutputProbeResult>(resolve => {
                     timeout = globalThis.setTimeout(
-                        () => resolve(unsupportedResult),
+                        () => resolve(qualifiedResult ?? unsupportedResult),
                         VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
                     );
                 })
             ]);
         } finally {
             acceptingFrame = false;
-            pendingFrameReject = null;
-            pendingFrameResolve = null;
+            pendingPhase.resolve?.();
+            pendingPhase.resolve = null;
+            for (const frame of ownedFrames) {
+                frame.close();
+            }
+            ownedFrames.clear();
             if (timeout !== null) {
                 globalThis.clearTimeout(timeout);
             }
@@ -1228,22 +1451,109 @@ NativeDolbyVisionVideoOutputProbe | null {
             outputSupported: false
         });
         let acceptingFrame = true;
-        let pendingFrameReject: ((reason: unknown) => void) | null = null;
-        let pendingFrameResolve: ((frame: VideoFrame) => void) | null = null;
-        let unexpectedOutput = false;
-        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-        const decoder = new VideoDecoder({
-            error: (error: DOMException): void => pendingFrameReject?.(error),
-            output: (frame: VideoFrame): void => {
-                const resolveFrame = pendingFrameResolve;
-                if (!acceptingFrame || !resolveFrame) {
-                    unexpectedOutput ||= acceptingFrame;
-                    frame.close();
+        let decoderError: DOMException | null = null;
+        let measuredFrameCount = 0;
+        let measuredOutstandingFrameCount = 0;
+        let measuredSubmittedFrameCount = 0;
+        let outputMatches = true;
+        const pendingPhase: { resolve: (() => void) | null } = { resolve: null };
+        let phase: 'draining' | 'measured' | 'warmup' = 'warmup';
+        const pumpState: ScheduledCapabilityProbePump = { scheduled: false };
+        let warmupFrameCount = 0;
+        const measuredTimestamps = new Set<number>();
+        const submittedMeasuredTimestamps = new Set<number>();
+        let qualifiedResult: NativeDolbyVisionVideoOutputProbeResult | null = null;
+
+        const settlePendingPhase = (): void => {
+            if (!pendingPhase.resolve) {
+                return;
+            }
+            const phaseComplete = phase === 'warmup' ?
+                warmupFrameCount >= VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT :
+                measuredFrameCount >= VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT;
+            if (decoderError === null && outputMatches && !phaseComplete) {
+                return;
+            }
+            const resolve = pendingPhase.resolve;
+            pendingPhase.resolve = null;
+            resolve();
+        };
+
+        const pumpMeasuredFrames = (): void => {
+            while (
+                acceptingFrame
+                && phase === 'measured'
+                && decoderError === null
+                && outputMatches
+                && measuredSubmittedFrameCount < VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT
+                && measuredOutstandingFrameCount < MAX_DECODED_FRAME_CREDITS
+            ) {
+                const frameIndex = VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT
+                    + measuredSubmittedFrameCount;
+                const timestamp = frameIndex
+                    * VIDEO_THROUGHPUT_PROBE_FRAME_INTERVAL_MICROSECONDS;
+                measuredSubmittedFrameCount += 1;
+                measuredOutstandingFrameCount += 1;
+                submittedMeasuredTimestamps.add(timestamp);
+                try {
+                    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+                    decoder.decode(new EncodedVideoChunk({
+                        data: probeRequest.encodedKeyFrame,
+                        timestamp,
+                        type: 'key'
+                    }));
+                } catch {
+                    outputMatches = false;
+                    settlePendingPhase();
                     return;
                 }
-                pendingFrameReject = null;
-                pendingFrameResolve = null;
-                resolveFrame(frame);
+            }
+        };
+
+        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+        const decoder = new VideoDecoder({
+            error: (error: DOMException): void => {
+                decoderError = error;
+                settlePendingPhase();
+            },
+            output: (frame: VideoFrame): void => {
+                try {
+                    if (!acceptingFrame) {
+                        return;
+                    }
+                    if (phase === 'draining') {
+                        outputMatches = false;
+                        return;
+                    }
+                    const timestamp = frame.timestamp;
+                    const timestampMatches = phase === 'warmup' ?
+                        timestamp === 0 && warmupFrameCount === 0 :
+                        submittedMeasuredTimestamps.has(timestamp)
+                            && !measuredTimestamps.has(timestamp);
+                    outputMatches = outputMatches && timestampMatches
+                        && frame.codedHeight === probeRequest.expectedCodedHeight
+                        && frame.codedWidth === probeRequest.expectedCodedWidth
+                        && frame.displayHeight > 0
+                        && frame.displayWidth > 0;
+                    if (phase === 'warmup') {
+                        warmupFrameCount += 1;
+                    } else {
+                        measuredFrameCount += 1;
+                        measuredOutstandingFrameCount = Math.max(
+                            0,
+                            measuredOutstandingFrameCount - 1
+                        );
+                        if (timestampMatches) {
+                            measuredTimestamps.add(timestamp);
+                        }
+                    }
+                } finally {
+                    frame.close();
+                }
+                settlePendingPhase();
+                if (phase === 'measured' && outputMatches) {
+                    scheduleCapabilityProbePump(pumpState, pumpMeasuredFrames);
+                }
             }
         });
         let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -1252,67 +1562,90 @@ NativeDolbyVisionVideoOutputProbe | null {
             const runOutputProbe = async (): Promise<
                 NativeDolbyVisionVideoOutputProbeResult
             > => {
-                const totalFrameCount = VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT
-                    + VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT;
-                let measurementStartMilliseconds = 0;
-                for (let frameIndex = 0; frameIndex < totalFrameCount; frameIndex += 1) {
+                const warmupPromise = new Promise<void>(resolve => {
+                    pendingPhase.resolve = resolve;
+                });
+                for (
+                    let frameIndex = 0;
+                    frameIndex < VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT;
+                    frameIndex += 1
+                ) {
                     const expectedTimestampMicroseconds = frameIndex
                         * VIDEO_THROUGHPUT_PROBE_FRAME_INTERVAL_MICROSECONDS;
-                    const framePromise = new Promise<VideoFrame>((resolve, reject) => {
-                        pendingFrameReject = reject;
-                        pendingFrameResolve = resolve;
-                    });
-                    // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
-                    decoder.decode(new EncodedVideoChunk({
-                        data: probeRequest.encodedKeyFrame,
-                        timestamp: expectedTimestampMicroseconds,
-                        type: 'key'
-                    }));
-                    await decoder.flush();
-                    const decodedFrame = await framePromise;
                     try {
-                        if (decodedFrame.codedHeight !== probeRequest.expectedCodedHeight
-                            || decodedFrame.codedWidth !== probeRequest.expectedCodedWidth
-                            || decodedFrame.displayHeight <= 0
-                            || decodedFrame.displayWidth <= 0
-                            || decodedFrame.timestamp !== expectedTimestampMicroseconds
-                            || unexpectedOutput) {
-                            return unsupportedResult;
-                        }
-                    } finally {
-                        decodedFrame.close();
-                    }
-                    if (frameIndex + 1 === VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT) {
-                        measurementStartMilliseconds = globalThis.performance.now();
+                        // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
+                        decoder.decode(new EncodedVideoChunk({
+                            data: probeRequest.encodedKeyFrame,
+                            timestamp: expectedTimestampMicroseconds,
+                            type: 'key'
+                        }));
+                    } catch {
+                        outputMatches = false;
+                        settlePendingPhase();
+                        return unsupportedResult;
                     }
                 }
+                await warmupPromise;
+                if (decoderError !== null
+                    || warmupFrameCount !== VIDEO_THROUGHPUT_PROBE_WARMUP_FRAME_COUNT
+                    || !outputMatches) {
+                    return unsupportedResult;
+                }
+
+                phase = 'measured';
+                const measuredPromise = new Promise<void>(resolve => {
+                    pendingPhase.resolve = resolve;
+                });
+                const measurementStartMilliseconds = globalThis.performance.now();
+                pumpMeasuredFrames();
+                await measuredPromise;
                 const measuredMilliseconds = globalThis.performance.now()
                     - measurementStartMilliseconds;
+                if (decoderError !== null
+                    || measuredFrameCount !== VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT
+                    || measuredTimestamps.size
+                        !== VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT
+                    || !outputMatches) {
+                    return unsupportedResult;
+                }
+
                 const measuredFramesPerSecond = measuredMilliseconds > 0 ?
                     (VIDEO_THROUGHPUT_PROBE_MEASURED_FRAME_COUNT * 1_000)
                         / measuredMilliseconds :
                     null;
-                return Object.freeze({
+                qualifiedResult = Object.freeze({
                     maximumFramesPerSecond: getQualifiedHDRMaximumFramesPerSecond(
                         measuredFramesPerSecond
                     ),
                     measuredFramesPerSecond,
                     outputSupported: true
                 });
+
+                // Prompt drain validates delayed duplicates without timing EOS work
+                phase = 'draining';
+                try {
+                    await decoder.flush();
+                } catch {
+                    return unsupportedResult;
+                }
+                if (decoderError !== null || !outputMatches) {
+                    return unsupportedResult;
+                }
+                return qualifiedResult ?? unsupportedResult;
             };
             return await Promise.race([
                 runOutputProbe(),
                 new Promise<NativeDolbyVisionVideoOutputProbeResult>(resolve => {
                     timeout = globalThis.setTimeout(
-                        () => resolve(unsupportedResult),
+                        () => resolve(qualifiedResult ?? unsupportedResult),
                         VIDEO_OUTPUT_PROBE_TIMEOUT_MILLISECONDS
                     );
                 })
             ]);
         } finally {
             acceptingFrame = false;
-            pendingFrameReject = null;
-            pendingFrameResolve = null;
+            pendingPhase.resolve?.();
+            pendingPhase.resolve = null;
             if (timeout !== null) {
                 globalThis.clearTimeout(timeout);
             }
@@ -1468,13 +1801,15 @@ function createRawHDRVideoCapabilities(
 }
 
 async function probeOptionalExactCapability<Capability>(
-    exactProbe: { probe: () => Promise<Capability> } | null | undefined
+    exactProbe: { probe: () => Promise<Capability> } | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<Capability | null> {
     if (!exactProbe) {
         return null;
     }
     try {
-        return await exactProbe.probe();
+        const capability = await heavyProbeScheduler.run(() => exactProbe.probe());
+        return capability === CAPABILITY_PROBE_TIMEOUT ? null : capability;
     } catch {
         return null;
     }
@@ -1682,11 +2017,15 @@ function createBundledAudioCapability(
 }
 
 async function probeH264Profiles(
-    profileProbe: Pick<H264ProfileCapabilityProbe, 'probe'> | null | undefined
+    profileProbe: Pick<H264ProfileCapabilityProbe, 'probe'> | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<H264ProfileCapabilities> {
     if (profileProbe) {
         try {
-            return await profileProbe.probe();
+            const capabilities = await heavyProbeScheduler.run(() => profileProbe.probe());
+            if (capabilities !== CAPABILITY_PROBE_TIMEOUT) {
+                return capabilities;
+            }
         } catch {
             // Fall through to the immutable unavailable result
         }
@@ -1700,7 +2039,8 @@ async function probeH264Profiles(
 async function probeRawHDRVideoConfig(
     definition: RawHDRVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: RawHDRVideoOutputProbe | null | undefined
+    outputProbe: RawHDRVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomRawHDRVideoCodecCapability> {
     const baseCapability = {
         bitDepth: 10 as const,
@@ -1738,7 +2078,7 @@ async function probeRawHDRVideoConfig(
                 status: 'unsupported'
             });
         }
-        const outputProbeResult = await waitForCapabilityProbe(outputProbe({
+        const outputProbeResult = await heavyProbeScheduler.runTimed(() => outputProbe({
             codec: definition.codec,
             configuration: definition.config,
             encodedKeyFrame: definition.encodedKeyFrame.slice(),
@@ -1831,7 +2171,8 @@ async function probeConfig<Codec extends CustomDecodeCodec, Config extends { cod
 async function probeNativeAudioConfig(
     definition: AudioProbeDefinition,
     decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
-    outputProbe: NativeAudioOutputProbe | null | undefined
+    outputProbe: NativeAudioOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomDecodeCodecCapability<Exclude<CustomAudioCodec, CustomBundledAudioCodec>>> {
     if (!decoder) {
         return createUnavailableCapability(definition.codec, definition.config.codec);
@@ -1874,7 +2215,7 @@ async function probeNativeAudioConfig(
                 timestamp: chunk.timestamp
             });
         }
-        const outputSupported = await waitForCapabilityProbe(outputProbe({
+        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe({
             codec: definition.codec,
             configuration: { ...definition.config },
             encodedChunks,
@@ -1910,12 +2251,14 @@ async function probeNativeAudioConfig(
 async function probeNativeSurroundAudioConfig(
     definition: NativeSurroundAudioProbeDefinition,
     decoder: DecoderCapabilityAPI<AudioDecoderConfig> | null | undefined,
-    outputProbe: NativeAudioOutputProbe | null | undefined
+    outputProbe: NativeAudioOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomNativeSurroundAudioCodecCapability> {
     const capability = await probeNativeAudioConfig(
         definition,
         decoder,
-        outputProbe
+        outputProbe,
+        heavyProbeScheduler
     );
     return Object.freeze({
         codec: definition.codec,
@@ -1928,14 +2271,16 @@ async function probeNativeSurroundAudioConfig(
 }
 
 function createNativeSurroundAudioProbePromises(
-    environment: WebCodecsCapabilityEnvironment
+    environment: WebCodecsCapabilityEnvironment,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Array<Promise<CustomNativeSurroundAudioCodecCapability>> {
     const probePromises: Array<Promise<CustomNativeSurroundAudioCodecCapability>> = [];
     for (const definition of NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS) {
         probePromises.push(probeNativeSurroundAudioConfig(
             definition,
             environment.audioDecoder,
-            environment.nativeAudioOutputProbe
+            environment.nativeAudioOutputProbe,
+            heavyProbeScheduler
         ));
     }
     return probePromises;
@@ -1968,7 +2313,8 @@ function getNativeSurroundAudioProbeCount(
 async function probeNativeVideoConfig(
     definition: DecodedVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: NativeVideoOutputProbe | null | undefined
+    outputProbe: NativeVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomDecodeCodecCapability<CustomVideoCodec>> {
     if (!decoder) {
         return createUnavailableCapability(definition.codec, definition.config.codec);
@@ -1999,7 +2345,7 @@ async function probeNativeVideoConfig(
         }
 
         const fixture = definition.outputFixture;
-        const outputSupported = await waitForCapabilityProbe(outputProbe({
+        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe({
             codec: definition.codec,
             configuration: {
                 ...definition.config,
@@ -2040,10 +2386,16 @@ async function probeNativeVideoConfig(
 async function probeNativeUltraHDVideoConfig(
     definition: NativeUltraHDVideoProbeDefinition,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: NativeVideoOutputProbe | null | undefined
+    outputProbe: NativeVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomNativeUltraHDVideoCodecCapability> {
     const capability: CustomDecodeCodecCapability<CustomVideoCodec> =
-        await probeNativeVideoConfig(definition, decoder, outputProbe);
+        await probeNativeVideoConfig(
+            definition,
+            decoder,
+            outputProbe,
+            heavyProbeScheduler
+        );
     return Object.freeze({
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec: definition.codec,
@@ -2056,14 +2408,16 @@ async function probeNativeUltraHDVideoConfig(
 }
 
 function createNativeUltraHDVideoProbePromises(
-    environment: WebCodecsCapabilityEnvironment
+    environment: WebCodecsCapabilityEnvironment,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Array<Promise<CustomNativeUltraHDVideoCodecCapability>> {
     const probePromises: Array<Promise<CustomNativeUltraHDVideoCodecCapability>> = [];
     for (const definition of NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS) {
         probePromises.push(probeNativeUltraHDVideoConfig(
             definition,
             environment.videoDecoder,
-            environment.nativeVideoOutputProbe
+            environment.nativeVideoOutputProbe,
+            heavyProbeScheduler
         ));
     }
     return probePromises;
@@ -2118,7 +2472,8 @@ async function probeNativeHEVCFrameRoute(
     expectedCodedHeight: number,
     expectedCodedWidth: number,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined
+    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<NativeHEVCFrameRouteProbeCapability> {
     const unavailableCapability: NativeHEVCFrameRouteProbeCapability = {
         maximumFramesPerSecond: 0,
@@ -2148,7 +2503,7 @@ async function probeNativeHEVCFrameRoute(
             };
         }
 
-        const outputProbeResult = await waitForCapabilityProbe(outputProbe({
+        const outputProbeResult = await heavyProbeScheduler.runTimed(() => outputProbe({
             configuration,
             encodedKeyFrame: new Uint8Array(encodedKeyFrame),
             expectedCodedHeight,
@@ -2197,7 +2552,8 @@ async function probeNativeHEVCFrameRoute(
 
 async function probeNativeDolbyVisionHEVC(
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined
+    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomNativeDolbyVisionHEVCCapability> {
     const routeCapability = await probeNativeHEVCFrameRoute(
         NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.config,
@@ -2205,7 +2561,8 @@ async function probeNativeDolbyVisionHEVC(
         CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_HEIGHT,
         CUSTOM_NATIVE_DOLBY_VISION_HEVC_MAXIMUM_CODED_WIDTH,
         decoder,
-        outputProbe
+        outputProbe,
+        heavyProbeScheduler
     );
     return Object.freeze({
         codec: NATIVE_DOLBY_VISION_HEVC_PROBE_DEFINITION.codec,
@@ -2221,7 +2578,8 @@ async function probeNativeDolbyVisionHEVC(
 
 async function probeNativeHDRHEVC(
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
-    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined
+    outputProbe: NativeDolbyVisionVideoOutputProbe | null | undefined,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomNativeHDRHEVCCapability> {
     const routeCapability = await probeNativeHEVCFrameRoute(
         NATIVE_HDR_HEVC_PROBE_DEFINITION.config,
@@ -2229,7 +2587,8 @@ async function probeNativeHDRHEVC(
         CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_HEIGHT,
         CUSTOM_NATIVE_HDR_HEVC_MAXIMUM_CODED_WIDTH,
         decoder,
-        outputProbe
+        outputProbe,
+        heavyProbeScheduler
     );
     return Object.freeze({
         codec: NATIVE_HDR_HEVC_PROBE_DEFINITION.codec,
@@ -2303,26 +2662,30 @@ function getSupportedVideoCodecCount(
 
 function createVideoProbePromise(
     definition: VideoProbeDefinition,
-    environment: WebCodecsCapabilityEnvironment
+    environment: WebCodecsCapabilityEnvironment,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Promise<CustomDecodeCodecCapability<CustomVideoCodec>> {
     return hasDecodedVideoOutputFixture(definition) ?
         probeNativeVideoConfig(
             definition,
             environment.videoDecoder,
-            environment.nativeVideoOutputProbe
+            environment.nativeVideoOutputProbe,
+            heavyProbeScheduler
         ) :
         probeConfig(definition, environment.videoDecoder);
 }
 
 function createAudioProbePromises(
-    environment: WebCodecsCapabilityEnvironment
+    environment: WebCodecsCapabilityEnvironment,
+    heavyProbeScheduler: SerializedHeavyCapabilityProbeScheduler
 ): Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> {
     const probePromises: Array<Promise<CustomDecodeCodecCapability<CustomAudioCodec>>> = [];
     for (const definition of AUDIO_PROBE_DEFINITIONS) {
         probePromises.push(probeNativeAudioConfig(
             definition,
             environment.audioDecoder,
-            environment.nativeAudioOutputProbe
+            environment.nativeAudioOutputProbe,
+            heavyProbeScheduler
         ));
     }
     return probePromises;
@@ -2346,24 +2709,30 @@ export default class CustomDecodeCapabilityProbe {
     }
 
     private async runProbe(environment: WebCodecsCapabilityEnvironment): Promise<CustomDecodeCapabilities> {
+        const heavyProbeScheduler = new SerializedHeavyCapabilityProbeScheduler();
         const videoProbePromises: Array<Promise<CustomDecodeCodecCapability<CustomVideoCodec>>> = [];
         for (const definition of VIDEO_PROBE_DEFINITIONS) {
-            videoProbePromises.push(createVideoProbePromise(definition, environment));
+            videoProbePromises.push(createVideoProbePromise(
+                definition,
+                environment,
+                heavyProbeScheduler
+            ));
         }
         const nativeUltraHDVideoProbePromises: Array<Promise<
             CustomNativeUltraHDVideoCodecCapability
         >> =
-            createNativeUltraHDVideoProbePromises(environment);
-        const audioProbePromises = createAudioProbePromises(environment);
+            createNativeUltraHDVideoProbePromises(environment, heavyProbeScheduler);
+        const audioProbePromises = createAudioProbePromises(environment, heavyProbeScheduler);
         const nativeSurroundAudioProbePromises: Array<Promise<
             CustomNativeSurroundAudioCodecCapability
-        >> = createNativeSurroundAudioProbePromises(environment);
+        >> = createNativeSurroundAudioProbePromises(environment, heavyProbeScheduler);
         const rawHDRVideoProbePromises: Array<Promise<CustomRawHDRVideoCodecCapability>> = [];
         for (const definition of RAW_HDR_VIDEO_PROBE_DEFINITIONS) {
             rawHDRVideoProbePromises.push(probeRawHDRVideoConfig(
                 definition,
                 environment.videoDecoder,
-                environment.rawHDRVideoOutputProbe
+                environment.rawHDRVideoOutputProbe,
+                heavyProbeScheduler
             ));
         }
 
@@ -2385,19 +2754,36 @@ export default class CustomDecodeCapabilityProbe {
             Promise.all(videoProbePromises),
             Promise.all(audioProbePromises),
             Promise.all(rawHDRVideoProbePromises),
-            probeH264Profiles(environment.h264ProfileProbe),
-            probeOptionalExactCapability(environment.bundledDTSExactProbe),
-            probeOptionalExactCapability(environment.bundledHEVCExactProbe),
-            probeOptionalExactCapability(environment.bundledJPEG2000ExactProbe),
-            probeOptionalExactCapability(environment.bundledLegacyVideoExactProbe),
-            probeOptionalExactCapability(environment.bundledTrueHDExactProbe),
+            probeH264Profiles(environment.h264ProfileProbe, heavyProbeScheduler),
+            probeOptionalExactCapability(
+                environment.bundledDTSExactProbe,
+                heavyProbeScheduler
+            ),
+            probeOptionalExactCapability(
+                environment.bundledHEVCExactProbe,
+                heavyProbeScheduler
+            ),
+            probeOptionalExactCapability(
+                environment.bundledJPEG2000ExactProbe,
+                heavyProbeScheduler
+            ),
+            probeOptionalExactCapability(
+                environment.bundledLegacyVideoExactProbe,
+                heavyProbeScheduler
+            ),
+            probeOptionalExactCapability(
+                environment.bundledTrueHDExactProbe,
+                heavyProbeScheduler
+            ),
             probeNativeDolbyVisionHEVC(
                 environment.videoDecoder,
-                environment.nativeDolbyVisionVideoOutputProbe
+                environment.nativeDolbyVisionVideoOutputProbe,
+                heavyProbeScheduler
             ),
             probeNativeHDRHEVC(
                 environment.videoDecoder,
-                environment.nativeHDRVideoOutputProbe
+                environment.nativeHDRVideoOutputProbe,
+                heavyProbeScheduler
             ),
             Promise.all(nativeSurroundAudioProbePromises),
             Promise.all(nativeUltraHDVideoProbePromises)

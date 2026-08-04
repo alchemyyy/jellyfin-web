@@ -45,6 +45,7 @@ type TestPlayOptions = {
         DefaultSubtitleStreamIndex: number
         MediaAttachments?: Array<{ DeliveryUrl: string, MimeType: string }>
         MediaStreams: TestMediaStream[]
+        TranscodingUrl?: string
     }
     playMethod: string
     playerStartPositionTicks: number
@@ -101,12 +102,14 @@ const htmlMediaHelperMock = vi.hoisted(() => ({
     enableHlsJsPlayerForCodecs: vi.fn<(mediaSource?: { Container?: string }, mediaType?: string) => boolean>().mockReturnValue(false),
     getBufferedRanges: vi.fn(() => []),
     getCrossOriginValue: vi.fn(() => null),
+    getHLSPlaybackPosition: vi.fn((_hlsPlayer: unknown, currentPositionSeconds: number) => currentPositionSeconds),
     getSavedVolume: vi.fn(() => 1),
     handleHlsJsMediaError: vi.fn(),
     isValidDuration: vi.fn(() => true),
     onEndedInternal: vi.fn(),
     onErrorInternal: vi.fn(),
     playWithPromise: vi.fn(() => Promise.resolve()),
+    prepareHLSSeek: vi.fn(),
     resetSrc: vi.fn(),
     saveVolume: vi.fn(),
     seekOnPlaybackStart: vi.fn()
@@ -121,29 +124,76 @@ const webSettingsMock = vi.hoisted(() => ({
 }));
 
 const hlsModuleMock = vi.hoisted(() => {
-    const instances: unknown[] = [];
+    const instances: Array<{ config: Record<string, unknown> }> = [];
+    const webGPUInstances: Array<{ config: Record<string, unknown> }> = [];
 
     class MockHls {
+        static readonly ErrorTypes = Object.freeze({
+            ['MEDIA_ERROR']: 'legacy-media-error',
+            ['NETWORK_ERROR']: 'legacy-network-error'
+        });
+        static readonly Events = Object.freeze({
+            ['ERROR']: 'legacy-error',
+            ['MANIFEST_PARSED']: 'legacy-manifest-parsed'
+        });
         static readonly DefaultConfig = {
+            backBufferLength: Number.POSITIVE_INFINITY,
             fragLoadPolicy: {
                 default: {
                     maxTimeToFirstByteMs: 0
                 }
-            }
+            },
+            liveBackBufferLength: null,
+            lowLatencyMode: true
         };
 
         attachMedia = vi.fn();
+        readonly config: Record<string, unknown>;
         destroy = vi.fn();
         loadSource = vi.fn();
         on = vi.fn();
         startLoad = vi.fn();
 
-        constructor() {
+        constructor(config: Record<string, unknown>) {
+            this.config = config;
             instances.push(this);
         }
     }
 
-    return { instances, MockHls };
+    class MockWebGPUHLS {
+        static readonly ErrorTypes = Object.freeze({
+            ['MEDIA_ERROR']: 'webgpu-media-error',
+            ['NETWORK_ERROR']: 'webgpu-network-error'
+        });
+        static readonly Events = Object.freeze({
+            ['ERROR']: 'webgpu-error',
+            ['MANIFEST_PARSED']: 'webgpu-manifest-parsed'
+        });
+        static readonly DefaultConfig = {
+            backBufferLength: Number.POSITIVE_INFINITY,
+            fragLoadPolicy: {
+                default: {
+                    maxTimeToFirstByteMs: 0
+                }
+            },
+            liveBackBufferLength: null,
+            lowLatencyMode: true
+        };
+
+        attachMedia = vi.fn();
+        readonly config: Record<string, unknown>;
+        destroy = vi.fn();
+        loadSource = vi.fn();
+        on = vi.fn();
+        startLoad = vi.fn();
+
+        constructor(config: Record<string, unknown>) {
+            this.config = config;
+            webGPUInstances.push(this);
+        }
+    }
+
+    return { instances, MockHls, MockWebGPUHLS, webGPUInstances };
 });
 
 const serverConnectionsMock = vi.hoisted(() => {
@@ -335,6 +385,10 @@ vi.mock('hls.js/dist/hls.js', () => ({
     default: hlsModuleMock.MockHls
 }));
 
+vi.mock('hls.js-webgpu/dist/hls.js', () => ({
+    default: hlsModuleMock.MockWebGPUHLS
+}));
+
 vi.mock('components/backdrop/backdrop', () => ({
     setBackdropTransparency: vi.fn(),
     ['TRANSPARENCY_LEVEL']: {
@@ -432,8 +486,12 @@ function createPlayOptions(url: string, container = 'MP4'): TestPlayOptions {
     };
 }
 
-async function createPlayer(): Promise<HtmlVideoPlayerTestHarness> {
-    const player = new HtmlVideoPlayer(undefined, true) as unknown as HtmlVideoPlayerTestHarness;
+async function createPlayer(useWebGPUHLSRuntime = false): Promise<HtmlVideoPlayerTestHarness> {
+    const player = new HtmlVideoPlayer(
+        undefined,
+        true,
+        useWebGPUHLSRuntime
+    ) as unknown as HtmlVideoPlayerTestHarness;
     await player.createMediaElement({ fullscreen: false });
     player._currentPlayOptions = {
         item: { ServerId: 'server' },
@@ -456,10 +514,14 @@ beforeEach(() => {
         return Promise.resolve();
     });
     htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(false);
+    htmlMediaHelperMock.getHLSPlaybackPosition.mockImplementation(
+        (_hlsPlayer: unknown, currentPositionSeconds: number) => currentPositionSeconds
+    );
     htmlMediaHelperMock.playWithPromise.mockReturnValue(Promise.resolve());
     itemHelperMock.isLocalItem.mockReturnValue(false);
     webSettingsMock.getIncludeCorsCredentials.mockReturnValue(Promise.resolve(false));
     hlsModuleMock.instances.length = 0;
+    hlsModuleMock.webGPUInstances.length = 0;
     specializedSubtitleRendererMock.assInstances.length = 0;
     specializedSubtitleRendererMock.pgsInstances.length = 0;
     vi.mocked(appSettings.aspectRatio).mockReturnValue('auto');
@@ -1071,6 +1133,90 @@ describe('HtmlVideoPlayer play generations', () => {
         expect(player.currentSrc()).toBe('https://example.test/second.mp4');
     });
 
+    it.each([
+        [ 'legacy then WebGPU', false, true ],
+        [ 'WebGPU then legacy', true, false ]
+    ])('isolates HLS runtimes and workers when loaded %s', async (
+        _loadOrder,
+        firstUsesWebGPUHLSRuntime,
+        secondUsesWebGPUHLSRuntime
+    ) => {
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementation((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+
+        const firstPlayer = await createPlayer(firstUsesWebGPUHLSRuntime);
+        await firstPlayer.play(createPlayOptions('https://example.test/first.m3u8', 'HLS'));
+        const secondPlayer = await createPlayer(secondUsesWebGPUHLSRuntime);
+        await secondPlayer.play(createPlayOptions('https://example.test/second.m3u8', 'HLS'));
+
+        expect(hlsModuleMock.instances).toHaveLength(1);
+        expect(hlsModuleMock.webGPUInstances).toHaveLength(1);
+        expect(hlsModuleMock.instances[0].config).toEqual(expect.objectContaining({
+            workerPath: 'libraries/hls.worker.js'
+        }));
+        expect(hlsModuleMock.webGPUInstances[0].config).toEqual(expect.objectContaining({
+            workerPath: 'libraries/hls.webgpu-1.7.0-rc.2.worker.js'
+        }));
+
+        const firstSessionCallbacks = htmlMediaHelperMock.bindEventsToHlsPlayer.mock.calls[0][6] as {
+            hlsRuntime: unknown
+        };
+        const secondSessionCallbacks = htmlMediaHelperMock.bindEventsToHlsPlayer.mock.calls[1][6] as {
+            hlsRuntime: unknown
+        };
+        expect(firstSessionCallbacks.hlsRuntime).toBe(
+            firstUsesWebGPUHLSRuntime ? hlsModuleMock.MockWebGPUHLS : hlsModuleMock.MockHls
+        );
+        expect(secondSessionCallbacks.hlsRuntime).toBe(
+            secondUsesWebGPUHLSRuntime ? hlsModuleMock.MockWebGPUHLS : hlsModuleMock.MockHls
+        );
+    });
+
+    it('configures HLS to select an encoded SDR video rendition', async () => {
+        const player = await createPlayer();
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementationOnce((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+        const options = createPlayOptions(
+            'https://example.test/master.m3u8?TranscodeReasons=AudioCodecNotSupported%2CVideoRangeTypeNotSupported',
+            'HLS'
+        );
+        options.playMethod = 'Transcode';
+
+        await player.play(options);
+
+        expect(hlsModuleMock.instances).toHaveLength(1);
+        expect(hlsModuleMock.instances[0].config).toEqual(expect.objectContaining({
+            videoPreference: { preferHDR: false }
+        }));
+    });
+
+    it('configures HLS to retain copied HDR for audio-only transcoding', async () => {
+        const player = await createPlayer();
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementationOnce((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+        const options = createPlayOptions(
+            'https://example.test/master.m3u8?TranscodeReasons=AudioCodecNotSupported%2CAudioChannelsNotSupported',
+            'HLS'
+        );
+        options.playMethod = 'Transcode';
+
+        await player.play(options);
+
+        expect(hlsModuleMock.instances).toHaveLength(1);
+        expect(hlsModuleMock.instances[0].config).toEqual(expect.objectContaining({
+            videoPreference: { preferHDR: true }
+        }));
+    });
+
     it('keeps established HLS callbacks current when no startup is pending', async () => {
         const player = await createPlayer();
         const terminalError = 'established-hls-error';
@@ -1111,5 +1257,94 @@ describe('HtmlVideoPlayer play generations', () => {
 
         expect(htmlMediaHelperMock.destroyHlsPlayer).toHaveBeenCalled();
         expect(htmlMediaHelperMock.onErrorInternal).toHaveBeenCalledWith(player, terminalError);
+    });
+
+    it('bounds WebGPU-owned HLS ranges while retaining byte-aware forward buffering', async () => {
+        const player = await createPlayer(true);
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementationOnce((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+
+        await player.play(createPlayOptions('https://example.test/master.m3u8', 'HLS'));
+
+        expect(hlsModuleMock.webGPUInstances).toHaveLength(1);
+        expect(hlsModuleMock.webGPUInstances[0].config).toEqual(expect.objectContaining({
+            backBufferLength: 6,
+            fragLoadPolicy: expect.objectContaining({
+                default: expect.objectContaining({
+                    maxTimeToFirstByteMs: 20_000
+                })
+            }),
+            frontBufferFlushThreshold: 6,
+            lowLatencyMode: false,
+            maxBufferLength: 6,
+            maxMaxBufferLength: 30
+        }));
+        expect(hlsModuleMock.MockWebGPUHLS.DefaultConfig.backBufferLength)
+            .toBe(Number.POSITIVE_INFINITY);
+        expect(hlsModuleMock.MockWebGPUHLS.DefaultConfig.fragLoadPolicy.default.maxTimeToFirstByteMs)
+            .toBe(0);
+        expect(hlsModuleMock.MockWebGPUHLS.DefaultConfig.liveBackBufferLength).toBeNull();
+        expect(hlsModuleMock.MockWebGPUHLS.DefaultConfig.lowLatencyMode).toBe(true);
+    });
+
+    it('preserves legacy HTML HLS retention without bitrate-based selection', async () => {
+        const player = await createPlayer();
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementationOnce((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+
+        await player.play(createPlayOptions('https://example.test/master.m3u8', 'HLS'));
+
+        expect(hlsModuleMock.instances).toHaveLength(1);
+        expect(hlsModuleMock.instances[0].config).toEqual(expect.objectContaining({
+            backBufferLength: Number.POSITIVE_INFINITY,
+            liveBackBufferLength: 90,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 30
+        }));
+        expect(hlsModuleMock.instances[0].config).not.toHaveProperty(
+            'frontBufferFlushThreshold'
+        );
+    });
+
+    it('publishes an explicit HLS seek before changing the media element', async () => {
+        const player = await createPlayer();
+        htmlMediaHelperMock.enableHlsJsPlayerForCodecs.mockReturnValue(true);
+        htmlMediaHelperMock.bindEventsToHlsPlayer.mockImplementationOnce((...eventArguments: unknown[]) => {
+            const resolveHlsSource = eventArguments[4] as () => void;
+            resolveHlsSource();
+        });
+        await player.play(createPlayOptions('https://example.test/master.m3u8', 'HLS'));
+        const video = player.getPresentationSurface()?.video;
+        expect(video).toBeDefined();
+        let mediaTimeWhenPrepared: number | null = null;
+        htmlMediaHelperMock.prepareHLSSeek.mockImplementationOnce(() => {
+            mediaTimeWhenPrepared = video?.currentTime ?? null;
+        });
+
+        player.currentTime(3_600_000);
+
+        expect(player.currentTime()).toBe(3_600_000);
+        expect(mediaTimeWhenPrepared).toBe(0);
+        expect(video?.currentTime).toBe(3_600);
+        expect(htmlMediaHelperMock.prepareHLSSeek).toHaveBeenCalledWith(
+            hlsModuleMock.instances[0],
+            3_600
+        );
+
+        htmlMediaHelperMock.getHLSPlaybackPosition.mockReturnValueOnce(3_600);
+        if (video) {
+            video.currentTime = 3_000;
+            video.dispatchEvent(new Event('timeupdate'));
+        }
+        expect(player.currentTime()).toBe(3_600_000);
+
+        player.currentTime(0);
+        expect(player.currentTime()).toBe(0);
     });
 });

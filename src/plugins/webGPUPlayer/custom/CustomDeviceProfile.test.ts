@@ -2563,6 +2563,63 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         )))).toBe(false);
     });
 
+    it('uses a dimension-neutral native HDR envelope for a Profile 8.1 HDR10 base', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const capabilities = createCapabilities([ 'hevc' ], [ 'truehd' ], [ 'hevc' ]);
+        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
+        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
+        capabilities.nativeHDRHEVC = {
+            bitDepth: 10,
+            codec: 'hevc',
+            codecString: 'hvc1.2.4.L153.B0',
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            maximumFramesPerSecond: 60,
+            maximumLevel: 153,
+            measuredFramesPerSecond: 80,
+            reason: 'decode-output-verified',
+            status: 'supported'
+        };
+
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            capabilities,
+            {
+                allowDolbyVision: true,
+                allowNativeDolbyVisionProfile8HDR10Base: true,
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ]
+            }
+        );
+        const profile8Profiles = result.profile.CodecProfiles?.filter(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value?.includes('DOVIWithHDR10')
+            ))
+        )) ?? [];
+
+        expect(profile8Profiles.length).toBeGreaterThan(0);
+        expect(profile8Profiles.every(profile => !profile.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        )))).toBe(true);
+    });
+
     it.each([ 24 as const, 30 as const, 60 as const ])(
         'does not export the %i fps native Profile 5 fixture as a source ceiling',
         maximumFramesPerSecond => {

@@ -44,6 +44,7 @@ import {
     TRANSCODE_OUTPUT_BITRATE_PURPOSE
 } from './PlaybackBitratePolicy';
 import { PlaybackRequestGate } from './PlaybackRequestGate';
+import { getPlaybackRecoveryStartTimeTicks } from './PlaybackRecoveryPosition';
 import { orderVideoPlayersByPreference } from './PreferredVideoPlayer';
 import * as bitrateTest from 'utils/bitrateTest';
 import {
@@ -4048,7 +4049,11 @@ export class PlaybackManager {
                 return null;
             }
 
-            const startTime = getCurrentTicks(player) || streamInfo.playerStartPositionTicks;
+            const startTime = getPlaybackRecoveryStartTimeTicks(
+                getCurrentTicks(player),
+                streamInfo.playerStartPositionTicks,
+                streamInfo.started === true
+            );
             const isRemoteSource = streamInfo.item.LocationType === 'Remote';
             const tryVideoStreamCopy = isRemoteSource && !isAlreadyFallbacking;
             return {

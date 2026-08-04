@@ -2,6 +2,11 @@ import appSettings from '../scripts/settings/appSettings' ;
 import browser from '../scripts/browser';
 import Events from '../utils/events.ts';
 import { MediaError } from 'types/mediaError';
+import { HLSAppendFailurePolicy } from './HLSAppendFailurePolicy';
+import {
+    HLSRecoveryPosition,
+    HLS_SEEK_CORRELATION_TOLERANCE_SECONDS
+} from './HLSRecoveryPosition';
 
 export function getSavedVolume() {
     return appSettings.get('volume') || 1;
@@ -74,8 +79,343 @@ export function enableHlsJsPlayer(runTimeTicks, mediaType) {
     return true;
 }
 
-let recoverDecodingErrorDate;
-let recoverSwapAudioCodecDate;
+const hlsMediaRecoveryStates = new WeakMap();
+const MAXIMUM_LOGGED_TIME_RANGES = 6;
+const MILLISECONDS_PER_SECOND = 1000;
+const HAVE_FUTURE_DATA_READY_STATE = 3;
+
+function getHLSPlaybackObservation(element, playing) {
+    const monotonicTimeMilliseconds = typeof performance !== 'undefined' ?
+        performance.now() :
+        Date.now();
+    return {
+        monotonicTimeSeconds: monotonicTimeMilliseconds / MILLISECONDS_PER_SECOND,
+        playbackRate: Number.isFinite(element.playbackRate) ?
+            Math.abs(element.playbackRate) :
+            1,
+        playing
+    };
+}
+
+function getHLSMediaRecoveryState(hlsPlayer) {
+    let recoveryState = hlsMediaRecoveryStates.get(hlsPlayer);
+    if (!recoveryState) {
+        recoveryState = {
+            playbackActive: false,
+            position: new HLSRecoveryPosition(),
+            recoveryAttempted: false,
+            removePositionListeners: null
+        };
+        hlsMediaRecoveryStates.set(hlsPlayer, recoveryState);
+    }
+
+    return recoveryState;
+}
+
+/** Records an explicit HLS seek before the media element processes it. */
+export function prepareHLSSeek(hlsPlayer, positionSeconds) {
+    if (!hlsPlayer || !Number.isFinite(positionSeconds) || positionSeconds < 0) {
+        return;
+    }
+
+    getHLSMediaRecoveryState(hlsPlayer).position.recordSeekRequest(positionSeconds);
+}
+
+/** Returns the latest explicit or monotonic HLS playback position. */
+export function getHLSPlaybackPosition(hlsPlayer, currentPositionSeconds) {
+    if (!hlsPlayer) {
+        return currentPositionSeconds;
+    }
+
+    const recoveryState = getHLSMediaRecoveryState(hlsPlayer);
+    const media = hlsPlayer.media;
+    return recoveryState.position.getRecoveryPosition(
+        currentPositionSeconds,
+        media ? getHLSPlaybackObservation(media, recoveryState.playbackActive) : undefined,
+        media ? getHLSSeekBounds(media) : undefined
+    ) ?? currentPositionSeconds;
+}
+
+function bindHLSPositionTracking(hlsPlayer, element, hlsRuntime) {
+    const recoveryState = getHLSMediaRecoveryState(hlsPlayer);
+    if (recoveryState.removePositionListeners) {
+        recoveryState.removePositionListeners();
+    }
+
+    const recordPlaybackPosition = function () {
+        recoveryState.position.recordPlaybackPosition(
+            element.currentTime,
+            getHLSPlaybackObservation(element, recoveryState.playbackActive),
+            getHLSSeekBounds(element)
+        );
+    };
+    const recordSeekCompletion = function () {
+        recoveryState.position.recordSeekCompletion(
+            element.currentTime,
+            getHLSSeekBounds(element),
+            getHLSPlaybackObservation(element, recoveryState.playbackActive)
+        );
+        if (
+            !element.paused
+            && !element.ended
+            && element.readyState >= HAVE_FUTURE_DATA_READY_STATE
+        ) {
+            recoveryState.playbackActive = true;
+            recoveryState.position.recordPlaybackState(
+                getHLSPlaybackObservation(element, true)
+            );
+        }
+    };
+    const recordPlayingState = function () {
+        recoveryState.playbackActive = true;
+        recoveryState.position.recordPlaybackState(
+            getHLSPlaybackObservation(element, true)
+        );
+    };
+    const recordInactiveState = function () {
+        recoveryState.playbackActive = false;
+        recoveryState.position.recordPlaybackState(
+            getHLSPlaybackObservation(element, false)
+        );
+    };
+    const recordPlaybackRate = function () {
+        recoveryState.position.recordPlaybackState(
+            getHLSPlaybackObservation(element, recoveryState.playbackActive)
+        );
+    };
+    const removePositionListeners = function () {
+        element.removeEventListener('timeupdate', recordPlaybackPosition);
+        element.removeEventListener('seeked', recordSeekCompletion);
+        element.removeEventListener('playing', recordPlayingState);
+        element.removeEventListener('waiting', recordInactiveState);
+        element.removeEventListener('seeking', recordInactiveState);
+        element.removeEventListener('pause', recordInactiveState);
+        element.removeEventListener('ended', recordInactiveState);
+        element.removeEventListener('ratechange', recordPlaybackRate);
+        if (recoveryState.removePositionListeners === removePositionListeners) {
+            recoveryState.removePositionListeners = null;
+        }
+    };
+
+    recoveryState.removePositionListeners = removePositionListeners;
+    element.addEventListener('timeupdate', recordPlaybackPosition);
+    element.addEventListener('seeked', recordSeekCompletion);
+    element.addEventListener('playing', recordPlayingState);
+    element.addEventListener('waiting', recordInactiveState);
+    element.addEventListener('seeking', recordInactiveState);
+    element.addEventListener('pause', recordInactiveState);
+    element.addEventListener('ended', recordInactiveState);
+    element.addEventListener('ratechange', recordPlaybackRate);
+    recordPlaybackPosition();
+
+    const destroyingEvent = hlsRuntime.Events.DESTROYING;
+    if (destroyingEvent) {
+        hlsPlayer.on(destroyingEvent, removePositionListeners);
+    }
+}
+
+function getHLSSeekBounds(element) {
+    let minimumPositionSeconds = null;
+    let maximumPositionSeconds = null;
+    const ranges = [];
+    const seekable = element.seekable;
+    for (let rangeIndex = 0; rangeIndex < seekable.length; rangeIndex++) {
+        const rangeStart = seekable.start(rangeIndex);
+        const rangeEnd = seekable.end(rangeIndex);
+        if (
+            Number.isFinite(rangeStart)
+            && Number.isFinite(rangeEnd)
+            && rangeEnd >= rangeStart
+        ) {
+            ranges.push({
+                endPositionSeconds: rangeEnd,
+                startPositionSeconds: rangeStart
+            });
+        }
+        if (Number.isFinite(rangeStart)) {
+            minimumPositionSeconds = minimumPositionSeconds === null ?
+                rangeStart :
+                Math.min(minimumPositionSeconds, rangeStart);
+        }
+        if (Number.isFinite(rangeEnd)) {
+            maximumPositionSeconds = maximumPositionSeconds === null ?
+                rangeEnd :
+                Math.max(maximumPositionSeconds, rangeEnd);
+        }
+    }
+
+    if (minimumPositionSeconds === null && Number.isFinite(element.duration)) {
+        minimumPositionSeconds = 0;
+    }
+    if (maximumPositionSeconds === null && Number.isFinite(element.duration)) {
+        maximumPositionSeconds = element.duration;
+    }
+
+    if (
+        ranges.length === 0
+        && minimumPositionSeconds !== null
+        && maximumPositionSeconds !== null
+    ) {
+        ranges.push({
+            endPositionSeconds: maximumPositionSeconds,
+            startPositionSeconds: minimumPositionSeconds
+        });
+    }
+
+    return { maximumPositionSeconds, minimumPositionSeconds, ranges };
+}
+
+function recordTrustedHLSClockMovement(
+    recoveryState,
+    hlsRuntime,
+    element,
+    errorData
+) {
+    if (errorData.fatal === true) {
+        return;
+    }
+
+    const errorDetails = hlsRuntime.ErrorDetails;
+    const seekOverHole = errorDetails?.BUFFER_SEEK_OVER_HOLE;
+    const nudgeOnStall = errorDetails?.BUFFER_NUDGE_ON_STALL;
+    if (
+        (seekOverHole && errorData.details === seekOverHole)
+        || (nudgeOnStall && errorData.details === nudgeOnStall)
+    ) {
+        recoveryState.position.recordHLSTrustedPosition(
+            element.currentTime,
+            getHLSPlaybackObservation(element, recoveryState.playbackActive)
+        );
+    }
+}
+
+function getBufferedEnd(element) {
+    const buffered = element.buffered;
+    let bufferedEnd = 0;
+    for (let rangeIndex = 0; rangeIndex < buffered.length; rangeIndex++) {
+        bufferedEnd = Math.max(bufferedEnd, buffered.end(rangeIndex));
+    }
+    return bufferedEnd;
+}
+
+function getTimeRangeSnapshot(timeRanges) {
+    const rangeIndices = [];
+    if (timeRanges.length <= MAXIMUM_LOGGED_TIME_RANGES) {
+        for (let rangeIndex = 0; rangeIndex < timeRanges.length; rangeIndex++) {
+            rangeIndices.push(rangeIndex);
+        }
+    } else {
+        const edgeRangeCount = MAXIMUM_LOGGED_TIME_RANGES / 2;
+        for (let rangeIndex = 0; rangeIndex < edgeRangeCount; rangeIndex++) {
+            rangeIndices.push(rangeIndex);
+        }
+        for (
+            let rangeIndex = timeRanges.length - edgeRangeCount;
+            rangeIndex < timeRanges.length;
+            rangeIndex++
+        ) {
+            rangeIndices.push(rangeIndex);
+        }
+    }
+
+    const ranges = [];
+    for (const rangeIndex of rangeIndices) {
+        ranges.push({
+            end: timeRanges.end(rangeIndex),
+            start: timeRanges.start(rangeIndex)
+        });
+    }
+
+    return {
+        count: timeRanges.length,
+        ranges
+    };
+}
+
+function getHLSErrorPlaybackState(hlsPlayer, element, data) {
+    const currentTime = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+    return {
+        bufferLength: Number.isFinite(data.buffer) ? data.buffer : null,
+        buffered: getTimeRangeSnapshot(element.buffered),
+        bufferingEnabled: hlsPlayer.bufferingEnabled ?? null,
+        configuredStartPosition: Number.isFinite(hlsPlayer.config?.startPosition) ?
+            hlsPlayer.config.startPosition :
+            null,
+        currentTime,
+        duration: Number.isFinite(element.duration) ? element.duration : null,
+        hasEnoughToStart: hlsPlayer.hasEnoughToStart ?? null,
+        loadingEnabled: hlsPlayer.loadingEnabled ?? null,
+        recoveryPosition: getHlsRecoveryPosition(hlsPlayer, currentTime),
+        seekable: getTimeRangeSnapshot(element.seekable),
+        sourceBufferName: data.sourceBufferName ?? null,
+        startPosition: Number.isFinite(hlsPlayer.startPosition) ? hlsPlayer.startPosition : null
+    };
+}
+
+function getHlsProgress(element) {
+    return {
+        bufferedEnd: getBufferedEnd(element),
+        currentTime: Number.isFinite(element.currentTime) ? element.currentTime : 0
+    };
+}
+
+function getHlsRecoveryPosition(hlsPlayer, currentTime) {
+    const recoveryState = getHLSMediaRecoveryState(hlsPlayer);
+    const media = hlsPlayer.media;
+    const trackedPosition = recoveryState.position.getRecoveryPosition(
+        currentTime,
+        media ? getHLSPlaybackObservation(media, recoveryState.playbackActive) : undefined,
+        media ? getHLSSeekBounds(media) : undefined
+    );
+    if (trackedPosition !== null) {
+        return trackedPosition;
+    }
+
+    if (currentTime > 0) {
+        return currentTime;
+    }
+
+    const activeStartPosition = hlsPlayer.startPosition;
+    if (Number.isFinite(activeStartPosition) && activeStartPosition >= -1) {
+        return activeStartPosition;
+    }
+
+    const configuredStartPosition = hlsPlayer.config?.startPosition;
+    if (Number.isFinite(configuredStartPosition) && configuredStartPosition >= -1) {
+        return configuredStartPosition;
+    }
+
+    return 0;
+}
+
+function recoverHlsMediaOnce(hlsPlayer, element) {
+    const recoveryState = getHLSMediaRecoveryState(hlsPlayer);
+    if (recoveryState.recoveryAttempted) {
+        return false;
+    }
+
+    recoveryState.recoveryAttempted = true;
+    const currentTime = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+    const recoveryPosition = getHlsRecoveryPosition(hlsPlayer, currentTime);
+    try {
+        hlsPlayer.stopLoad();
+        hlsPlayer.recoverMediaError();
+        const recoveryStartedAtCurrentPosition = hlsPlayer.loadingEnabled === true;
+        const recoveryRequiresRetarget = Math.abs(currentTime - recoveryPosition)
+            > HLS_SEEK_CORRELATION_TOLERANCE_SECONDS;
+        if (recoveryStartedAtCurrentPosition && recoveryRequiresRetarget) {
+            hlsPlayer.stopLoad();
+        }
+        if (hlsPlayer.loadingEnabled !== true) {
+            hlsPlayer.startLoad(recoveryPosition);
+        }
+        return true;
+    } catch (error) {
+        console.error('HLS MediaSource recovery failed', error);
+        return false;
+    }
+}
+
 export function handleHlsJsMediaError(instance, reject) {
     const hlsPlayer = instance._hlsPlayer;
 
@@ -83,29 +423,18 @@ export function handleHlsJsMediaError(instance, reject) {
         return;
     }
 
-    let now = Date.now();
-
-    if (window.performance?.now) {
-        now = performance.now();
+    const element = hlsPlayer.media || instance._mediaElement;
+    if (element && recoverHlsMediaOnce(hlsPlayer, element)) {
+        console.debug('try to recover media Error ...');
+        return;
     }
 
-    if (!recoverDecodingErrorDate || (now - recoverDecodingErrorDate) > 3000) {
-        recoverDecodingErrorDate = now;
-        console.debug('try to recover media Error ...');
-        hlsPlayer.recoverMediaError();
-    } else if (!recoverSwapAudioCodecDate || (now - recoverSwapAudioCodecDate) > 3000) {
-        recoverSwapAudioCodecDate = now;
-        console.debug('try to swap Audio Codec and recover media Error ...');
-        hlsPlayer.swapAudioCodec();
-        hlsPlayer.recoverMediaError();
+    console.error('cannot recover, HLS MediaSource recovery budget exhausted ...');
+    destroyHlsPlayer(instance);
+    if (reject) {
+        reject(MediaError.MEDIA_DECODE_ERROR);
     } else {
-        console.error('cannot recover, last media error recovery failed ...');
-
-        if (reject) {
-            reject();
-        } else {
-            onErrorInternal(instance, MediaError.FATAL_HLS_ERROR);
-        }
+        onErrorInternal(instance, MediaError.MEDIA_DECODE_ERROR);
     }
 }
 
@@ -259,41 +588,126 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
-export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
-    hls.on(Hls.Events.MANIFEST_PARSED, function () {
-        playWithPromise(elem, onErrorFn).then(resolve, function () {
-            if (reject) {
-                reject();
-                reject = null;
+export function bindEventsToHlsPlayer(
+    instance,
+    hls,
+    elem,
+    onErrorFn,
+    resolve,
+    reject,
+    sessionCallbacks
+) {
+    const isCurrent = sessionCallbacks?.isCurrent;
+    const onEstablishedError = sessionCallbacks?.onEstablishedError;
+    const hlsRuntime = sessionCallbacks?.hlsRuntime;
+    if (!hlsRuntime) {
+        throw new TypeError('The owning hls.js runtime is required');
+    }
+    const appendFailurePolicy = new HLSAppendFailurePolicy(getHlsProgress(elem));
+    bindHLSPositionTracking(hls, elem, hlsRuntime);
+    let fatalNetworkRecoveryAttempted = false;
+    let startupSettled = false;
+    let terminalErrorSignaled = false;
+    const isCurrentHlsSession = function () {
+        if (typeof isCurrent === 'function') {
+            return isCurrent();
+        }
+        return instance._hlsPlayer === hls;
+    };
+    const signalTerminalError = function (errorType) {
+        if (terminalErrorSignaled || !isCurrentHlsSession()) {
+            return;
+        }
+
+        terminalErrorSignaled = true;
+        const rejectCurrentSource = !startupSettled ? reject : null;
+        startupSettled = true;
+        reject = null;
+        try {
+            hls.destroy();
+        } catch (error) {
+            console.error('Failed to destroy terminal HLS session', error);
+        } finally {
+            if (instance._hlsPlayer === hls) {
+                instance._hlsPlayer = null;
             }
+            if (rejectCurrentSource) {
+                rejectCurrentSource(errorType);
+            } else if (typeof onEstablishedError === 'function') {
+                onEstablishedError(errorType);
+            } else {
+                onErrorInternal(instance, errorType);
+            }
+        }
+    };
+
+    hls.on(hlsRuntime.Events.MANIFEST_PARSED, function () {
+        if (!isCurrentHlsSession() || terminalErrorSignaled) {
+            return;
+        }
+        playWithPromise(elem, onErrorFn).then(function () {
+            if (isCurrentHlsSession() && !terminalErrorSignaled) {
+                startupSettled = true;
+                reject = null;
+                resolve();
+            }
+        }, function () {
+            if (!isCurrentHlsSession() || terminalErrorSignaled || !reject) {
+                return;
+            }
+            const rejectCurrentSource = reject;
+            startupSettled = true;
+            reject = null;
+            rejectCurrentSource();
         });
     });
 
-    hls.on(Hls.Events.ERROR, function (event, data) {
-        console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
+    hls.on(hlsRuntime.Events.ERROR, function (event, data) {
+        if (!isCurrentHlsSession() || terminalErrorSignaled) {
+            return;
+        }
+
+        recordTrustedHLSClockMovement(
+            getHLSMediaRecoveryState(hls),
+            hlsRuntime,
+            elem,
+            data
+        );
+
+        console.error(
+            'HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false),
+            getHLSErrorPlaybackState(hls, elem, data)
+        );
+
+        const appendFailureAction = appendFailurePolicy.recordFailure(data, getHlsProgress(elem));
+        if (appendFailureAction === 'recover') {
+            console.warn('Repeated HLS coded-frame append failures; resetting MediaSource once');
+            if (!recoverHlsMediaOnce(hls, elem)) {
+                signalTerminalError(MediaError.MEDIA_DECODE_ERROR);
+            }
+            return;
+        }
+        if (appendFailureAction === 'terminate') {
+            console.error('Repeated HLS coded-frame append failures after recovery; ending session');
+            signalTerminalError(MediaError.MEDIA_DECODE_ERROR);
+            return;
+        }
 
         // try to recover network error
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR
+        if (data.type === hlsRuntime.ErrorTypes.NETWORK_ERROR
                 && data.response?.code && data.response.code >= 400
         ) {
             console.debug('hls.js response error code: ' + data.response.code);
 
             // Trigger failure differently depending on whether this is prior to start of playback, or after
-            hls.destroy();
-
-            if (reject) {
-                reject(MediaError.SERVER_ERROR);
-                reject = null;
-            } else {
-                onErrorInternal(instance, MediaError.SERVER_ERROR);
-            }
+            signalTerminalError(MediaError.SERVER_ERROR);
 
             return;
         }
 
         if (data.fatal) {
             switch (data.type) {
-                case Hls.ErrorTypes.NETWORK_ERROR:
+                case hlsRuntime.ErrorTypes.NETWORK_ERROR:
 
                     if (data.response && data.response.code === 0) {
                         // This could be a CORS error related to access control response headers
@@ -301,38 +715,37 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                         console.debug('hls.js response error code: ' + data.response.code);
 
                         // Trigger failure differently depending on whether this is prior to start of playback, or after
-                        hls.destroy();
-
-                        if (reject) {
-                            reject(MediaError.NETWORK_ERROR);
-                            reject = null;
-                        } else {
-                            onErrorInternal(instance, MediaError.NETWORK_ERROR);
-                        }
+                        signalTerminalError(MediaError.NETWORK_ERROR);
                     } else {
-                        console.debug('fatal network error encountered, try to recover');
-                        hls.startLoad();
+                        if (fatalNetworkRecoveryAttempted) {
+                            console.error('fatal network error recovery budget exhausted');
+                            signalTerminalError(MediaError.NETWORK_ERROR);
+                            break;
+                        }
+
+                        fatalNetworkRecoveryAttempted = true;
+                        console.debug('fatal network error encountered, try to recover once');
+                        try {
+                            hls.startLoad();
+                        } catch (error) {
+                            console.error('fatal network error recovery failed', error);
+                            signalTerminalError(MediaError.NETWORK_ERROR);
+                        }
                     }
 
                     break;
-                case Hls.ErrorTypes.MEDIA_ERROR:
+                case hlsRuntime.ErrorTypes.MEDIA_ERROR:
                     console.debug('fatal media error encountered, try to recover');
-                    handleHlsJsMediaError(instance, reject);
-                    reject = null;
+                    if (!recoverHlsMediaOnce(hls, elem)) {
+                        signalTerminalError(MediaError.MEDIA_DECODE_ERROR);
+                    }
                     break;
                 default:
 
                     console.debug('Cannot recover from hls error - destroy and trigger error');
                     // cannot recover
                     // Trigger failure differently depending on whether this is prior to start of playback, or after
-                    hls.destroy();
-
-                    if (reject) {
-                        reject();
-                        reject = null;
-                    } else {
-                        onErrorInternal(instance, MediaError.FATAL_HLS_ERROR);
-                    }
+                    signalTerminalError(MediaError.FATAL_HLS_ERROR);
                     break;
             }
         }

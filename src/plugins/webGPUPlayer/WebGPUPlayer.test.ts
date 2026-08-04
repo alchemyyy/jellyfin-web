@@ -30,12 +30,17 @@ type MockEligibilityOptions = {
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
+    allowNativeDolbyVisionProfile8HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR: boolean
     nativeMediaAudioCapabilities?: NativeMediaAudioCapabilities | null
 };
 
 const htmlPlayerMockState = vi.hoisted(() => ({
+    constructorOptions: [] as Array<{
+        forceCustomSubtitleElements: boolean
+        useWebGPUHLSRuntime: boolean
+    }>,
     instances: [] as object[],
     owners: [] as object[]
 }));
@@ -64,6 +69,7 @@ const customDecodeMockState = vi.hoisted(() => ({
     dolbyVision: false,
     dolbyVisionProfile7HDR10Base: false,
     dolbyVisionProfile7: false,
+    dolbyVisionProfile8HDR10Base: false,
     eligible: false,
     hdr: false,
     instances: [] as object[],
@@ -139,7 +145,9 @@ vi.mock('./custom/CustomPlaybackEligibility', async importOriginal => {
                 || eligibilityOptions.allowNativeHDR === true;
         }
         if (!customDecodeMockState.dolbyVisionProfile7) {
-            return eligibilityOptions.allowDolbyVision === true;
+            return customDecodeMockState.dolbyVisionProfile8HDR10Base ?
+                eligibilityOptions.allowNativeDolbyVisionProfile8HDR10Base === true :
+                eligibilityOptions.allowDolbyVision === true;
         }
         if (eligibilityOptions.allowDolbyVisionProfile7 === true) {
             return true;
@@ -149,7 +157,8 @@ vi.mock('./custom/CustomPlaybackEligibility', async importOriginal => {
     };
     const getDolbyVisionOutputProfile = (): 5 | 7 | 8 | null => {
         if (!customDecodeMockState.dolbyVision
-            || customDecodeMockState.dolbyVisionProfile7HDR10Base) {
+            || customDecodeMockState.dolbyVisionProfile7HDR10Base
+            || customDecodeMockState.dolbyVisionProfile8HDR10Base) {
             return null;
         }
         return customDecodeMockState.dolbyVisionProfile7 ? 7 : 8;
@@ -647,9 +656,17 @@ vi.mock('plugins/htmlVideoPlayer/plugin', () => {
         readonly profile = { Name: 'HTML profile' };
         presentationSurface: { container: HTMLDivElement, video: HTMLVideoElement } | null = null;
 
-        constructor(owner: object) {
+        constructor(
+            owner: object,
+            forceCustomSubtitleElements = false,
+            useWebGPUHLSRuntime = false
+        ) {
             htmlPlayerMockState.instances.push(this);
             htmlPlayerMockState.owners.push(owner);
+            htmlPlayerMockState.constructorOptions.push({
+                forceCustomSubtitleElements,
+                useWebGPUHLSRuntime
+            });
         }
 
         currentSrc = vi.fn(() => 'backend-source');
@@ -1101,6 +1118,39 @@ function createKnownDolbyVisionPlayOptions(
     };
 }
 
+function createKnownProfile8HDR10BasePlayOptions(
+    properties: Record<string, unknown> = {}
+): Record<string, unknown> {
+    return {
+        ...properties,
+        mediaSource: {
+            MediaStreams: [{
+                BitDepth: 10,
+                BlPresentFlag: true,
+                Codec: 'hevc',
+                ColorPrimaries: 'bt2020',
+                ColorRange: 'tv',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                DvBlSignalCompatibilityId: 1,
+                DvProfile: 8,
+                ElPresentFlag: false,
+                Height: 2_160,
+                Index: 0,
+                IsInterlaced: false,
+                Level: 153,
+                Profile: 'Main 10',
+                RealFrameRate: 23.976025,
+                RpuPresentFlag: true,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVIWithHDR10',
+                Width: 3_840
+            }]
+        }
+    };
+}
+
 function createKnownProfile7DolbyVisionPlayOptions(
     properties: Record<string, unknown> = {}
 ): Record<string, unknown> {
@@ -1175,6 +1225,7 @@ describe('WebGPUPlayer HTML delegation', () => {
     beforeEach(() => {
         htmlPlayerMockState.instances.length = 0;
         htmlPlayerMockState.owners.length = 0;
+        htmlPlayerMockState.constructorOptions.length = 0;
         presenterMockState.instances.length = 0;
         presenterMockState.authorizedExternalHDRRouteKeys = [];
         presenterMockState.authorizedRawHDRRouteKeys = [];
@@ -1188,6 +1239,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.dolbyVision = false;
         customDecodeMockState.dolbyVisionProfile7HDR10Base = false;
         customDecodeMockState.dolbyVisionProfile7 = false;
+        customDecodeMockState.dolbyVisionProfile8HDR10Base = false;
         customDecodeMockState.hdr = false;
         customDecodeMockState.nativeHDRTransfer = null;
         customDecodeMockState.neutralizeHDRColorMetadata = false;
@@ -1234,6 +1286,10 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(htmlPlayerMockState.instances).toHaveLength(1);
         expect(htmlPlayerMockState.owners).toEqual([player]);
+        expect(htmlPlayerMockState.constructorOptions).toEqual([{
+            forceCustomSubtitleElements: true,
+            useWebGPUHLSRuntime: true
+        }]);
         expect(player.id).toBe('webgpuplayer');
         expect(player.syncPlayWrapAs).toBe('htmlvideoplayer');
         expect(player.priority).toBe(0);
@@ -1736,6 +1792,35 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
             allowDolbyVisionProfile7: true,
             allowNativeDolbyVisionProfile7HDR10Base: true,
+            allowNativeHDR: true,
+            authorizedExternalHDRRouteKeys: [
+                'external-hevc-main10-bt709-limited:pq-v1'
+            ]
+        });
+    });
+
+    it('authorizes the native HDR10 base for one exact Profile 8.1 source', async () => {
+        const player = new WebGPUPlayer();
+        const presenter = getPresenter();
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        presenterMockState.authorizedExternalHDRRouteKeys = [
+            'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        const playOptions = createKnownProfile8HDR10BasePlayOptions();
+
+        await player.getDeviceProfile({
+            Id: 'profile-8-1-item',
+            MediaSources: [ playOptions.mediaSource ]
+        }, { isRetry: false });
+
+        expect(presenter.waitForExternalHDRAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(presenter.waitForDolbyVisionAuthorizationPrewarm).toHaveBeenCalledOnce();
+        expect(presenter.waitForRawHDRAuthorizationPrewarm).not.toHaveBeenCalled();
+        expect(customProfileMockState.augmentationCalls[0]?.options).toMatchObject({
+            allowDolbyVision: true,
+            allowNativeDolbyVisionProfile8HDR10Base: true,
             allowNativeHDR: true,
             authorizedExternalHDRRouteKeys: [
                 'external-hevc-main10-bt709-limited:pq-v1'
@@ -2246,6 +2331,61 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.videoOutputMode = 'video-frame';
 
         await player.play(createKnownProfile7DolbyVisionPlayOptions({
+            playMethod: 'DirectPlay'
+        }));
+        const customPlaybackController = getCustomPlaybackController();
+
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(presenter.prewarmExternalHDRPresentationAuthorization).toHaveBeenCalled();
+        expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            inputMode: 'external-hdr',
+            metadata: expect.objectContaining({
+                bitDepth: 10,
+                matrix: 'bt2020-ncl',
+                primaries: 'bt2020',
+                transfer: 'pq'
+            }),
+            settings: expect.objectContaining({
+                mode: 'hdr-to-sdr',
+                toneMapping: expect.objectContaining({ inputPeakNits: 1_000 })
+            })
+        }, 1);
+        expect(customPlaybackController.play).toHaveBeenCalledWith(
+            expect.objectContaining({
+                dolbyVisionProfile: null,
+                nativeHDRTransfer: 'pq',
+                neutralizeHDRColorMetadata: true,
+                rawVideoFrameFormat: null,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame'
+            })
+        );
+    });
+
+    it('presents an oversized Profile 8.1 source through its native HDR10 base', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        presenterMockState.dolbyVisionAuthorized = true;
+        presenterMockState.authorizedExternalHDRRouteKeys = [
+            'external-hevc-main10-bt709-limited:pq-v1'
+        ];
+        customDecodeMockState.dolbyVision = true;
+        customDecodeMockState.dolbyVisionProfile8HDR10Base = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.hdr = true;
+        customDecodeMockState.nativeHDRTransfer = 'pq';
+        customDecodeMockState.neutralizeHDRColorMetadata = true;
+        customDecodeMockState.videoDecoderBackend = 'native';
+        customDecodeMockState.videoOutputMode = 'video-frame';
+
+        await player.play(createKnownProfile8HDR10BasePlayOptions({
             playMethod: 'DirectPlay'
         }));
         const customPlaybackController = getCustomPlaybackController();
@@ -3598,6 +3738,32 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.currentTime()).toBe(2_000);
     });
 
+    it('renegotiates a widened direct-stream source when custom decode is disabled', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        const errorListener = vi.fn();
+        Events.on(player, 'error', errorListener);
+        await player.getDeviceProfile({ Id: 'item' }, { isRetry: false });
+        webSettingsMockState.customDecodeEnabled = false;
+
+        const result = await player.play(createKnownSDRPlayOptions({
+            playMethod: 'DirectStream',
+            playerStartPositionTicks: 20_000_000
+        }));
+
+        expect(result).toBe(PLAYBACK_SUPERSEDED);
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(errorListener.mock.calls[0][1]).toEqual({
+            type: MediaError.MEDIA_NOT_SUPPORTED
+        });
+        expect(player.currentTime()).toBe(2_000);
+    });
+
     it('bounds custom setup and retries a widened source from its session start', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -3900,6 +4066,7 @@ describe('WebGPUPlayer event and lifecycle contract', () => {
     beforeEach(() => {
         htmlPlayerMockState.instances.length = 0;
         htmlPlayerMockState.owners.length = 0;
+        htmlPlayerMockState.constructorOptions.length = 0;
         presenterMockState.instances.length = 0;
         webSettingsMockState.customDecodeEnabled = false;
         customDecodeMockState.audioEligibilityOverride = null;

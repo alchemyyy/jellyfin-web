@@ -71,7 +71,7 @@ export function getCustomDecodeHardwareAcceleration(
     }
     switch (videoOutputMode) {
         case 'raw-planes':
-            return 'prefer-software';
+            return 'no-preference';
         case 'video-frame':
             return 'prefer-hardware';
     }

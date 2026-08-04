@@ -7,6 +7,12 @@ const HtmlWebpackPlugin = require('html-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
 const { DefinePlugin, IgnorePlugin } = require('webpack');
 const packageJson = require('./package.json');
+const webGPUHLSPackageJson = require(path.resolve(
+    __dirname,
+    'node_modules/hls.js-webgpu/package.json'
+));
+
+const WEBGPU_HLS_WORKER_FILENAME = `hls.webgpu-${webGPUHLSPackageJson.version}.worker.js`;
 
 const Assets = [
     'native-promise-only/npo.js',
@@ -360,6 +366,14 @@ const config = {
                     ),
                     // Jellyfin serves the capability artifact under a generic media type
                     to: 'libraries/openjpeg/jpeg2000-960x540-qualification.bin'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'node_modules/hls.js-webgpu/dist/hls.worker.js'
+                    ),
+                    // Keep the modern WebGPU-owned worker isolated from the legacy player cache
+                    to: `libraries/${WEBGPU_HLS_WORKER_FILENAME}`
                 },
                 ...Assets.map(asset => {
                     return {

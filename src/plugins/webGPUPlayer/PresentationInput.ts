@@ -66,6 +66,16 @@ export function isDolbyVisionProfile7HDR10BaseLayerDescriptor(
         && descriptor.enhancementLayerPresent;
 }
 
+/** Returns whether Profile 8 carries the exact HDR10-compatible base layer. */
+export function isDolbyVisionProfile8HDR10BaseLayerDescriptor(
+    descriptor: DolbyVisionPresentationDescriptor
+): boolean {
+    return descriptor.profile === 8
+        && descriptor.baseLayerBitDepth === 10
+        && descriptor.baseLayerSignalCompatibilityID === 1
+        && !descriptor.enhancementLayerPresent;
+}
+
 const SDR_VIDEO_RANGE = 'SDR';
 const HDR_VIDEO_RANGE = 'HDR';
 const HDR_COLOR_TRANSFERS = new Set([
@@ -564,13 +574,12 @@ export function getPresentationVideoTrackOrdinal(options: unknown): number | nul
     return 0;
 }
 
-/** Returns exact BT.2020 PQ metadata for a Profile 7 HDR10-compatible base. */
-export function getDolbyVisionProfile7HDR10BaseColorMetadata(
-    options: unknown
+function getDolbyVisionHDR10BaseColorMetadata(
+    options: unknown,
+    acceptsDescriptor: (descriptor: DolbyVisionPresentationDescriptor) => boolean
 ): InputColorMetadata | null {
     const selection = getDolbyVisionPresentationSelection(options);
-    if (!selection
-        || !isDolbyVisionProfile7HDR10BaseLayerDescriptor(selection.descriptor)) {
+    if (!selection || !acceptsDescriptor(selection.descriptor)) {
         return null;
     }
     const videoStream = getPlaybackVideoStreams(options)?.[
@@ -591,6 +600,26 @@ export function getDolbyVisionProfile7HDR10BaseColorMetadata(
         return null;
     }
     return createPQColorMetadata({ range: colorRange ?? 'limited' });
+}
+
+/** Returns exact BT.2020 PQ metadata for a Profile 7 HDR10-compatible base. */
+export function getDolbyVisionProfile7HDR10BaseColorMetadata(
+    options: unknown
+): InputColorMetadata | null {
+    return getDolbyVisionHDR10BaseColorMetadata(
+        options,
+        isDolbyVisionProfile7HDR10BaseLayerDescriptor
+    );
+}
+
+/** Returns exact BT.2020 PQ metadata for a Profile 8.1 HDR10-compatible base. */
+export function getDolbyVisionProfile8HDR10BaseColorMetadata(
+    options: unknown
+): InputColorMetadata | null {
+    return getDolbyVisionHDR10BaseColorMetadata(
+        options,
+        isDolbyVisionProfile8HDR10BaseLayerDescriptor
+    );
 }
 
 /**

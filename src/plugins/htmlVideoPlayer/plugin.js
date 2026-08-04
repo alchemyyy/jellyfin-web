@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import webGPUHLSPackage from 'hls.js-webgpu/package.json';
 import debounce from 'lodash-es/debounce';
 import Screenfull from 'screenfull';
 
@@ -35,7 +36,9 @@ import {
     handleHlsJsMediaError,
     getSavedVolume,
     isValidDuration,
-    getBufferedRanges
+    getBufferedRanges,
+    getHLSPlaybackPosition,
+    prepareHLSSeek
 } from '../../components/htmlMediaHelper';
 import itemHelper from '../../components/itemHelper';
 import globalize from '../../lib/globalize';
@@ -45,25 +48,14 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
-import {
-    calculateClientHDRToneMappingSaturation,
-    createClientHDRToneMappingHlsConfig,
-    isClientHDRToneMappingRuntimeAvailable,
-    resolveClientHDRToneMappingPreset
-} from './clientHDRToneMapping';
-
-const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
-const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
-const VOBSUB_SUBTITLE_CODECS = ['dvdsub', 'vobsub'];
-const BITMAP_SUBTITLE_ASPECT_MODES = ['stretch', 'contain', 'cover'];
-const HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS = 20000;
-const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_INTERVAL_MS = 250;
-const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS =
-    'clientHDRToneMappingPostProcessing';
-const CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY =
-    '--client-hdr-tone-mapping-saturation';
+import { shouldPreferHDRHLSRendition } from './HLSRenditionPreference';
+import { loadHLSRuntime } from './HLSRuntimeLoader';
 
 const HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS = 20000;
+const HLS_MINIMUM_BUFFER_LENGTH_SECONDS = 6;
+const HLS_MAXIMUM_BUFFER_LENGTH_SECONDS = 30;
+const HLS_WORKER_PATH = 'libraries/hls.worker.js';
+const WEBGPU_HLS_WORKER_PATH = `libraries/hls.webgpu-${webGPUHLSPackage.version}.worker.js`;
 const MILLISECONDS_PER_SECOND = 1000;
 const TICKS_PER_SECOND = 10000000;
 const MINIMUM_SUBTITLE_CANVAS_DIMENSION = 1;
@@ -138,16 +130,34 @@ function enableNativeTrackSupport(mediaSource, track) {
     return true;
 }
 
-function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: hls }) => {
-        hls.DefaultConfig.lowLatencyMode = false;
-        hls.DefaultConfig.backBufferLength = Infinity;
-        hls.DefaultConfig.liveBackBufferLength = 90;
-        // Give cold storage enough time to start producing a segment
-        hls.DefaultConfig.fragLoadPolicy.default.maxTimeToFirstByteMs = HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS;
-        window.Hls = hls;
-        callback();
-    });
+function getHLSFragmentLoadPolicy(HLSRuntime) {
+    const fragmentLoadPolicy = HLSRuntime.DefaultConfig.fragLoadPolicy;
+    return {
+        ...fragmentLoadPolicy,
+        default: {
+            ...fragmentLoadPolicy.default,
+            // Give cold storage enough time to start producing a segment
+            maxTimeToFirstByteMs: HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS
+        }
+    };
+}
+
+function getHLSBufferConfiguration(useWebGPUHLSRuntime) {
+    if (useWebGPUHLSRuntime) {
+        return {
+            backBufferLength: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            frontBufferFlushThreshold: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            maxBufferLength: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            maxMaxBufferLength: HLS_MAXIMUM_BUFFER_LENGTH_SECONDS
+        };
+    }
+
+    return {
+        backBufferLength: Number.POSITIVE_INFINITY,
+        liveBackBufferLength: 90,
+        maxBufferLength: HLS_MAXIMUM_BUFFER_LENGTH_SECONDS,
+        maxMaxBufferLength: HLS_MAXIMUM_BUFFER_LENGTH_SECONDS
+    };
 }
 
 function getMediaStreamVideoTracks(mediaSource) {
@@ -289,6 +299,11 @@ export class HtmlVideoPlayer {
      * @type {boolean}
      */
     #forceCustomSubtitleElements;
+    /**
+     * Selects the isolated hls.js runtime used by the owned WebGPU fallback.
+     * @type {boolean}
+     */
+    #useWebGPUHLSRuntime;
     /**
      * @type {number | undefined}
      */
@@ -456,9 +471,14 @@ export class HtmlVideoPlayer {
      */
     #lastProfile;
 
-    constructor(playbackManagerPlayer, forceCustomSubtitleElements = false) {
+    constructor(
+        playbackManagerPlayer,
+        forceCustomSubtitleElements = false,
+        useWebGPUHLSRuntime = false
+    ) {
         this.#playbackManagerPlayer = playbackManagerPlayer || this;
         this.#forceCustomSubtitleElements = forceCustomSubtitleElements;
+        this.#useWebGPUHLSRuntime = useWebGPUHLSRuntime;
 
         if (browser.edgeUwp) {
             this.name = 'Windows Video Player';
@@ -960,21 +980,14 @@ export class HtmlVideoPlayer {
                 onErrorInternal(this, error || MediaError.FATAL_HLS_ERROR);
             };
 
-            requireHlsPlayer(async () => {
+            loadHLSRuntime(this.#useWebGPUHLSRuntime).then(async ({
+                HLSRuntime,
+                useWebGPUHLSRuntime
+            }) => {
                 try {
                     if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
                         resolve();
                         return;
-                    }
-
-                    let maxBufferLength = 30;
-
-                    // Some browsers cannot handle huge fragments in high bitrate.
-                    // This issue usually happens when using HWA encoders with a high bitrate setting.
-                    // Limit the BufferLength to 6s, it works fine when playing 4k 120Mbps over HLS on chrome.
-                    // https://github.com/video-dev/hls.js/issues/876
-                    if ((browser.chrome || browser.edgeChromium || browser.firefox) && playbackManager.getMaxStreamingBitrate(this.#playbackManagerPlayer) >= 25000000) {
-                        maxBufferLength = 6;
                     }
 
                     const includeCorsCredentials = await getIncludeCorsCredentials();
@@ -983,13 +996,18 @@ export class HtmlVideoPlayer {
                         return;
                     }
 
-                    const hls = new Hls({
+                    const hls = new HLSRuntime({
+                        ...getHLSBufferConfiguration(this.#useWebGPUHLSRuntime),
                         startPosition: options.playerStartPositionTicks / 10000000,
                         manifestLoadingTimeOut: 20000,
-                        maxBufferLength: maxBufferLength,
-                        maxMaxBufferLength: maxBufferLength,
-                        videoPreference: { preferHDR: true },
-                        workerPath: 'libraries/hls.worker.js',
+                        fragLoadPolicy: getHLSFragmentLoadPolicy(HLSRuntime),
+                        lowLatencyMode: false,
+                        videoPreference: {
+                            preferHDR: shouldPreferHDRHLSRendition(options)
+                        },
+                        workerPath: useWebGPUHLSRuntime ?
+                            WEBGPU_HLS_WORKER_PATH :
+                            HLS_WORKER_PATH,
                         xhrSetup(xhr) {
                             xhr.withCredentials = includeCorsCredentials;
                         }
@@ -1014,16 +1032,20 @@ export class HtmlVideoPlayer {
                         return;
                     }
 
-                    const guardedHlsPlayer = {
-                        destroy: () => hls.destroy(),
-                        on: (eventName, eventListener) => hls.on(eventName, (...eventArguments) => {
-                            if (this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
-                                eventListener(...eventArguments);
-                            }
-                        }),
-                        startLoad: () => hls.startLoad()
-                    };
-                    bindEventsToHlsPlayer(this, guardedHlsPlayer, elem, this.onError, resolveSource, rejectSource);
+                    bindEventsToHlsPlayer(
+                        this,
+                        hls,
+                        elem,
+                        this.onError,
+                        resolveSource,
+                        rejectSource,
+                        {
+                            hlsRuntime: HLSRuntime,
+                            isCurrent: () => this.#isPlaySessionCurrent(playSessionGeneration, elem)
+                                && this._hlsPlayer === hls,
+                            onEstablishedError: rejectSource
+                        }
+                    );
                     if (sourceRejected || !this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
                         return;
                     }
@@ -1036,6 +1058,12 @@ export class HtmlVideoPlayer {
                     } else {
                         resolve();
                     }
+                }
+            }, (error) => {
+                if (this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                    reject(error);
+                } else {
+                    resolve();
                 }
             });
         });
@@ -1619,7 +1647,7 @@ export class HtmlVideoPlayer {
          */
         const elem = e.target;
         // get the player position and the transcoding offset
-        const time = elem.currentTime;
+        const time = getHLSPlaybackPosition(this._hlsPlayer, elem.currentTime);
 
         if (time && !this.#timeUpdated) {
             this.#timeUpdated = true;
@@ -2934,12 +2962,15 @@ export class HtmlVideoPlayer {
                     return;
                 }
 
-                mediaElement.currentTime = val / 1000;
+                const targetTimeSeconds = val / MILLISECONDS_PER_SECOND;
+                this.#currentTime = targetTimeSeconds;
+                prepareHLSSeek(this._hlsPlayer, targetTimeSeconds);
+                mediaElement.currentTime = targetTimeSeconds;
                 return;
             }
 
             const currentTime = this.#currentTime;
-            if (currentTime) {
+            if (currentTime != null) {
                 return currentTime * 1000;
             }
 

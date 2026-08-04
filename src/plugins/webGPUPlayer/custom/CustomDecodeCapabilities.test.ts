@@ -301,6 +301,127 @@ describe('CustomDecodeCapabilityProbe', () => {
         vi.unstubAllGlobals();
     });
 
+    it('serializes decoder-backed output and exact capability probes', async () => {
+        const harness = createEnvironment(new Set<string>(), new Set<string>());
+        let activeHeavyProbeCount = 0;
+        let heavyProbeInvocationCount = 0;
+        let maximumActiveHeavyProbeCount = 0;
+        const observeHeavyProbe = async <Value>(value: Value): Promise<Value> => {
+            activeHeavyProbeCount += 1;
+            heavyProbeInvocationCount += 1;
+            maximumActiveHeavyProbeCount = Math.max(
+                maximumActiveHeavyProbeCount,
+                activeHeavyProbeCount
+            );
+            try {
+                await Promise.resolve();
+                return value;
+            } finally {
+                activeHeavyProbeCount -= 1;
+            }
+        };
+        harness.environment.audioDecoder = {
+            isConfigSupported: vi.fn(async (config: AudioDecoderConfig) => ({
+                config,
+                supported: true
+            }))
+        };
+        harness.environment.videoDecoder = {
+            isConfigSupported: vi.fn(async (config: VideoDecoderConfig) => ({
+                config,
+                supported: true
+            }))
+        };
+        harness.environment.bundledDTSExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(SUPPORTED_DTS_EXACT_CAPABILITY))
+        };
+        harness.environment.bundledHEVCExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(BUNDLED_HEVC_EXACT_CAPABILITIES))
+        };
+        harness.environment.bundledJPEG2000ExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_JPEG2000_EXACT_CAPABILITY))
+        };
+        harness.environment.bundledLegacyVideoExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY))
+        };
+        harness.environment.bundledTrueHDExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(SUPPORTED_TRUEHD_EXACT_CAPABILITY))
+        };
+        harness.environment.nativeAudioOutputProbe = vi.fn(
+            () => observeHeavyProbe(true)
+        );
+        harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(
+            () => observeHeavyProbe({
+                maximumFramesPerSecond: 60 as const,
+                measuredFramesPerSecond: 80,
+                outputSupported: true
+            })
+        );
+        harness.environment.nativeHDRVideoOutputProbe = vi.fn(
+            () => observeHeavyProbe({
+                maximumFramesPerSecond: 60 as const,
+                measuredFramesPerSecond: 80,
+                outputSupported: true
+            })
+        );
+        harness.environment.nativeVideoOutputProbe = vi.fn(
+            () => observeHeavyProbe(true)
+        );
+        harness.environment.rawHDRVideoOutputProbe = vi.fn(
+            () => observeHeavyProbe({
+                maximumFramesPerSecond: 60 as const,
+                measuredFramesPerSecond: 80,
+                outputCopySupported: true
+            })
+        );
+
+        await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        expect(heavyProbeInvocationCount).toBeGreaterThan(20);
+        expect(maximumActiveHeavyProbeCount).toBe(1);
+    });
+
+    it('does not start queued heavy probes after the active probe times out', async () => {
+        vi.useFakeTimers();
+        const supportedAudioCodecs = new Set([
+            'mp4a.40.2',
+            'opus',
+            'flac',
+            'mp3',
+            'vorbis'
+        ]);
+        const harness = createEnvironment(new Set<string>(), supportedAudioCodecs);
+        const nativeAudioOutputProbe = vi.fn((probeRequest: {
+            configuration: AudioDecoderConfig
+        }): Promise<boolean> => {
+            if (probeRequest.configuration.codec === 'mp4a.40.2') {
+                return new Promise<boolean>(() => undefined);
+            }
+            return Promise.resolve(true);
+        });
+        harness.environment.bundledDTSExactProbe = null;
+        harness.environment.bundledHEVCExactProbe = null;
+        harness.environment.bundledJPEG2000ExactProbe = null;
+        harness.environment.bundledLegacyVideoExactProbe = null;
+        harness.environment.bundledTrueHDExactProbe = null;
+        harness.environment.h264ProfileProbe = null;
+        harness.environment.nativeAudioOutputProbe = nativeAudioOutputProbe;
+        const probePromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(nativeAudioOutputProbe).toHaveBeenCalledOnce();
+        expect(nativeAudioOutputProbe.mock.calls[0][0].configuration.codec)
+            .toBe('mp4a.40.2');
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        const capabilities = await probePromise;
+
+        expect(nativeAudioOutputProbe).toHaveBeenCalledOnce();
+        expect(capabilities.audio.aac.reason).toBe('probe-timeout');
+        expect(capabilities.audio.opus.reason).toBe('probe-timeout');
+        expect(capabilities.audio.flac.reason).toBe('probe-timeout');
+    });
+
     it('does not create a native audio output probe without both WebCodecs APIs', () => {
         vi.stubGlobal('AudioDecoder', undefined);
         vi.stubGlobal('EncodedAudioChunk', class FakeEncodedAudioChunk {});
@@ -443,7 +564,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(harness.rawHDRVideoOutputProbe.mock.calls[0][0]).toMatchObject({
             codec: 'vp9',
             configuration: {
-                hardwareAcceleration: 'prefer-software'
+                hardwareAcceleration: 'no-preference'
             },
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840,
@@ -1768,7 +1889,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                 public readonly timestamp: number;
 
                 public constructor(init: { timestamp: number }) {
-                    this.timestamp = init.timestamp;
+                    this.timestamp = Number(init.timestamp);
                 }
             }
             const now = vi.fn()
@@ -1803,6 +1924,234 @@ describe('CustomDecodeCapabilityProbe', () => {
             expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCount);
         }
     );
+
+    it('measures native Main10 output before one final decoder flush', async () => {
+        const closeFrame = vi.fn();
+        let clockMilliseconds = 0;
+        let flushCount = 0;
+        let maximumQueuedFrameCount = 0;
+        let queuedFrameCount = 0;
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly displayHeight = 2_160;
+            public readonly displayWidth = 3_840;
+
+            public constructor(public readonly timestamp: number) {}
+
+            public close(): void {
+                closeFrame();
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                return;
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                queuedFrameCount += 1;
+                maximumQueuedFrameCount = Math.max(
+                    maximumQueuedFrameCount,
+                    queuedFrameCount
+                );
+                void Promise.resolve().then((): void => {
+                    queuedFrameCount -= 1;
+                    if (chunk.timestamp > 0) {
+                        clockMilliseconds += 80 / 7;
+                    }
+                    this.callbacks.output(
+                        new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                    );
+                });
+            }
+
+            public flush(): Promise<void> {
+                flushCount += 1;
+                clockMilliseconds += 10_000;
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        const now = vi.fn((): number => clockMilliseconds);
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('performance', { now });
+        const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+
+        await expect(outputProbe?.({
+            configuration: {
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        })).resolves.toMatchObject({
+            maximumFramesPerSecond: 60,
+            outputSupported: true
+        });
+        expect(flushCount).toBe(1);
+        expect(maximumQueuedFrameCount).toBe(4);
+        expect(closeFrame).toHaveBeenCalledTimes(8);
+    });
+
+    it('keeps qualified native throughput when the final flush stalls', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        const closeFrame = vi.fn();
+        let clockMilliseconds = 0;
+        let flushCount = 0;
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly displayHeight = 2_160;
+            public readonly displayWidth = 3_840;
+
+            public constructor(public readonly timestamp: number) {}
+
+            public close(): void {
+                closeFrame();
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                closeDecoder();
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                if (chunk.timestamp > 0) {
+                    clockMilliseconds += 80 / 7;
+                }
+                this.callbacks.output(
+                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                );
+            }
+
+            public flush(): Promise<void> {
+                flushCount += 1;
+                return new Promise<void>(() => undefined);
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('performance', { now: (): number => clockMilliseconds });
+        const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+        const probePromise = outputProbe?.({
+            configuration: {
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        });
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(flushCount).toBe(1);
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toMatchObject({
+            maximumFramesPerSecond: 60,
+            outputSupported: true
+        });
+        expect(closeFrame).toHaveBeenCalledTimes(8);
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
+
+    it('fails cleanly when a scheduled native decode throws synchronously', async () => {
+        const closeFrame = vi.fn();
+        let decodeCount = 0;
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly displayHeight = 2_160;
+            public readonly displayWidth = 3_840;
+
+            public constructor(public readonly timestamp: number) {}
+
+            public close(): void {
+                closeFrame();
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                return;
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                decodeCount += 1;
+                if (decodeCount > 1) {
+                    throw new DOMException('Decoder queue rejected input', 'OperationError');
+                }
+                this.callbacks.output(
+                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                );
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createNativeDolbyVisionVideoOutputProbe();
+
+        await expect(outputProbe?.({
+            configuration: {
+                codec: 'hvc1.2.4.L153.B0',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840
+        })).resolves.toEqual({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputSupported: false
+        });
+        expect(closeFrame).toHaveBeenCalledOnce();
+    });
 
     it('rejects and closes duplicate native Profile 5 output', async () => {
         const closeFrame = vi.fn();
@@ -2147,23 +2496,43 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedFrameCopyCount,
             outputCopySupported
         }) => {
+            let clockMilliseconds = 0;
+            let copiedFrameCount = 0;
+            let flushCount = 0;
+            let openFrameCount = 0;
+            let maximumOpenFrameCount = 0;
             const closeFrame = vi.fn();
-            const copyFrame = vi.fn(async (): Promise<readonly PlaneLayout[]> => ([
-                { offset: 0, stride: 7_680 },
-                { offset: 16_588_800, stride: 3_840 },
-                { offset: 20_736_000, stride: 3_840 }
-            ]));
+            const copyFrame = vi.fn(async (): Promise<readonly PlaneLayout[]> => {
+                if (copiedFrameCount > 0) {
+                    clockMilliseconds += elapsedMilliseconds / 7;
+                }
+                copiedFrameCount += 1;
+                return [
+                    { offset: 0, stride: 7_680 },
+                    { offset: 16_588_800, stride: 3_840 },
+                    { offset: 20_736_000, stride: 3_840 }
+                ];
+            });
             class FakeVideoFrame {
                 public readonly codedHeight = 2_160;
                 public readonly codedWidth = 3_840;
                 // Hardware-backed frames may expose no native CPU-readable format
                 public readonly format = null;
 
+                public constructor(public readonly timestamp: number) {
+                    openFrameCount += 1;
+                    maximumOpenFrameCount = Math.max(
+                        maximumOpenFrameCount,
+                        openFrameCount
+                    );
+                }
+
                 public allocationSize(): number {
                     return 24_883_200;
                 }
 
                 public close(): void {
+                    openFrameCount -= 1;
                     closeFrame();
                 }
 
@@ -2182,18 +2551,26 @@ describe('CustomDecodeCapabilityProbe', () => {
                     return;
                 }
 
-                public decode(): void {
-                    this.callbacks.output(new FakeVideoFrame() as unknown as VideoFrame);
+                public decode(chunk: { timestamp: number }): void {
+                    this.callbacks.output(
+                        new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                    );
                 }
 
                 public flush(): Promise<void> {
-                    return Promise.resolve();
+                    flushCount += 1;
+                    clockMilliseconds += 10_000;
+                    return Promise.resolve(undefined);
                 }
             }
-            class FakeEncodedVideoChunk {}
-            const now = vi.fn()
-                .mockReturnValueOnce(0)
-                .mockReturnValueOnce(elapsedMilliseconds);
+            class FakeEncodedVideoChunk {
+                public readonly timestamp: number;
+
+                public constructor(init: { timestamp: number }) {
+                    this.timestamp = init.timestamp;
+                }
+            }
+            const now = vi.fn((): number => clockMilliseconds);
             vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
             vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
             vi.stubGlobal('performance', { now });
@@ -2225,6 +2602,172 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
             expect(copyFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
             expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
+            expect(flushCount).toBe(outputCopySupported ? 1 : 0);
+            expect(maximumOpenFrameCount).toBe(outputCopySupported ? 2 : 1);
         }
     );
+
+    it('closes an owned raw frame when copyTo never settles', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        const closeFrame = vi.fn();
+        const copyFrame = vi.fn(() => new Promise<readonly PlaneLayout[]>(() => undefined));
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly format = 'I420P10';
+            public readonly timestamp = 0;
+
+            public allocationSize(): number {
+                return 24_883_200;
+            }
+
+            public close(): void {
+                closeFrame();
+            }
+
+            public copyTo(): Promise<readonly PlaneLayout[]> {
+                return copyFrame();
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                closeDecoder();
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(): void {
+                this.callbacks.output(new FakeVideoFrame() as unknown as VideoFrame);
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {}
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const outputProbe = createRawHDRVideoOutputProbe();
+        const probePromise = outputProbe?.({
+            codec: 'vp9',
+            configuration: {
+                codec: 'vp09.02.10.10',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840,
+            expectedDecodedFrameFingerprint: 667_501_752,
+            expectedFormat: 'I420P10'
+        });
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toEqual({
+            maximumFramesPerSecond: null,
+            measuredFramesPerSecond: null,
+            outputCopySupported: false
+        });
+        expect(copyFrame).toHaveBeenCalledOnce();
+        expect(closeFrame).toHaveBeenCalledOnce();
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
+
+    it('keeps qualified raw throughput when the final flush stalls', async () => {
+        vi.useFakeTimers();
+        const closeDecoder = vi.fn();
+        const closeFrame = vi.fn();
+        let clockMilliseconds = 0;
+        let copiedFrameCount = 0;
+        let flushCount = 0;
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = 3_840;
+            public readonly format = 'I420P10';
+
+            public constructor(public readonly timestamp: number) {}
+
+            public allocationSize(): number {
+                return 24_883_200;
+            }
+
+            public close(): void {
+                closeFrame();
+            }
+
+            public async copyTo(): Promise<readonly PlaneLayout[]> {
+                if (copiedFrameCount > 0) {
+                    clockMilliseconds += 80 / 7;
+                }
+                copiedFrameCount += 1;
+                return [
+                    { offset: 0, stride: 7_680 },
+                    { offset: 16_588_800, stride: 3_840 },
+                    { offset: 20_736_000, stride: 3_840 }
+                ];
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                closeDecoder();
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                const frame = new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame;
+                this.callbacks.output(frame);
+            }
+
+            public flush(): Promise<void> {
+                flushCount += 1;
+                return new Promise<void>(() => undefined);
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('performance', { now: (): number => clockMilliseconds });
+        const outputProbe = createRawHDRVideoOutputProbe();
+        const probePromise = outputProbe?.({
+            codec: 'vp9',
+            configuration: {
+                codec: 'vp09.02.10.10',
+                codedHeight: 2_160,
+                codedWidth: 3_840
+            },
+            encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840,
+            expectedDecodedFrameFingerprint: 667_501_752,
+            expectedFormat: 'I420P10'
+        });
+
+        await vi.advanceTimersByTimeAsync(0);
+        expect(flushCount).toBe(1);
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+
+        await expect(probePromise).resolves.toMatchObject({
+            maximumFramesPerSecond: 60,
+            outputCopySupported: true
+        });
+        expect(closeFrame).toHaveBeenCalledTimes(8);
+        expect(closeDecoder).toHaveBeenCalledOnce();
+    });
 });

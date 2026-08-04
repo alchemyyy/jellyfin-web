@@ -54,6 +54,7 @@ export type CustomDeviceProfileOptions = {
     allowDolbyVisionProfile7HDR10Base?: boolean
     allowNativeDolbyVision?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
+    allowNativeDolbyVisionProfile8HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR?: boolean
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
@@ -355,6 +356,28 @@ function getAuthorizedExternalHDRVideoRangeTypes(
         }
     }
     return rangeTypes;
+}
+
+function authorizeNativeDolbyVisionHDR10BaseRanges(
+    capabilities: CustomDecodeCapabilities,
+    options: CustomDeviceProfileOptions,
+    nativeHDRVideoRangeTypes: string[]
+): ReadonlySet<string> {
+    const overlappingRawRangeTypes = new Set<string>();
+    if (!nativeHDRVideoRangeTypes.includes('HDR10')
+        || capabilities.nativeHDRHEVC?.status !== 'supported') {
+        return overlappingRawRangeTypes;
+    }
+    if (options.allowNativeDolbyVisionProfile7HDR10Base === true) {
+        nativeHDRVideoRangeTypes.push('DOVIWithEL');
+        overlappingRawRangeTypes.add('DOVIWithEL');
+        overlappingRawRangeTypes.add('HDR10');
+    }
+    if (options.allowNativeDolbyVisionProfile8HDR10Base === true) {
+        nativeHDRVideoRangeTypes.push('DOVIWithHDR10');
+        overlappingRawRangeTypes.add('DOVIWithHDR10');
+    }
+    return overlappingRawRangeTypes;
 }
 
 type MeasuredVideoRoute = {
@@ -2650,13 +2673,12 @@ export function augmentDeviceProfileForCustomDecode(
             options.authorizedExternalHDRRouteKeys ?? []
         ) :
         [];
-    const nativeProfile7HDR10BaseAuthorized =
-        options.allowNativeDolbyVisionProfile7HDR10Base === true
-        && nativeHDRVideoRangeTypes.includes('HDR10')
-        && capabilities.nativeHDRHEVC?.status === 'supported';
-    if (nativeProfile7HDR10BaseAuthorized) {
-        nativeHDRVideoRangeTypes.push('DOVIWithEL');
-    }
+    const overlappingRawDolbyVisionRangeTypes =
+        authorizeNativeDolbyVisionHDR10BaseRanges(
+            capabilities,
+            options,
+            nativeHDRVideoRangeTypes
+        );
     const rawHDRVideoRangeTypes = options.allowRawHDR === true ?
         getAuthorizedRawHDRVideoRangeTypes(options.authorizedRawHDRRouteKeys ?? []) :
         [];
@@ -2681,12 +2703,10 @@ export function augmentDeviceProfileForCustomDecode(
         availableRawDolbyVisionVideoRangeTypes.filter(rangeType => rangeType !== 'DOVI') :
         availableRawDolbyVisionVideoRangeTypes;
     const allowRawDolbyVision = rawDolbyVisionVideoRangeTypes.length > 0;
-    if (nativeProfile7HDR10BaseAuthorized) {
-        // The source cannot distinguish the full-DV and HDR10-base routes. The
-        // shared native envelope authorizes both, while runtime selects the
-        // full route only inside its measured raw-output limits.
+    if (overlappingRawDolbyVisionRangeTypes.size > 0) {
+        // Runtime prefers full Dolby Vision inside the measured raw envelope
         rawDolbyVisionVideoRangeTypes = rawDolbyVisionVideoRangeTypes.filter(rangeType => (
-            rangeType !== 'DOVIWithEL' && rangeType !== 'HDR10'
+            !overlappingRawDolbyVisionRangeTypes.has(rangeType)
         ));
     }
     const dolbyVisionVideoRangeTypes = [

@@ -51,12 +51,8 @@ function supportsFade() {
 }
 
 function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: hls }) => {
-        hls.DefaultConfig.lowLatencyMode = false;
-        hls.DefaultConfig.backBufferLength = Infinity;
-        hls.DefaultConfig.liveBackBufferLength = 90;
-        window.Hls = hls;
-        callback();
+    import('hls.js/dist/hls.js').then(({ default: HLSRuntime }) => {
+        callback(HLSRuntime);
     });
 }
 
@@ -176,10 +172,13 @@ class HtmlAudioPlayer {
 
             return enableHlsPlayer(val, options.item, options.mediaSource, 'Audio').then(function () {
                 return new Promise(function (resolve, reject) {
-                    requireHlsPlayer(async () => {
+                    requireHlsPlayer(async (HLSRuntime) => {
                         const includeCorsCredentials = await getIncludeCorsCredentials();
 
-                        const hls = new Hls({
+                        const hls = new HLSRuntime({
+                            backBufferLength: Infinity,
+                            liveBackBufferLength: 90,
+                            lowLatencyMode: false,
                             manifestLoadingTimeOut: 20000,
                             workerPath: 'libraries/hls.worker.js',
                             xhrSetup: function (xhr) {
@@ -189,7 +188,15 @@ class HtmlAudioPlayer {
                         hls.loadSource(val);
                         hls.attachMedia(elem);
 
-                        htmlMediaHelper.bindEventsToHlsPlayer(self, hls, elem, onError, resolve, reject);
+                        htmlMediaHelper.bindEventsToHlsPlayer(
+                            self,
+                            hls,
+                            elem,
+                            onError,
+                            resolve,
+                            reject,
+                            { hlsRuntime: HLSRuntime }
+                        );
 
                         self._hlsPlayer = hls;
 
@@ -324,7 +331,10 @@ class HtmlAudioPlayer {
 
         function onTimeUpdate() {
             // Get the player position + the transcoding offset
-            const time = this.currentTime;
+            const time = htmlMediaHelper.getHLSPlaybackPosition(
+                self._hlsPlayer,
+                this.currentTime
+            );
 
             // Don't trigger events after user stop
             if (!self._isFadingOut) {
@@ -429,12 +439,15 @@ class HtmlAudioPlayer {
         const mediaElement = this._mediaElement;
         if (mediaElement) {
             if (val != null) {
-                mediaElement.currentTime = val / 1000;
+                const positionSeconds = val / 1000;
+                htmlMediaHelper.prepareHLSSeek(this._hlsPlayer, positionSeconds);
+                this._currentTime = positionSeconds;
+                mediaElement.currentTime = positionSeconds;
                 return;
             }
 
             const currentTime = this._currentTime;
-            if (currentTime) {
+            if (currentTime != null) {
                 return currentTime * 1000;
             }
 

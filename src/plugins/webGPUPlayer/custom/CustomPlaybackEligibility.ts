@@ -1,9 +1,11 @@
 import {
     getDolbyVisionPresentationDescriptor,
     getDolbyVisionProfile7HDR10BaseColorMetadata,
+    getDolbyVisionProfile8HDR10BaseColorMetadata,
     getPresentationInputColorMetadata,
     getPresentationVideoTrackOrdinal
 } from '../PresentationInput';
+import type { InputColorMetadata } from '../color/ColorMetadata';
 import {
     jellyfinTicksToMicroseconds,
     type Microseconds
@@ -375,6 +377,7 @@ export type CustomPlaybackEligibilityOptions = {
     allowDolbyVisionProfile7?: boolean
     allowNativeDolbyVision?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
+    allowNativeDolbyVisionProfile8HDR10Base?: boolean
     allowNativeHDR?: boolean
     allowRawHDR: boolean
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
@@ -1042,6 +1045,23 @@ function hasExplicitNativeHDRChromaticity(stream: MediaStream): boolean {
     return true;
 }
 
+function getAuthorizedDolbyVisionHDR10BaseMetadata(
+    options: unknown,
+    eligibilityOptions: CustomPlaybackEligibilityOptions
+): InputColorMetadata | null {
+    const profile7Metadata = getDolbyVisionProfile7HDR10BaseColorMetadata(options);
+    if (profile7Metadata !== null) {
+        return eligibilityOptions.allowNativeDolbyVisionProfile7HDR10Base === true ?
+            profile7Metadata :
+            null;
+    }
+    const profile8Metadata = getDolbyVisionProfile8HDR10BaseColorMetadata(options);
+    return profile8Metadata !== null
+        && eligibilityOptions.allowNativeDolbyVisionProfile8HDR10Base === true ?
+        profile8Metadata :
+        null;
+}
+
 function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
@@ -1113,18 +1133,20 @@ function selectDolbyVisionVideoOutput(
         };
     }
 
-    const profile7BaseMetadata = getDolbyVisionProfile7HDR10BaseColorMetadata(options);
-    const profile7BaseRouteKey = profile7BaseMetadata ?
-        getExternalHDRAuthorizationRouteKey(profile7BaseMetadata) :
+    const dolbyVisionHDR10BaseMetadata = getAuthorizedDolbyVisionHDR10BaseMetadata(
+        options,
+        eligibilityOptions
+    );
+    const dolbyVisionHDR10BaseRouteKey = dolbyVisionHDR10BaseMetadata ?
+        getExternalHDRAuthorizationRouteKey(dolbyVisionHDR10BaseMetadata) :
         null;
     const nativeHDRCapability = capabilities.nativeHDRHEVC;
     if (
         eligibilityOptions.allowNativeHDR === true
-        && eligibilityOptions.allowNativeDolbyVisionProfile7HDR10Base === true
-        && profile7BaseMetadata !== null
-        && profile7BaseRouteKey !== null
+        && dolbyVisionHDR10BaseMetadata !== null
+        && dolbyVisionHDR10BaseRouteKey !== null
         && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(
-            profile7BaseRouteKey
+            dolbyVisionHDR10BaseRouteKey
         )
         && hasExplicitNativeHDRChromaticity(videoStream)
         && supportsNativeHDRHEVC(nativeHDRCapability, videoCodec, videoStream)
