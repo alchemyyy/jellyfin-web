@@ -678,17 +678,72 @@ describe('CustomPlaybackEligibility', () => {
             VideoRangeType: 'SDR',
             Width: 1_920
         };
+        mediaSource.MediaStreams[1] = {
+            Channels: 2,
+            Codec: 'ac3',
+            Index: 1,
+            SampleRate: 48_000,
+            Type: 'Audio'
+        };
 
         expect(getCustomPlaybackEligibility(
             options,
             capabilities,
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
             eligible: true,
             maximumCodedHeight: 1_080,
             maximumCodedWidth: 1_920,
             videoDecoderBackend: 'legacy-software',
             videoOutputMode: 'video-frame'
+        });
+    });
+
+    it('keeps unqualified VC-1 plus DTS software decoding out of custom playback', () => {
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            bundledVC1: createBundledVC1Capability(),
+            video: {
+                ...baseCapabilities.video,
+                vc1: createCapability('vc1', true)
+            }
+        };
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Height: 1_080,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: 'Advanced',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+        mediaSource.MediaStreams[1] = {
+            Channels: 6,
+            Codec: 'dts',
+            Index: 1,
+            Profile: 'DTS',
+            SampleRate: 48_000,
+            Type: 'Audio'
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({
+            eligible: false,
+            reason: 'combined-software-decode-unqualified'
         });
     });
 

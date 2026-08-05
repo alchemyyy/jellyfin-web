@@ -1744,7 +1744,9 @@ export function getCustomPlaybackEligibility(
     const synchronousSoftwareAudio = audioOutputMode === 'decoded-pcm'
         && selectedAudioCodec !== null
         && BUNDLED_AUDIO_CODEC_SET.has(selectedAudioCodec);
-    if (synchronousSoftwareVideo && synchronousSoftwareAudio) {
+    const qualifiedLegacyAudioRoute = videoOutput.videoDecoderBackend === 'legacy-software'
+        && (selectedAudioCodec === 'ac3' || selectedAudioCodec === 'eac3');
+    if (synchronousSoftwareVideo && synchronousSoftwareAudio && !qualifiedLegacyAudioRoute) {
         return { eligible: false, reason: 'combined-software-decode-unqualified' };
     }
 

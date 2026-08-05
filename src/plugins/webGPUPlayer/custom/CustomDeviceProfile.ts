@@ -190,7 +190,7 @@ const JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
     videoCodecs: [ 'jpeg2000' ]
 };
 const LEGACY_MATROSKA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_WEB_CODECS_AUDIO_CODECS,
+    audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
     container: 'mkv',
     videoCodecs: [ 'mpeg2video', 'vc1' ]
 };

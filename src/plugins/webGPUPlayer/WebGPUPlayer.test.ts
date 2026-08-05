@@ -1345,22 +1345,6 @@ describe('WebGPUPlayer HTML delegation', () => {
             Profile: 'Main',
             Width: 720
         }) ],
-        [ 'VC-1 with TrueHD and PGS', createPlaybackSelectionItem('vc1', {
-            AverageFrameRate: 23.976,
-            BitDepth: 8,
-            Codec: 'VC1',
-            Profile: 'Advanced'
-        }, [{
-            Channels: 6,
-            Codec: 'TRUEHD',
-            Index: 1,
-            SampleRate: 48_000,
-            Type: 'Audio'
-        }, {
-            Codec: 'PGSSUB',
-            Index: 2,
-            Type: 'Subtitle'
-        }]) ],
         [ '10-bit SDR AV1 with Opus 5.1', createPlaybackSelectionItem('av1-10bit-sdr', {
             AverageFrameRate: 24,
             BitDepth: 10,
@@ -1391,6 +1375,35 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.canPlayItem(item, playOptions)).toBe(false);
         expect(canPlayItem).toHaveBeenCalledTimes(2);
         expect(canPlayItem).toHaveBeenLastCalledWith(item, playOptions);
+    });
+
+    it('keeps exact VC-1 video available while later checks own audio and subtitles', () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const canPlayItem = vi.fn(() => true);
+        backend.canPlayItem = canPlayItem;
+        const item = createPlaybackSelectionItem('vc1', {
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Profile: 'Advanced'
+        }, [{
+            Channels: 6,
+            Codec: 'TRUEHD',
+            Index: 1,
+            SampleRate: 48_000,
+            Type: 'Audio'
+        }, {
+            Codec: 'PGSSUB',
+            Index: 2,
+            Type: 'Subtitle'
+        }]);
+        const playOptions = { fullscreen: true };
+
+        webSettingsMockState.customDecodeEnabled = true;
+        expect(player.canPlayItem(item, playOptions)).toBe(true);
+        expect(canPlayItem).toHaveBeenCalledOnce();
+        expect(canPlayItem).toHaveBeenCalledWith(item, playOptions);
     });
 
     it('delegates profile and source objects without mutation', async () => {

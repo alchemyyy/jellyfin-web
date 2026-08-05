@@ -710,38 +710,41 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('advertises only the exact qualified progressive Advanced VC-1 Matroska route', () => {
-        const result = augmentDeviceProfileForCustomDecode(
-            createBaseProfile(),
-            createCapabilities([ 'vc1' ], [ 'aac' ])
-        );
+    it.each([ 'ac3', 'eac3' ] as const)(
+        'advertises exact qualified progressive Advanced VC-1 Matroska with %s audio',
+        (audioCodec) => {
+            const result = augmentDeviceProfileForCustomDecode(
+                createBaseProfile(),
+                createCapabilities([ 'vc1' ], [ audioCodec ])
+            );
 
-        expect(result.profile.DirectPlayProfiles).toContainEqual({
-            AudioCodec: 'aac',
-            Container: 'mkv',
-            Type: 'Video',
-            VideoCodec: 'vc1'
-        });
-        expect(result.profile.DirectPlayProfiles?.some(profile => (
-            profile.VideoCodec === 'vc1'
-            && profile.Container !== 'mkv'
-        ))).toBe(false);
-        const measuredProfile = result.profile.CodecProfiles?.find(profile => (
-            profile.Codec === 'vc1'
-        ));
-        expect(measuredProfile).toMatchObject({
-            Container: 'mkv',
-            Type: 'Video'
-        });
-        expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
-            expect.objectContaining({ Property: 'Width', Value: '1920' }),
-            expect.objectContaining({ Property: 'Height', Value: '1080' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-            expect.objectContaining({ Property: 'VideoProfile', Value: 'advanced' }),
-            expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
-        ]));
-    });
+            expect(result.profile.DirectPlayProfiles).toContainEqual({
+                AudioCodec: audioCodec,
+                Container: 'mkv',
+                Type: 'Video',
+                VideoCodec: 'vc1'
+            });
+            expect(result.profile.DirectPlayProfiles?.some(profile => (
+                profile.VideoCodec === 'vc1'
+                && profile.Container !== 'mkv'
+            ))).toBe(false);
+            const measuredProfile = result.profile.CodecProfiles?.find(profile => (
+                profile.Codec === 'vc1'
+            ));
+            expect(measuredProfile).toMatchObject({
+                Container: 'mkv',
+                Type: 'Video'
+            });
+            expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
+                expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
+                expect.objectContaining({ Property: 'Width', Value: '1920' }),
+                expect.objectContaining({ Property: 'Height', Value: '1080' }),
+                expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
+                expect.objectContaining({ Property: 'VideoProfile', Value: 'advanced' }),
+                expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
+            ]));
+        }
+    );
 
     it('advertises only the exact qualified OpenJPEG MJ2 route', () => {
         const result = augmentDeviceProfileForCustomDecode(
