@@ -13,7 +13,7 @@ import {
     type CustomAudioOutputChannelCount
 } from './CustomAudioChannelLayout';
 import {
-    DTS_CAPABILITY_FIXTURE_ROUTES,
+    DTS_SUPPORTED_INPUT_ROUTES,
     TRUEHD_CAPABILITY_FIXTURE_ROUTES,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
@@ -58,7 +58,7 @@ const CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
 const CUSTOM_DTS_INPUT_CHANNEL_COUNTS: readonly number[] = [
-    ...new Set(DTS_CAPABILITY_FIXTURE_ROUTES.map(route => route.channelCount))
+    ...new Set(DTS_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount))
 ];
 const CUSTOM_TRUEHD_INPUT_CHANNEL_COUNTS: readonly number[] = [
     ...new Set(TRUEHD_CAPABILITY_FIXTURE_ROUTES

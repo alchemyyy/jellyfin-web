@@ -26,6 +26,7 @@ import {
     augmentDeviceProfileForCustomDecode,
     createBitrateIndependentDeviceProfile
 } from './CustomDeviceProfile';
+import { CUSTOM_CONTAINER_CODEC_RULES } from './CustomContainerCodecSupport';
 import {
     H264_JELLYFIN_PROFILE_NAMES,
     H264_PROFILE_PROBE_CODED_HEIGHT,
@@ -674,6 +675,31 @@ function getAppliedTranscodeAudioSampleRates(
 }
 
 describe('augmentDeviceProfileForCustomDecode', () => {
+    it('advertises every independently supported container codec composition', () => {
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities(CUSTOM_VIDEO_CODECS, CUSTOM_AUDIO_CODECS)
+        );
+
+        for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
+            const expectedContainer: string = rule.profileContainers.join(',');
+            for (const videoCodec of rule.videoCodecs) {
+                for (const audioCodec of rule.audioCodecs) {
+                    const routePresent: boolean = result.profile.DirectPlayProfiles?.some(profile => (
+                        profile.Type === 'Video'
+                        && profile.Container === expectedContainer
+                        && profile.VideoCodec?.split(',').includes(videoCodec) === true
+                        && profile.AudioCodec?.split(',').includes(audioCodec) === true
+                    )) === true;
+                    expect(
+                        routePresent,
+                        `Missing ${expectedContainer}/${videoCodec}/${audioCodec}`
+                    ).toBe(true);
+                }
+            }
+        }
+    });
+
     it('advertises only the exact qualified progressive MPEG-2 Matroska route', () => {
         const result = augmentDeviceProfileForCustomDecode(
             createBaseProfile(),
@@ -1323,6 +1349,25 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Condition: 'Equals',
                     IsRequired: true,
                     Property: 'AudioChannels',
+                    Value: '6'
+                }
+            ],
+            Codec: 'dts',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: true,
+                Property: 'AudioProfile',
+                Value: 'DTS|DTS 96/24|DTS-HD HRA|DTS-HD MA|DTS-HD MA + DTS:X'
+            } ],
+            Container: 'mkv',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ApplyConditions: [
+                {
+                    Condition: 'Equals',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
                     Value: '8'
                 }
             ],
@@ -1340,6 +1385,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         for (const route of [
             { channelCount: 6, profile: 'DTS', sampleRate: 48_000 },
             { channelCount: 6, profile: 'DTS 96/24', sampleRate: 96_000 },
+            { channelCount: 6, profile: 'DTS-HD HRA', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD HRA', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 96_000 },
             { channelCount: 6, profile: 'DTS-HD MA', sampleRate: 96_001 },

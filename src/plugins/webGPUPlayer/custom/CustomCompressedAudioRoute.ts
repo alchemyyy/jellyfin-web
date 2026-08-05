@@ -10,7 +10,7 @@ export type DTSProfileToken =
 
 export type DTSDirectPlayProfileToken = Exclude<DTSProfileToken, 'DTSES'>;
 
-export type DTSCapabilityFixtureRoute = Readonly<{
+export type DTSInputRoute = Readonly<{
     channelCount: 6 | 7 | 8
     profileTokens: readonly DTSProfileToken[]
     sampleRate: 48_000 | 96_000 | 192_000
@@ -78,7 +78,21 @@ export const DTS_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
         profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 192_000
     })
-] as const) satisfies readonly DTSCapabilityFixtureRoute[];
+] as const) satisfies readonly DTSInputRoute[];
+
+const DTS_COMPOSED_INPUT_ROUTES = Object.freeze([
+    Object.freeze({
+        channelCount: 6,
+        profileTokens: Object.freeze([ 'DTSHDHRA' ] as const),
+        sampleRate: 48_000
+    })
+] as const) satisfies readonly DTSInputRoute[];
+
+/** Production routes backed by exact profile, channel-layout, and output evidence. */
+export const DTS_SUPPORTED_INPUT_ROUTES = Object.freeze([
+    ...DTS_CAPABILITY_FIXTURE_ROUTES,
+    ...DTS_COMPOSED_INPUT_ROUTES
+] as const) satisfies readonly DTSInputRoute[];
 
 export const TRUEHD_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
     Object.freeze({ channelCount: 2, codec: 'truehd', sampleRate: 48_000 }),
@@ -114,7 +128,7 @@ export function isSupportedDTSInputRoute(
             || (profileToken !== 'DTSHDMA' && profileToken !== 'DTSHDMADTSX'))) {
         return false;
     }
-    for (const route of DTS_CAPABILITY_FIXTURE_ROUTES) {
+    for (const route of DTS_SUPPORTED_INPUT_ROUTES) {
         const routeProfileTokens: readonly DTSProfileToken[] = route.profileTokens;
         if (route.channelCount === channelCount
             && routeProfileTokens.includes(profileToken as DTSProfileToken)) {

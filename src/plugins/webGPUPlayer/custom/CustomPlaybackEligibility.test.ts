@@ -700,7 +700,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('keeps unqualified VC-1 plus DTS software decoding out of custom playback', () => {
+    it('composes exact VC-1 and DTS software decoders without a pairwise blacklist', () => {
         const baseCapabilities = createCapabilities();
         const capabilities: CustomDecodeCapabilities = {
             ...baseCapabilities,
@@ -741,9 +741,109 @@ describe('CustomPlaybackEligibility', () => {
             options,
             capabilities,
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({
-            eligible: false,
-            reason: 'combined-software-decode-unqualified'
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 6,
+            eligible: true,
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
+    it('composes exact VC-1 and TrueHD software decoders without a pairwise blacklist', () => {
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            bundledVC1: createBundledVC1Capability(),
+            video: {
+                ...baseCapabilities.video,
+                vc1: createCapability('vc1', true)
+            }
+        };
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Height: 1_080,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: 'Advanced',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+        mediaSource.MediaStreams[1] = {
+            Channels: 2,
+            Codec: 'truehd',
+            Index: 1,
+            SampleRate: 48_000,
+            Type: 'Audio'
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 2,
+            eligible: true,
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
+    it('composes exact OpenJPEG video and PCM audio without a pairwise blacklist', () => {
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            bundledJPEG2000: createBundledJPEG2000Capability(),
+            video: {
+                ...baseCapabilities.video,
+                jpeg2000: createCapability('jpeg2000', true)
+            }
+        };
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mj2';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            BitDepth: 8,
+            Codec: 'JPEG2000',
+            Height: 540,
+            Index: 0,
+            IsInterlaced: false,
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 960
+        };
+        mediaSource.MediaStreams[1] = {
+            Channels: 2,
+            Codec: 'pcm_s16le',
+            Index: 1,
+            SampleRate: 48_000,
+            Type: 'Audio'
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 2,
+            eligible: true,
+            videoDecoderBackend: 'openjpeg',
+            videoOutputMode: 'video-frame'
         });
     });
 
@@ -2918,6 +3018,7 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ 'DTS', 6, 48_000 ],
         [ 'DTS 96/24', 6, 96_000 ],
+        [ 'DTS-HD HRA', 6, 48_000 ],
         [ 'DTS-HD HRA', 8, 48_000 ],
         [ 'DTS-HD MA', 8, 48_000 ],
         [ 'DTS-HD MA', 6, 96_001 ],
@@ -2925,7 +3026,7 @@ describe('CustomPlaybackEligibility', () => {
         [ 'DTS-HD MA + DTS:X', 8, 48_000 ],
         [ 'DTS', 6, 12_345 ]
     ] as const)(
-        'selects the fixture-derived Matroska DTS channel-bed route for %s',
+        'selects the qualified Matroska DTS channel-bed route for %s',
         (profile, channelCount, sampleRate) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {

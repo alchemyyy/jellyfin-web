@@ -9,6 +9,7 @@ import DTSSoftwareAudioDecoder, {
     getDTSDecodedAudioFingerprint
 } from './DTSSoftwareAudioDecoder';
 import {
+    DTS_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
     DTS_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
     DTS_WAVE_CHANNEL_MASK_STEREO
 } from './DTSChannelLayout';
@@ -207,6 +208,25 @@ describe('DTSSoftwareAudioDecoder', () => {
         );
 
         expect(output.lossless).toBe(false);
+        decoder.close();
+    });
+
+    it('accepts 5.1 DTS-HD High Resolution output', async () => {
+        const fakeDecoder = createFakeDTSDecoder({
+            jellyfin_dts_get_channel_mask: () => DTS_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
+            jellyfin_dts_get_profile: () => DTS_PROFILE_HD_HIGH_RESOLUTION
+        });
+        const decoder = await DTSSoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        const output = decoder.decode(
+            new Uint8Array([ 1 ]),
+            millisecondsToMicroseconds(0)
+        );
+
+        expect(output.channelData).toHaveLength(6);
+        expect(output.channelLayout.id).toBe('5.1-side');
+        expect(output.lossless).toBe(false);
+        expect(output.profile).toBe(DTS_PROFILE_HD_HIGH_RESOLUTION);
         decoder.close();
     });
 

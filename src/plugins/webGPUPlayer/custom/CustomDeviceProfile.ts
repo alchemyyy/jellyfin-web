@@ -8,11 +8,9 @@ import type { SubtitleProfile } from '@jellyfin/sdk/lib/generated-client/models/
 import {
     CUSTOM_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
-    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
-    CUSTOM_WEB_CODECS_AUDIO_CODECS,
     hasSupportedNativeSDRVideoCodec,
     isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
@@ -29,9 +27,14 @@ import {
     isCustomMediabunnyPCMAudioCodec
 } from './CustomAudioOutputPolicy';
 import {
-    DTS_CAPABILITY_FIXTURE_ROUTES,
+    CUSTOM_CONTAINER_CODEC_RULES,
+    CUSTOM_MATROSKA_PROFILE_CONTAINER,
+    CUSTOM_PROFILE_VIDEO_CONTAINERS
+} from './CustomContainerCodecSupport';
+import {
     DTS_DIRECT_PLAY_PROFILE_TOKENS,
     DTS_PROFILE_VALUE_BY_TOKEN,
+    DTS_SUPPORTED_INPUT_ROUTES,
     TRUEHD_CAPABILITY_FIXTURE_ROUTES,
     isDTSDirectPlayProfileToken,
     type DTSDirectPlayProfileToken
@@ -95,12 +98,6 @@ export type CustomDeviceProfileResult = {
     telemetry: CustomDeviceProfileTelemetry
 };
 
-type VideoContainerRule = {
-    audioCodecs: readonly CustomAudioCodec[]
-    container: string
-    videoCodecs: readonly CustomVideoCodec[]
-};
-
 type AuthorizedHDRRoutes = {
     allowNativeDolbyVision: boolean
     allowNativeHDR: boolean
@@ -126,105 +123,7 @@ type AuthorizedHEVCProfilePlan = {
     rangeTypes: readonly string[]
 };
 
-const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = [
-    'aac',
-    'opus',
-    'flac',
-    'mp3',
-    'vorbis',
-    'ac3',
-    'eac3'
-];
-const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] =
-    CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => (
-        codec !== 'jpeg2000' && codec !== 'mpeg2video' && codec !== 'vc1'
-    ));
-const ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
-    container: 'mp4,m4v,mov',
-    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-};
-const ISO_BASE_MEDIA_PCM_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: [
-        'pcm_s16le',
-        'pcm_s16be',
-        'pcm_s24le',
-        'pcm_s24be',
-        'pcm_s32le',
-        'pcm_s32be',
-        'pcm_f32le',
-        'pcm_f32be',
-        'pcm_f64le',
-        'pcm_f64be'
-    ],
-    container: 'mp4,m4v,mov',
-    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-};
-const QUICKTIME_PCM_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
-    container: 'mov',
-    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-};
-const MATROSKA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: [
-        ...CUSTOM_COMPRESSED_AUDIO_CODECS,
-        'dts',
-        'mlp',
-        'truehd',
-        'pcm_u8',
-        'pcm_s16le',
-        'pcm_s16be',
-        'pcm_s24le',
-        'pcm_s24be',
-        'pcm_s32le',
-        'pcm_s32be',
-        'pcm_f32le',
-        'pcm_f64le'
-    ],
-    container: 'mkv',
-    videoCodecs: CUSTOM_NATIVE_VIDEO_CODECS
-};
-const JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_WEB_CODECS_AUDIO_CODECS,
-    container: 'mov,mj2',
-    videoCodecs: [ 'jpeg2000' ]
-};
-const LEGACY_MATROSKA_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
-    container: 'mkv',
-    videoCodecs: [ 'mpeg2video', 'vc1' ]
-};
-const WEBM_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: [ 'opus', 'vorbis' ],
-    container: 'webm',
-    videoCodecs: [ 'vp8', 'vp9', 'av1' ]
-};
-const MPEG_TS_VIDEO_RULE: VideoContainerRule = {
-    audioCodecs: [ 'aac', 'mp3', 'ac3', 'eac3' ],
-    container: 'ts,m2ts,mts',
-    videoCodecs: [ 'h264', 'hevc' ]
-};
-const VIDEO_CONTAINER_RULES: readonly VideoContainerRule[] = [
-    ISO_BASE_MEDIA_VIDEO_RULE,
-    ISO_BASE_MEDIA_PCM_VIDEO_RULE,
-    QUICKTIME_PCM_VIDEO_RULE,
-    MATROSKA_VIDEO_RULE,
-    JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE,
-    LEGACY_MATROSKA_VIDEO_RULE,
-    WEBM_VIDEO_RULE,
-    MPEG_TS_VIDEO_RULE
-];
-const CUSTOM_VIDEO_CONTAINERS = [
-    'mp4',
-    'm4v',
-    'mov',
-    'mj2',
-    'mkv',
-    'webm',
-    'ts',
-    'm2ts',
-    'mts'
-] as const;
+const CUSTOM_VIDEO_CONTAINERS: readonly string[] = CUSTOM_PROFILE_VIDEO_CONTAINERS;
 const CUSTOM_VIDEO_CONTAINER_SET = new Set<string>(CUSTOM_VIDEO_CONTAINERS);
 const CUSTOM_VIDEO_CONTAINER_VALUE = CUSTOM_VIDEO_CONTAINERS.join(',');
 const NON_CUSTOM_VIDEO_CONTAINER_VALUE = `-${CUSTOM_VIDEO_CONTAINER_VALUE}`;
@@ -729,7 +628,7 @@ function createCompatibleProfiles(
     const supportedVideoSet = new Set(supportedVideoCodecs);
     const supportedAudioSet = new Set(supportedAudioCodecs);
 
-    for (const rule of VIDEO_CONTAINER_RULES) {
+    for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
         const videoCodecs = selectCompatibleCodecs(rule.videoCodecs, supportedVideoSet);
         const audioCodecs = selectCompatibleCodecs(rule.audioCodecs, supportedAudioSet);
         if (videoCodecs.length === 0 || audioCodecs.length === 0) {
@@ -737,7 +636,7 @@ function createCompatibleProfiles(
         }
         profiles.push({
             AudioCodec: audioCodecs.join(','),
-            Container: rule.container,
+            Container: rule.profileContainers.join(','),
             Type: 'Video',
             VideoCodec: videoCodecs.join(',')
         });
@@ -1716,11 +1615,11 @@ function widenRawHDRCodecProfiles(
 function getCustomContainersForVideoCodec(codec: CustomVideoCodec): string[] {
     const containers: string[] = [];
     const containerSet = new Set<string>();
-    for (const rule of VIDEO_CONTAINER_RULES) {
+    for (const rule of CUSTOM_CONTAINER_CODEC_RULES) {
         if (!rule.videoCodecs.includes(codec)) {
             continue;
         }
-        for (const container of rule.container.split(',')) {
+        for (const container of rule.profileContainers) {
             if (!containerSet.has(container)) {
                 containerSet.add(container);
                 containers.push(container);
@@ -2272,7 +2171,7 @@ function createMeasuredExactAudioRouteProfile(
         ...(applyConditions.length > 0 ? { ApplyConditions: [ ...applyConditions ] } : {}),
         Codec: codec,
         Conditions: [ ...conditions ],
-        Container: MATROSKA_VIDEO_RULE.container,
+        Container: CUSTOM_MATROSKA_PROFILE_CONTAINER,
         Type: 'VideoAudio'
     };
 }
@@ -2285,7 +2184,7 @@ type DTSProfileRouteGroup = {
 function createMeasuredDTSRouteProfiles(): CodecProfile[] {
     const measuredProfiles: CodecProfile[] = [];
     const routeGroupsByChannelCount = new Map<number, DTSProfileRouteGroup>();
-    for (const route of DTS_CAPABILITY_FIXTURE_ROUTES) {
+    for (const route of DTS_SUPPORTED_INPUT_ROUTES) {
         for (const profileToken of route.profileTokens) {
             if (!isDTSDirectPlayProfileToken(profileToken)) {
                 continue;
@@ -2335,9 +2234,9 @@ function createMeasuredDTSRouteProfiles(): CodecProfile[] {
     ));
 
     for (const routeGroup of routeGroupsByChannelCount.values()) {
-        const profileValues = routeGroup.profileTokens.map(profileToken => (
-            DTS_PROFILE_VALUE_BY_TOKEN[profileToken]
-        ));
+        const profileValues = DTS_DIRECT_PLAY_PROFILE_TOKENS
+            .filter(profileToken => routeGroup.profileTokens.includes(profileToken))
+            .map(profileToken => DTS_PROFILE_VALUE_BY_TOKEN[profileToken]);
         measuredProfiles.push(createMeasuredExactAudioRouteProfile(
             'dts',
             [ createRequiredAudioRouteCondition(AUDIO_PROFILE_PROPERTY, profileValues) ],

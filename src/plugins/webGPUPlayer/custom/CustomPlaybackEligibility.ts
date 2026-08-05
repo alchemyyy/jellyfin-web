@@ -13,7 +13,6 @@ import {
 import {
     CUSTOM_BUNDLED_AUDIO_CODECS,
     CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
-    CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
     CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
@@ -42,6 +41,10 @@ import {
     isCustomMediabunnyPCMAudioCodec,
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
+import {
+    isCustomPlaybackContainer,
+    supportsCustomContainerCodecCombination
+} from './CustomContainerCodecSupport';
 import {
     isSupportedDTSInputRoute,
     isSupportedTrueHDInputRoute
@@ -78,104 +81,6 @@ const POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT = 540;
 const POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH = 960;
 const POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
 const BUNDLED_AUDIO_CODEC_SET = new Set<CustomAudioCodec>(CUSTOM_BUNDLED_AUDIO_CODECS);
-const SUPPORTED_VIDEO_CONTAINERS = new Set([
-    '3G2',
-    '3GP',
-    'M2TS',
-    'M4V',
-    'MATROSKA',
-    'MJ2',
-    'MKV',
-    'MOV',
-    'MP4',
-    'MTS',
-    'TS',
-    'WEBM'
-]);
-
-type ContainerCodecRule = {
-    audioCodecs: ReadonlySet<CustomAudioCodec>
-    containers: ReadonlySet<string>
-    videoCodecs: ReadonlySet<CustomVideoCodec>
-};
-
-const ISO_BASE_MEDIA_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([ 'aac', 'opus', 'flac', 'mp3', 'vorbis', 'ac3', 'eac3' ]),
-    containers: new Set([ 'MP4', 'M4V', 'MOV', '3GP', '3G2', 'MJ2' ]),
-    videoCodecs: new Set([ 'h264', 'hevc', 'vp8', 'vp9', 'av1' ])
-};
-const JPEG2000_ISO_BASE_MEDIA_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([
-        ...ISO_BASE_MEDIA_CONTAINER_RULE.audioCodecs,
-        ...CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS
-    ]),
-    containers: new Set([ 'MJ2', 'MOV' ]),
-    videoCodecs: new Set([ 'jpeg2000' ])
-};
-const ISO_BASE_MEDIA_PCM_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([
-        'pcm_s16le',
-        'pcm_s16be',
-        'pcm_s24le',
-        'pcm_s24be',
-        'pcm_s32le',
-        'pcm_s32be',
-        'pcm_f32le',
-        'pcm_f32be',
-        'pcm_f64le',
-        'pcm_f64be'
-    ]),
-    containers: new Set([ 'MP4', 'M4V', 'MOV' ]),
-    videoCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs
-};
-const QUICKTIME_PCM_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set(CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS),
-    containers: new Set([ 'MOV' ]),
-    videoCodecs: ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs
-};
-const MATROSKA_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([
-        ...ISO_BASE_MEDIA_CONTAINER_RULE.audioCodecs,
-        'dts',
-        'mlp',
-        'truehd',
-        'pcm_u8',
-        'pcm_s16le',
-        'pcm_s16be',
-        'pcm_s24le',
-        'pcm_s24be',
-        'pcm_s32le',
-        'pcm_s32be',
-        'pcm_f32le',
-        'pcm_f64le'
-    ]),
-    containers: new Set([ 'MKV', 'MATROSKA' ]),
-    videoCodecs: new Set([
-        ...ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs,
-        'mpeg2video',
-        'vc1'
-    ])
-};
-const WEBM_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([ 'opus', 'vorbis' ]),
-    containers: new Set([ 'WEBM' ]),
-    videoCodecs: new Set([ 'vp8', 'vp9', 'av1' ])
-};
-const MPEG_TS_CONTAINER_RULE: ContainerCodecRule = {
-    audioCodecs: new Set([ 'aac', 'mp3', 'ac3', 'eac3' ]),
-    containers: new Set([ 'TS', 'M2TS', 'MTS' ]),
-    videoCodecs: new Set([ 'h264', 'hevc' ])
-};
-const CONTAINER_CODEC_RULES: readonly ContainerCodecRule[] = [
-    ISO_BASE_MEDIA_CONTAINER_RULE,
-    JPEG2000_ISO_BASE_MEDIA_CONTAINER_RULE,
-    ISO_BASE_MEDIA_PCM_CONTAINER_RULE,
-    QUICKTIME_PCM_CONTAINER_RULE,
-    MATROSKA_CONTAINER_RULE,
-    WEBM_CONTAINER_RULE,
-    MPEG_TS_CONTAINER_RULE
-];
-
 const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
     AVC1: 'h264',
@@ -352,7 +257,6 @@ export type CustomPlaybackIneligibilityReason =
     | 'audio-layout-unsupported'
     | 'audio-track-invalid'
     | 'codec-unsupported'
-    | 'combined-software-decode-unqualified'
     | 'container-unsupported'
     | 'duration-unavailable'
     | 'hdr-codec-unsupported'
@@ -465,22 +369,6 @@ function getContainerTokens(value: unknown): string[] {
         }
     }
     return tokens;
-}
-
-function supportsContainerCodecCombination(
-    containerTokens: readonly string[],
-    videoCodec: CustomVideoCodec,
-    audioCodec: CustomAudioCodec | null
-): boolean {
-    for (const rule of CONTAINER_CODEC_RULES) {
-        if (!containerTokens.some(container => rule.containers.has(container))
-            || !rule.videoCodecs.has(videoCodec)
-            || (audioCodec !== null && !rule.audioCodecs.has(audioCodec))) {
-            continue;
-        }
-        return true;
-    }
-    return false;
 }
 
 function getStreams(mediaSource: MediaSource): MediaStream[] {
@@ -1316,7 +1204,7 @@ function parsePlaybackSource(
     }
     const containerTokens = getContainerTokens(mediaSource.Container);
     if (!containerTokens.some(container => (
-        SUPPORTED_VIDEO_CONTAINERS.has(container)
+        isCustomPlaybackContainer(container)
     ))) {
         return { eligible: false, parsed: false, reason: 'container-unsupported' };
     }
@@ -1535,7 +1423,7 @@ function selectPotentialVideoCodec(
         return { status: 'unknown' };
     }
     const codec: CustomVideoCodec | undefined = VIDEO_CODEC_ALIASES[normalizedCodec];
-    if (!codec || !supportsContainerCodecCombination(containerTokens, codec, null)) {
+    if (!codec || !supportsCustomContainerCodecCombination(containerTokens, codec, null)) {
         return { status: 'unsupported' };
     }
     return { codec, status: 'selected' };
@@ -1546,7 +1434,7 @@ function hasPotentialCustomVideoRoute(mediaSource: MediaSource): boolean {
     if (containerTokens.length === 0) {
         return true;
     }
-    if (!containerTokens.some(container => SUPPORTED_VIDEO_CONTAINERS.has(container))) {
+    if (!containerTokens.some(isCustomPlaybackContainer)) {
         return false;
     }
 
@@ -1732,22 +1620,12 @@ export function getCustomPlaybackEligibility(
     const audioSourceChannelCount = audioSelection.audioSourceChannelCount;
     const audioTrackIndex = audioSelection.audioTrackIndex;
     const selectedAudioCodec = audioSelection.audioCodec;
-    if (!supportsContainerCodecCombination(
+    if (!supportsCustomContainerCodecCombination(
         parsedSource.containerTokens,
         videoCodec,
         selectedAudioCodec
     )) {
         return { eligible: false, reason: 'container-unsupported' };
-    }
-    const synchronousSoftwareVideo = videoOutput.videoDecoderBackend === 'legacy-software'
-        || videoOutput.videoDecoderBackend === 'openjpeg';
-    const synchronousSoftwareAudio = audioOutputMode === 'decoded-pcm'
-        && selectedAudioCodec !== null
-        && BUNDLED_AUDIO_CODEC_SET.has(selectedAudioCodec);
-    const qualifiedLegacyAudioRoute = videoOutput.videoDecoderBackend === 'legacy-software'
-        && (selectedAudioCodec === 'ac3' || selectedAudioCodec === 'eac3');
-    if (synchronousSoftwareVideo && synchronousSoftwareAudio && !qualifiedLegacyAudioRoute) {
-        return { eligible: false, reason: 'combined-software-decode-unqualified' };
     }
 
     const runtimeRequirements: CustomPlaybackRuntimeRequirements = {

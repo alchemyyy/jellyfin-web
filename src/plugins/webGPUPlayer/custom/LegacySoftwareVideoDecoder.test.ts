@@ -349,6 +349,35 @@ describe('LegacySoftwareVideoDecoder', () => {
         decoder.close();
     });
 
+    it('replaces a zero-duration VFW timing placeholder at the same timestamp', async () => {
+        const harness = createHarness();
+        harness.module.sendFrameBatches.push([], [ {
+            duration: BigInt(0),
+            timestamp: BigInt(0)
+        } ]);
+        const samples: VideoSample[] = [];
+        const decoder = createDecoder(harness, samples);
+        await decoder.init();
+
+        decoder.decode(new EncodedPacket(
+            new Uint8Array([ 31, 32, 33 ]),
+            'key',
+            0,
+            0
+        ));
+        decoder.decode(new EncodedPacket(
+            new Uint8Array([ 34, 35, 36 ]),
+            'delta',
+            0,
+            0.042
+        ));
+
+        expect(samples).toHaveLength(1);
+        expect(samples[0]).toMatchObject({ duration: 0.042, timestamp: 0 });
+        samples[0].close();
+        decoder.close();
+    });
+
     it('rejects interlaced output with its field metadata', async () => {
         const harness = createHarness();
         harness.module.sendFrameBatches.push([ {

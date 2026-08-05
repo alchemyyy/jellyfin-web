@@ -339,11 +339,12 @@ export default class LegacySoftwareVideoDecoder {
             throw new RangeError('The legacy video packet duration must not be negative');
         }
         if (
-            this.durationsByTimestamp.has(timestampMicroseconds)
-            || this.durationsByTimestamp.size >= MAXIMUM_PENDING_PICTURE_COUNT
+            !this.durationsByTimestamp.has(timestampMicroseconds)
+            && this.durationsByTimestamp.size >= MAXIMUM_PENDING_PICTURE_COUNT
         ) {
             throw new RangeError('The legacy video decoder reorder window is invalid');
         }
+        // VFW VC-1 can replace a zero-duration timing placeholder before output
         this.durationsByTimestamp.set(timestampMicroseconds, durationMicroseconds);
 
         const packetPointer = module._legacy_video_decoder_configure_packet(
