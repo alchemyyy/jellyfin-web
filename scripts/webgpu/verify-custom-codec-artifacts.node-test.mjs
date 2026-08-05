@@ -18,6 +18,8 @@ const HEVC_QUALIFICATION_SOURCE =
     'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc';
 const HEVC_QUALIFICATION_SERVED =
     'libraries/hevcjs/main10-4k-qualification.bin';
+const PGS_WORKER_SOURCE = 'node_modules/libpgs/dist/libpgs.worker.js';
+const PGS_WORKER_SERVED = 'libraries/libpgs.worker.js';
 const DOLBY_VISION_FILES = Object.freeze([
     [
         'scripts/webgpu/dolby-vision-parser/artifacts/dovi-rpu-parser.wasm',
@@ -49,8 +51,8 @@ const PINNED_TRUEHD_BRIDGE_SHA256 =
     'afc1314afac62f3985a814706ef2ec471d2015b61816cb5df751e9dae4711bf2';
 const PINNED_TRUEHD_RUNTIME_SHA256 =
     'e69f9e1e7fbfdd2b7c8c750de59ccfb887c88c633e407c4b46a8ce875d13c630';
-const PINNED_MPEG2_BRIDGE_SHA256 =
-    'a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da';
+const PINNED_LEGACY_VIDEO_BRIDGE_SHA256 =
+    '832b62326346f5049f89a2d6a8f97f73df8b5b26c5a1d9114573fa1015be2ee8';
 const DTS_FILES = Object.freeze([
     [
         'scripts/webgpu/dts/artifacts/COPYING.LGPLv2.1',
@@ -139,6 +141,10 @@ const LEGACY_VIDEO_FILES = Object.freeze([
     [
         'scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv',
         'libraries/legacy-video/mpeg2-progressive-1920x1080-qualification.bin'
+    ],
+    [
+        'scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv',
+        'libraries/legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin'
     ]
 ]);
 const OPENJPEG_FILES = Object.freeze([
@@ -208,6 +214,16 @@ async function createArtifactFixture() {
         join('dist', HEVC_QUALIFICATION_SERVED),
         'complex HEVC qualification fixture'
     );
+    await writeFixtureFile(
+        repositoryRoot,
+        PGS_WORKER_SOURCE,
+        'libpgs worker'
+    );
+    await writeFixtureFile(
+        repositoryRoot,
+        join('dist', PGS_WORKER_SERVED),
+        'libpgs worker'
+    );
     for (const [ sourcePath, servedPath ] of DOLBY_VISION_FILES) {
         const contents = `dovi:${sourcePath}`;
         await writeFixtureFile(repositoryRoot, sourcePath, contents);
@@ -273,7 +289,7 @@ async function createArtifactFixture() {
         `Emscripten: ${PINNED_EMSCRIPTEN_VERSION}`,
         `Emscripten revision: ${PINNED_EMSCRIPTEN_REVISION}`,
         'Configured license: LGPL version 2.1 or later',
-        `Bridge SHA-256: ${PINNED_MPEG2_BRIDGE_SHA256}`,
+        `Bridge SHA-256: ${PINNED_LEGACY_VIDEO_BRIDGE_SHA256}`,
         'Isolated reproducible rebuild: verified'
     ].join('\n');
     await writeFixtureFile(
@@ -305,9 +321,10 @@ async function createArtifactFixture() {
             '--disable-version3',
             '--disable-nonfree',
             '--enable-avcodec',
-            '--enable-decoder=mpeg2video'
+            '--enable-decoder=mpeg2video',
+            '--enable-decoder=vc1'
         ],
-        decoders: [ 'mpeg2video' ],
+        decoders: [ 'mpeg2video', 'vc1' ],
         emscripten: PINNED_EMSCRIPTEN_VERSION,
         emscriptenRevision: PINNED_EMSCRIPTEN_REVISION,
         ffmpegRevision: PINNED_FFMPEG_COMMIT,
@@ -377,6 +394,7 @@ test('accepts an ordinary build with Mediabunny AC-3 and its license', async () 
     assert.equal(result.dts.verifiedArtifacts.length, DTS_FILES.length);
     assert.equal(result.hevc.length, HEVC_FILES.length + 1);
     assert.equal(result.legacyVideo.length, LEGACY_VIDEO_FILES.length + 1);
+    assert.equal(result.pgsWorker.path, PGS_WORKER_SERVED);
     assert.equal(result.openjpeg.length, OPENJPEG_FILES.length);
     assert.equal(result.truehd.implementationAssets.length, 1);
     assert.equal(result.truehd.verifiedArtifacts.length, TRUEHD_FILES.length);
@@ -455,6 +473,33 @@ test('rejects a copied HEVC artifact that differs from its pinned package', asyn
     await assert.rejects(
         verifyCustomCodecArtifacts(fixture),
         /HEVC artifact hash mismatch/
+    );
+});
+
+test('requires the copied libpgs worker', async () => {
+    const fixture = await createArtifactFixture();
+    await rm(
+        join(fixture.distDirectory, PGS_WORKER_SERVED),
+        { force: true }
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts(fixture),
+        /Required artifact is missing/
+    );
+});
+
+test('rejects a copied libpgs worker that differs from its pinned package', async () => {
+    const fixture = await createArtifactFixture();
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        join('dist', PGS_WORKER_SERVED),
+        'corrupt'
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts(fixture),
+        /libpgs worker artifact hash mismatch/
     );
 });
 
@@ -663,7 +708,7 @@ test('rejects a legacy video manifest that advertises another decoder', async ()
 
     await assert.rejects(
         verifyCustomCodecArtifacts(fixture),
-        /Legacy video manifest decoder list is not MPEG-2-only/
+        /Legacy video manifest decoder list is invalid/
     );
 });
 

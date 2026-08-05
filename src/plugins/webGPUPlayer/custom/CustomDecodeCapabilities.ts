@@ -49,6 +49,7 @@ import {
 } from './TrueHDExactCapabilityProbe';
 import {
     probeLegacyVideoExactCapability,
+    probeVC1ExactCapability,
     type LegacyVideoExactCapability
 } from './LegacyVideoExactCapabilityProbe';
 import type {
@@ -73,6 +74,7 @@ export const CUSTOM_VIDEO_CODECS = [
     'vp9',
     'av1',
     'mpeg2video',
+    'vc1',
     'jpeg2000'
 ] as const;
 export const CUSTOM_RAW_HDR_VIDEO_CODECS = [ 'hevc', 'vp9', 'av1' ] as const;
@@ -154,6 +156,7 @@ export type CustomDecodeCapabilities = {
     bundledHEVC?: BundledHEVCExactCapabilities
     bundledJPEG2000?: JPEG2000ExactCapability
     bundledLegacyVideo?: LegacyVideoExactCapability
+    bundledVC1?: LegacyVideoExactCapability
     bundledTrueHD?: TrueHDExactCapability
     h264Profiles?: H264ProfileCapabilities
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
@@ -319,6 +322,7 @@ export type WebCodecsCapabilityEnvironment = {
     bundledHEVCExactProbe?: { probe: () => Promise<BundledHEVCExactCapabilities> } | null
     bundledJPEG2000ExactProbe?: { probe: () => Promise<JPEG2000ExactCapability> } | null
     bundledLegacyVideoExactProbe?: { probe: () => Promise<LegacyVideoExactCapability> } | null
+    bundledVC1ExactProbe?: { probe: () => Promise<LegacyVideoExactCapability> } | null
     bundledTrueHDExactProbe?: { probe: () => Promise<TrueHDExactCapability> } | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
@@ -448,6 +452,9 @@ const defaultBundledJPEG2000ExactProbe = {
 };
 const defaultBundledLegacyVideoExactProbe = {
     probe: probeLegacyVideoExactCapability
+};
+const defaultBundledVC1ExactProbe = {
+    probe: probeVC1ExactCapability
 };
 
 type ScheduledCapabilityProbePump = {
@@ -1667,6 +1674,7 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
         bundledHEVCExactProbe: defaultBundledHEVCExactProbe,
         bundledJPEG2000ExactProbe: defaultBundledJPEG2000ExactProbe,
         bundledLegacyVideoExactProbe: defaultBundledLegacyVideoExactProbe,
+        bundledVC1ExactProbe: defaultBundledVC1ExactProbe,
         bundledTrueHDExactProbe: defaultBundledTrueHDExactProbe,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
         nativeAudioOutputProbe: createNativeAudioOutputProbe(),
@@ -1863,15 +1871,24 @@ function createBundledJPEG2000Capability(
 }
 
 function createBundledLegacyVideoCapability(
+    codec: 'mpeg2video' | 'vc1',
     exactCapability: LegacyVideoExactCapability | null
-): CustomDecodeCodecCapability<'mpeg2video'> {
+): CustomDecodeCodecCapability<'mpeg2video' | 'vc1'> {
     if (!exactCapability) {
-        return createUnavailableCapability('mpeg2video', 'mpeg2video');
+        return createUnavailableCapability(codec, codec);
+    }
+    if (exactCapability.codec !== codec) {
+        return Object.freeze({
+            codec,
+            codecString: codec,
+            reason: 'decode-output-missing',
+            status: 'unsupported'
+        });
     }
     if (exactCapability.status === 'supported') {
         return Object.freeze({
-            codec: 'mpeg2video',
-            codecString: 'mpeg2video',
+            codec,
+            codecString: codec,
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
@@ -1902,11 +1919,17 @@ function createBundledLegacyVideoCapability(
             break;
     }
     return Object.freeze({
-        codec: 'mpeg2video',
-        codecString: 'mpeg2video',
+        codec,
+        codecString: codec,
         reason,
         status: exactCapability.status
     });
+}
+
+function createOptionalBundledVC1Capability(
+    bundledVC1: LegacyVideoExactCapability | null
+): Pick<CustomDecodeCapabilities, 'bundledVC1'> {
+    return bundledVC1 ? { bundledVC1 } : {};
 }
 
 function createBundledDTSCapability(
@@ -2449,7 +2472,8 @@ function getNativeUltraHDVideoProbeCount(
 
 function getVideoProbeCount(environment: WebCodecsCapabilityEnvironment): number {
     const bundledProbeCount = Number(Boolean(environment.bundledJPEG2000ExactProbe))
-        + Number(Boolean(environment.bundledLegacyVideoExactProbe));
+        + Number(Boolean(environment.bundledLegacyVideoExactProbe))
+        + Number(Boolean(environment.bundledVC1ExactProbe));
     if (!environment.videoDecoder) {
         return bundledProbeCount;
     }
@@ -2745,6 +2769,7 @@ export default class CustomDecodeCapabilityProbe {
             bundledHEVC,
             bundledJPEG2000,
             bundledLegacyVideo,
+            bundledVC1,
             bundledTrueHD,
             nativeDolbyVisionHEVC,
             nativeHDRHEVC,
@@ -2772,6 +2797,10 @@ export default class CustomDecodeCapabilityProbe {
                 heavyProbeScheduler
             ),
             probeOptionalExactCapability(
+                environment.bundledVC1ExactProbe,
+                heavyProbeScheduler
+            ),
+            probeOptionalExactCapability(
                 environment.bundledTrueHDExactProbe,
                 heavyProbeScheduler
             ),
@@ -2789,7 +2818,11 @@ export default class CustomDecodeCapabilityProbe {
             Promise.all(nativeUltraHDVideoProbePromises)
         ]);
         videoCapabilities.push(createBundledJPEG2000Capability(bundledJPEG2000));
-        videoCapabilities.push(createBundledLegacyVideoCapability(bundledLegacyVideo));
+        videoCapabilities.push(createBundledLegacyVideoCapability(
+            'mpeg2video',
+            bundledLegacyVideo
+        ));
+        videoCapabilities.push(createBundledLegacyVideoCapability('vc1', bundledVC1));
         const audioCapabilities: Array<CustomDecodeCodecCapability<CustomAudioCodec>> = [];
         audioCapabilities.push(...probedAudioCapabilities);
         audioCapabilities.push(createBundledDTSCapability(bundledDTS));
@@ -2875,6 +2908,7 @@ export default class CustomDecodeCapabilityProbe {
             ...(bundledHEVC ? { bundledHEVC } : {}),
             ...(bundledJPEG2000 ? { bundledJPEG2000 } : {}),
             ...(bundledLegacyVideo ? { bundledLegacyVideo } : {}),
+            ...createOptionalBundledVC1Capability(bundledVC1),
             ...(bundledTrueHD ? { bundledTrueHD } : {}),
             h264Profiles,
             nativeDolbyVisionHEVC,

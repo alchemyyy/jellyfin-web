@@ -8,6 +8,8 @@ export type DTSProfileToken =
     | 'DTSHDMA'
     | 'DTSHDMADTSX';
 
+export type DTSDirectPlayProfileToken = Exclude<DTSProfileToken, 'DTSES'>;
+
 export type DTSCapabilityFixtureRoute = Readonly<{
     channelCount: 6 | 7 | 8
     profileTokens: readonly DTSProfileToken[]
@@ -29,6 +31,16 @@ export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string
         DTSHDMA: 'DTS-HD MA',
         DTSHDMADTSX: 'DTS-HD MA + DTS:X'
     });
+
+/** DTS profiles retained for production direct play. */
+export const DTS_DIRECT_PLAY_PROFILE_TOKENS: readonly DTSDirectPlayProfileToken[] =
+    Object.freeze([
+        'DTS',
+        'DTS9624',
+        'DTSHDHRA',
+        'DTSHDMA',
+        'DTSHDMADTSX'
+    ]);
 
 export const DTS_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
     Object.freeze({
@@ -75,13 +87,26 @@ export const TRUEHD_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
     Object.freeze({ channelCount: 2, codec: 'mlp', sampleRate: 48_000 })
 ] as const) satisfies readonly TrueHDCapabilityFixtureRoute[];
 
-/** Accepts measured DTS profile/layout pairs at any bounded source sample rate. */
+/** Returns whether a DTS profile is stable enough for production direct play. */
+export function isDTSDirectPlayProfileToken(
+    profileToken: string
+): profileToken is DTSDirectPlayProfileToken {
+    return DTS_DIRECT_PLAY_PROFILE_TOKENS.includes(
+        profileToken as DTSDirectPlayProfileToken
+    );
+}
+
+/** Accepts production-qualified DTS profile/layout pairs at any bounded source rate. */
 export function isSupportedDTSInputRoute(
     channelCount: unknown,
     sampleRate: unknown,
     profileToken: string | null
 ): boolean {
     if (profileToken === null || !isSupportedCustomAudioSampleRate(sampleRate)) {
+        return false;
+    }
+    // DTS-ES stays in the decoder fixture, but its reported 6.1 route failed geometry validation
+    if (!isDTSDirectPlayProfileToken(profileToken)) {
         return false;
     }
     if (sampleRate > 96_000

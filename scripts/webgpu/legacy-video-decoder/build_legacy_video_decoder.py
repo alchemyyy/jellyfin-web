@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned progressive MPEG-2 Video decoder as WebAssembly."""
+"""Build the pinned progressive MPEG-2 Video and VC-1 decoder as WebAssembly."""
 
 from __future__ import annotations
 
@@ -47,9 +47,10 @@ from pinned_ffmpeg_build import (  # noqa: E402
 
 
 ARTIFACT_DIRECTORY = SCRIPT_DIRECTORY / "artifacts"
-ENABLED_DECODERS = ("mpeg2video",)
+ENABLED_DECODERS = ("mpeg2video", "vc1")
 EXPORTED_FUNCTIONS = (
     "_legacy_video_decoder_create",
+    "_legacy_video_decoder_get_extradata",
     "_legacy_video_decoder_open",
     "_legacy_video_decoder_configure_packet",
     "_legacy_video_decoder_send_packet",
@@ -85,6 +86,7 @@ CONFIGURED_COMPONENTS = (
     "--disable-nonfree",
     "--enable-avcodec",
     "--enable-decoder=mpeg2video",
+    "--enable-decoder=vc1",
 )
 
 
@@ -94,7 +96,7 @@ def build_ffmpeg(
     source_root: Path,
     jobs: int,
 ) -> None:
-    """Builds only FFmpeg avcodec/avutil with the MPEG-2 Video decoder."""
+    """Builds only FFmpeg avcodec/avutil with the required legacy decoders."""
     compiler = get_emscripten_tool(compiler_path, "emcc")
     cxx_compiler = get_emscripten_tool(compiler_path, "em++")
     archiver = get_emscripten_tool(compiler_path, "emar.py")
@@ -149,7 +151,7 @@ def link_decoder(
     source_root: Path,
     output_path: Path,
 ) -> None:
-    """Links the MPEG-2-only libraries to the classic-worker bridge."""
+    """Links the focused legacy video libraries to the classic-worker bridge."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     compiler = get_emscripten_tool(compiler_path, "emcc")
     exported_functions_json = json.dumps(EXPORTED_FUNCTIONS, separators=(",", ":"))
@@ -224,7 +226,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Builds, verifies, and records the focused MPEG-2 release artifacts."""
+    """Builds, verifies, and records the focused legacy video artifacts."""
     arguments = parse_arguments()
     archive_path = select_source_archive(arguments.source_archive, REPOSITORY_ROOT)
     compiler_path = find_emscripten_compiler(arguments.emcc, REPOSITORY_ROOT)
@@ -233,7 +235,7 @@ def main() -> int:
     ARTIFACT_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(
-        prefix="jellyfin-ffmpeg-mpeg2-release-"
+        prefix="jellyfin-ffmpeg-legacy-video-release-"
     ) as temporary_directory:
         temporary_root = Path(temporary_directory)
         first_js, first_wasm, upstream_license = build_runtime_artifacts(
@@ -255,7 +257,7 @@ def main() -> int:
                 sha256_file(first_js) != sha256_file(second_js)
                 or sha256_file(first_wasm) != sha256_file(second_wasm)
             ):
-                raise RuntimeError("The isolated MPEG-2 rebuild was not reproducible")
+                raise RuntimeError("The isolated legacy video rebuild was not reproducible")
 
         output_js = ARTIFACT_DIRECTORY / "legacy-video-decode.js"
         output_wasm = ARTIFACT_DIRECTORY / "legacy-video-decode.wasm"
@@ -307,7 +309,7 @@ def main() -> int:
         newline="\n",
     )
     print(
-        f"Built FFmpeg {FFMPEG_COMMIT} MPEG-2 Video decoder with "
+        f"Built FFmpeg {FFMPEG_COMMIT} MPEG-2 Video and VC-1 decoders with "
         f"Emscripten {EMSCRIPTEN_VERSION}"
     )
     return 0

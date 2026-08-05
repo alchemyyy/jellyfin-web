@@ -78,14 +78,6 @@ const POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT = 540;
 const POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH = 960;
 const POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
 const BUNDLED_AUDIO_CODEC_SET = new Set<CustomAudioCodec>(CUSTOM_BUNDLED_AUDIO_CODECS);
-const SUPPORTED_DTS_PROFILE_TOKENS = new Set<string>([
-    'DTS',
-    'DTS9624',
-    'DTSES',
-    'DTSHDHRA',
-    'DTSHDMA',
-    'DTSHDMADTSX'
-]);
 const SUPPORTED_VIDEO_CONTAINERS = new Set([
     '3G2',
     '3GP',
@@ -160,7 +152,8 @@ const MATROSKA_CONTAINER_RULE: ContainerCodecRule = {
     containers: new Set([ 'MKV', 'MATROSKA' ]),
     videoCodecs: new Set([
         ...ISO_BASE_MEDIA_CONTAINER_RULE.videoCodecs,
-        'mpeg2video'
+        'mpeg2video',
+        'vc1'
     ])
 };
 const WEBM_CONTAINER_RULE: ContainerCodecRule = {
@@ -196,6 +189,8 @@ const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     'MPEG-2': 'mpeg2video',
     MPEG2: 'mpeg2video',
     MPEG2VIDEO: 'mpeg2video',
+    'VC-1': 'vc1',
+    VC1: 'vc1',
     VP8: 'vp8',
     VP9: 'vp9'
 };
@@ -614,8 +609,7 @@ function hasQualifiedDecodedPCMInputLayout(
     }
     if (codec === 'dts') {
         const profile = normalizeMetadataToken(stream.Profile);
-        if (capabilities.bundledDTS?.status !== 'supported'
-            || (profile !== null && !SUPPORTED_DTS_PROFILE_TOKENS.has(profile))) {
+        if (capabilities.bundledDTS?.status !== 'supported') {
             return false;
         }
         return isSupportedDTSInputRoute(stream.Channels, stream.SampleRate, profile);
@@ -761,6 +755,7 @@ function hasSupportedNativeVideoProfile(
         case 'av1':
             return profile === 'MAIN';
         case 'mpeg2video':
+        case 'vc1':
         case 'jpeg2000':
             return false;
     }
@@ -781,6 +776,7 @@ function hasSupportedRawVideoProfile(
         case 'h264':
         case 'jpeg2000':
         case 'mpeg2video':
+        case 'vc1':
         case 'vp8':
             return false;
     }
@@ -821,15 +817,19 @@ function getJPEG2000SDRVideoSelection(
 
 function getLegacyVideoSDRSelection(
     capabilities: CustomDecodeCapabilities,
+    codec: 'mpeg2video' | 'vc1',
     stream: MediaStream,
     bitDepth: number
 ): SDRVideoSelection | null {
-    const capability = capabilities.bundledLegacyVideo;
+    const capability = codec === 'vc1' ?
+        capabilities.bundledVC1 :
+        capabilities.bundledLegacyVideo;
+    const requiredProfile = codec === 'vc1' ? 'ADVANCED' : 'MAIN';
     const frameRate = getEffectiveVideoFrameRate(stream);
     if (
         capability?.status !== 'supported'
         || bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH
-        || normalizeMetadataToken(stream.Profile) !== 'MAIN'
+        || normalizeMetadataToken(stream.Profile) !== requiredProfile
         || capability.maximumFramesPerSecond !== 24
         || frameRate === null
         || frameRate > capability.maximumFramesPerSecond
@@ -849,7 +849,7 @@ function getLegacyVideoSDRSelection(
 
 function getOrdinarySDRVideoSelection(
     capabilities: CustomDecodeCapabilities,
-    codec: Exclude<CustomVideoCodec, 'jpeg2000' | 'mpeg2video'>,
+    codec: Exclude<CustomVideoCodec, 'jpeg2000' | 'mpeg2video' | 'vc1'>,
     stream: MediaStream,
     bitDepth: number
 ): SDRVideoSelection | null {
@@ -933,8 +933,8 @@ function getSDRVideoSelection(
     if (codec === 'jpeg2000') {
         return getJPEG2000SDRVideoSelection(capabilities, stream, bitDepth);
     }
-    if (codec === 'mpeg2video') {
-        return getLegacyVideoSDRSelection(capabilities, stream, bitDepth);
+    if (codec === 'mpeg2video' || codec === 'vc1') {
+        return getLegacyVideoSDRSelection(capabilities, codec, stream, bitDepth);
     }
     return getOrdinarySDRVideoSelection(capabilities, codec, stream, bitDepth);
 }
@@ -1453,8 +1453,11 @@ function hasPotentialSDRVideoRoute(
     }
     switch (codec) {
         case 'mpeg2video':
+        case 'vc1':
             return containerTokens.some(container => container === 'MKV' || container === 'MATROSKA')
-                && normalizeMetadataToken(stream.Profile) === 'MAIN'
+                && normalizeMetadataToken(stream.Profile) === (
+                    codec === 'vc1' ? 'ADVANCED' : 'MAIN'
+                )
                 && hasPotentialSoftwareVideoFrameRate(stream)
                 && hasPotentialCustomVideoDimensions(
                     stream,
@@ -1501,8 +1504,9 @@ function hasCompletePotentialSDRVideoMetadata(
     switch (codec) {
         case 'jpeg2000':
         case 'mpeg2video':
+        case 'vc1':
             return getEffectiveVideoFrameRate(stream) !== null
-                && (codec !== 'mpeg2video' || normalizeMetadataToken(stream.Profile) !== null);
+                && (codec === 'jpeg2000' || normalizeMetadataToken(stream.Profile) !== null);
         case 'av1':
         case 'h264':
         case 'hevc':

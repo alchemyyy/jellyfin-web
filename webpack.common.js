@@ -22,6 +22,7 @@ const Assets = [
     '@jellyfin/libass-wasm/dist/js/subtitles-octopus-worker.js',
     '@jellyfin/libass-wasm/dist/js/subtitles-octopus-worker.wasm',
     '@jellyfin/libass-wasm/dist/js/subtitles-octopus-worker-legacy.js',
+    'libpgs/dist/libpgs.worker.js',
     'pdfjs-dist/build/pdf.worker.js',
     'hls.js/dist/hls.worker.js'
 ];
@@ -324,6 +325,14 @@ const config = {
                 {
                     from: path.resolve(
                         __dirname,
+                        'scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv'
+                    ),
+                    // Jellyfin serves the capability artifact under a generic media type
+                    to: 'libraries/legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
                         'node_modules/@cornerstonejs/codec-openjpeg/dist/openjpegwasm_decode.js'
                     ),
                     // Preserve the exact reviewed Emscripten glue artifact
@@ -512,7 +521,6 @@ const config = {
                     path.resolve(__dirname, 'node_modules/highlight-words'),
                     path.resolve(__dirname, 'node_modules/idb-keyval'),
                     path.resolve(__dirname, 'node_modules/libarchive.js'),
-                    path.resolve(__dirname, 'node_modules/libbitsub'),
                     path.resolve(__dirname, 'node_modules/linkify-it'),
                     path.resolve(__dirname, 'node_modules/markdown-it'),
                     path.resolve(__dirname, 'node_modules/material-react-table'),

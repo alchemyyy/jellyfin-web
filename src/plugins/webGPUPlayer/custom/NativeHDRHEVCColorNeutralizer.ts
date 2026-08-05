@@ -42,6 +42,16 @@ type RewrittenNALUnitArray = {
     rewrittenSPSCount: number
 };
 
+type RewrittenHEVCDecoderDescription = {
+    description: Uint8Array
+    rewrittenSPSCount: number
+};
+
+export type NeutralizedNativeHDRHEVCDecoderConfig = {
+    configuration: VideoDecoderConfig
+    decoderDescriptionValidated: boolean
+};
+
 function rewriteHEVCConfigurationNALUnitArray(
     description: Uint8Array,
     arrayOffset: number,
@@ -92,11 +102,10 @@ function rewriteHEVCConfigurationNALUnitArray(
     return { nextOffset: offset, rewrittenSPSCount };
 }
 
-/** Rebuilds one HVCC record after neutralizing every SPS color description. */
-export function rewriteHEVCDecoderDescriptionColorDescriptionToBT709(
+function rewriteHEVCDecoderDescription(
     descriptionSource: AllowSharedBufferSource,
     expectedHDRTransfer?: HEVCHDRTransfer
-): Uint8Array {
+): RewrittenHEVCDecoderDescription {
     const description = toUint8Array(descriptionSource);
     if (
         description.byteLength < HEVC_CONFIGURATION_HEADER_BYTE_LENGTH
@@ -127,13 +136,57 @@ export function rewriteHEVCDecoderDescriptionColorDescriptionToBT709(
     if (offset !== description.byteLength) {
         throw new TypeError('The HEVC decoder description has trailing data');
     }
-    if (rewrittenSPSCount === 0) {
-        throw new TypeError('The HEVC decoder description has no SPS to rewrite');
-    }
     if (outputBytes.length > MAXIMUM_HEVC_CONFIGURATION_BYTE_LENGTH) {
         throw new TypeError('The rewritten HEVC decoder description exceeds its size bound');
     }
-    return new Uint8Array(outputBytes);
+    return {
+        description: new Uint8Array(outputBytes),
+        rewrittenSPSCount
+    };
+}
+
+/** Rebuilds one HVCC record after neutralizing every SPS color description. */
+export function rewriteHEVCDecoderDescriptionColorDescriptionToBT709(
+    descriptionSource: AllowSharedBufferSource,
+    expectedHDRTransfer?: HEVCHDRTransfer
+): Uint8Array {
+    const rewrittenDescription = rewriteHEVCDecoderDescription(
+        descriptionSource,
+        expectedHDRTransfer
+    );
+    if (rewrittenDescription.rewrittenSPSCount === 0) {
+        throw new TypeError('The HEVC decoder description has no SPS to rewrite');
+    }
+    return rewrittenDescription.description;
+}
+
+/**
+ * Neutralizes decoder metadata while reporting whether HVCC proved and rewrote
+ * the source SPS. An SPS-free HVCC remains usable when the first key packet
+ * carries the required in-band SPS.
+ */
+export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+    configuration: VideoDecoderConfig,
+    expectedHDRTransfer: HEVCHDRTransfer
+): NeutralizedNativeHDRHEVCDecoderConfig {
+    const rewrittenDescription = configuration.description === undefined ?
+        null :
+        rewriteHEVCDecoderDescription(configuration.description, expectedHDRTransfer);
+    return {
+        configuration: {
+            ...configuration,
+            colorSpace: {
+                fullRange: false,
+                matrix: 'bt709',
+                primaries: 'bt709',
+                transfer: 'bt709'
+            },
+            ...(rewrittenDescription === null ? {} : {
+                description: rewrittenDescription.description
+            })
+        },
+        decoderDescriptionValidated: (rewrittenDescription?.rewrittenSPSCount ?? 0) > 0
+    };
 }
 
 /** Applies the exact neutral metadata contract required by external HDR presentation. */
@@ -141,19 +194,15 @@ export function neutralizeNativeHDRHEVCDecoderConfig(
     configuration: VideoDecoderConfig,
     expectedHDRTransfer: HEVCHDRTransfer
 ): VideoDecoderConfig {
-    return {
-        ...configuration,
-        colorSpace: {
-            fullRange: false,
-            matrix: 'bt709',
-            primaries: 'bt709',
-            transfer: 'bt709'
-        },
-        ...(configuration.description === undefined ? {} : {
-            description: rewriteHEVCDecoderDescriptionColorDescriptionToBT709(
-                configuration.description,
-                expectedHDRTransfer
-            )
-        })
-    };
+    const neutralizedConfiguration = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+        configuration,
+        expectedHDRTransfer
+    );
+    if (
+        configuration.description !== undefined
+        && !neutralizedConfiguration.decoderDescriptionValidated
+    ) {
+        throw new TypeError('The HEVC decoder description has no SPS to rewrite');
+    }
+    return neutralizedConfiguration.configuration;
 }

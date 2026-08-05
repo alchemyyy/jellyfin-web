@@ -37,6 +37,43 @@
       },
       "sha256": "86db9dfebafb85c3c6001c762c5a1c91427d2039fcd5fbffba8c8c42efaf43b1",
       "uri": "repo://scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv"
+    },
+    {
+      "byteLength": 620054,
+      "id": "vc1-advanced-progressive-1080p24-matroska",
+      "license": {
+        "evidence": "repo://LICENSE",
+        "expression": "GPL-2.0-or-later"
+      },
+      "media": {
+        "container": "matroska",
+        "packetization": "vc1-advanced-access-units",
+        "video": {
+          "bitDepth": 8,
+          "chroma": "4:2:0",
+          "codec": "vc1",
+          "frameRate": 24,
+          "height": 1080,
+          "matrix": "unspecified",
+          "primaries": "unspecified",
+          "profile": "advanced",
+          "progressive": true,
+          "range": "unspecified",
+          "transfer": "unspecified",
+          "width": 1920
+        }
+      },
+      "provenance": {
+        "generatorArguments": [
+          "Windows Media Foundation MFVideoFormat_WVC1",
+          "FFmpeg stream-copy remux to Matroska"
+        ],
+        "kind": "generated",
+        "revision": "windows-11-media-foundation",
+        "source": "Project-authored synthetic RGB moving test pattern"
+      },
+      "sha256": "560ccb27518b854f765aa84d4503a84c0a2ffaa5b28f5d6edd7de0326f246cd0",
+      "uri": "repo://scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv"
     }
   ],
   "generator": "repo://scripts/webgpu/generate_legacy_video_capability_fixture.py",

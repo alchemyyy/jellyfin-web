@@ -17,6 +17,7 @@ import LegacySoftwareVideoDecoder, {
     type LegacySoftwareVideoDecoderDependencies,
     type LegacyVideoDecoderModule
 } from './LegacySoftwareVideoDecoder';
+import { getMatroskaVC1DecoderDescription } from './MatroskaVFWVideoConfiguration';
 import {
     LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
     LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH,
@@ -36,6 +37,11 @@ const FIXTURE_PATH = resolve(
     process.cwd(),
     'scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv'
 );
+const VC1_FIXTURE_PATH = resolve(
+    process.cwd(),
+    'scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv'
+);
+const VC1_QUALIFICATION_FINGERPRINT = 182_587_665;
 const FNV_OFFSET_BASIS = 2_166_136_261;
 const FNV_PRIME = 16_777_619;
 
@@ -71,7 +77,7 @@ describe('legacy video decoder integration', () => {
                 '--disable-everything',
                 '--enable-decoder=mpeg2video'
             ]),
-            decoders: [ 'mpeg2video' ]
+            decoders: [ 'mpeg2video', 'vc1' ]
         });
         const requireFunction = createRequire(import.meta.url);
         const createModule = requireFunction(
@@ -140,6 +146,89 @@ describe('legacy video decoder integration', () => {
                 sample.close();
             }
             decoder.close();
+            input.dispose();
+        }
+    });
+
+    it('demuxes and exactly decodes progressive Advanced VC-1 through WASM', async () => {
+        const requireFunction = createRequire(import.meta.url);
+        const createModule = requireFunction(
+            DECODER_GLUE_PATH
+        ) as ActualLegacyVideoDecoderModuleFactory;
+        const wasmBinary = new Uint8Array(readFileSync(DECODER_WASM_PATH));
+        const dependencies: LegacySoftwareVideoDecoderDependencies = {
+            createModule: async (): Promise<LegacyVideoDecoderModule> => (
+                createModule({ wasmBinary })
+            ),
+            loadDecoderGlue: (): void => undefined,
+            resolveAssetURL: (path: string): string => path
+        };
+        const input = new Input({
+            formats: ALL_FORMATS,
+            source: new BufferSource(new Uint8Array(readFileSync(VC1_FIXTURE_PATH)))
+        });
+        const samples: VideoSample[] = [];
+        let decoder: LegacySoftwareVideoDecoder | null = null;
+
+        try {
+            const tracks = await input.getVideoTracks();
+            expect(tracks).toHaveLength(1);
+            const track = tracks[0];
+            expect(await track.getCodec()).toBeNull();
+            expect(await track.getInternalCodecId()).toBe('V_MS/VFW/FOURCC');
+            const codedHeight = await track.getCodedHeight();
+            const codedWidth = await track.getCodedWidth();
+            const description = getMatroskaVC1DecoderDescription(
+                track,
+                codedWidth,
+                codedHeight
+            );
+            expect(description).not.toBeNull();
+            decoder = new LegacySoftwareVideoDecoder({
+                codec: 'vc1',
+                codedHeight,
+                codedWidth,
+                description: description ?? undefined,
+                displayHeight: codedHeight,
+                displayWidth: codedWidth
+            }, {
+                onError: (error: unknown): never => {
+                    throw error;
+                },
+                onSample: (sample: VideoSample): void => {
+                    samples.push(sample);
+                }
+            }, dependencies);
+            await decoder.init();
+            const packetSink = new EncodedPacketSink(track);
+            const firstKeyPacket = await packetSink.getFirstKeyPacket({
+                verifyKeyPackets: true
+            });
+            const seekKeyPacket = await packetSink.getKeyPacket(0.25, {
+                verifyKeyPackets: true
+            });
+            expect(firstKeyPacket?.type).toBe('key');
+            expect(seekKeyPacket?.type).toBe('key');
+            expect(seekKeyPacket?.timestamp).toBeLessThanOrEqual(0.25);
+            for await (const packet of packetSink.packets()) {
+                decoder.decode(packet);
+            }
+            decoder.flush();
+
+            expect(samples).toHaveLength(LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT);
+            expect(samples.every((sample: VideoSample): boolean => (
+                sample.format === 'I420'
+                    && sample.codedWidth === LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH
+                    && sample.codedHeight === LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT
+            ))).toBe(true);
+            const output = await fingerprintSamples(samples);
+            expect(output.byteLength).toBe(LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH);
+            expect(output.fingerprint).toBe(VC1_QUALIFICATION_FINGERPRINT);
+        } finally {
+            for (const sample of samples) {
+                sample.close();
+            }
+            decoder?.close();
             input.dispose();
         }
     });

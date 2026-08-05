@@ -13,6 +13,8 @@ import {
     LEGACY_VIDEO_QUALIFICATION_FRAME_BYTE_LENGTH,
     LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT,
     LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH,
+    VC1_EXACT_CAPABILITY_REQUEST_ID,
+    VC1_VIDEO_QUALIFICATION_FINGERPRINT,
     type LegacyVideoExactCapabilityWorkerResponse
 } from './LegacyVideoExactCapabilityProtocol';
 
@@ -137,6 +139,40 @@ describe('LegacyVideoExactCapabilityProbe', () => {
             maximumFramesPerSecond: 0,
             reason: 'output-mismatch',
             status: 'unsupported'
+        });
+    });
+
+    it('selects and independently qualifies the Advanced VC-1 fixture', async () => {
+        const worker = new MockLegacyVideoCapabilityWorker();
+        const loadFixture = vi.fn<
+            (url: string) => Promise<ArrayBuffer>
+        >(async (): Promise<ArrayBuffer> => new ArrayBuffer(128));
+        const probe = new LegacyVideoExactCapabilityProbe(
+            createEnvironment(worker, { loadFixture }),
+            5_000,
+            'vc1'
+        );
+        const capabilityPromise = probe.probe();
+        await vi.waitFor(() => expect(worker.postedMessages).toHaveLength(1));
+
+        expect(loadFixture).toHaveBeenCalledWith(
+            'https://example.test/web/libraries/legacy-video/'
+                + 'vc1-advanced-progressive-1920x1080-qualification.bin'
+        );
+        expect(worker.postedMessages[0]).toMatchObject({
+            requestID: VC1_EXACT_CAPABILITY_REQUEST_ID
+        });
+        worker.emit('message', createSuccessfulResponse({
+            decodedI420Fingerprint: VC1_VIDEO_QUALIFICATION_FINGERPRINT,
+            measuredFramesPerSecond: 24,
+            requestID: VC1_EXACT_CAPABILITY_REQUEST_ID
+        }));
+
+        await expect(capabilityPromise).resolves.toMatchObject({
+            codec: 'vc1',
+            maximumFramesPerSecond: 24,
+            reason: 'decode-output-verified',
+            status: 'supported'
         });
     });
 

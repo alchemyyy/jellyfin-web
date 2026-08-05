@@ -101,6 +101,13 @@ function createPacket(data: Uint8Array, sequenceNumber: number): EncodedPacket {
     return new EncodedPacket(data, 'key', sequenceNumber / 24, 1 / 24, sequenceNumber);
 }
 
+function createSPSFreeHVCCDescription(): Uint8Array {
+    const description = new Uint8Array(23);
+    description[0] = 1;
+    description[21] = 3;
+    return description;
+}
+
 class FakeVideoFrame {
     public readonly codedHeight = 1_080;
     public readonly codedWidth = 1_920;
@@ -241,6 +248,47 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         expect(harness.packets).toHaveLength(1);
         expect(harness.packets[0].data).not.toBe(originalData);
         expect(parseHEVCSPS(getFirstAnnexBNALUnit(harness.packets[0].data)).colorSpace)
+            .toEqual({
+                fullRange: false,
+                matrix: 'bt709',
+                primaries: 'bt709',
+                transfer: 'bt709'
+            });
+        decoder.close();
+    });
+
+    it('defers SPS validation from an SPS-free HVCC record to the first key packet', async () => {
+        const harness = createHarness();
+        const description = createSPSFreeHVCCDescription();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            {
+                codec: 'hvc1.2.4.L120.B0',
+                codedHeight: 1_080,
+                codedWidth: 1_920,
+                description
+            },
+            { kind: 'length-prefixed', lengthSize: 4 },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies,
+            { nativeHDRTransfer: 'pq', neutralizeHDRColorMetadata: true }
+        );
+        await decoder.init();
+
+        expect(harness.decoder.configure).toHaveBeenCalledWith(expect.objectContaining({
+            colorSpace: {
+                fullRange: false,
+                matrix: 'bt709',
+                primaries: 'bt709',
+                transfer: 'bt709'
+            },
+            description: expect.any(Uint8Array)
+        }));
+        const originalData = encodeLengthPrefixedNALUnits([
+            MAIN10_PQ_SPS,
+            createNALUnit(19, [ 1 ])
+        ]);
+        expect(decoder.decode(createPacket(originalData, 0))).toBe(true);
+        expect(parseHEVCSPS(getFirstLengthPrefixedNALUnit(harness.packets[0].data)).colorSpace)
             .toEqual({
                 fullRange: false,
                 matrix: 'bt709',

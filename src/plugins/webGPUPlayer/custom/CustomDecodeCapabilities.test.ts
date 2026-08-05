@@ -202,6 +202,18 @@ const UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY = Object.freeze({
     reason: 'output-mismatch' as const,
     status: 'unsupported' as const
 });
+const SUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
+    ...SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY,
+    codec: 'vc1' as const,
+    decodedI420Fingerprint: 182_587_665,
+    measuredFramesPerSecond: 30
+});
+const UNSUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
+    ...SUPPORTED_VC1_EXACT_CAPABILITY,
+    maximumFramesPerSecond: 0 as const,
+    reason: 'throughput-insufficient' as const,
+    status: 'unsupported' as const
+});
 
 function createEnvironment(
     videoSupport: ReadonlySet<string>,
@@ -276,6 +288,9 @@ function createEnvironment(
             bundledLegacyVideoExactProbe: {
                 probe: vi.fn(async () => UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY)
             },
+            bundledVC1ExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
+            },
             bundledTrueHDExactProbe: {
                 probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
@@ -344,6 +359,9 @@ describe('CustomDecodeCapabilityProbe', () => {
         harness.environment.bundledLegacyVideoExactProbe = {
             probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY))
         };
+        harness.environment.bundledVC1ExactProbe = {
+            probe: vi.fn(() => observeHeavyProbe(UNSUPPORTED_VC1_EXACT_CAPABILITY))
+        };
         harness.environment.bundledTrueHDExactProbe = {
             probe: vi.fn(() => observeHeavyProbe(SUPPORTED_TRUEHD_EXACT_CAPABILITY))
         };
@@ -403,6 +421,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         harness.environment.bundledHEVCExactProbe = null;
         harness.environment.bundledJPEG2000ExactProbe = null;
         harness.environment.bundledLegacyVideoExactProbe = null;
+        harness.environment.bundledVC1ExactProbe = null;
         harness.environment.bundledTrueHDExactProbe = null;
         harness.environment.h264ProfileProbe = null;
         harness.environment.nativeAudioOutputProbe = nativeAudioOutputProbe;
@@ -592,7 +611,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             unknownNativeSurroundAudioCodecCount: 0,
             unknownNativeUltraHDVideoCodecCount: 0,
             unknownVideoCodecCount: 0,
-            videoProbeCount: 12
+            videoProbeCount: 13
         });
         expect(capabilities.nativeUltraHDVideo).toMatchObject({
             av1: {
@@ -624,7 +643,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(first).toBe(second);
         expect(second).toBe(third);
         expect(harness.videoProbe).toHaveBeenCalledTimes(
-            CUSTOM_VIDEO_CODECS.length - 2
+            CUSTOM_VIDEO_CODECS.length - 3
                 + CUSTOM_NATIVE_ULTRA_HD_VIDEO_CODECS.length
                 + CUSTOM_RAW_HDR_VIDEO_CODECS.length
                 + 2
@@ -1048,6 +1067,9 @@ describe('CustomDecodeCapabilityProbe', () => {
             bundledJPEG2000ExactProbe: {
                 probe: vi.fn(async () => UNSUPPORTED_JPEG2000_EXACT_CAPABILITY)
             },
+            bundledVC1ExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
+            },
             bundledTrueHDExactProbe: {
                 probe: vi.fn(async () => SUPPORTED_TRUEHD_EXACT_CAPABILITY)
             },
@@ -1286,6 +1308,38 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         expect(supported.bundledLegacyVideo)
             .toBe(SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY);
+    });
+
+    it('gates bundled Advanced VC-1 on exact decoded-output qualification', async () => {
+        const unavailable = await new CustomDecodeCapabilityProbe({
+            bundledVC1ExactProbe: null
+        }).probe();
+        const throughputInsufficient = await new CustomDecodeCapabilityProbe({
+            bundledVC1ExactProbe: {
+                probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
+            }
+        }).probe();
+        const supported = await new CustomDecodeCapabilityProbe({
+            bundledVC1ExactProbe: {
+                probe: vi.fn(async () => SUPPORTED_VC1_EXACT_CAPABILITY)
+            }
+        }).probe();
+
+        expect(unavailable.video.vc1).toMatchObject({
+            reason: 'api-unavailable',
+            status: 'unknown'
+        });
+        expect(unavailable.bundledVC1).toBeUndefined();
+        expect(throughputInsufficient.video.vc1).toMatchObject({
+            reason: 'throughput-insufficient',
+            status: 'unsupported'
+        });
+        expect(supported.video.vc1).toMatchObject({
+            codecString: 'vc1',
+            reason: 'bundled-software-decoder',
+            status: 'supported'
+        });
+        expect(supported.bundledVC1).toBe(SUPPORTED_VC1_EXACT_CAPABILITY);
     });
 
     it('gates bundled HEVC on exact decoded-output qualification', async () => {

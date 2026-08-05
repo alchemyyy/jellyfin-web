@@ -885,17 +885,22 @@ function getCustomPlaybackController(): MockCustomPlaybackController {
 
 type Deferred<Value> = {
     promise: Promise<Value>
+    reject: (error: unknown) => void
     resolve: (value: Value) => void
 };
 
 function createDeferred<Value>(): Deferred<Value> {
+    let rejectPromise: (error: unknown) => void = () => {
+        throw new Error('Deferred promise was not initialized');
+    };
     let resolvePromise: (value: Value) => void = () => {
         throw new Error('Deferred promise was not initialized');
     };
-    const promise = new Promise<Value>(resolve => {
+    const promise = new Promise<Value>((resolve, reject) => {
+        rejectPromise = reject;
         resolvePromise = resolve;
     });
-    return { promise, resolve: resolvePromise };
+    return { promise, reject: rejectPromise, resolve: resolvePromise };
 }
 
 function runNextAnimationFrame(timestamp = 0): void {
@@ -1404,6 +1409,101 @@ describe('WebGPUPlayer HTML delegation', () => {
         await expect(player.play(playOptions)).resolves.toBe(playOptions);
         expect(backend.getDeviceProfile).toHaveBeenCalledWith(item, profileOptions);
         expect(backend.play).toHaveBeenCalledWith(playOptions);
+    });
+
+    it.each([
+        [ 'Profile 8 HDR10 base', 8, false, 'DOVIWithHDR10' ],
+        [ 'Profile 7 enhancement layer', 7, true, 'DOVIWithEL' ]
+    ] as const)('blocks %s video stream copy before negotiation', (
+        _label,
+        dolbyVisionProfile,
+        enhancementLayerPresent,
+        videoRangeType
+    ) => {
+        const player = new WebGPUPlayer();
+        const item = createPlaybackSelectionItem('dolby-vision', {
+            BlPresentFlag: true,
+            Codec: 'HEVC',
+            DvBlSignalCompatibilityId: dolbyVisionProfile === 7 ? 6 : 1,
+            DvProfile: dolbyVisionProfile,
+            ElPresentFlag: enhancementLayerPresent,
+            RpuPresentFlag: true,
+            VideoRange: 'HDR',
+            VideoRangeType: videoRangeType
+        });
+
+        expect(player.supportsVideoStreamCopy(
+            item,
+            'dolby-vision-source'
+        )).toBe(false);
+    });
+
+    it('keeps video stream copy available for a selected SDR source', () => {
+        const player = new WebGPUPlayer();
+        const item = createPlaybackSelectionItem('sdr', {
+            Codec: 'HEVC',
+            VideoRangeType: 'SDR'
+        });
+
+        expect(player.supportsVideoStreamCopy(item, 'sdr-source')).toBe(true);
+    });
+
+    it('blocks Dolby Vision copy from the full streams fetched for negotiation', () => {
+        const player = new WebGPUPlayer();
+        const mediaStreams = [{
+            BlPresentFlag: true,
+            Codec: 'HEVC',
+            DvBlSignalCompatibilityId: 6,
+            DvProfile: 7,
+            ElPresentFlag: true,
+            RpuPresentFlag: true,
+            Type: 'Video',
+            VideoRange: 'HDR',
+            VideoRangeType: 'DOVIWithEL'
+        }];
+
+        expect(player.supportsVideoStreamCopy(
+            { Id: 'sparse-playback-item' },
+            'dolby-vision-source',
+            mediaStreams
+        )).toBe(false);
+    });
+
+    it('scopes the Dolby Vision stream-copy block to the selected source', () => {
+        const player = new WebGPUPlayer();
+        const item = {
+            MediaSources: [
+                {
+                    Id: 'dolby-vision-source',
+                    MediaStreams: [{
+                        BlPresentFlag: true,
+                        Codec: 'HEVC',
+                        DvBlSignalCompatibilityId: 1,
+                        DvProfile: 8,
+                        ElPresentFlag: false,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithHDR10'
+                    }]
+                },
+                {
+                    Id: 'sdr-source',
+                    MediaStreams: [{
+                        Codec: 'HEVC',
+                        Type: 'Video',
+                        VideoRangeType: 'SDR'
+                    }]
+                }
+            ]
+        };
+
+        expect(player.supportsVideoStreamCopy(
+            item,
+            'dolby-vision-source'
+        )).toBe(false);
+        expect(player.supportsVideoStreamCopy(item, 'sdr-source')).toBe(true);
+        expect(player.supportsVideoStreamCopy(item, 'unknown-source')).toBe(true);
     });
 
     it('widens a custom-decode profile only when enabled and never on retry', async () => {
@@ -2731,6 +2831,105 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.currentTime).toHaveBeenCalledWith(2_500);
     });
 
+    it('uses the latest seek requested while custom audio teardown is pending', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        const options = createKnownSDRPlayOptions({ playMethod: 'DirectPlay' });
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+        const destroy = createDeferred<void>();
+        customPlaybackController.destroy.mockReturnValueOnce(destroy.promise);
+        const fallbackPromise = customPlaybackController.fallbackHook({
+            disposition: 'same-session-native',
+            generation: 1,
+            mediaTimeMicroseconds: 2_500_000,
+            preserveHTMLSession: true,
+            reason: 'lifecycle-failed'
+        });
+
+        player.currentTime(9_000);
+        expect(player.currentTime()).toBe(9_000);
+        expect(backend.currentTime).not.toHaveBeenCalledWith(9_000);
+        destroy.resolve(undefined);
+        await fallbackPromise;
+
+        expect(backend.play).toHaveBeenCalledWith({
+            ...options,
+            playerStartPositionTicks: 90_000_000,
+            suppressInitialUnpause: true
+        });
+    });
+
+    it('applies a seek requested while native fallback is initializing', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const nativePlay = createDeferred<unknown>();
+        backend.play.mockReturnValueOnce(nativePlay.promise);
+        const fallbackPromise = customPlaybackController.fallbackHook({
+            disposition: 'same-session-native',
+            generation: 1,
+            mediaTimeMicroseconds: 2_500_000,
+            preserveHTMLSession: true,
+            reason: 'lifecycle-failed'
+        });
+        await vi.waitFor(() => expect(backend.play).toHaveBeenCalledOnce());
+
+        player.currentTime(12_000);
+        expect(player.currentTime()).toBe(12_000);
+        expect(backend.currentTime).not.toHaveBeenCalledWith(12_000);
+        nativePlay.resolve(undefined);
+        await fallbackPromise;
+
+        expect(backend.currentTime).toHaveBeenCalledWith(12_000);
+        expect(player.currentTime()).toBe(12_000);
+    });
+
+    it('ignores a stale custom seek failure after a newer seek wins', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const staleSeek = createDeferred<unknown>();
+        customPlaybackController.seek.mockImplementationOnce(
+            (): Promise<unknown> => staleSeek.promise
+        );
+
+        player.currentTime(8_000);
+        player.currentTime(9_000);
+        await vi.waitFor(() => (
+            expect(customPlaybackController.seek).toHaveBeenCalledTimes(2)
+        ));
+        staleSeek.reject(new Error('stale seek failed'));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(backend.play).not.toHaveBeenCalled();
+        expect(player.currentTime()).toBe(9_000);
+    });
+
     it('requests source renegotiation without replaying a custom-only URL natively', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -3326,6 +3525,45 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.setVolume).toHaveBeenCalledWith(0.125);
     });
 
+    it('preserves normalization and logical volume across native fallback', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        const options = createKnownSDRAudioPlayOptions();
+        const mediaSource = options.mediaSource as Record<string, unknown>;
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        options.item = { NormalizationGain: 20 * Math.log10(2) };
+        mediaSource.albumNormalizationGain = 20 * Math.log10(0.5);
+        userSettingsMockState.audioNormalizationMode = 'AlbumGain';
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+
+        await player.play(options);
+        const customPlaybackController = getCustomPlaybackController();
+        await customPlaybackController.fallbackHook({
+            disposition: 'same-session-native',
+            generation: 1,
+            mediaTimeMicroseconds: 2_500_000,
+            preserveHTMLSession: true,
+            reason: 'lifecycle-failed'
+        });
+
+        const fallbackVolume = backend.setVolume.mock.calls.at(-1)?.[0] as number;
+        expect((fallbackVolume / 100) ** 3).toBeCloseTo(0.0625);
+        expect(player.getVolume()).toBe(50);
+
+        player.setVolume(80);
+        const adjustedVolume = backend.setVolume.mock.calls.at(-1)?.[0] as number;
+        expect((adjustedVolume / 100) ** 3).toBeCloseTo(0.256);
+        expect(player.getVolume()).toBe(80);
+
+        player.destroy();
+        expect(backend.setVolume).toHaveBeenLastCalledWith(80);
+    });
+
     it('makes overlapping custom audio selections strictly last-write-wins', async () => {
         const player = new WebGPUPlayer();
         const backend = getBackend();
@@ -3874,7 +4112,8 @@ describe('WebGPUPlayer HTML delegation', () => {
     it('exposes the complete manager-facing delegation surface', () => {
         const player = new WebGPUPlayer();
         const methodNames = [
-            'canPlayMediaType', 'canPlayItem', 'supportsPlayMethod', 'getDeviceProfile',
+            'canPlayMediaType', 'canPlayItem', 'supportsPlayMethod', 'supportsVideoStreamCopy',
+            'getDeviceProfile',
             'supports', 'currentSrc', 'cancelPendingPlay', 'play', 'stop', 'destroy', 'currentTime',
             'duration', 'seekable', 'pause', 'resume', 'unpause', 'paused',
             'setSubtitleStreamIndex', 'setSecondarySubtitleStreamIndex',

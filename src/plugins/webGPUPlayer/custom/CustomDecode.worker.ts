@@ -130,7 +130,10 @@ import TrueHDSoftwareAudioDecoder, {
     type TrueHDDecodedAudioOutput,
     type TrueHDDecoderCodec
 } from './TrueHDSoftwareAudioDecoder';
-import LegacySoftwareVideoDecoder from './LegacySoftwareVideoDecoder';
+import LegacySoftwareVideoDecoder, {
+    type LegacySoftwareVideoDecoderConfiguration
+} from './LegacySoftwareVideoDecoder';
+import { getMatroskaVC1DecoderDescription } from './MatroskaVFWVideoConfiguration';
 import {
     MAXIMUM_STATIC_HDR_METADATA_SCAN_ACCESS_UNIT_COUNT,
     type StaticHDRMetadataScanResult
@@ -198,7 +201,7 @@ type DecodeRun = {
 
 type PreparedVideoTrack = {
     availableVideoTracks: readonly InputVideoTrack[]
-    codec: VideoCodec | 'jpeg2000' | 'mpeg2video'
+    codec: VideoCodec | 'jpeg2000' | 'mpeg2video' | 'vc1'
     containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
@@ -471,7 +474,7 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
 }
 
 type FocusedSoftwareVideoRoute = Readonly<{
-    codec: 'jpeg2000' | 'mpeg2video'
+    codec: 'jpeg2000' | 'mpeg2video' | 'vc1'
     decoderCodec: string
     errorName: string
     expectedInternalCodecID: string
@@ -491,7 +494,8 @@ type FocusedSoftwareVideoTrackInput = Readonly<{
 }>;
 
 function getFocusedSoftwareVideoRoute(
-    backend: CustomDecodeVideoDecoderBackend
+    backend: CustomDecodeVideoDecoderBackend,
+    internalCodecID: unknown
 ): FocusedSoftwareVideoRoute | null {
     switch (backend) {
         case 'openjpeg':
@@ -503,6 +507,15 @@ function getFocusedSoftwareVideoRoute(
                 includeColorSpace: false
             };
         case 'legacy-software':
+            if (internalCodecID === 'V_MS/VFW/FOURCC') {
+                return {
+                    codec: 'vc1',
+                    decoderCodec: 'vc1',
+                    errorName: 'Advanced VC-1 software',
+                    expectedInternalCodecID: 'V_MS/VFW/FOURCC',
+                    includeColorSpace: true
+                };
+            }
             return {
                 codec: 'mpeg2video',
                 decoderCodec: 'mpeg2video',
@@ -519,7 +532,10 @@ function getFocusedSoftwareVideoRoute(
 async function prepareFocusedSoftwareVideoTrack(
     input: FocusedSoftwareVideoTrackInput
 ): Promise<PreparedVideoTrack | null> {
-    const route = getFocusedSoftwareVideoRoute(input.request.videoDecoderBackend);
+    const route = getFocusedSoftwareVideoRoute(
+        input.request.videoDecoderBackend,
+        input.internalCodecID
+    );
     if (!route) {
         return null;
     }
@@ -537,6 +553,18 @@ async function prepareFocusedSoftwareVideoTrack(
     }
 
     const colorSpace = route.includeColorSpace ? await input.videoTrack.getColorSpace() : null;
+    const description = route.codec === 'vc1' ?
+        getMatroskaVC1DecoderDescription(
+            input.videoTrack,
+            input.codedWidth,
+            input.codedHeight
+        ) :
+        null;
+    if (route.codec === 'vc1' && !description) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected VC-1 track has no supported WVC1 decoder description'
+        );
+    }
     return {
         availableVideoTracks: input.availableVideoTracks,
         codec: route.codec,
@@ -545,6 +573,7 @@ async function prepareFocusedSoftwareVideoTrack(
             codec: route.decoderCodec,
             codedHeight: input.codedHeight,
             codedWidth: input.codedWidth,
+            ...(description ? { description } : {}),
             ...(colorSpace ? { colorSpace } : {}),
             displayAspectHeight: input.displayHeight,
             displayAspectWidth: input.displayWidth,
@@ -2809,16 +2838,10 @@ async function streamLegacyVideoFrames(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
-    if (
-        preparedVideoTrack.codec !== 'mpeg2video'
-        || run.videoDecoderBackend !== 'legacy-software'
-        || run.videoOutputMode !== 'video-frame'
-    ) {
-        throw new UnsupportedCustomDecodeSourceError(
-            'The legacy software decoder requires a negotiated MPEG-2 VideoFrame route'
-        );
-    }
-
+    const decoderConfiguration = createLegacyVideoDecoderConfiguration(
+        run,
+        preparedVideoTrack
+    );
     const packetSink = new EncodedPacketSink(preparedVideoTrack.videoTrack);
     const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
     const keyPacket = await packetSink.getKeyPacket(
@@ -2841,14 +2864,7 @@ async function streamLegacyVideoFrames(
 
     const pendingSamples: VideoSample[] = [];
     let decoderError: unknown = null;
-    const decoder = new LegacySoftwareVideoDecoder({
-        codec: 'mpeg2video',
-        codedHeight: preparedVideoTrack.geometry.codedHeight,
-        codedWidth: preparedVideoTrack.geometry.codedWidth,
-        colorSpace: preparedVideoTrack.decoderConfig.colorSpace,
-        displayHeight: preparedVideoTrack.geometry.displayHeight,
-        displayWidth: preparedVideoTrack.geometry.displayWidth
-    }, {
+    const decoder = new LegacySoftwareVideoDecoder(decoderConfiguration, {
         onError: (error: unknown): void => {
             decoderError = error;
         },
@@ -2939,6 +2955,42 @@ async function streamLegacyVideoFrames(
         }
         decoder.close();
     }
+}
+
+function createLegacyVideoDecoderConfiguration(
+    run: DecodeRun,
+    preparedVideoTrack: PreparedVideoTrack
+): LegacySoftwareVideoDecoderConfiguration {
+    if (
+        (preparedVideoTrack.codec !== 'mpeg2video'
+            && preparedVideoTrack.codec !== 'vc1')
+        || run.videoDecoderBackend !== 'legacy-software'
+        || run.videoOutputMode !== 'video-frame'
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The legacy software decoder requires a negotiated MPEG-2 or VC-1 VideoFrame route'
+        );
+    }
+    const decoderDescription = preparedVideoTrack.decoderConfig.description;
+    if (
+        preparedVideoTrack.codec === 'vc1'
+        && !(decoderDescription instanceof Uint8Array)
+    ) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The negotiated VC-1 decoder description is unavailable'
+        );
+    }
+    return {
+        codec: preparedVideoTrack.codec,
+        codedHeight: preparedVideoTrack.geometry.codedHeight,
+        codedWidth: preparedVideoTrack.geometry.codedWidth,
+        colorSpace: preparedVideoTrack.decoderConfig.colorSpace,
+        ...(decoderDescription instanceof Uint8Array ?
+            { description: decoderDescription } :
+            {}),
+        displayHeight: preparedVideoTrack.geometry.displayHeight,
+        displayWidth: preparedVideoTrack.geometry.displayWidth
+    };
 }
 
 async function streamVideoFrames(

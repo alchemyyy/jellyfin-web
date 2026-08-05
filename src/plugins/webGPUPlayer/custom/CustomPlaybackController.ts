@@ -934,6 +934,10 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
+        if (!this.isGenerationActive(generation)) {
+            return;
+        }
+
         try {
             await this.waitBounded(this.stopDecodePipelines(), 'Decoder shutdown timed out');
             if (!this.isGenerationActive(generation)) {

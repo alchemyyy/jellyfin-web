@@ -683,6 +683,11 @@ export default class OwnedNativeMediaAudioBackend {
         const audioElement = this.audioElement;
         const objectURL = this.objectURL;
         this.activeGeneration = null;
+        if (audioElement) {
+            // Silence the retired sink before asynchronous SourceBuffer cleanup can block
+            audioElement.muted = true;
+            audioElement.pause();
+        }
         this.cancelAppendRoomWaiters();
         await this.appendOperationTail.catch((): void => undefined);
         this.appendOperationTail = Promise.resolve(true);
@@ -697,7 +702,6 @@ export default class OwnedNativeMediaAudioBackend {
         this.clockQualified = false;
         this.requestedStartTimeMicroseconds = null;
         if (audioElement) {
-            audioElement.pause();
             audioElement.removeAttribute('src');
             audioElement.load();
             audioElement.remove();

@@ -13,18 +13,22 @@ const LEGACY_VIDEO_DECODER_WASM_ASSET =
 const MAXIMUM_CODED_HEIGHT = 1_080;
 const MAXIMUM_CODED_WIDTH = 1_920;
 const MAXIMUM_COMPRESSED_PACKET_BYTE_LENGTH = 64 * 1024 * 1024;
+const MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH = 1024 * 1024;
 const MAXIMUM_DECODED_FRAME_BYTE_LENGTH =
     MAXIMUM_CODED_WIDTH * MAXIMUM_CODED_HEIGHT * 3 / 2;
 const MAXIMUM_PENDING_PICTURE_COUNT = 64;
 const AV_NOPTS_VALUE = BigInt('-9223372036854775808');
 const AV_COLOR_RANGE_MPEG = 1;
 const AV_COLOR_RANGE_JPEG = 2;
+const LEGACY_VIDEO_CODEC_MPEG2VIDEO = 1;
+const LEGACY_VIDEO_CODEC_VC1 = 2;
 
 export type LegacySoftwareVideoDecoderConfiguration = {
-    codec: 'mpeg2video'
+    codec: 'mpeg2video' | 'vc1'
     codedHeight: number
     codedWidth: number
     colorSpace?: VideoColorSpaceInit
+    description?: Uint8Array
     displayHeight?: number
     displayWidth?: number
 };
@@ -43,8 +47,10 @@ export type LegacyVideoDecoderModule = {
         packetByteLength: number
     ) => number
     _legacy_video_decoder_create: (
+        codec: number,
         codedWidth: number,
-        codedHeight: number
+        codedHeight: number,
+        extradataByteLength: number
     ) => number
     _legacy_video_decoder_error_again: () => number
     _legacy_video_decoder_error_eof: () => number
@@ -58,6 +64,7 @@ export type LegacyVideoDecoderModule = {
     _legacy_video_decoder_get_crop_right: (decoder: number) => number
     _legacy_video_decoder_get_crop_top: (decoder: number) => number
     _legacy_video_decoder_get_duration: (decoder: number) => bigint
+    _legacy_video_decoder_get_extradata: (decoder: number) => number
     _legacy_video_decoder_get_height: (decoder: number) => number
     _legacy_video_decoder_get_interlaced: (decoder: number) => number
     _legacy_video_decoder_get_plane: (decoder: number, plane: number) => number
@@ -237,7 +244,7 @@ function copyPlane(
     }
 }
 
-/** Focused FFmpeg decoder for progressive MPEG-2 Video. */
+/** Focused FFmpeg decoder for progressive MPEG-2 Video and VC-1. */
 export default class LegacySoftwareVideoDecoder {
     private closed = false;
     private decoder = 0;
@@ -269,15 +276,31 @@ export default class LegacySoftwareVideoDecoder {
             return;
         }
 
+        const decoderDescription = this.configuration.description;
         const decoder = module._legacy_video_decoder_create(
+            this.configuration.codec === 'vc1' ?
+                LEGACY_VIDEO_CODEC_VC1 :
+                LEGACY_VIDEO_CODEC_MPEG2VIDEO,
             this.configuration.codedWidth,
-            this.configuration.codedHeight
+            this.configuration.codedHeight,
+            decoderDescription?.byteLength ?? 0
         );
         if (decoder === 0) {
             throw new Error('The legacy software decoder context could not be created');
         }
 
         try {
+            if (decoderDescription) {
+                const descriptionPointer = module._legacy_video_decoder_get_extradata(decoder);
+                if (descriptionPointer === 0
+                    || descriptionPointer + decoderDescription.byteLength
+                        > module.HEAPU8.byteLength) {
+                    throw new Error(
+                        'The legacy software decoder description allocation is invalid'
+                    );
+                }
+                module.HEAPU8.set(decoderDescription, descriptionPointer);
+            }
             const openResult = module._legacy_video_decoder_open(decoder);
             if (openResult < 0) {
                 throw new Error(`The legacy software decoder open failed: ${openResult}`);
@@ -373,13 +396,24 @@ export default class LegacySoftwareVideoDecoder {
 
     private validateConfiguration(): void {
         if (
-            this.configuration.codec !== 'mpeg2video'
+            (this.configuration.codec !== 'mpeg2video'
+                && this.configuration.codec !== 'vc1')
             || !isPositiveSafeInteger(this.configuration.codedWidth)
             || !isPositiveSafeInteger(this.configuration.codedHeight)
             || this.configuration.codedWidth > MAXIMUM_CODED_WIDTH
             || this.configuration.codedHeight > MAXIMUM_CODED_HEIGHT
         ) {
             throw new TypeError('The legacy software decoder configuration is unsupported');
+        }
+        const description = this.configuration.description;
+        if (
+            (this.configuration.codec === 'mpeg2video' && description !== undefined)
+            || (this.configuration.codec === 'vc1'
+                && (!(description instanceof Uint8Array)
+                    || description.byteLength === 0
+                    || description.byteLength > MAXIMUM_DECODER_DESCRIPTION_BYTE_LENGTH))
+        ) {
+            throw new TypeError('The legacy software decoder description is unsupported');
         }
         if (
             (this.configuration.displayWidth !== undefined

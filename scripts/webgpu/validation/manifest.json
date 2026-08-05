@@ -61,6 +61,35 @@
     },
     {
       "checkIds": [
+        "vitest-codec-contracts"
+      ],
+      "expectations": {
+        "audioRoute": "disabled",
+        "capability": "supported",
+        "decoderBackend": "legacy-software",
+        "fallback": "none",
+        "frameMode": "raw-i420",
+        "jellyfinPlayMethod": "not-applicable",
+        "permittedTranscodeReasons": [],
+        "presentationRoute": "custom-webgpu"
+      },
+      "fixtureIds": [
+        "vc1-advanced-progressive-1080p24-matroska"
+      ],
+      "id": "vc1-advanced-progressive-1080p24-matroska-exact",
+      "tags": [
+        "checkpoint",
+        "codec:vc1",
+        "container:matroska",
+        "route:legacy-software"
+      ],
+      "thresholds": {
+        "minimumDecodeFramesPerSecond": 24
+      },
+      "title": "Progressive VC-1 Advanced 1080p24 Matroska exact demux route"
+    },
+    {
+      "checkIds": [
         "dts-fixtures-current",
         "vitest-codec-contracts"
       ],
@@ -650,6 +679,7 @@
       "caseIds": [
         "jpeg2000-srgb-960x540-exact",
         "mpeg2-main-progressive-1080p24-matroska-exact",
+        "vc1-advanced-progressive-1080p24-matroska-exact",
         "dts-core-5-1-48k-exact",
         "dts-96-24-5-1-96k-exact",
         "dts-es-6-1-48k-exact",
@@ -679,6 +709,7 @@
       "caseIds": [
         "jpeg2000-srgb-960x540-exact",
         "mpeg2-main-progressive-1080p24-matroska-exact",
+        "vc1-advanced-progressive-1080p24-matroska-exact",
         "dts-core-5-1-48k-exact",
         "dts-96-24-5-1-96k-exact",
         "dts-es-6-1-48k-exact",
@@ -713,6 +744,7 @@
       "caseIds": [
         "jpeg2000-srgb-960x540-exact",
         "mpeg2-main-progressive-1080p24-matroska-exact",
+        "vc1-advanced-progressive-1080p24-matroska-exact",
         "dts-core-5-1-48k-exact",
         "dts-96-24-5-1-96k-exact",
         "dts-es-6-1-48k-exact",

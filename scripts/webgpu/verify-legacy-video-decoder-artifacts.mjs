@@ -20,27 +20,32 @@ const FFMPEG_SOURCE_SHA256 =
 const EMSCRIPTEN_VERSION = '4.0.13';
 const EMSCRIPTEN_REVISION = '2659582941bef14008476903f48941909db1b196';
 const EXPECTED_BRIDGE_SHA256 =
-    'a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da';
+    '832b62326346f5049f89a2d6a8f97f73df8b5b26c5a1d9114573fa1015be2ee8';
 const EXPECTED_FILE_HASHES = Object.freeze({
     'legacy-video-decode.js':
-        'd43c51795d5d77ae5dd1bd7cda5bb086d90e91638030165645a4295a08ea1563',
+        'f6e6b2294655cb3665ece2015b98e389b336221ea8854631d78652c76e977aa5',
     'legacy-video-decode.wasm':
-        '322a09a902af2b896958b6685f399fc44c73be3dc2d4c67b66eaf5ee3857149a',
+        '6d1608becf8bd027e69d535a1517b74d4b619a7ac4cecf39d60cde8cebeec428',
     'manifest.json':
-        '3299b701c5c9e95dd798bbb2670ede934837e71f48779bb706f77a99597033d8'
+        'f8c0ee3b4d33f8aa6abb88d9bdb00de0bbf0879a0f854fe5b92beab4b1648a94'
 });
 const EXPECTED_LICENSE_SHA256 =
     '246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30';
 const EXPECTED_REVISION_SHA256 =
-    '3c5338127bdc80b6e02687f03d2d388b6db744056cb56c7bb557aab94f44d5e2';
-const EXPECTED_FIXTURE_SHA256 =
-    '86db9dfebafb85c3c6001c762c5a1c91427d2039fcd5fbffba8c8c42efaf43b1';
+    '5c4f205b4a7fba2b60a74aea36cc0885d8f143279777c46b1d4cd40e927a7eb6';
+const EXPECTED_FIXTURE_HASHES = Object.freeze({
+    'mpeg2-progressive-1920x1080.mkv':
+        '86db9dfebafb85c3c6001c762c5a1c91427d2039fcd5fbffba8c8c42efaf43b1',
+    'vc1-advanced-progressive-1920x1080.mkv':
+        '560ccb27518b854f765aa84d4503a84c0a2ffaa5b28f5d6edd7de0326f246cd0'
+});
 const REQUIRED_EXPORTS = Object.freeze([
     'legacy_video_decoder_close',
     'legacy_video_decoder_configure_packet',
     'legacy_video_decoder_create',
     'legacy_video_decoder_frame_is_i420',
     'legacy_video_decoder_get_height',
+    'legacy_video_decoder_get_extradata',
     'legacy_video_decoder_get_interlaced',
     'legacy_video_decoder_get_plane',
     'legacy_video_decoder_get_stride',
@@ -90,14 +95,17 @@ async function verifyArtifactHashes() {
         FFMPEG_SOURCE_SHA256,
         'Shared pinned FFmpeg source archive'
     );
-    await requireFileHash(
-        resolve(
-            REPOSITORY_ROOT,
-            'scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv'
-        ),
-        EXPECTED_FIXTURE_SHA256,
-        'Legacy video qualification fixture'
-    );
+    for (const [ fileName, expectedSHA256 ] of Object.entries(EXPECTED_FIXTURE_HASHES)) {
+        await requireFileHash(
+            resolve(
+                REPOSITORY_ROOT,
+                'scripts/webgpu/legacy-video-capability-fixtures',
+                fileName
+            ),
+            expectedSHA256,
+            `Legacy video qualification fixture ${fileName}`
+        );
+    }
 }
 
 async function verifyManifest() {
@@ -113,7 +121,7 @@ async function verifyManifest() {
         || manifest.bridgeSHA256 !== EXPECTED_BRIDGE_SHA256
         || manifest.license !== 'LGPL version 2.1 or later'
         || manifest.reproducibleBuild !== true
-        || JSON.stringify(manifest.decoders) !== JSON.stringify([ 'mpeg2video' ])
+        || JSON.stringify(manifest.decoders) !== JSON.stringify([ 'mpeg2video', 'vc1' ])
     ) {
         throw new Error('Legacy video artifact manifest provenance is invalid');
     }
@@ -138,7 +146,8 @@ async function verifyManifest() {
         '--disable-version3',
         '--disable-nonfree',
         '--enable-avcodec',
-        '--enable-decoder=mpeg2video'
+        '--enable-decoder=mpeg2video',
+        '--enable-decoder=vc1'
     ];
     if (JSON.stringify(configuredComponents) !== JSON.stringify(expectedComponents)) {
         throw new Error('Legacy video manifest contains an unexpected FFmpeg component');
@@ -164,6 +173,7 @@ async function verifyBuildAndBridge() {
         EMSCRIPTEN_VERSION,
         EMSCRIPTEN_REVISION,
         '--enable-decoder=mpeg2video',
+        '--enable-decoder=vc1',
         '--disable-gpl',
         '--disable-nonfree',
         '--verify-reproducible',
@@ -236,6 +246,6 @@ await verifyArtifactHashes();
 await verifyManifest();
 await verifyBuildAndBridge();
 await verifyModuleExports();
-console.log('Verified pinned MPEG-2-only FFmpeg WebAssembly, source, licenses, fixture, and reproducibility.');
+console.log('Verified pinned MPEG-2 and VC-1 FFmpeg WebAssembly, source, licenses, fixtures, and reproducibility.');
 
 /* eslint-enable compat/compat */

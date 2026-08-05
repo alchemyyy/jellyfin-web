@@ -11,19 +11,14 @@ import LegacySoftwareVideoDecoder, {
     type LegacySoftwareVideoDecoderDependencies,
     type LegacyVideoDecoderModule
 } from './LegacySoftwareVideoDecoder';
+import { getMatroskaVC1DecoderDescription } from './MatroskaVFWVideoConfiguration';
 import {
+    getLegacyVideoQualification,
     isLegacyVideoExactCapabilityWorkerRequest,
-    LEGACY_VIDEO_EXACT_CAPABILITY_REQUEST_ID,
-    LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
-    LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH,
-    LEGACY_VIDEO_QUALIFICATION_FINGERPRINT,
-    LEGACY_VIDEO_QUALIFICATION_FRAME_BYTE_LENGTH,
-    LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT,
-    LEGACY_VIDEO_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
-    LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH,
-    LEGACY_VIDEO_QUALIFICATION_WARMUP_FRAME_COUNT,
+    type LegacyVideoExactCapabilityRequestID,
     type LegacyVideoExactCapabilityWorkerRequest,
-    type LegacyVideoExactCapabilityWorkerResponse
+    type LegacyVideoExactCapabilityWorkerResponse,
+    type LegacyVideoQualification
 } from './LegacyVideoExactCapabilityProtocol';
 
 type LegacyVideoDecoderModuleFactory = (options: {
@@ -41,6 +36,7 @@ const workerScope = globalThis as LegacyVideoProbeWorkerScope;
 let probeStarted = false;
 
 function createFailureResponse(
+    requestID: LegacyVideoExactCapabilityRequestID,
     reason: LegacyVideoExactCapabilityWorkerResponse['reason'] = 'decode-error'
 ): LegacyVideoExactCapabilityWorkerResponse {
     return {
@@ -53,7 +49,7 @@ function createFailureResponse(
         decodedTotalByteLength: null,
         measuredFramesPerSecond: null,
         reason,
-        requestID: LEGACY_VIDEO_EXACT_CAPABILITY_REQUEST_ID,
+        requestID,
         supported: false,
         type: 'result'
     };
@@ -86,7 +82,13 @@ function createDependencies(
     };
 }
 
-async function getQualifiedTrack(input: Input): Promise<InputVideoTrack> {
+async function getQualifiedTrack(
+    input: Input,
+    qualification: LegacyVideoQualification
+): Promise<{
+        description?: Uint8Array
+        track: InputVideoTrack
+    }> {
     const tracks = await input.getVideoTracks();
     if (tracks.length !== 1) {
         throw new TypeError('The legacy video fixture track count is invalid');
@@ -100,13 +102,24 @@ async function getQualifiedTrack(input: Input): Promise<InputVideoTrack> {
     ]);
     if (
         codec !== null
-        || internalCodecID !== 'V_MPEG2'
-        || codedHeight !== LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT
-        || codedWidth !== LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH
+        || internalCodecID !== qualification.internalCodecID
+        || codedHeight !== qualification.codedHeight
+        || codedWidth !== qualification.codedWidth
     ) {
         throw new TypeError('The legacy video fixture route is invalid');
     }
-    return track;
+    if (qualification.codec === 'vc1') {
+        const description = getMatroskaVC1DecoderDescription(
+            track,
+            codedWidth,
+            codedHeight
+        );
+        if (!description) {
+            throw new TypeError('The VC-1 qualification description is invalid');
+        }
+        return { description, track };
+    }
+    return { track };
 }
 
 async function fingerprintSamples(samples: readonly VideoSample[]): Promise<{
@@ -147,6 +160,7 @@ async function fingerprintSamples(samples: readonly VideoSample[]): Promise<{
 async function runProbe(
     request: LegacyVideoExactCapabilityWorkerRequest
 ): Promise<LegacyVideoExactCapabilityWorkerResponse> {
+    const qualification = getLegacyVideoQualification(request.requestID);
     const input = new Input({
         formats: ALL_FORMATS,
         source: new BufferSource(new Uint8Array(request.fixture))
@@ -154,27 +168,29 @@ async function runProbe(
     const samples: VideoSample[] = [];
     let decodeError: unknown = null;
     let measurementStartMilliseconds: number | null = null;
-    const decoder = new LegacySoftwareVideoDecoder({
-        codec: 'mpeg2video',
-        codedHeight: LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
-        codedWidth: LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH,
-        displayHeight: LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
-        displayWidth: LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH
-    }, {
-        onError: (error: unknown): void => {
-            decodeError = error;
-        },
-        onSample: (sample: VideoSample): void => {
-            samples.push(sample);
-            if (samples.length === LEGACY_VIDEO_QUALIFICATION_WARMUP_FRAME_COUNT) {
-                measurementStartMilliseconds = performance.now();
-            }
-        }
-    }, createDependencies(request));
+    let decoder: LegacySoftwareVideoDecoder | null = null;
     try {
-        const track = await getQualifiedTrack(input);
+        const qualifiedTrack = await getQualifiedTrack(input, qualification);
+        decoder = new LegacySoftwareVideoDecoder({
+            codec: qualification.codec,
+            codedHeight: qualification.codedHeight,
+            codedWidth: qualification.codedWidth,
+            description: qualifiedTrack.description,
+            displayHeight: qualification.codedHeight,
+            displayWidth: qualification.codedWidth
+        }, {
+            onError: (error: unknown): void => {
+                decodeError = error;
+            },
+            onSample: (sample: VideoSample): void => {
+                samples.push(sample);
+                if (samples.length === qualification.warmupFrameCount) {
+                    measurementStartMilliseconds = performance.now();
+                }
+            }
+        }, createDependencies(request));
         await decoder.init();
-        const packetSink = new EncodedPacketSink(track);
+        const packetSink = new EncodedPacketSink(qualifiedTrack.track);
         for await (const packet of packetSink.packets()) {
             decoder.decode(packet);
         }
@@ -184,25 +200,23 @@ async function runProbe(
             throw decodeError;
         }
         if (
-            samples.length !== LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT
+            samples.length !== qualification.frameCount
             || measurementStartMilliseconds === null
         ) {
             throw new TypeError('The legacy video qualification frame count is invalid');
         }
         const decodeMilliseconds = measurementEndMilliseconds
             - measurementStartMilliseconds;
-        const measuredFrameCount = LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT
-            - LEGACY_VIDEO_QUALIFICATION_WARMUP_FRAME_COUNT;
+        const measuredFrameCount = qualification.frameCount
+            - qualification.warmupFrameCount;
         const measuredFramesPerSecond = measuredFrameCount * 1_000 / decodeMilliseconds;
         const fingerprints = await fingerprintSamples(samples);
         const outputMatches = fingerprints.decodedFrameByteLength
-                === LEGACY_VIDEO_QUALIFICATION_FRAME_BYTE_LENGTH
-            && fingerprints.decodedTotalByteLength
-                === LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH
-            && fingerprints.decodedI420Fingerprint
-                === LEGACY_VIDEO_QUALIFICATION_FINGERPRINT;
+                === qualification.frameByteLength
+            && fingerprints.decodedTotalByteLength === qualification.totalByteLength
+            && fingerprints.decodedI420Fingerprint === qualification.fingerprint;
         const throughputMatches = measuredFramesPerSecond
-            >= LEGACY_VIDEO_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND;
+            >= qualification.minimumFramesPerSecond;
         let reason: LegacyVideoExactCapabilityWorkerResponse['reason'];
         if (!outputMatches) {
             reason = 'output-mismatch';
@@ -212,8 +226,8 @@ async function runProbe(
             reason = 'decode-output-verified';
         }
         return {
-            codedHeight: LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
-            codedWidth: LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH,
+            codedHeight: qualification.codedHeight,
+            codedWidth: qualification.codedWidth,
             decodeMilliseconds,
             decodedFrameByteLength: fingerprints.decodedFrameByteLength,
             decodedFrameCount: samples.length,
@@ -221,7 +235,7 @@ async function runProbe(
             decodedTotalByteLength: fingerprints.decodedTotalByteLength,
             measuredFramesPerSecond,
             reason,
-            requestID: LEGACY_VIDEO_EXACT_CAPABILITY_REQUEST_ID,
+            requestID: qualification.requestID,
             supported: reason === 'decode-output-verified',
             type: 'result'
         };
@@ -229,7 +243,7 @@ async function runProbe(
         for (const sample of samples) {
             sample.close();
         }
-        decoder.close();
+        decoder?.close();
         input.dispose();
     }
 }
@@ -243,7 +257,7 @@ async function handleRequest(value: unknown): Promise<void> {
     try {
         response = await runProbe(value);
     } catch {
-        response = createFailureResponse();
+        response = createFailureResponse(value.requestID);
     }
     workerScope.postMessage(response);
 }

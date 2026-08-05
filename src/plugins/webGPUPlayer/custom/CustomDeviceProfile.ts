@@ -30,9 +30,11 @@ import {
 } from './CustomAudioOutputPolicy';
 import {
     DTS_CAPABILITY_FIXTURE_ROUTES,
+    DTS_DIRECT_PLAY_PROFILE_TOKENS,
     DTS_PROFILE_VALUE_BY_TOKEN,
     TRUEHD_CAPABILITY_FIXTURE_ROUTES,
-    type DTSProfileToken
+    isDTSDirectPlayProfileToken,
+    type DTSDirectPlayProfileToken
 } from './CustomCompressedAudioRoute';
 import {
     NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS,
@@ -135,7 +137,7 @@ const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = [
 ];
 const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] =
     CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => (
-        codec !== 'jpeg2000' && codec !== 'mpeg2video'
+        codec !== 'jpeg2000' && codec !== 'mpeg2video' && codec !== 'vc1'
     ));
 const ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: CUSTOM_COMPRESSED_AUDIO_CODECS,
@@ -190,7 +192,7 @@ const JPEG2000_ISO_BASE_MEDIA_VIDEO_RULE: VideoContainerRule = {
 const LEGACY_MATROSKA_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: CUSTOM_WEB_CODECS_AUDIO_CODECS,
     container: 'mkv',
-    videoCodecs: [ 'mpeg2video' ]
+    videoCodecs: [ 'mpeg2video', 'vc1' ]
 };
 const WEBM_VIDEO_RULE: VideoContainerRule = {
     audioCodecs: [ 'opus', 'vorbis' ],
@@ -268,7 +270,9 @@ const NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES = new Set<string>([
     VIDEO_WIDTH_PROPERTY
 ]);
 const SUPPORTED_DTS_AUDIO_PROFILES: readonly string[] =
-    Object.freeze(Object.values(DTS_PROFILE_VALUE_BY_TOKEN));
+    Object.freeze(DTS_DIRECT_PLAY_PROFILE_TOKENS.map(profileToken => (
+        DTS_PROFILE_VALUE_BY_TOKEN[profileToken]
+    )));
 
 function getDolbyVisionVideoRangeTypes(
     capabilities: CustomDecodeCapabilities,
@@ -417,6 +421,7 @@ const NATIVE_VIDEO_PROFILES: Readonly<Record<CustomVideoCodec, readonly string[]
     hevc: [ 'main' ],
     jpeg2000: [],
     mpeg2video: [ 'main' ],
+    vc1: [ 'advanced' ],
     vp8: [],
     vp9: [ 'profile 0' ]
 };
@@ -451,6 +456,8 @@ function supportsNativeVideoCodec(
             return capabilities.bundledJPEG2000?.status === 'supported';
         case 'mpeg2video':
             return capabilities.bundledLegacyVideo?.status === 'supported';
+        case 'vc1':
+            return capabilities.bundledVC1?.status === 'supported';
         case 'vp8':
             return capabilities.video[codec].status === 'supported';
     }
@@ -1822,8 +1829,10 @@ function createNativeMeasuredVideoRoute(
         };
     }
 
-    if (codec === 'mpeg2video') {
-        const capability = capabilities.bundledLegacyVideo;
+    if (codec === 'mpeg2video' || codec === 'vc1') {
+        const capability = codec === 'vc1' ?
+            capabilities.bundledVC1 :
+            capabilities.bundledLegacyVideo;
         if (
             capability?.status !== 'supported'
             || capability.maximumFramesPerSecond !== 24
@@ -1837,7 +1846,7 @@ function createNativeMeasuredVideoRoute(
             maximumHeight: capability.maximumCodedHeight,
             maximumLevel: null,
             maximumWidth: capability.maximumCodedWidth,
-            profiles: NATIVE_VIDEO_PROFILES.mpeg2video,
+            profiles: NATIVE_VIDEO_PROFILES[codec],
             rangeTypes: [ 'SDR' ]
         };
     }
@@ -2270,13 +2279,36 @@ function createMeasuredExactAudioRouteProfile(
 
 type DTSProfileRouteGroup = {
     channelCount: number
-    profileTokens: DTSProfileToken[]
+    profileTokens: DTSDirectPlayProfileToken[]
 };
 
 function createMeasuredDTSRouteProfiles(): CodecProfile[] {
     const measuredProfiles: CodecProfile[] = [];
+    const routeGroupsByChannelCount = new Map<number, DTSProfileRouteGroup>();
+    for (const route of DTS_CAPABILITY_FIXTURE_ROUTES) {
+        for (const profileToken of route.profileTokens) {
+            if (!isDTSDirectPlayProfileToken(profileToken)) {
+                continue;
+            }
+            let routeGroup = routeGroupsByChannelCount.get(route.channelCount);
+            if (!routeGroup) {
+                routeGroup = {
+                    channelCount: route.channelCount,
+                    profileTokens: []
+                };
+                routeGroupsByChannelCount.set(route.channelCount, routeGroup);
+            }
+            if (!routeGroup.profileTokens.includes(profileToken)) {
+                routeGroup.profileTokens.push(profileToken);
+            }
+        }
+    }
+
     measuredProfiles.push(createMeasuredExactAudioRouteProfile('dts', [
-        createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, [ 6, 7, 8 ]),
+        createRequiredAudioRouteCondition(
+            AUDIO_CHANNELS_PROPERTY,
+            [ ...routeGroupsByChannelCount.keys() ]
+        ),
         ...createAudioSampleRateConditions({ kind: 'bounded' }),
         createRequiredAudioRouteCondition(AUDIO_PROFILE_PROPERTY, SUPPORTED_DTS_AUDIO_PROFILES)
     ]));
@@ -2301,23 +2333,6 @@ function createMeasuredDTSRouteProfiles(): CodecProfile[] {
             Value: String(DTS_HIGH_SAMPLE_RATE_MINIMUM)
         } ]
     ));
-
-    const routeGroupsByChannelCount = new Map<number, DTSProfileRouteGroup>();
-    for (const route of DTS_CAPABILITY_FIXTURE_ROUTES) {
-        let routeGroup = routeGroupsByChannelCount.get(route.channelCount);
-        if (!routeGroup) {
-            routeGroup = {
-                channelCount: route.channelCount,
-                profileTokens: []
-            };
-            routeGroupsByChannelCount.set(route.channelCount, routeGroup);
-        }
-        for (const profileToken of route.profileTokens) {
-            if (!routeGroup.profileTokens.includes(profileToken)) {
-                routeGroup.profileTokens.push(profileToken);
-            }
-        }
-    }
 
     for (const routeGroup of routeGroupsByChannelCount.values()) {
         const profileValues = routeGroup.profileTokens.map(profileToken => (

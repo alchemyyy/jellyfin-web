@@ -65,14 +65,22 @@ class ManifestTests(unittest.TestCase):
             else:
                 self.assertIn("$schema", value)
 
-        self.assertEqual(len(self.manifest.fixtures), 15)
+        self.assertEqual(len(self.manifest.fixtures), 16)
         self.assertEqual(len(self.manifest.fixture_registry_sha256), 4)
         self.assertNotEqual(
             self.manifest.manifest_sha256,
             self.manifest.manifest_source_sha256,
         )
-        self.assertEqual(len(self.manifest.cases), 15)
+        self.assertEqual(len(self.manifest.cases), 16)
         self.assertEqual(len(self.manifest.checks), 15)
+        self.assertIn(
+            "vc1-advanced-progressive-1080p24-matroska",
+            self.manifest.fixtures,
+        )
+        self.assertIn(
+            "vc1-advanced-progressive-1080p24-matroska-exact",
+            self.manifest.cases,
+        )
         self.assertEqual(set(self.manifest.matrices), {"checkpoint", "release", "static"})
         for fixture in self.manifest.fixtures.values():
             result = verify_fixture(fixture, self.manifest.failure_codes)

@@ -1,5 +1,5 @@
 /*
- * Focused FFmpeg decoder bridge for progressive MPEG-2 Video.
+ * Focused FFmpeg decoder bridge for progressive MPEG-2 Video and VC-1.
  *
  * This file is part of jellyfin-web and is licensed under GPL-2.0-or-later.
  */
@@ -11,7 +11,12 @@
 #include "libavcodec/avcodec.h"
 #include "libavutil/avutil.h"
 #include "libavutil/frame.h"
+#include "libavutil/mem.h"
 #include "libavutil/pixfmt.h"
+
+#define LEGACY_VIDEO_CODEC_MPEG2VIDEO 1
+#define LEGACY_VIDEO_CODEC_VC1 2
+#define MAXIMUM_EXTRADATA_SIZE (1024 * 1024)
 
 typedef struct LegacyVideoDecoderContext {
     AVCodecContext *codec_context;
@@ -34,14 +39,39 @@ static void free_decoder(LegacyVideoDecoderContext *decoder) {
 
 EMSCRIPTEN_KEEPALIVE
 LegacyVideoDecoderContext *legacy_video_decoder_create(
+    int codec_selector,
     int coded_width,
-    int coded_height
+    int coded_height,
+    int extradata_size
 ) {
-    if (coded_width <= 0 || coded_height <= 0) {
+    if (
+        coded_width <= 0
+        || coded_height <= 0
+        || extradata_size < 0
+        || extradata_size > MAXIMUM_EXTRADATA_SIZE
+    ) {
         return NULL;
     }
 
-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO);
+    enum AVCodecID codec_id;
+    switch (codec_selector) {
+        case LEGACY_VIDEO_CODEC_MPEG2VIDEO:
+            if (extradata_size != 0) {
+                return NULL;
+            }
+            codec_id = AV_CODEC_ID_MPEG2VIDEO;
+            break;
+        case LEGACY_VIDEO_CODEC_VC1:
+            if (extradata_size == 0) {
+                return NULL;
+            }
+            codec_id = AV_CODEC_ID_VC1;
+            break;
+        default:
+            return NULL;
+    }
+
+    const AVCodec *codec = avcodec_find_decoder(codec_id);
     if (!codec) {
         return NULL;
     }
@@ -65,8 +95,28 @@ LegacyVideoDecoderContext *legacy_video_decoder_create(
     decoder->codec_context->coded_height = coded_height;
     decoder->codec_context->pkt_timebase = (AVRational) { 1, 1000000 };
     decoder->codec_context->thread_count = 1;
+    if (extradata_size > 0) {
+        decoder->codec_context->extradata = av_mallocz(
+            extradata_size + AV_INPUT_BUFFER_PADDING_SIZE
+        );
+        if (!decoder->codec_context->extradata) {
+            free_decoder(decoder);
+            return NULL;
+        }
+        decoder->codec_context->extradata_size = extradata_size;
+    }
 
     return decoder;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t *legacy_video_decoder_get_extradata(
+    LegacyVideoDecoderContext *decoder
+) {
+    if (!decoder || !decoder->codec_context || decoder->opened) {
+        return NULL;
+    }
+    return decoder->codec_context->extradata;
 }
 
 EMSCRIPTEN_KEEPALIVE

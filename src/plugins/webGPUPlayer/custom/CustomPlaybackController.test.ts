@@ -1669,6 +1669,54 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.getTelemetry().staleEventCount).toBe(1);
     });
 
+    it('does not let delayed seek preparation stop the latest generation', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        if (!harness.audioOutput) {
+            throw new Error('Expected an audio output');
+        }
+        const delayedAudioSuspension = createDeferred<void>();
+        harness.audioOutput.setPlaying.mockImplementationOnce(
+            (): Promise<void> => delayedAudioSuspension.promise
+        );
+
+        const firstSeek = harness.controller.seek(secondsToMicroseconds(10));
+        const secondSeek = harness.controller.seek(secondsToMicroseconds(20));
+        await flushAsyncWork();
+        const latestGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!latestGeneration) {
+            throw new Error('Latest seek generation did not start');
+        }
+        expect(harness.videoDecodeSession.starts.at(-1)?.startTimeMicroseconds)
+            .toBe(secondsToMicroseconds(20));
+        const stopCallCount = harness.videoDecodeSession.stop.mock.calls.length;
+
+        delayedAudioSuspension.resolve(undefined);
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.stop).toHaveBeenCalledTimes(stopCallCount);
+
+        const audioConfiguration: DecodeWorkerAudioConfiguration = {
+            channelCount: 2,
+            codec: 'opus',
+            sampleRate: 48_000
+        };
+        await harness.videoDecodeSession.prepareAudio(audioConfiguration);
+        harness.audioBridge.activate(latestGeneration, harness.audioOutput.generation);
+        harness.videoDecodeSession.emit({
+            audio: audioConfiguration,
+            codec: 'avc1.640028',
+            generation: latestGeneration,
+            type: 'ready'
+        });
+
+        await expect(firstSeek).resolves.toMatchObject({ status: 'superseded' });
+        await expect(secondSeek).resolves.toMatchObject({
+            generation: latestGeneration,
+            status: 'started'
+        });
+        await harness.controller.destroy();
+    });
+
     it('switches audio tracks by restarting generations at the audio-master time', async () => {
         const harness = createControllerHarness(true);
         const firstGeneration = await startReadyPlayback(harness, true);

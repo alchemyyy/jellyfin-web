@@ -263,7 +263,12 @@ describe('OwnedNativeMediaAudioBackend', () => {
             createSegment(2_000, 2_100)
         )).rejects.toThrow('append queue is full');
 
-        expect(await harness.backend.stop(1)).toBe(true);
+        expect(await harness.backend.setPlaying(1, true)).toBe(true);
+        expect(harness.audioElement.paused).toBe(false);
+        const stopPromise = harness.backend.stop(1);
+        expect(harness.audioElement.paused).toBe(true);
+        expect(harness.audioElement.muted).toBe(true);
+        expect(await stopPromise).toBe(true);
         expect(await Promise.all(queuedAppends)).toEqual(
             new Array(MAXIMUM_NATIVE_AUDIO_PENDING_SEGMENT_COUNT).fill(false)
         );

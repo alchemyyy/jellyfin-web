@@ -6,7 +6,9 @@ import {
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat
 } from './DolbyVisionHEVCSplitter';
-import { neutralizeNativeHDRHEVCDecoderConfig } from './NativeHDRHEVCColorNeutralizer';
+import {
+    neutralizeNativeHDRHEVCDecoderConfigWithValidation
+} from './NativeHDRHEVCColorNeutralizer';
 import type { HEVCHDRTransfer } from './HEVCSPSParser';
 
 export type OwnedNativeHEVCVideoDecoderCallbacks = {
@@ -75,14 +77,19 @@ export default class OwnedNativeHEVCVideoDecoder {
         try {
             const neutralizeHDRColorMetadata =
                 this.options.neutralizeHDRColorMetadata === true;
-            decoder.configure(neutralizeHDRColorMetadata ?
-                neutralizeNativeHDRHEVCDecoderConfig(
-                    this.config,
-                    this.requireNativeHDRTransfer()
-                ) :
-                this.config);
-            this.nativeHDRColorDescriptionValidated = neutralizeHDRColorMetadata
-                && this.config.description !== undefined;
+            if (neutralizeHDRColorMetadata) {
+                const neutralizedConfiguration =
+                    neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+                        this.config,
+                        this.requireNativeHDRTransfer()
+                    );
+                decoder.configure(neutralizedConfiguration.configuration);
+                this.nativeHDRColorDescriptionValidated =
+                    neutralizedConfiguration.decoderDescriptionValidated;
+            } else {
+                decoder.configure(this.config);
+                this.nativeHDRColorDescriptionValidated = false;
+            }
         } catch (error) {
             decoder.ondequeue = null;
             decoder.close();

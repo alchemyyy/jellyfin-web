@@ -261,6 +261,23 @@ function createBundledLegacyVideoCapabilityProperties(
     return { bundledLegacyVideo: createBundledLegacyVideoCapability() };
 }
 
+function createBundledVC1CapabilityProperties(
+    supportedVideoCodecs: ReadonlySet<CustomVideoCodec>
+): Readonly<Pick<CustomDecodeCapabilities, 'bundledVC1'>>
+    | Readonly<Record<string, never>> {
+    if (!supportedVideoCodecs.has('vc1')) {
+        return {};
+    }
+    return {
+        bundledVC1: Object.freeze({
+            ...createBundledLegacyVideoCapability(),
+            codec: 'vc1',
+            decodedI420Fingerprint: 182_587_665,
+            measuredFramesPerSecond: 30
+        })
+    };
+}
+
 type NativeUltraHDVideoCapabilityHarness = Readonly<{
     capabilityProperties: Readonly<{
         nativeUltraHDVideo?: NonNullable<CustomDecodeCapabilities['nativeUltraHDVideo']>
@@ -405,6 +422,7 @@ function createCapabilities(
         } : {}),
         ...createBundledJPEG2000CapabilityProperties(supportedVideoSet),
         ...createBundledLegacyVideoCapabilityProperties(supportedVideoSet),
+        ...createBundledVC1CapabilityProperties(supportedVideoSet),
         h264Profiles: createH264ProfileCapabilities(supportedVideoSet.has('h264')),
         nativeDolbyVisionHEVC: {
             bitDepth: 10,
@@ -690,6 +708,39 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(measuredProfile?.Conditions?.some(condition => (
             condition.Property === 'VideoBitrate'
         ))).toBe(false);
+    });
+
+    it('advertises only the exact qualified progressive Advanced VC-1 Matroska route', () => {
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities([ 'vc1' ], [ 'aac' ])
+        );
+
+        expect(result.profile.DirectPlayProfiles).toContainEqual({
+            AudioCodec: 'aac',
+            Container: 'mkv',
+            Type: 'Video',
+            VideoCodec: 'vc1'
+        });
+        expect(result.profile.DirectPlayProfiles?.some(profile => (
+            profile.VideoCodec === 'vc1'
+            && profile.Container !== 'mkv'
+        ))).toBe(false);
+        const measuredProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'vc1'
+        ));
+        expect(measuredProfile).toMatchObject({
+            Container: 'mkv',
+            Type: 'Video'
+        });
+        expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
+            expect.objectContaining({ Property: 'Width', Value: '1920' }),
+            expect.objectContaining({ Property: 'Height', Value: '1080' }),
+            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
+            expect.objectContaining({ Property: 'VideoProfile', Value: 'advanced' }),
+            expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
+        ]));
     });
 
     it('advertises only the exact qualified OpenJPEG MJ2 route', () => {
@@ -1225,14 +1276,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Condition: 'EqualsAny',
                     IsRequired: true,
                     Property: 'AudioChannels',
-                    Value: '6|7|8'
+                    Value: '6|8'
                 },
                 ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS,
                 {
                     Condition: 'EqualsAny',
                     IsRequired: true,
                     Property: 'AudioProfile',
-                    Value: 'DTS|DTS 96/24|DTS-ES|DTS-HD HRA|DTS-HD MA|DTS-HD MA + DTS:X'
+                    Value: 'DTS|DTS 96/24|DTS-HD HRA|DTS-HD MA|DTS-HD MA + DTS:X'
                 }
             ],
             Container: 'mkv',
@@ -1286,19 +1337,20 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         for (const route of [
             { channelCount: 6, profile: 'DTS', sampleRate: 48_000 },
             { channelCount: 6, profile: 'DTS 96/24', sampleRate: 96_000 },
-            { channelCount: 7, profile: 'DTS-ES', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD HRA', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 96_000 },
             { channelCount: 6, profile: 'DTS-HD MA', sampleRate: 96_001 },
             { channelCount: 6, profile: 'DTS-HD MA + DTS:X', sampleRate: 192_000 },
             { channelCount: 6, profile: 'DTS', sampleRate: 12_345 },
-            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 },
             { channelCount: 6, profile: 'DTS', sampleRate: 2_999 }
         ]) {
             expect(acceptsMeasuredAudioRoute(codecProfiles, 'dts', route)).toBe(true);
         }
         for (const route of [
             { channelCount: 2, profile: 'DTS', sampleRate: 48_000 },
+            { channelCount: 7, profile: 'DTS-ES', sampleRate: 48_000 },
+            { channelCount: 7, profile: 'DTS-ES', sampleRate: 96_000 },
+            { channelCount: 7, profile: 'DTS-HD MA', sampleRate: 48_000 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 96_001 },
             { channelCount: 8, profile: 'DTS-HD HRA', sampleRate: 96_001 },
             { channelCount: 8, profile: 'DTS-HD MA', sampleRate: 192_000 },

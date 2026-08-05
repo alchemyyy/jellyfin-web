@@ -3,5 +3,5 @@ FFmpeg source SHA-256: fff68fd0b5061b1befba1cd9fc95357d9fc85eb3201bfed597c70d5f8
 Emscripten: 4.0.13
 Emscripten revision: 2659582941bef14008476903f48941909db1b196
 Configured license: LGPL version 2.1 or later
-Bridge SHA-256: a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da
+Bridge SHA-256: 832b62326346f5049f89a2d6a8f97f73df8b5b26c5a1d9114573fa1015be2ee8
 Isolated reproducible rebuild: verified

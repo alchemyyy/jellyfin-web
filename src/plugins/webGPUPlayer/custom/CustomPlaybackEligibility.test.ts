@@ -234,6 +234,17 @@ function createBundledLegacyVideoCapability(): NonNullable<
     });
 }
 
+function createBundledVC1Capability(): NonNullable<
+    CustomDecodeCapabilities['bundledVC1']
+> {
+    return Object.freeze({
+        ...createBundledLegacyVideoCapability(),
+        codec: 'vc1',
+        decodedI420Fingerprint: 182_587_665,
+        measuredFramesPerSecond: 30
+    });
+}
+
 function createCapabilities(): CustomDecodeCapabilities {
     const createRawHDRCapability = (
         codec: CustomRawHDRVideoCodec
@@ -319,6 +330,7 @@ function createCapabilities(): CustomDecodeCapabilities {
             hevc: createCapability('hevc', true),
             jpeg2000: createCapability('jpeg2000', false),
             mpeg2video: createCapability('mpeg2video', false),
+            vc1: createCapability('vc1', false),
             vp8: createCapability('vp8', true),
             vp9: createCapability('vp9', true)
         }
@@ -507,12 +519,6 @@ describe('CustomPlaybackEligibility', () => {
             Profile: 'Main',
             Width: 720
         } ],
-        [ 'VC-1', {
-            AverageFrameRate: 23.976,
-            BitDepth: 8,
-            Codec: 'VC1',
-            Profile: 'Advanced'
-        } ],
         [ '10-bit SDR AV1', {
             AverageFrameRate: 24,
             BitDepth: 10,
@@ -527,12 +533,23 @@ describe('CustomPlaybackEligibility', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(false);
     });
 
+    it('keeps exact progressive Advanced VC-1 metadata eligible for selection', () => {
+        const item = createPlaybackSelectionItem({
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Profile: 'Advanced'
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
+    });
+
     it('uses the requested media source instead of an unrelated supported alternate', () => {
         const unsupportedSource = (
             createPlaybackSelectionItem({
                 BitDepth: 8,
-                Codec: 'VC1',
-                Profile: 'Advanced'
+                Codec: 'PRORES',
+                Profile: null
             }, 'mkv', 'unsupported').MediaSources as unknown[]
         )[0];
         const supportedSource = (
@@ -579,7 +596,7 @@ describe('CustomPlaybackEligibility', () => {
     it('rejects a known unsupported codec even when unrelated metadata is incomplete', () => {
         const item = createPlaybackSelectionItem({
             BitDepth: undefined,
-            Codec: 'VC1',
+            Codec: 'PRORES',
             IsInterlaced: undefined,
             Profile: undefined
         });
@@ -632,6 +649,48 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     );
+
+    it('selects the exact progressive Advanced VC-1 Matroska route', () => {
+        const baseCapabilities = createCapabilities();
+        const capabilities: CustomDecodeCapabilities = {
+            ...baseCapabilities,
+            bundledVC1: createBundledVC1Capability(),
+            video: {
+                ...baseCapabilities.video,
+                vc1: createCapability('vc1', true)
+            }
+        };
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 23.976,
+            BitDepth: 8,
+            Codec: 'VC1',
+            Height: 1_080,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: 'Advanced',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            capabilities,
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            videoDecoderBackend: 'legacy-software',
+            videoOutputMode: 'video-frame'
+        });
+    });
 
     it.each([
         [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false ],
@@ -2804,7 +2863,6 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ 'DTS', 6, 48_000 ],
         [ 'DTS 96/24', 6, 96_000 ],
-        [ 'DTS-ES', 7, 48_000 ],
         [ 'DTS-HD HRA', 8, 48_000 ],
         [ 'DTS-HD MA', 8, 48_000 ],
         [ 'DTS-HD MA', 6, 96_001 ],
@@ -2845,6 +2903,25 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     );
+
+    it('rejects DTS-ES after the reported 6.1 route failed runtime geometry validation', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1].Channels = 7;
+        mediaSource.MediaStreams[1].Codec = 'dts';
+        mediaSource.MediaStreams[1].Profile = 'DTS-ES';
+        mediaSource.MediaStreams[1].SampleRate = 48_000;
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+    });
 
     it('accepts the Matroska DCA alias through the same DTS route', () => {
         const options = createOptions();

@@ -1,9 +1,9 @@
 {
   "artifacts": {
-    "legacy-video-decode.js": "d43c51795d5d77ae5dd1bd7cda5bb086d90e91638030165645a4295a08ea1563",
-    "legacy-video-decode.wasm": "322a09a902af2b896958b6685f399fc44c73be3dc2d4c67b66eaf5ee3857149a"
+    "legacy-video-decode.js": "f6e6b2294655cb3665ece2015b98e389b336221ea8854631d78652c76e977aa5",
+    "legacy-video-decode.wasm": "6d1608becf8bd027e69d535a1517b74d4b619a7ac4cecf39d60cde8cebeec428"
   },
-  "bridgeSHA256": "a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da",
+  "bridgeSHA256": "832b62326346f5049f89a2d6a8f97f73df8b5b26c5a1d9114573fa1015be2ee8",
   "configuredComponents": [
     "--disable-all",
     "--disable-everything",
@@ -11,10 +11,12 @@
     "--disable-version3",
     "--disable-nonfree",
     "--enable-avcodec",
-    "--enable-decoder=mpeg2video"
+    "--enable-decoder=mpeg2video",
+    "--enable-decoder=vc1"
   ],
   "decoders": [
-    "mpeg2video"
+    "mpeg2video",
+    "vc1"
   ],
   "emscripten": "4.0.13",
   "emscriptenRevision": "2659582941bef14008476903f48941909db1b196",

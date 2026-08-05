@@ -9,6 +9,7 @@ import LegacySoftwareVideoDecoder, {
 
 const DECODER_POINTER = 1;
 const PACKET_POINTER = 48;
+const EXTRADATA_POINTER = 256;
 const AGAIN_ERROR = -11;
 const EOF_ERROR = -541_478_725;
 
@@ -39,8 +40,10 @@ class FakeLegacyVideoDecoderModule implements LegacyVideoDecoderModule {
     >();
     public readonly _legacy_video_decoder_create = vi.fn<
         (
+            codec: number,
             codedWidth: number,
-            codedHeight: number
+            codedHeight: number,
+            extradataByteLength: number
         ) => number
     >();
     public readonly _legacy_video_decoder_error_again = (): number => AGAIN_ERROR;
@@ -72,6 +75,9 @@ class FakeLegacyVideoDecoderModule implements LegacyVideoDecoderModule {
     );
     public readonly _legacy_video_decoder_get_duration = (): bigint => (
         this.currentFrame.duration ?? BigInt(0)
+    );
+    public readonly _legacy_video_decoder_get_extradata = (): number => (
+        EXTRADATA_POINTER
     );
     public readonly _legacy_video_decoder_get_height = (): number => (
         this.currentFrame.height ?? 2
@@ -232,10 +238,40 @@ describe('LegacySoftwareVideoDecoder', () => {
             'https://example.test/web/libraries/legacy-video/legacy-video-decode.wasm'
         );
         expect(harness.module._legacy_video_decoder_create).toHaveBeenCalledWith(
+            1,
             4,
-            2
+            2,
+            0
         );
         expect(harness.module._legacy_video_decoder_close).toHaveBeenCalledOnce();
+    });
+
+    it('opens VC-1 with an owned decoder description', async () => {
+        const harness = createHarness();
+        const description = new Uint8Array([ 15, 219, 126, 59 ]);
+        const decoder = new LegacySoftwareVideoDecoder({
+            codec: 'vc1',
+            codedHeight: 2,
+            codedWidth: 4,
+            description
+        }, {
+            onError: vi.fn(),
+            onSample: vi.fn()
+        }, harness.dependencies);
+
+        await decoder.init();
+
+        expect(harness.module._legacy_video_decoder_create).toHaveBeenCalledWith(
+            2,
+            4,
+            2,
+            description.byteLength
+        );
+        expect(harness.module.HEAPU8.slice(
+            EXTRADATA_POINTER,
+            EXTRADATA_POINTER + description.byteLength
+        )).toEqual(description);
+        decoder.close();
     });
 
     it('emits an owned progressive I420 sample with exact timing and metadata', async () => {
@@ -367,6 +403,16 @@ describe('LegacySoftwareVideoDecoder', () => {
         }, harness.dependencies);
         await expect(oversizedDecoder.init()).rejects.toThrow('unsupported');
         expect(harness.module._legacy_video_decoder_create).not.toHaveBeenCalled();
+
+        const missingDescriptionDecoder = new LegacySoftwareVideoDecoder({
+            codec: 'vc1',
+            codedHeight: 2,
+            codedWidth: 4
+        }, {
+            onError: vi.fn(),
+            onSample: vi.fn()
+        }, harness.dependencies);
+        await expect(missingDescriptionDecoder.init()).rejects.toThrow('description');
 
         const secondHarness = createHarness();
         secondHarness.module.sendFrameBatches.push([ { width: 5 } ]);

@@ -29,6 +29,9 @@ OUTPUT_PATH = (
     / "mpeg2-progressive-1920x1080.mkv"
 )
 EXPECTED_SHA256 = "86db9dfebafb85c3c6001c762c5a1c91427d2039fcd5fbffba8c8c42efaf43b1"
+VC1_EXPECTED_SHA256 = (
+    "560ccb27518b854f765aa84d4503a84c0a2ffaa5b28f5d6edd7de0326f246cd0"
+)
 DEFAULT_REGISTRY_OUTPUT = DEFAULT_FRAGMENT_DIRECTORY / "legacy-video.json"
 
 
@@ -53,7 +56,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def create_registry_fragment() -> dict[str, object]:
-    """Creates the exact progressive MPEG-2 validation-registry fragment."""
+    """Creates the exact progressive legacy-video validation-registry fragment."""
 
     specification = FixtureRegistrySpecification(
         fixture_id="mpeg2-main-progressive-1080p24-matroska",
@@ -92,12 +95,49 @@ def create_registry_fragment() -> dict[str, object]:
             },
         },
     )
+    vc1_specification = FixtureRegistrySpecification(
+        fixture_id="vc1-advanced-progressive-1080p24-matroska",
+        repository_path=(
+            "scripts/webgpu/legacy-video-capability-fixtures/"
+            "vc1-advanced-progressive-1920x1080.mkv"
+        ),
+        expected_sha256=VC1_EXPECTED_SHA256,
+        license_expression="GPL-2.0-or-later",
+        license_evidence_uri="repo://LICENSE",
+        provenance={
+            "generatorArguments": [
+                "Windows Media Foundation MFVideoFormat_WVC1",
+                "FFmpeg stream-copy remux to Matroska",
+            ],
+            "kind": "generated",
+            "revision": "windows-11-media-foundation",
+            "source": "Project-authored synthetic RGB moving test pattern",
+        },
+        media={
+            "container": "matroska",
+            "packetization": "vc1-advanced-access-units",
+            "video": {
+                "bitDepth": 8,
+                "chroma": "4:2:0",
+                "codec": "vc1",
+                "frameRate": 24,
+                "height": 1080,
+                "matrix": "unspecified",
+                "primaries": "unspecified",
+                "profile": "advanced",
+                "progressive": True,
+                "range": "unspecified",
+                "transfer": "unspecified",
+                "width": 1920,
+            },
+        },
+    )
     return create_fixture_registry_fragment(
         registry_id="legacy-video",
         generator_uri=(
             "repo://scripts/webgpu/generate_legacy_video_capability_fixture.py"
         ),
-        specifications=(specification,),
+        specifications=(specification, vc1_specification),
     )
 
 

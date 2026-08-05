@@ -45,6 +45,7 @@ import {
 } from './PlaybackBitratePolicy';
 import { PlaybackRequestGate } from './PlaybackRequestGate';
 import { getPlaybackRecoveryStartTimeTicks } from './PlaybackRecoveryPosition';
+import { shouldAllowVideoStreamCopy } from './PlaybackStreamCopyPolicy';
 import { orderVideoPlayersByPreference } from './PreferredVideoPlayer';
 import * as bitrateTest from 'utils/bitrateTest';
 import {
@@ -546,6 +547,12 @@ async function getPlaybackInfo(player, apiClient, item, deviceProfile, mediaSour
     query.AlwaysBurnInSubtitleWhenTranscoding = appSettings.alwaysBurnInSubtitleWhenTranscoding();
 
     query.DeviceProfile = deviceProfile;
+
+    if (query.AllowVideoStreamCopy !== false
+        && !shouldAllowVideoStreamCopy(player, item, mediaSourceId, options.mediaStreams)
+    ) {
+        query.AllowVideoStreamCopy = false;
+    }
 
     const res = await getMediaInfoApi(api).getPostedPlaybackInfo({ itemId: itemId, playbackInfoDto: query });
     return res.data;
@@ -1963,6 +1970,7 @@ export class PlaybackManager {
                     maxBitrate,
                     startPosition: ticks,
                     isPlayback: true,
+                    mediaStreams: currentMediaSource.MediaStreams,
                     audioStreamIndex,
                     subtitleStreamIndex,
                     enableDirectPlay: params.EnableDirectPlay,
@@ -3172,6 +3180,7 @@ export class PlaybackManager {
                     transcodingBitrate: transcodingMaxBitrate,
                     startPosition,
                     isPlayback: null,
+                    mediaStreams,
                     audioStreamIndex,
                     subtitleStreamIndex,
                     startIndex: playOptions.startIndex,

@@ -40,16 +40,17 @@ const PINNED_TRUEHD_BRIDGE_SHA256 =
     'afc1314afac62f3985a814706ef2ec471d2015b61816cb5df751e9dae4711bf2';
 const PINNED_TRUEHD_RUNTIME_SHA256 =
     'e69f9e1e7fbfdd2b7c8c750de59ccfb887c88c633e407c4b46a8ce875d13c630';
-const PINNED_MPEG2_BRIDGE_SHA256 =
-    'a9853ba5b679967dd8675cec0e7a2370da2ec972a18d12e084edbb79dcf682da';
-const PINNED_MPEG2_COMPONENTS = Object.freeze([
+const PINNED_LEGACY_VIDEO_BRIDGE_SHA256 =
+    '832b62326346f5049f89a2d6a8f97f73df8b5b26c5a1d9114573fa1015be2ee8';
+const PINNED_LEGACY_VIDEO_COMPONENTS = Object.freeze([
     '--disable-all',
     '--disable-everything',
     '--disable-gpl',
     '--disable-version3',
     '--disable-nonfree',
     '--enable-avcodec',
-    '--enable-decoder=mpeg2video'
+    '--enable-decoder=mpeg2video',
+    '--enable-decoder=vc1'
 ]);
 const DTS_ARTIFACTS = Object.freeze([
     {
@@ -126,6 +127,10 @@ const HEVC_ARTIFACTS = Object.freeze([
         sourcePath: 'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
     }
 ]);
+const PGS_WORKER_ARTIFACT = Object.freeze({
+    packagePath: 'dist/libpgs.worker.js',
+    servedPath: 'libraries/libpgs.worker.js'
+});
 const LEGACY_VIDEO_ARTIFACTS = Object.freeze([
     {
         servedPath: 'libraries/legacy-video/legacy-video-decode.js',
@@ -170,6 +175,10 @@ const LEGACY_VIDEO_ARTIFACTS = Object.freeze([
     {
         servedPath: 'libraries/legacy-video/mpeg2-progressive-1920x1080-qualification.bin',
         sourcePath: 'scripts/webgpu/legacy-video-capability-fixtures/mpeg2-progressive-1920x1080.mkv'
+    },
+    {
+        servedPath: 'libraries/legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin',
+        sourcePath: 'scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv'
     }
 ]);
 const OPENJPEG_ARTIFACTS = Object.freeze([
@@ -275,6 +284,29 @@ async function verifyHEVCArtifacts(repositoryRoot, distDirectory) {
     return verifiedArtifacts;
 }
 
+async function verifyPGSWorkerArtifact(repositoryRoot, distDirectory) {
+    const sourceArtifact = join(
+        repositoryRoot,
+        'node_modules',
+        'libpgs',
+        PGS_WORKER_ARTIFACT.packagePath
+    );
+    const servedArtifact = join(distDirectory, PGS_WORKER_ARTIFACT.servedPath);
+    await requireFile(sourceArtifact);
+    await requireFile(servedArtifact);
+    const [ sourceSHA256, servedSHA256 ] = await Promise.all([
+        hashFile(sourceArtifact),
+        hashFile(servedArtifact)
+    ]);
+    if (sourceSHA256 !== servedSHA256) {
+        throw new Error('libpgs worker artifact hash mismatch');
+    }
+    return {
+        path: PGS_WORKER_ARTIFACT.servedPath,
+        sha256: servedSHA256
+    };
+}
+
 async function verifyDolbyVisionArtifacts(repositoryRoot, distDirectory) {
     const verifiedArtifacts = [];
     for (const artifact of DOLBY_VISION_ARTIFACTS) {
@@ -324,10 +356,9 @@ async function verifyLegacyVideoArtifacts(repositoryRoot, distDirectory) {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
     if (
         !Array.isArray(manifest?.decoders)
-        || manifest.decoders.length !== 1
-        || manifest.decoders[0] !== 'mpeg2video'
+        || JSON.stringify(manifest.decoders) !== JSON.stringify([ 'mpeg2video', 'vc1' ])
     ) {
-        throw new Error('Legacy video manifest decoder list is not MPEG-2-only');
+        throw new Error('Legacy video manifest decoder list is invalid');
     }
     if (
         manifest.ffmpegRevision !== PINNED_FFMPEG_COMMIT
@@ -337,7 +368,7 @@ async function verifyLegacyVideoArtifacts(repositoryRoot, distDirectory) {
         || manifest.license !== 'LGPL version 2.1 or later'
         || manifest.reproducibleBuild !== true
         || JSON.stringify(manifest.configuredComponents)
-            !== JSON.stringify(PINNED_MPEG2_COMPONENTS)
+            !== JSON.stringify(PINNED_LEGACY_VIDEO_COMPONENTS)
     ) {
         throw new Error('Legacy video manifest provenance is incomplete or unpinned');
     }
@@ -376,7 +407,7 @@ async function verifyLegacyVideoArtifacts(repositoryRoot, distDirectory) {
         PINNED_FFMPEG_SOURCE_SHA256,
         PINNED_EMSCRIPTEN_VERSION,
         PINNED_EMSCRIPTEN_REVISION,
-        PINNED_MPEG2_BRIDGE_SHA256,
+        PINNED_LEGACY_VIDEO_BRIDGE_SHA256,
         'LGPL version 2.1 or later',
         'Isolated reproducible rebuild: verified'
     ], 'Legacy video');
@@ -599,16 +630,35 @@ export async function verifyCustomCodecArtifacts(options = {}) {
     const repositoryRoot = resolve(options.repositoryRoot ?? REPOSITORY_ROOT);
     const distDirectory = resolve(options.distDirectory ?? join(repositoryRoot, 'dist'));
     await requireFile(join(distDirectory, 'config.json'));
-    const [ hevc, ac3, dolbyVision, dts, legacyVideo, openjpeg, truehd ] = await Promise.all([
+    const [
+        hevc,
+        ac3,
+        dolbyVision,
+        dts,
+        legacyVideo,
+        pgsWorker,
+        openjpeg,
+        truehd
+    ] = await Promise.all([
         verifyHEVCArtifacts(repositoryRoot, distDirectory),
         verifyAC3Artifacts(repositoryRoot, distDirectory),
         verifyDolbyVisionArtifacts(repositoryRoot, distDirectory),
         verifyDTSArtifacts(repositoryRoot, distDirectory),
         verifyLegacyVideoArtifacts(repositoryRoot, distDirectory),
+        verifyPGSWorkerArtifact(repositoryRoot, distDirectory),
         verifyOpenJPEGArtifacts(repositoryRoot, distDirectory),
         verifyTrueHDArtifacts(repositoryRoot, distDirectory)
     ]);
-    return { ac3, dolbyVision, dts, hevc, legacyVideo, openjpeg, truehd };
+    return {
+        ac3,
+        dolbyVision,
+        dts,
+        hevc,
+        legacyVideo,
+        openjpeg,
+        pgsWorker,
+        truehd
+    };
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
