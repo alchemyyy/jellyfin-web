@@ -355,6 +355,95 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
         });
     });
 
+    it('retries a borderline cold 4K throughput result', async () => {
+        let decoderIndex = 0;
+        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
+            createDecoder: async (): Promise<HEVCDecoderBackend> => {
+                let tier: HEVCExactCapabilityTier;
+                switch (decoderIndex) {
+                    case 0:
+                        tier = 'main-1080p';
+                        break;
+                    case 1:
+                        tier = 'main10-1080p';
+                        break;
+                    default:
+                        tier = 'main10-4k';
+                        break;
+                }
+                decoderIndex += 1;
+                return createBackend(tier, () => undefined);
+            },
+            fingerprintFrame,
+            now: createNow([
+                0, 10, 80,
+                100, 110, 180,
+                200, 210, 460,
+                500, 510, 710
+            ])
+        };
+
+        const response = await runHEVCExactCapabilityWorkerRequest(
+            createRequest(),
+            dependencies
+        );
+
+        expect(decoderIndex).toBe(4);
+        expect(response.results[2]).toMatchObject({
+            decodeMilliseconds: 210,
+            framesPerSecond: 35,
+            reason: 'decode-output-verified',
+            steadyStateDecodeMilliseconds: 200,
+            supported: true,
+            tier: 'main10-4k'
+        });
+    });
+
+    it('bounds 4K warm retries and retains the fastest insufficient result', async () => {
+        let decoderIndex = 0;
+        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
+            createDecoder: async (): Promise<HEVCDecoderBackend> => {
+                let tier: HEVCExactCapabilityTier;
+                switch (decoderIndex) {
+                    case 0:
+                        tier = 'main-1080p';
+                        break;
+                    case 1:
+                        tier = 'main10-1080p';
+                        break;
+                    default:
+                        tier = 'main10-4k';
+                        break;
+                }
+                decoderIndex += 1;
+                return createBackend(tier, () => undefined);
+            },
+            fingerprintFrame,
+            now: createNow([
+                0, 10, 80,
+                100, 110, 180,
+                200, 210, 460,
+                500, 510, 750,
+                800, 810, 1_055
+            ])
+        };
+
+        const response = await runHEVCExactCapabilityWorkerRequest(
+            createRequest(),
+            dependencies
+        );
+
+        expect(decoderIndex).toBe(5);
+        expect(response.results[2]).toMatchObject({
+            decodeMilliseconds: 250,
+            framesPerSecond: 175 / 6,
+            reason: 'throughput-insufficient',
+            steadyStateDecodeMilliseconds: 240,
+            supported: false,
+            tier: 'main10-4k'
+        });
+    });
+
     it('rejects malformed requests before creating decoder memory', async () => {
         const createDecoder = vi.fn();
         const request = createRequest();

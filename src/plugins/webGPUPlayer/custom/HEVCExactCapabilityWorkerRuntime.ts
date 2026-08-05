@@ -11,6 +11,7 @@ import {
 import {
     HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH,
     HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH,
+    HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS,
     isHEVCExactCapabilityWorkerRequest,
@@ -31,6 +32,8 @@ const DEFAULT_DEPENDENCIES: HEVCExactCapabilityWorkerRuntimeDependencies = Objec
     fingerprintFrame: createFrameFingerprint,
     now: (): number => globalThis.performance.now()
 });
+
+const HEVC_ULTRA_HD_MAXIMUM_PROBE_ATTEMPT_COUNT = 3;
 
 type AnnexBStartCode = Readonly<{
     byteLength: 3 | 4
@@ -520,7 +523,64 @@ async function probeTier(
     }
 }
 
-/** Runs both exact HEVC decode tiers through the bounded @hevcjs/core backend. */
+function isBorderlineUltraHDThroughputFailure(
+    result: HEVCExactCapabilityWorkerTierResult
+): boolean {
+    return result.tier === 'main10-4k'
+        && result.reason === 'throughput-insufficient'
+        && result.framesPerSecond !== null
+        && result.framesPerSecond
+            >= HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND;
+}
+
+function selectFasterThroughputFailure(
+    first: HEVCExactCapabilityWorkerTierResult,
+    second: HEVCExactCapabilityWorkerTierResult
+): HEVCExactCapabilityWorkerTierResult {
+    return (second.framesPerSecond ?? 0) > (first.framesPerSecond ?? 0) ?
+        second :
+        first;
+}
+
+async function probeTierWithWarmRetry(
+    tierRequest: HEVCExactCapabilityWorkerTierRequest,
+    decoderWASMURL: string,
+    dependencies: HEVCExactCapabilityWorkerRuntimeDependencies
+): Promise<HEVCExactCapabilityWorkerTierResult> {
+    let bestResult = await probeTier(tierRequest, decoderWASMURL, dependencies);
+    if (!isBorderlineUltraHDThroughputFailure(bestResult)) {
+        return bestResult;
+    }
+
+    // UHD allocation and WASM tiering can distort the first otherwise valid sample
+    for (
+        let attemptNumber = 2;
+        attemptNumber <= HEVC_ULTRA_HD_MAXIMUM_PROBE_ATTEMPT_COUNT;
+        attemptNumber += 1
+    ) {
+        const retryResult = await probeTier(
+            tierRequest,
+            decoderWASMURL,
+            dependencies
+        );
+        switch (retryResult.reason) {
+            case 'decode-output-verified':
+                return retryResult;
+            case 'throughput-insufficient':
+                bestResult = selectFasterThroughputFailure(bestResult, retryResult);
+                if (!isBorderlineUltraHDThroughputFailure(retryResult)) {
+                    return bestResult;
+                }
+                break;
+            default:
+                // Inconsistent decode or output evidence must still fail closed
+                return retryResult;
+        }
+    }
+    return bestResult;
+}
+
+/** Runs every exact HEVC decode tier through the bounded @hevcjs/core backend. */
 export async function runHEVCExactCapabilityWorkerRequest(
     request: HEVCExactCapabilityWorkerRequest,
     dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = DEFAULT_DEPENDENCIES
@@ -532,7 +592,11 @@ export async function runHEVCExactCapabilityWorkerRequest(
     const results: HEVCExactCapabilityWorkerTierResult[] = [];
     let totalDecodedByteLength = 0;
     for (const tierRequest of request.tiers) {
-        const result = await probeTier(tierRequest, request.decoderWASMURL, dependencies);
+        const result = await probeTierWithWarmRetry(
+            tierRequest,
+            request.decoderWASMURL,
+            dependencies
+        );
         totalDecodedByteLength += result.totalDecodedByteLength ?? 0;
         if (
             !Number.isSafeInteger(totalDecodedByteLength)
