@@ -1,0 +1,10 @@
+TrueHD and MLP capability fixture provenance
+
+These files contain only deterministic, mathematically generated sine tones.
+They contain no copied media content. The generator records exact source
+SHA-256 values and embeds complete access units plus reference PCM fingerprints
+in TrueHDExactCapabilityFixtures.ts.
+
+truehd_51_side_24_96000.mka is a deterministic, metadata-free Matroska remux of
+the corresponding elementary stream and validates Mediabunny A_TRUEHD packet
+extraction.

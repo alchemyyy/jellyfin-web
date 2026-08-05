@@ -1,0 +1,12 @@
+libdcadec qualification fixture provenance
+
+The DTS elementary streams and mono PCM reference files come from
+foo86/dcadec-samples commit 8665d5718888f2b9192516f86014cc3642ed653a.
+Upstream explicitly releases these sample files into the public domain.
+
+packets.json records FFmpeg DTS-demuxer packet byte ranges adjusted past the
+DTS-HD file headers. It is validation metadata only. Production packets come
+from Mediabunny's bounded container input.
+
+core_51_24_48_768_0.mka is a deterministic, metadata-free Matroska remux of
+the Core fixture and verifies Mediabunny's A_DTS unknown-codec packet route.

@@ -122,7 +122,7 @@ function enableNativeTrackSupport(mediaSource, track) {
 
     if (track) {
         const format = (track.Codec || '').toLowerCase();
-        if (NATIVE_UNSUPPORTED_SUBTITLE_CODECS.includes(format)) {
+        if (format === 'ssa' || format === 'ass' || format === 'pgssub') {
             return false;
         }
     }
@@ -211,54 +211,11 @@ function getTextTrackUrl(track, item, format) {
     return url;
 }
 
-function getSubtitleFileNameHint(track) {
-    const candidates = [track?.Path, track?.DeliveryUrl];
-    for (const candidate of candidates) {
-        if (!candidate) {
-            continue;
-        }
-
-        const sanitized = candidate.split(/[?#]/)[0];
-        const fileName = sanitized.split(/[\\/]/).pop();
-        if (fileName) {
-            return fileName;
-        }
-    }
-
-    const codec = (track?.Codec || '').toLowerCase();
-    if (VOBSUB_SUBTITLE_CODECS.includes(codec)) {
-        return 'subtitle.mks';
-    }
-
-    return undefined;
-}
-
-function getBitmapSubtitleDisplaySettings() {
-    const aspectMode = userSettings.getSubtitleAppearanceSettings()?.aspectMode;
-    const normalizedAspectMode = typeof aspectMode === 'string' ? aspectMode.toLowerCase() : 'stretch';
-
-    if (BITMAP_SUBTITLE_ASPECT_MODES.includes(normalizedAspectMode)) {
-        return {
-            aspectMode: normalizedAspectMode
-        };
-    }
-
-    return {
-        aspectMode: 'contain'
-    };
-}
-
-function getSubtitleTimeOffset(playOptions, subtitleOffset = 0) {
-    return ((playOptions?.transcodingOffsetTicks || 0) / 10000000) + subtitleOffset;
-}
-
 function getDefaultProfile() {
     return profileBuilder({});
 }
 
 const PRIMARY_TEXT_TRACK_INDEX = 0;
-const VOBSUB_DEBAND_THRESHOLD = 64;
-const VOBSUB_DEBAND_RANGE = 15;
 const SECONDARY_TEXT_TRACK_INDEX = 1;
 
 export class HtmlVideoPlayer {
@@ -327,7 +284,7 @@ export class HtmlVideoPlayer {
     /**
      * @type {any | null | undefined}
      */
-    #currentBitmapSubRenderer;
+    #currentPgsRenderer;
     /**
      * @type {HTMLCanvasElement | null | undefined}
      */
@@ -470,7 +427,6 @@ export class HtmlVideoPlayer {
      * @type {any | undefined}
      */
     #lastProfile;
-
     constructor(
         playbackManagerPlayer,
         forceCustomSubtitleElements = false,
@@ -1493,7 +1449,6 @@ export class HtmlVideoPlayer {
         this.#invalidatePlaySession();
         this.#invalidateSubtitleSession();
         this.setSubtitleOffset.cancel();
-        this.#stopClientHDRToneMappingPostProcessing();
 
         destroyHlsPlayer(this);
         destroyFlvPlayer(this);
@@ -1541,83 +1496,6 @@ export class HtmlVideoPlayer {
             // iOS Safari
             document.webkitCancelFullscreen();
         }
-    }
-
-    /**
-     * Applies curve-derived global desaturation and follows strength changes
-     * without restarting the active stream.
-     * @private
-     */
-    #startClientHDRToneMappingPostProcessing(
-        videoElement,
-        preset,
-        bt2390Parameters
-    ) {
-        this.#stopClientHDRToneMappingPostProcessing();
-
-        const resolvedPreset = resolveClientHDRToneMappingPreset(preset);
-        const updateSaturation = () => {
-            const saturation = calculateClientHDRToneMappingSaturation(
-                resolvedPreset,
-                bt2390Parameters,
-                userSettings.clientHDRToneMappingDesaturationStrength()
-            );
-
-            if (
-                this.#clientHDRToneMappingPostProcessingElement !== videoElement
-                || this.#clientHDRToneMappingPostProcessingSaturation
-                    === saturation
-            ) {
-                return;
-            }
-
-            this.#clientHDRToneMappingPostProcessingSaturation = saturation;
-            videoElement.style.setProperty(
-                CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY,
-                saturation.toFixed(6)
-            );
-            videoElement.classList.toggle(
-                CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS,
-                saturation < 1
-            );
-            console.debug(
-                `client HDR tone-mapping CSS saturation: ${saturation.toFixed(3)}`
-            );
-        };
-
-        this.#clientHDRToneMappingPostProcessingElement = videoElement;
-        updateSaturation();
-        this.#clientHDRToneMappingPostProcessingInterval = window.setInterval(
-            updateSaturation,
-            CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_INTERVAL_MS
-        );
-    }
-
-    /**
-     * Removes the post-processing state from the current video element.
-     * @private
-     */
-    #stopClientHDRToneMappingPostProcessing() {
-        if (this.#clientHDRToneMappingPostProcessingInterval !== undefined) {
-            window.clearInterval(
-                this.#clientHDRToneMappingPostProcessingInterval
-            );
-            this.#clientHDRToneMappingPostProcessingInterval = undefined;
-        }
-
-        const videoElement =
-            this.#clientHDRToneMappingPostProcessingElement;
-        if (videoElement) {
-            videoElement.classList.remove(
-                CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS
-            );
-            videoElement.style.removeProperty(
-                CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY
-            );
-        }
-
-        this.#clientHDRToneMappingPostProcessingElement = undefined;
-        this.#clientHDRToneMappingPostProcessingSaturation = undefined;
     }
 
     /**

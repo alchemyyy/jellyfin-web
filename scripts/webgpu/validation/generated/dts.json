@@ -5,7 +5,7 @@
       "byteLength": 7368,
       "id": "dts-core-5-1-48k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -37,7 +37,7 @@
       "byteLength": 14284,
       "id": "dts-96-24-5-1-96k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -69,7 +69,7 @@
       "byteLength": 7368,
       "id": "dts-es-6-1-48k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -101,7 +101,7 @@
       "byteLength": 36064,
       "id": "dts-hd-hra-7-1-48k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -133,7 +133,7 @@
       "byteLength": 32888,
       "id": "dts-hd-ma-7-1-48k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -165,7 +165,7 @@
       "byteLength": 54184,
       "id": "dts-hd-ma-7-1-96k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -197,7 +197,7 @@
       "byteLength": 44608,
       "id": "dts-hd-ma-5-1-192k",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {
@@ -229,7 +229,7 @@
       "byteLength": 6636,
       "id": "dts-core-5-1-48k-matroska",
       "license": {
-        "evidence": "repo://scripts/webgpu/dts/fixtures/README.md",
+        "evidence": "repo://scripts/webgpu/dts/fixtures/PROVENANCE.txt",
         "expression": "LicenseRef-Public-Domain"
       },
       "media": {

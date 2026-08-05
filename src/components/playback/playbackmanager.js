@@ -1919,7 +1919,8 @@ export class PlaybackManager {
 
             const deviceProfileOptions = {
                 isRetry: params.EnableDirectPlay === false
-            }).then(function (deviceProfile) {
+            };
+            player.getDeviceProfile(currentItem, deviceProfileOptions).then(function (deviceProfile) {
                 if (!streamChangeRequestGate.isCurrent(streamChangeRequestGeneration)) {
                     return;
                 }
