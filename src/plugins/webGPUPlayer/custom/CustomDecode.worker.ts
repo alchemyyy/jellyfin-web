@@ -33,9 +33,9 @@ import {
     isSupportedCustomAudioInputLayout
 } from './CustomAudioOutputPolicy';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
-import StreamingAudioResampler, {
+import StreamingAudioOutputPipeline, {
     type StreamingAudioResamplerOutput
-} from './StreamingAudioResampler';
+} from './StreamingAudioOutputPipeline';
 import {
     getCustomDecodeHardwareAcceleration,
     isDecodeWorkerRequest,
@@ -1630,7 +1630,7 @@ function normalizeAudioSample(
     sample: AudioSample,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    resampler: StreamingAudioResampler
+    outputPipeline: StreamingAudioOutputPipeline
 ): StreamingAudioResamplerOutput[] {
     try {
         const sampleTimeMicroseconds = requireMicroseconds(
@@ -1677,7 +1677,7 @@ function normalizeAudioSample(
             preparedAudioTrack.inputChannelLayout,
             preparedAudioTrack.outputChannelCount
         );
-        return resampler.push({
+        return outputPipeline.push({
             channelData,
             mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
         });
@@ -1690,7 +1690,7 @@ function normalizeDTSAudioOutput(
     output: DTSDecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    resampler: StreamingAudioResampler
+    outputPipeline: StreamingAudioOutputPipeline
 ): StreamingAudioResamplerOutput[] {
     if (output.channelData.length !== preparedAudioTrack.inputChannelCount
         || output.sampleRate !== preparedAudioTrack.sourceSampleRate
@@ -1723,7 +1723,7 @@ function normalizeDTSAudioOutput(
         output.channelLayout,
         preparedAudioTrack.outputChannelCount
     );
-    return resampler.push({
+    return outputPipeline.push({
         channelData,
         mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
     });
@@ -1733,7 +1733,7 @@ function normalizeEAC3AudioOutput(
     output: EAC3DecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    resampler: StreamingAudioResampler
+    outputPipeline: StreamingAudioOutputPipeline
 ): StreamingAudioResamplerOutput[] {
     if (preparedAudioTrack.decoderBackend !== 'eac3'
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1767,7 +1767,7 @@ function normalizeEAC3AudioOutput(
         output.channelLayout,
         preparedAudioTrack.outputChannelCount
     );
-    return resampler.push({
+    return outputPipeline.push({
         channelData,
         mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
     });
@@ -1777,7 +1777,7 @@ function normalizeTrueHDAudioOutput(
     output: TrueHDDecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    resampler: StreamingAudioResampler
+    outputPipeline: StreamingAudioOutputPipeline
 ): StreamingAudioResamplerOutput[] {
     if (output.codec !== preparedAudioTrack.decoderBackend
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1811,7 +1811,7 @@ function normalizeTrueHDAudioOutput(
         output.channelLayout,
         preparedAudioTrack.outputChannelCount
     );
-    return resampler.push({
+    return outputPipeline.push({
         channelData,
         mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
     });
@@ -3145,21 +3145,34 @@ async function streamVideoFrames(
     }
 }
 
+function createStreamingAudioOutputPipeline(
+    preparedAudioTrack: PreparedAudioTrack,
+    maximumTimestampQuantizationMicroseconds: number
+): StreamingAudioOutputPipeline {
+    const peakLimiterEnabled = preparedAudioTrack.outputMode === 'decoded-pcm'
+        && preparedAudioTrack.outputChannelCount === CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT
+        && preparedAudioTrack.inputChannelLayout.id === '7.1';
+    return new StreamingAudioOutputPipeline({
+        channelCount: preparedAudioTrack.outputChannelCount,
+        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        maximumTimestampQuantizationMicroseconds,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
+        peakLimiterEnabled,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    });
+}
+
 async function streamAudioSamples(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
-    const resampler = new StreamingAudioResampler({
-        channelCount: preparedAudioTrack.outputChannelCount,
-        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
-        maximumTimestampQuantizationMicroseconds:
-            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-    });
+    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+        preparedAudioTrack,
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+    );
     const iterator = sampleSink.samples(
         microsecondsToSeconds(request.startTimeMicroseconds)
     ) as unknown as MediaSampleIterator<AudioSample>;
@@ -3172,7 +3185,7 @@ async function streamAudioSamples(
             return;
         }
         if (iteratorResult.done) {
-            await postNormalizedAudioOutput(run, resampler.finalize(), true);
+            await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
             return;
         }
 
@@ -3180,7 +3193,7 @@ async function streamAudioSamples(
             iteratorResult.value,
             preparedAudioTrack,
             request.startTimeMicroseconds,
-            resampler
+            audioOutputPipeline
         );
         if (!await postNormalizedAudioOutput(run, output, true)) {
             return;
@@ -3201,15 +3214,10 @@ async function streamDTSAudioPackets(
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await DTSSoftwareAudioDecoder.create();
-    const resampler = new StreamingAudioResampler({
-        channelCount: preparedAudioTrack.outputChannelCount,
-        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
-        maximumTimestampQuantizationMicroseconds:
-            DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-    });
+    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+        preparedAudioTrack,
+        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+    );
 
     try {
         while (await waitForAudioSampleCredit(run)) {
@@ -3218,7 +3226,7 @@ async function streamDTSAudioPackets(
                 return;
             }
             if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3233,7 +3241,7 @@ async function streamDTSAudioPackets(
                 output,
                 preparedAudioTrack,
                 request.startTimeMicroseconds,
-                resampler
+                audioOutputPipeline
             );
             if (!await postNormalizedAudioOutput(run, normalizedOutput, true)) {
                 return;
@@ -3257,15 +3265,10 @@ async function streamEAC3AudioPackets(
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await EAC3SoftwareAudioDecoder.create();
-    const resampler = new StreamingAudioResampler({
-        channelCount: preparedAudioTrack.outputChannelCount,
-        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
-        maximumTimestampQuantizationMicroseconds:
-            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-    });
+    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+        preparedAudioTrack,
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+    );
 
     try {
         while (await waitForAudioSampleCredit(run)) {
@@ -3274,7 +3277,7 @@ async function streamEAC3AudioPackets(
                 return;
             }
             if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3291,7 +3294,7 @@ async function streamEAC3AudioPackets(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    resampler
+                    audioOutputPipeline
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
@@ -3324,15 +3327,10 @@ async function streamTrueHDAudioPackets(
         MediaSampleIterator<EncodedPacket>;
     run.audioIterator = iterator;
     const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
-    const resampler = new StreamingAudioResampler({
-        channelCount: preparedAudioTrack.outputChannelCount,
-        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
-        maximumTimestampQuantizationMicroseconds:
-            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
-        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
-    });
+    const audioOutputPipeline = createStreamingAudioOutputPipeline(
+        preparedAudioTrack,
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+    );
 
     try {
         while (await waitForAudioSampleCredit(run)) {
@@ -3341,7 +3339,7 @@ async function streamTrueHDAudioPackets(
                 return;
             }
             if (iteratorResult.done) {
-                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
@@ -3358,7 +3356,7 @@ async function streamTrueHDAudioPackets(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    resampler
+                    audioOutputPipeline
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {

@@ -18,9 +18,10 @@ import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput,
     getDTSDecodedAudioFingerprint
 } from './DTSSoftwareAudioDecoder';
-import StreamingAudioResampler, {
+import { CUSTOM_AUDIO_LIMITER_CEILING_GAIN } from './StreamingAudioLookaheadLimiter';
+import StreamingAudioOutputPipeline, {
     type StreamingAudioResamplerOutput
-} from './StreamingAudioResampler';
+} from './StreamingAudioOutputPipeline';
 import { requireMicroseconds } from './TimeMath';
 
 type DTSFixtureDefinition = {
@@ -125,23 +126,24 @@ function concatenateStereoOutput(
     return [ left, right ];
 }
 
-function resampleStereo(
+function processStereoOutput(
     channelData: StereoChannelData,
     sourceSampleRate: number,
     splitFrameCounts: readonly number[]
 ): StereoChannelData {
-    const resampler = new StreamingAudioResampler({
+    const outputPipeline = new StreamingAudioOutputPipeline({
         channelCount: 2,
         maximumOutputFrameCount: 4_096,
         maximumTimestampQuantizationMicroseconds: 2_000,
         minimumOutputFrameCount: 1,
+        peakLimiterEnabled: true,
         sourceSampleRate,
         targetSampleRate: 48_000
     });
     const outputs: StreamingAudioResamplerOutput[] = [];
     let frameOffset = 0;
     for (const frameCount of splitFrameCounts) {
-        outputs.push(...resampler.push({
+        outputs.push(...outputPipeline.push({
             channelData: [
                 channelData[0].slice(frameOffset, frameOffset + frameCount),
                 channelData[1].slice(frameOffset, frameOffset + frameCount)
@@ -155,7 +157,7 @@ function resampleStereo(
     if (frameOffset !== channelData[0].length) {
         throw new Error('DTS downmix resampler split does not cover the input');
     }
-    outputs.push(...resampler.finalize());
+    outputs.push(...outputPipeline.finalize());
     return concatenateStereoOutput(outputs);
 }
 
@@ -237,7 +239,6 @@ describe('bundled libdcadec integration', () => {
                 for (const channel of stereo) {
                     for (const sample of channel) {
                         expect(Number.isFinite(sample)).toBe(true);
-                        expect(Math.abs(sample)).toBeLessThanOrEqual(1);
                     }
                 }
             }
@@ -247,7 +248,7 @@ describe('bundled libdcadec integration', () => {
     it.each(Object.entries(FIXTURE_DEFINITIONS).filter(([, definition ]) => (
         definition.qualificationStereoFingerprint !== undefined
     )))(
-        'keeps exact 7.1 normalization for %s across decode/resampler boundaries',
+        'limits exact 7.1 output for %s across decode/resampler boundaries',
         async (fileName, definition) => {
             const outputs = await decodeFixture(fileName);
             const qualificationOutput = outputs[definition.qualificationPacketIndex];
@@ -255,7 +256,7 @@ describe('bundled libdcadec integration', () => {
                 qualificationOutput.channelData,
                 qualificationOutput.channelLayout
             );
-            const contiguous = resampleStereo(
+            const contiguous = processStereoOutput(
                 stereo,
                 qualificationOutput.sampleRate,
                 [ stereo[0].length ]
@@ -265,7 +266,7 @@ describe('bundled libdcadec integration', () => {
                 101,
                 stereo[0].length - 118
             ];
-            const split = resampleStereo(
+            const split = processStereoOutput(
                 stereo,
                 qualificationOutput.sampleRate,
                 splitFrameCounts
@@ -275,7 +276,9 @@ describe('bundled libdcadec integration', () => {
             for (const channel of split) {
                 for (const sample of channel) {
                     expect(Number.isFinite(sample)).toBe(true);
-                    expect(Math.abs(sample)).toBeLessThanOrEqual(1);
+                    expect(Math.abs(sample)).toBeLessThanOrEqual(
+                        CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6
+                    );
                 }
             }
         }

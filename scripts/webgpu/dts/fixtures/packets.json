@@ -46,7 +46,7 @@
     "qualificationFingerprint": 3536941583,
     "qualificationFrameCount": 512,
     "qualificationPacketIndex": 2,
-    "qualificationStereoFingerprint": 462495223,
+    "qualificationStereoFingerprint": 2693076502,
     "packets": [
       [140, 5120], [5260, 5120], [10380, 5120], [15500, 5120],
       [20620, 5120], [25740, 5204], [30944, 5120]
@@ -60,7 +60,7 @@
     "qualificationFingerprint": 2341239666,
     "qualificationFrameCount": 512,
     "qualificationPacketIndex": 2,
-    "qualificationStereoFingerprint": 2480053321,
+    "qualificationStereoFingerprint": 2496824725,
     "referenceDelayFrames": 1024,
     "referenceFrameCount": 2048,
     "packets": [
@@ -76,7 +76,7 @@
     "qualificationFingerprint": 1000973190,
     "qualificationFrameCount": 1024,
     "qualificationPacketIndex": 2,
-    "qualificationStereoFingerprint": 378858437,
+    "qualificationStereoFingerprint": 809530197,
     "packets": [
       [140, 1140], [1280, 1140], [2420, 14440], [16860, 12344],
       [29204, 11216], [40420, 12624], [53044, 1140]

@@ -23,10 +23,9 @@ const SIX_POINT_ONE_MIXED_CHANNEL_GAIN =
 const STEREO_FINGERPRINT_OFFSET_BASIS = 0x811c9dc5;
 const STEREO_FINGERPRINT_PRIME = 0x01000193;
 
-export const CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY = 'mpv-normalized' as const;
-export const SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN = 1 / (1 + 3 * Math.SQRT1_2);
-export const SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN =
-    SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN * Math.SQRT1_2;
+export const CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY = 'mpv-default-limited' as const;
+export const SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN = 1;
+export const SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN = Math.SQRT1_2;
 export const SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK =
     SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN
     + 3 * SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN;
@@ -169,9 +168,9 @@ function requireSevenPointOnePlanarInput(
 
 /**
  * Downmixes WAVE-order 7.1 planar PCM (FL, FR, FC, LFE, BL, BR, SL, SR) to
- * stereo using mpv's opt-in normalized libswresample matrix. This prevents
- * correlated full-scale input from exceeding unity without per-chunk gain
- * changes or clipping. LFE is intentionally omitted.
+ * stereo using mpv's default libswresample matrix. The streaming output
+ * limiter handles correlated peaks without permanently reducing program gain.
+ * LFE is intentionally omitted.
  */
 export function downmixSevenPointOneToStereo(
     channelData: readonly Float32Array[]

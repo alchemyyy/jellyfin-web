@@ -203,22 +203,22 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
             'side-left',
             'side-right'
         ]);
-        expect(CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY).toBe('mpv-normalized');
+        expect(CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY).toBe('mpv-default-limited');
         expect(SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN).toBe(
-            REFERENCE.policies.mpvNormalized.directGain
+            REFERENCE.policies.mpvDefault.directGain
         );
         expect(SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN).toBe(
-            REFERENCE.policies.mpvNormalized.centerBackSideGain
+            REFERENCE.policies.mpvDefault.centerBackSideGain
         );
-        expect(REFERENCE.policies.mpvNormalized.lfeGain).toBe(0);
+        expect(REFERENCE.policies.mpvDefault.lfeGain).toBe(0);
         expect(SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK).toBeCloseTo(
-            REFERENCE.policies.mpvNormalized.maximumCorrelatedPeak,
+            REFERENCE.policies.mpvDefault.maximumCorrelatedPeak,
             14
         );
     });
 
     it.each(REFERENCE.corpus.sampleRates)(
-        'matches the generated %i Hz corpus metrics without hidden clipping',
+        'matches the generated %i Hz default-matrix corpus metrics',
         sampleRate => {
             const corpus = createCorpus(REFERENCE.corpus.frameCount);
             expect(hashInterleavedFloat32(corpus)).toBe(
@@ -227,7 +227,7 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
 
             const output = downmixSevenPointOneToStereo(corpus);
             const actual = computeStereoMetrics(output);
-            const expected = REFERENCE.measurements[String(sampleRate)].mpvNormalized;
+            const expected = REFERENCE.measurements[String(sampleRate)].mpvDefault;
 
             expect(actual.nonFiniteSampleCount).toBe(expected.nonFiniteSampleCount);
             expect(actual.clippedSampleCount).toBe(expected.clippedSampleCount);
@@ -241,7 +241,7 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
         }
     );
 
-    it('retains normalization because mpv default overloads correlated input', () => {
+    it('delegates default-matrix overload protection to the streaming limiter', () => {
         const defaultPolicy = REFERENCE.policies.mpvDefault;
         const normalizedPolicy = REFERENCE.policies.mpvNormalized;
 

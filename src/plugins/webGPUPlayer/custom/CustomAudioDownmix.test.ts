@@ -138,7 +138,7 @@ describe('downmixSevenPointOneToStereo', () => {
         ].map(Math.fround));
     });
 
-    it('omits LFE and bounds correlated full-scale input without clipping', () => {
+    it('omits LFE and leaves correlated peaks for the streaming limiter', () => {
         const channelData: Float32Array[] = [];
         for (let channelIndex = 0; channelIndex < 8; channelIndex += 1) {
             channelData.push(createConstantChannel(channelIndex === 3 ? 100 : 1, 1));
@@ -148,13 +148,13 @@ describe('downmixSevenPointOneToStereo', () => {
 
         expect(outputLeft[0]).toBeCloseTo(SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK, 6);
         expect(outputRight[0]).toBeCloseTo(SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK, 6);
-        expect(Math.abs(outputLeft[0])).toBeLessThanOrEqual(1);
-        expect(Math.abs(outputRight[0])).toBeLessThanOrEqual(1);
+        expect(Math.abs(outputLeft[0])).toBeGreaterThan(3);
+        expect(Math.abs(outputRight[0])).toBeGreaterThan(3);
         expect(Number.isFinite(outputLeft[0])).toBe(true);
         expect(Number.isFinite(outputRight[0])).toBe(true);
     });
 
-    it('maps isolated WAVE-order impulses to the pinned mpv coefficients', () => {
+    it('maps isolated WAVE-order impulses to the default mpv coefficients', () => {
         const expectedLeft = [
             SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN,
             0,
