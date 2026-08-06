@@ -6,6 +6,7 @@ import type {
 } from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
+import type { CustomAudioDownmixAlgorithm } from './CustomAudioDownmixAlgorithm';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
@@ -54,6 +55,7 @@ export type CustomPlaybackFallbackDisposition =
     | 'same-session-native';
 
 export type CustomPlaybackPlayOptions = {
+    audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount

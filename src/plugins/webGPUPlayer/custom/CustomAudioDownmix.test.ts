@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN,
+    FIVE_POINT_ONE_MAXIMUM_CORRELATED_PEAK,
+    FIVE_POINT_ONE_MIXED_CHANNEL_GAIN,
     SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN,
     SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK,
     SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN,
@@ -9,6 +12,7 @@ import {
     downmixSevenPointOneToStereo,
     getStereoChannelDataFingerprint
 } from './CustomAudioDownmix';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 
 function createConstantChannel(value: number, frameCount = 3): Float32Array {
     const channel = new Float32Array(frameCount);
@@ -29,8 +33,8 @@ describe('downmixFivePointOneToStereo', () => {
 
         const [ outputLeft, outputRight ] = downmixFivePointOneToStereo(channelData);
 
-        const directGain = Math.SQRT2 - 1;
-        const mixedGain = 1 - (Math.SQRT2 / 2);
+        const directGain = FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN;
+        const mixedGain = FIVE_POINT_ONE_MIXED_CHANNEL_GAIN;
         expect(Array.from(outputLeft)).toEqual([
             1 * directGain + 3 * mixedGain + 5 * mixedGain,
             1 * directGain + 3 * mixedGain + 5 * mixedGain,
@@ -43,22 +47,77 @@ describe('downmixFivePointOneToStereo', () => {
         ].map(Math.fround));
     });
 
-    it('omits LFE and remains bounded for full-scale nominal input', () => {
+    it('omits LFE and leaves correlated peaks for the streaming limiter', () => {
         const channelData = [
             createConstantChannel(1, 1),
-            createConstantChannel(-1, 1),
+            createConstantChannel(1, 1),
             createConstantChannel(1, 1),
             createConstantChannel(100, 1),
             createConstantChannel(1, 1),
-            createConstantChannel(-1, 1)
+            createConstantChannel(1, 1)
         ];
 
         const [ outputLeft, outputRight ] = downmixFivePointOneToStereo(channelData);
 
+        expect(outputLeft[0]).toBeCloseTo(FIVE_POINT_ONE_MAXIMUM_CORRELATED_PEAK, 6);
+        expect(outputRight[0]).toBeCloseTo(FIVE_POINT_ONE_MAXIMUM_CORRELATED_PEAK, 6);
+        expect(Math.abs(outputLeft[0])).toBeGreaterThan(2);
+        expect(Math.abs(outputRight[0])).toBeGreaterThan(2);
+    });
+
+    it('provides a bounded fixed-headroom Lo/Ro alternative', () => {
+        const channelData = [ 1, 1, 1, 100, 1, 1 ].map(value => (
+            createConstantChannel(value, 1)
+        ));
+
+        const [ outputLeft, outputRight ] = downmixFivePointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.PeakNormalizedLORO
+        );
+
         expect(outputLeft[0]).toBeCloseTo(1, 6);
-        expect(outputRight[0]).toBeCloseTo(-Math.SQRT2 + 1, 6);
-        expect(Math.abs(outputLeft[0])).toBeLessThanOrEqual(1);
-        expect(Math.abs(outputRight[0])).toBeLessThanOrEqual(1);
+        expect(outputRight[0]).toBeCloseTo(1, 6);
+    });
+
+    it.each([
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4,
+            expectedLeft: 1 + 3 * Math.SQRT1_2 + 5 * Math.SQRT1_2,
+            expectedRight: 2 + 3 * Math.SQRT1_2 + 6 * Math.SQRT1_2
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.Dave750,
+            expectedLeft: 1 * 0.707 + 3 * 0.5 + 4 * 0.5 + 5 * 0.707,
+            expectedRight: 2 * 0.707 + 3 * 0.5 + 4 * 0.5 + 6 * 0.707
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
+            expectedLeft: 1 * 0.3 + 3 + 5 * 0.3,
+            expectedRight: 2 * 0.3 + 3 + 6 * 0.3
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            expectedLeft: 1 * 0.529067 + 3 * 0.374107 + 4 * 0.374107
+                + 5 * 0.458186 + 6 * 0.264534,
+            expectedRight: 2 * 0.529067 + 3 * 0.374107 + 4 * 0.374107
+                + 6 * 0.458186 + 5 * 0.264534
+        }
+    ])('applies the $algorithm 5.1 matrix', ({
+        algorithm,
+        expectedLeft,
+        expectedRight
+    }) => {
+        const channelData = [ 1, 2, 3, 4, 5, 6 ].map(value => (
+            createConstantChannel(value, 1)
+        ));
+
+        const [ outputLeft, outputRight ] = downmixFivePointOneToStereo(
+            channelData,
+            algorithm
+        );
+
+        expect(outputLeft[0]).toBeCloseTo(expectedLeft, 6);
+        expect(outputRight[0]).toBeCloseTo(expectedRight, 6);
     });
 
     it('does not mutate input planes', () => {
@@ -189,6 +248,51 @@ describe('downmixSevenPointOneToStereo', () => {
             expect(outputLeft[0]).toBeCloseTo(expectedLeft[inputChannelIndex], 7);
             expect(outputRight[0]).toBeCloseTo(expectedRight[inputChannelIndex], 7);
         }
+    });
+
+    it.each([
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.AC4,
+            expectedLeft: 1 + 3 * Math.SQRT1_2 + 5 * 0.5 + 7 * 0.5,
+            expectedRight: 2 + 3 * Math.SQRT1_2 + 6 * 0.5 + 8 * 0.5
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.Dave750,
+            expectedLeft: 1 * 0.707 + 3 * 0.5 + 4 * 0.5 + 5 * 0.5 + 7 * 0.5,
+            expectedRight: 2 * 0.707 + 3 * 0.5 + 4 * 0.5 + 6 * 0.5 + 8 * 0.5
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
+            expectedLeft: 1 * 0.3 + 3 + 5 * 0.3 * Math.SQRT1_2
+                + 7 * 0.3 * Math.SQRT1_2,
+            expectedRight: 2 * 0.3 + 3 + 6 * 0.3 * Math.SQRT1_2
+                + 8 * 0.3 * Math.SQRT1_2
+        },
+        {
+            algorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            expectedLeft: 1 * 0.388631 + 3 * 0.274804 + 4 * 0.274804
+                + 5 * 0.336565 + 6 * 0.194316
+                + 7 * 0.336565 + 8 * 0.194316,
+            expectedRight: 2 * 0.388631 + 3 * 0.274804 + 4 * 0.274804
+                + 6 * 0.336565 + 5 * 0.194316
+                + 8 * 0.336565 + 7 * 0.194316
+        }
+    ])('applies the $algorithm 7.1 matrix', ({
+        algorithm,
+        expectedLeft,
+        expectedRight
+    }) => {
+        const channelData = [ 1, 2, 3, 4, 5, 6, 7, 8 ].map(value => (
+            createConstantChannel(value, 1)
+        ));
+
+        const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(
+            channelData,
+            algorithm
+        );
+
+        expect(outputLeft[0]).toBeCloseTo(expectedLeft, 6);
+        expect(outputRight[0]).toBeCloseTo(expectedRight, 6);
     });
 
     it('is sample-exact across arbitrary input chunk boundaries', () => {

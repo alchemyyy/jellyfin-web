@@ -10,6 +10,7 @@ import type {
     DecodedVideoPresentationFrame
 } from '../WebGPUPresenter';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
@@ -613,15 +614,17 @@ describe('CustomPlaybackController', () => {
         await harness.controller.destroy();
     });
 
-    it('forwards the selected decoded multichannel output count', async () => {
+    it('forwards the selected decoded audio layout and downmix algorithm', async () => {
         const harness = createControllerHarness(true);
         const options = createPlayOptions(0);
+        options.audioDownmixAlgorithm = CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845;
         options.decodedAudioOutputChannelCount = 8;
 
         const startPromise = harness.controller.play(options);
         await flushAsyncWork();
 
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8
         });

@@ -45,6 +45,7 @@ import {
     type BrowserAudioContextPrewarmLease
 } from './custom/BrowserAudioContextPrewarm';
 import { CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE } from './custom/CustomAudioOutputPolicy';
+import type { CustomAudioDownmixAlgorithm } from './custom/CustomAudioDownmixAlgorithm';
 import { isSupportedCustomAudioSampleRate } from './custom/CustomAudioSampleRate';
 import {
     getCustomPlaybackEligibility,
@@ -582,6 +583,13 @@ function selectDecodedAudioOutputChannelCount(
         audioContext,
         eligibility.audioSourceChannelCount
     );
+}
+
+function selectAudioDownmixAlgorithm(
+    audioTrackIndex: number | null,
+    selectedAlgorithm: CustomAudioDownmixAlgorithm
+): CustomAudioDownmixAlgorithm | undefined {
+    return audioTrackIndex === null ? undefined : selectedAlgorithm;
 }
 
 /**
@@ -2243,8 +2251,13 @@ export default class WebGPUPlayer {
                 options,
                 userSettingsModule.selectAudioNormalization(undefined)
             );
+            const audioDownmixAlgorithm = selectAudioDownmixAlgorithm(
+                eligibility.audioTrackIndex,
+                userSettingsModule.webGPUAudioDownmixAlgorithm(undefined)
+            );
 
             const startResult = await customPlaybackController.play({
+                audioDownmixAlgorithm,
                 audioOutputMode: eligibility.audioOutputMode ?? undefined,
                 audioTrackIndex: eligibility.audioTrackIndex,
                 decodedAudioOutputChannelCount,

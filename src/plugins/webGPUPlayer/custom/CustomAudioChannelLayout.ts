@@ -1,4 +1,8 @@
 import {
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    type CustomAudioDownmixAlgorithm
+} from './CustomAudioDownmixAlgorithm';
+import {
     downmixFivePointOneToStereo,
     downmixSixPointOneToStereo,
     downmixSevenPointOneToStereo
@@ -98,6 +102,26 @@ export const CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT: CustomAudioChannelLayout = Obj
 export type StereoChannelData = [ Float32Array, Float32Array ];
 export type CustomAudioOutputChannelData = readonly Float32Array[];
 
+/** Reports whether destination constraints require selectable 5.1/7.1 mixing. */
+export function isSelectableCustomAudioDownmixRequired(
+    layout: CustomAudioChannelLayout,
+    outputChannelCount: CustomAudioOutputChannelCount
+): boolean {
+    if (outputChannelCount !== CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT) {
+        return false;
+    }
+    switch (layout.id) {
+        case '5.1-back':
+        case '5.1-side':
+        case '7.1':
+            return true;
+        case '6.1':
+        case 'mono':
+        case 'stereo':
+            return false;
+    }
+}
+
 /** Rejects incomplete multichannel speaker beds and unsupported layout conversion. */
 export function assertCustomAudioOutputChannelLayout(
     layout: CustomAudioChannelLayout,
@@ -163,7 +187,9 @@ function requireLayoutChannelData(
 /** Applies the one shared channel-layout policy before decoded PCM output. */
 export function mixCustomAudioToStereo(
     channelData: readonly Float32Array[],
-    layout: CustomAudioChannelLayout
+    layout: CustomAudioChannelLayout,
+    downmixAlgorithm: CustomAudioDownmixAlgorithm =
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM
 ): StereoChannelData {
     const frameCount = requireLayoutChannelData(channelData, layout);
     switch (layout.id) {
@@ -179,11 +205,11 @@ export function mixCustomAudioToStereo(
             return [ channelData[0], channelData[1] ];
         case '5.1-back':
         case '5.1-side':
-            return downmixFivePointOneToStereo(channelData);
+            return downmixFivePointOneToStereo(channelData, downmixAlgorithm);
         case '6.1':
             return downmixSixPointOneToStereo(channelData);
         case '7.1':
-            return downmixSevenPointOneToStereo(channelData);
+            return downmixSevenPointOneToStereo(channelData, downmixAlgorithm);
     }
 }
 
@@ -191,12 +217,14 @@ export function mixCustomAudioToStereo(
 export function prepareCustomAudioOutputChannelData(
     channelData: readonly Float32Array[],
     layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputChannelCount: CustomAudioOutputChannelCount,
+    downmixAlgorithm: CustomAudioDownmixAlgorithm =
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM
 ): CustomAudioOutputChannelData {
     assertCustomAudioOutputChannelLayout(layout, outputChannelCount);
     switch (outputChannelCount) {
         case CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT:
-            return mixCustomAudioToStereo(channelData, layout);
+            return mixCustomAudioToStereo(channelData, layout, downmixAlgorithm);
         case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
         case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
             requireLayoutChannelData(channelData, layout);

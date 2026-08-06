@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { VideoPlayerPreference } from 'components/playback/PreferredVideoPlayer';
+import {
+    CUSTOM_AUDIO_DOWNMIX_ALGORITHMS,
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM
+} from 'plugins/webGPUPlayer/custom/CustomAudioDownmixAlgorithm';
 
 vi.mock('hooks/api/useDisplayPreferences', () => ({
     getDisplayPreferencesQuery: vi.fn()
@@ -76,5 +80,49 @@ describe('UserSettings preferred video player', () => {
         localStorage.setItem('user-1-preferredVideoPlayer', 'unsupported');
 
         expect(settings.preferredVideoPlayer()).toBe(VideoPlayerPreference.Auto);
+    });
+});
+
+describe('UserSettings WebGPU audio downmix algorithm', () => {
+    beforeEach(() => {
+        localStorage.clear();
+    });
+
+    it('defaults to standard Lo/Ro with dynamic peak limiting', () => {
+        const settings = new UserSettings();
+
+        expect(settings.webGPUAudioDownmixAlgorithm())
+            .toBe(DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM);
+    });
+
+    it('persists a supported selection for the current user on this client', () => {
+        const settings = new UserSettings();
+        settings.currentUserId = 'user-1';
+
+        settings.webGPUAudioDownmixAlgorithm(
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845
+        );
+
+        expect(localStorage.getItem('user-1-webGPUAudioDownmixAlgorithm'))
+            .toBe(CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845);
+        expect(settings.webGPUAudioDownmixAlgorithm())
+            .toBe(CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845);
+    });
+
+    it('normalizes invalid persisted and assigned values to the default', () => {
+        const settings = new UserSettings();
+        settings.currentUserId = 'user-1';
+        localStorage.setItem('user-1-webGPUAudioDownmixAlgorithm', 'unsupported');
+
+        expect(settings.webGPUAudioDownmixAlgorithm())
+            .toBe(DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM);
+
+        const untypedSettings = settings as unknown as {
+            webGPUAudioDownmixAlgorithm: (value: string) => string
+        };
+        untypedSettings.webGPUAudioDownmixAlgorithm('also-unsupported');
+
+        expect(localStorage.getItem('user-1-webGPUAudioDownmixAlgorithm'))
+            .toBe(DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM);
     });
 });

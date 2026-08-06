@@ -6,6 +6,7 @@ import {
     type Microseconds
 } from '../MediaTime';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 import CustomDecodeNativeAudioBridge, {
     type OwnedNativeMediaAudioBackendPort
 } from './CustomDecodeNativeAudioBridge';
@@ -725,6 +726,7 @@ describe('CustomDecodeSession', () => {
         );
 
         session.start({
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8,
             dolbyVisionProfile: null,
@@ -742,6 +744,7 @@ describe('CustomDecodeSession', () => {
         });
 
         expect(worker.postedMessages[0]).toMatchObject({
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8,
             generation: 9,

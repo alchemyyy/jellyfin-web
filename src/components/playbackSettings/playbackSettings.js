@@ -301,6 +301,8 @@ function loadForm(context, user, userSettings, systemInfo, apiClient) {
     context.querySelector('.chkEnableCinemaMode').checked = userSettings.enableCinemaMode();
     context.querySelector('#selectAudioNormalization').value = userSettings.selectAudioNormalization();
     context.querySelector('#selectPreferredVideoPlayer').value = userSettings.preferredVideoPlayer();
+    context.querySelector('#selectWebGPUAudioDownmixAlgorithm').value =
+        userSettings.webGPUAudioDownmixAlgorithm();
     context.querySelector('.chkEnableNextVideoOverlay').checked = userSettings.enableNextVideoInfoOverlay();
     context.querySelector('.chkRememberAudioSelections').checked = user.Configuration.RememberAudioSelections || false;
     context.querySelector('.chkRememberSubtitleSelections').checked = user.Configuration.RememberSubtitleSelections || false;
@@ -405,6 +407,9 @@ function saveUser(context, user, userSettingsInstance, apiClient) {
     userSettingsInstance.selectAudioNormalization(context.querySelector('#selectAudioNormalization').value);
     userSettingsInstance.preferredVideoPlayer(
         context.querySelector('#selectPreferredVideoPlayer').value
+    );
+    userSettingsInstance.webGPUAudioDownmixAlgorithm(
+        context.querySelector('#selectWebGPUAudioDownmixAlgorithm').value
     );
     userSettingsInstance.enableNextVideoInfoOverlay(context.querySelector('.chkEnableNextVideoOverlay').checked);
     user.Configuration.RememberAudioSelections = context.querySelector('.chkRememberAudioSelections').checked;

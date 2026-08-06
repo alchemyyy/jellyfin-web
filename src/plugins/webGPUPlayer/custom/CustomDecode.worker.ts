@@ -21,8 +21,14 @@ import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
+    customAudioDownmixAlgorithmUsesLimiter,
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    type CustomAudioDownmixAlgorithm
+} from './CustomAudioDownmixAlgorithm';
+import {
     assertCustomAudioOutputChannelLayout,
     getCustomAudioChannelLayout,
+    isSelectableCustomAudioDownmixRequired,
     prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout,
     type CustomAudioOutputChannelCount
@@ -1630,7 +1636,8 @@ function normalizeAudioSample(
     sample: AudioSample,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline
+    outputPipeline: StreamingAudioOutputPipeline,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
 ): StreamingAudioResamplerOutput[] {
     try {
         const sampleTimeMicroseconds = requireMicroseconds(
@@ -1675,7 +1682,8 @@ function normalizeAudioSample(
         const channelData = prepareCustomAudioOutputChannelData(
             inputChannelData,
             preparedAudioTrack.inputChannelLayout,
-            preparedAudioTrack.outputChannelCount
+            preparedAudioTrack.outputChannelCount,
+            audioDownmixAlgorithm
         );
         return outputPipeline.push({
             channelData,
@@ -1690,7 +1698,8 @@ function normalizeDTSAudioOutput(
     output: DTSDecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline
+    outputPipeline: StreamingAudioOutputPipeline,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
 ): StreamingAudioResamplerOutput[] {
     if (output.channelData.length !== preparedAudioTrack.inputChannelCount
         || output.sampleRate !== preparedAudioTrack.sourceSampleRate
@@ -1721,7 +1730,8 @@ function normalizeDTSAudioOutput(
     const channelData = prepareCustomAudioOutputChannelData(
         inputChannelData,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount
+        preparedAudioTrack.outputChannelCount,
+        audioDownmixAlgorithm
     );
     return outputPipeline.push({
         channelData,
@@ -1733,7 +1743,8 @@ function normalizeEAC3AudioOutput(
     output: EAC3DecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline
+    outputPipeline: StreamingAudioOutputPipeline,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
 ): StreamingAudioResamplerOutput[] {
     if (preparedAudioTrack.decoderBackend !== 'eac3'
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1765,7 +1776,8 @@ function normalizeEAC3AudioOutput(
     const channelData = prepareCustomAudioOutputChannelData(
         inputChannelData,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount
+        preparedAudioTrack.outputChannelCount,
+        audioDownmixAlgorithm
     );
     return outputPipeline.push({
         channelData,
@@ -1777,7 +1789,8 @@ function normalizeTrueHDAudioOutput(
     output: TrueHDDecodedAudioOutput,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
-    outputPipeline: StreamingAudioOutputPipeline
+    outputPipeline: StreamingAudioOutputPipeline,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
 ): StreamingAudioResamplerOutput[] {
     if (output.codec !== preparedAudioTrack.decoderBackend
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1809,7 +1822,8 @@ function normalizeTrueHDAudioOutput(
     const channelData = prepareCustomAudioOutputChannelData(
         inputChannelData,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount
+        preparedAudioTrack.outputChannelCount,
+        audioDownmixAlgorithm
     );
     return outputPipeline.push({
         channelData,
@@ -3147,11 +3161,15 @@ async function streamVideoFrames(
 
 function createStreamingAudioOutputPipeline(
     preparedAudioTrack: PreparedAudioTrack,
-    maximumTimestampQuantizationMicroseconds: number
+    maximumTimestampQuantizationMicroseconds: number,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
 ): StreamingAudioOutputPipeline {
     const peakLimiterEnabled = preparedAudioTrack.outputMode === 'decoded-pcm'
-        && preparedAudioTrack.outputChannelCount === CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT
-        && preparedAudioTrack.inputChannelLayout.id === '7.1';
+        && isSelectableCustomAudioDownmixRequired(
+            preparedAudioTrack.inputChannelLayout,
+            preparedAudioTrack.outputChannelCount
+        )
+        && customAudioDownmixAlgorithmUsesLimiter(audioDownmixAlgorithm);
     return new StreamingAudioOutputPipeline({
         channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
@@ -3168,10 +3186,13 @@ async function streamAudioSamples(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
+    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
+        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        audioDownmixAlgorithm
     );
     const iterator = sampleSink.samples(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3193,7 +3214,8 @@ async function streamAudioSamples(
             iteratorResult.value,
             preparedAudioTrack,
             request.startTimeMicroseconds,
-            audioOutputPipeline
+            audioOutputPipeline,
+            audioDownmixAlgorithm
         );
         if (!await postNormalizedAudioOutput(run, output, true)) {
             return;
@@ -3206,6 +3228,8 @@ async function streamDTSAudioPackets(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
+    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
+        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const startPacket = await packetSink.getPacket(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3216,7 +3240,8 @@ async function streamDTSAudioPackets(
     const decoder = await DTSSoftwareAudioDecoder.create();
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        audioDownmixAlgorithm
     );
 
     try {
@@ -3241,7 +3266,8 @@ async function streamDTSAudioPackets(
                 output,
                 preparedAudioTrack,
                 request.startTimeMicroseconds,
-                audioOutputPipeline
+                audioOutputPipeline,
+                audioDownmixAlgorithm
             );
             if (!await postNormalizedAudioOutput(run, normalizedOutput, true)) {
                 return;
@@ -3257,6 +3283,8 @@ async function streamEAC3AudioPackets(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
+    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
+        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const startPacket = await packetSink.getPacket(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3267,7 +3295,8 @@ async function streamEAC3AudioPackets(
     const decoder = await EAC3SoftwareAudioDecoder.create();
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        audioDownmixAlgorithm
     );
 
     try {
@@ -3294,7 +3323,8 @@ async function streamEAC3AudioPackets(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    audioOutputPipeline
+                    audioOutputPipeline,
+                    audioDownmixAlgorithm
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
@@ -3311,6 +3341,8 @@ async function streamTrueHDAudioPackets(
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedAudioTrack: PreparedAudioTrack
 ): Promise<void> {
+    const audioDownmixAlgorithm = request.audioDownmixAlgorithm
+        ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
     const decoderCodec = preparedAudioTrack.decoderBackend;
     if (decoderCodec !== 'truehd' && decoderCodec !== 'mlp') {
         throw new UnsupportedCustomDecodeSourceError('TrueHD decoder selection is unavailable');
@@ -3329,7 +3361,8 @@ async function streamTrueHDAudioPackets(
     const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        audioDownmixAlgorithm
     );
 
     try {
@@ -3356,7 +3389,8 @@ async function streamTrueHDAudioPackets(
                     output,
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
-                    audioOutputPipeline
+                    audioOutputPipeline,
+                    audioDownmixAlgorithm
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {

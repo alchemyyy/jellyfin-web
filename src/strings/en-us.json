@@ -1637,6 +1637,7 @@
     "SpecialFeatures": "Special Features",
     "Sports": "Sports",
     "StereoDownmixAlgorithmHelp": "Algorithm used to downmix multi-channel audio to stereo.",
+    "WebGPUAudioDownmixAlgorithmHelp": "Used by the WebGPU player only when the audio destination cannot present the complete 5.1 or 7.1 speaker layout.",
     "StillWatchingPrompt": "Still Watching Prompt",
     "StillWatchingOption": "{0} episodes or {1} minutes",
     "StoryArc": "Story Arc",

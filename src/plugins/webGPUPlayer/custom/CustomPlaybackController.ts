@@ -10,6 +10,7 @@ import type {
 import AudioWorkletController from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolicy';
+import { isCustomAudioDownmixAlgorithm } from './CustomAudioDownmixAlgorithm';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeAudioBridgeFactory,
@@ -155,6 +156,14 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioTrackIndex === null && options.audioOutputMode !== undefined) {
         throw new TypeError('Custom playback cannot select an audio output mode without audio');
     }
+    if (options.audioDownmixAlgorithm !== undefined
+        && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
+        throw new TypeError('Custom playback audio downmix algorithm is invalid');
+    }
+    if (options.audioDownmixAlgorithm !== undefined
+        && options.audioTrackIndex === null) {
+        throw new TypeError('Custom playback cannot select a downmix algorithm without audio');
+    }
     const decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
     if (decodedAudioOutputChannelCount !== undefined
         && decodedAudioOutputChannelCount !== 2
@@ -279,6 +288,7 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
 
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
+        audioDownmixAlgorithm: options.audioDownmixAlgorithm,
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
@@ -973,6 +983,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
                 return;
             }
             this.videoDecodeSession.start({
+                audioDownmixAlgorithm: options.audioDownmixAlgorithm,
                 audioOutputMode: options.audioOutputMode,
                 audioTrackIndex: options.audioTrackIndex,
                 decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,

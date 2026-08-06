@@ -14,6 +14,7 @@ import {
     downmixSevenPointOneToStereo,
     type StereoChannelData
 } from './CustomAudioDownmix';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 
 type StereoMetrics = {
     clippedSampleCount: number
@@ -228,6 +229,29 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
             const output = downmixSevenPointOneToStereo(corpus);
             const actual = computeStereoMetrics(output);
             const expected = REFERENCE.measurements[String(sampleRate)].mpvDefault;
+
+            expect(actual.nonFiniteSampleCount).toBe(expected.nonFiniteSampleCount);
+            expect(actual.clippedSampleCount).toBe(expected.clippedSampleCount);
+            expect(actual.peak).toBeCloseTo(expected.peak, 7);
+            expect(actual.rms).toBeCloseTo(expected.rms, 10);
+            expect(actual.rmsDBFS).toBeCloseTo(expected.rmsDBFS, 10);
+            expect(actual.crestFactor).toBeCloseTo(expected.crestFactor, 10);
+            expect(actual.crestFactorDB).toBeCloseTo(expected.crestFactorDB, 10);
+            expect(output[0][LFE_ONLY_FRAME]).toBe(0);
+            expect(output[1][LFE_ONLY_FRAME]).toBe(0);
+        }
+    );
+
+    it.each(REFERENCE.corpus.sampleRates)(
+        'matches the generated %i Hz peak-normalized corpus metrics',
+        sampleRate => {
+            const corpus = createCorpus(REFERENCE.corpus.frameCount);
+            const output = downmixSevenPointOneToStereo(
+                corpus,
+                CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.PeakNormalizedLORO
+            );
+            const actual = computeStereoMetrics(output);
+            const expected = REFERENCE.measurements[String(sampleRate)].mpvNormalized;
 
             expect(actual.nonFiniteSampleCount).toBe(expected.nonFiniteSampleCount);
             expect(actual.clippedSampleCount).toBe(expected.clippedSampleCount);

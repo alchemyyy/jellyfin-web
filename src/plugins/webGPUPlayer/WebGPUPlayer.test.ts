@@ -56,6 +56,7 @@ const webSettingsMockState = vi.hoisted(() => ({
     hdrToneMappingEnabled: false
 }));
 const userSettingsMockState = vi.hoisted(() => ({
+    audioDownmixAlgorithm: 'standard-lo-ro',
     audioNormalizationMode: 'TrackGain'
 }));
 const customDecodeMockState = vi.hoisted(() => ({
@@ -132,7 +133,8 @@ vi.mock('scripts/settings/webSettings', () => ({
 }));
 
 vi.mock('scripts/settings/userSettings', () => ({
-    selectAudioNormalization: vi.fn(() => userSettingsMockState.audioNormalizationMode)
+    selectAudioNormalization: vi.fn(() => userSettingsMockState.audioNormalizationMode),
+    webGPUAudioDownmixAlgorithm: vi.fn(() => userSettingsMockState.audioDownmixAlgorithm)
 }));
 
 vi.mock('./custom/CustomPlaybackEligibility', async importOriginal => {
@@ -1239,6 +1241,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.customDecodeEnabledPromises.length = 0;
         webSettingsMockState.hdrToneMappingEnabled = false;
         userSettingsMockState.audioNormalizationMode = 'TrackGain';
+        userSettingsMockState.audioDownmixAlgorithm = 'standard-lo-ro';
         customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.dolbyVision = false;
@@ -2618,11 +2621,13 @@ describe('WebGPUPlayer HTML delegation', () => {
             customDecodeMockState.audioTrackIndex = 1;
             customDecodeMockState.audioSourceChannelCount = sourceChannels;
             audioPrewarmMockState.maximumChannelCount = maximumOutput;
+            userSettingsMockState.audioDownmixAlgorithm = 'rfc-7845';
 
             await player.play(createKnownSDRAudioPlayOptions());
 
             expect(getCustomPlaybackController().play).toHaveBeenCalledWith(
                 expect.objectContaining({
+                    audioDownmixAlgorithm: 'rfc-7845',
                     decodedAudioOutputChannelCount: expectedOutput
                 })
             );

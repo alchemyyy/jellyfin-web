@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { downmixSevenPointOneToStereo } from './CustomAudioDownmix';
+import {
+    downmixFivePointOneToStereo,
+    downmixSevenPointOneToStereo
+} from './CustomAudioDownmix';
 import { CUSTOM_AUDIO_LIMITER_CEILING_GAIN } from './StreamingAudioLookaheadLimiter';
 import StreamingAudioOutputPipeline, {
     type StreamingAudioResamplerOutput
@@ -106,6 +109,45 @@ describe('StreamingAudioOutputPipeline', () => {
             }
         }
         const downmixedChannels = downmixSevenPointOneToStereo(inputChannels);
+
+        const outputs = pipeline.push({
+            channelData: downmixedChannels,
+            mediaTimeMicroseconds: requireMicroseconds(5_000_000)
+        });
+        outputs.push(...pipeline.finalize());
+        const outputLeft = new Float32Array(frameCount);
+        let outputFrameOffset = 0;
+        for (const output of outputs) {
+            outputLeft.set(output.channelData[0], outputFrameOffset);
+            outputFrameOffset += output.frameCount;
+        }
+
+        expect(outputFrameOffset).toBe(frameCount);
+        expect(downmixedChannels[0][0]).toBe(0.5);
+        expect(outputLeft[0]).toBe(0.5);
+        expect(outputLeft[peakFrame - 1_000]).toBe(0.5);
+        expect(Math.abs(outputLeft[peakFrame]))
+            .toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6);
+        expect(getMaximumPeak(outputs))
+            .toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6);
+    });
+
+    it('preserves normal 5.1 program gain and limits only an overloaded downmix', () => {
+        const pipeline = createPipeline(true);
+        const frameCount = 12_000;
+        const peakFrame = 6_000;
+        const inputChannels: Float32Array[] = [];
+        for (let channelIndex = 0; channelIndex < 6; channelIndex += 1) {
+            inputChannels.push(new Float32Array(frameCount));
+        }
+        inputChannels[0].fill(0.5);
+        inputChannels[1].fill(0.5);
+        for (let channelIndex = 0; channelIndex < inputChannels.length; channelIndex += 1) {
+            if (channelIndex !== 3) {
+                inputChannels[channelIndex][peakFrame] = 1;
+            }
+        }
+        const downmixedChannels = downmixFivePointOneToStereo(inputChannels);
 
         const outputs = pipeline.push({
             channelData: downmixedChannels,

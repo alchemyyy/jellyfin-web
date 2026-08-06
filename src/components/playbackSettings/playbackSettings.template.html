@@ -179,6 +179,18 @@
             <div class="fieldDescription">${PreferredVideoPlayerHelp}</div>
         </div>
 
+        <div class="selectContainer">
+            <select is="emby-select" id="selectWebGPUAudioDownmixAlgorithm" label="${LabelStereoDownmixAlgorithm}">
+                <option value="standard-lo-ro">Standard Lo/Ro with lookahead limiter</option>
+                <option value="peak-normalized-lo-ro">Peak-normalized Lo/Ro without lookahead</option>
+                <option value="ac-4">AC-4</option>
+                <option value="rfc-7845">RFC 7845</option>
+                <option value="dave750">Dave750</option>
+                <option value="night-mode-dialogue">Night mode dialogue</option>
+            </select>
+            <div class="fieldDescription">${WebGPUAudioDownmixAlgorithmHelp}</div>
+        </div>
+
         <div class="checkboxContainer checkboxContainer-withDescription fldEnableDts">
             <label>
                 <input type="checkbox" is="emby-checkbox" class="chkEnableDts" />

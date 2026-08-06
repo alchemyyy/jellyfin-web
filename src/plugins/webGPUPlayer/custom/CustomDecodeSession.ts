@@ -8,6 +8,10 @@ import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from './CustomDecodeNativeAudioBridge';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import {
+    isCustomAudioDownmixAlgorithm,
+    type CustomAudioDownmixAlgorithm
+} from './CustomAudioDownmixAlgorithm';
+import {
     DecodedVideoGeometryError,
     requireConsistentDecodedVideoGeometry
 } from './DecodedVideoGeometry';
@@ -50,6 +54,7 @@ const WORKER_STOP_TIMEOUT_MILLISECONDS = 1_000;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 
 export type CustomDecodeSessionStartOptions = {
+    audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
@@ -330,6 +335,20 @@ function validateDecodedAudioOutputChannelCount(
     }
 }
 
+function validateAudioDownmixAlgorithm(
+    options: CustomDecodeSessionStartOptions
+): void {
+    if (options.audioDownmixAlgorithm === undefined) {
+        return;
+    }
+    if (!isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
+        throw new TypeError('Custom decode audio downmix algorithm is invalid');
+    }
+    if (options.audioTrackIndex == null) {
+        throw new TypeError('Custom decode cannot select a downmix algorithm without audio');
+    }
+}
+
 function getReadyAudioConfigurationError(
     workerRecord: WorkerRecord,
     audioConfiguration: DecodeWorkerReadyAudioConfiguration | null
@@ -375,6 +394,7 @@ function validateAudioStartOptions(
     if (options.audioTrackIndex == null && options.audioOutputMode !== undefined) {
         throw new TypeError('Custom decode cannot select an audio output mode without audio');
     }
+    validateAudioDownmixAlgorithm(options);
     validateDecodedAudioOutputChannelCount(options, audioOutputMode);
     if (options.audioTrackIndex == null) {
         return;
@@ -503,6 +523,10 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             };
             if (workerRecord.audioOutputMode === 'native-media') {
                 startRequest.audioOutputMode = 'native-media';
+            }
+            if (workerRecord.audioOutputMode === 'decoded-pcm'
+                && options.audioDownmixAlgorithm !== undefined) {
+                startRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
             }
             if (options.decodedAudioOutputChannelCount !== undefined) {
                 startRequest.decodedAudioOutputChannelCount =

@@ -29,6 +29,10 @@ import {
 } from './StaticHDRMetadata';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import {
+    isCustomAudioDownmixAlgorithm,
+    type CustomAudioDownmixAlgorithm
+} from './CustomAudioDownmixAlgorithm';
+import {
     MAXIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
     MINIMUM_CUSTOM_AUDIO_SAMPLE_RATE,
     isSupportedCustomAudioSampleRate
@@ -85,6 +89,8 @@ export type CustomDecodeFailureKind =
     | 'source-unsupported';
 
 export type DecodeWorkerStartRequest = {
+    /** Applies only when decoded multichannel PCM must be presented as stereo. */
+    audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     /** Defaults to decoded-pcm for compatibility with existing session callers. */
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioSampleCredits: number
@@ -345,6 +351,18 @@ function isValidDecodedAudioOutputSelection(
     }
     return value.decodedAudioOutputChannelCount === undefined
         || isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount);
+}
+
+function isValidAudioDownmixAlgorithmSelection(
+    value: Record<string, unknown>,
+    audioOutputMode: unknown,
+    hasAudioTrack: boolean
+): boolean {
+    if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
+        return value.audioDownmixAlgorithm === undefined;
+    }
+    return value.audioDownmixAlgorithm === undefined
+        || isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm);
 }
 
 function isRawVideoFrameFormat(value: unknown): value is CustomDecodeRawVideoFrameFormat {
@@ -677,6 +695,12 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 audioOutputMode,
                 hasAudioTrack
             );
+            const hasValidAudioDownmixAlgorithm =
+                isValidAudioDownmixAlgorithmSelection(
+                    value,
+                    audioOutputMode,
+                    hasAudioTrack
+                );
             const hasValidVideoOutput = value.videoOutputMode === 'raw-planes' ?
                 isRawVideoFrameFormat(value.rawVideoFrameFormat) :
                 value.videoOutputMode === 'video-frame'
@@ -722,6 +746,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && (hasAudioTrack || hasNoAudioTrack)
                 && isAudioOutputMode(audioOutputMode)
                 && hasValidDecodedAudioOutput
+                && hasValidAudioDownmixAlgorithm
                 && (hasAudioTrack || value.audioOutputMode === undefined)
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);

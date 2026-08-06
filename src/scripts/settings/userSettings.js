@@ -7,6 +7,9 @@ import {
     normalizeVideoPlayerPreference,
     VideoPlayerPreference
 } from 'components/playback/PreferredVideoPlayer';
+import {
+    normalizeCustomAudioDownmixAlgorithm
+} from 'plugins/webGPUPlayer/custom/CustomAudioDownmixAlgorithm';
 import Events from 'utils/events';
 import { queryClient } from 'utils/query/queryClient';
 import { toBoolean } from 'utils/string';
@@ -412,6 +415,25 @@ export class UserSettings {
 
         return normalizeVideoPlayerPreference(
             this.get('preferredVideoPlayer', false) ?? VideoPlayerPreference.Auto
+        );
+    }
+
+    /**
+     * Get or set the local WebGPU stereo downmix algorithm.
+     * @param {import('plugins/webGPUPlayer/custom/CustomAudioDownmixAlgorithm').CustomAudioDownmixAlgorithm|undefined} [val] - Downmix algorithm.
+     * @return {import('plugins/webGPUPlayer/custom/CustomAudioDownmixAlgorithm').CustomAudioDownmixAlgorithm} Normalized downmix algorithm.
+     */
+    webGPUAudioDownmixAlgorithm(val) {
+        if (val !== undefined) {
+            return this.set(
+                'webGPUAudioDownmixAlgorithm',
+                normalizeCustomAudioDownmixAlgorithm(val),
+                false
+            );
+        }
+
+        return normalizeCustomAudioDownmixAlgorithm(
+            this.get('webGPUAudioDownmixAlgorithm', false)
         );
     }
 
@@ -929,6 +951,7 @@ export const limitSegmentLength = currentSettings.limitSegmentLength.bind(curren
 export const enableCinemaMode = currentSettings.enableCinemaMode.bind(currentSettings);
 export const selectAudioNormalization = currentSettings.selectAudioNormalization.bind(currentSettings);
 export const preferredVideoPlayer = currentSettings.preferredVideoPlayer.bind(currentSettings);
+export const webGPUAudioDownmixAlgorithm = currentSettings.webGPUAudioDownmixAlgorithm.bind(currentSettings);
 export const enableNextVideoInfoOverlay = currentSettings.enableNextVideoInfoOverlay.bind(currentSettings);
 export const enableVideoRemainingTime = currentSettings.enableVideoRemainingTime.bind(currentSettings);
 export const enableThemeSongs = currentSettings.enableThemeSongs.bind(currentSettings);

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN,
+    FIVE_POINT_ONE_MIXED_CHANNEL_GAIN,
     SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN,
     SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN
 } from './CustomAudioDownmix';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 import {
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_MONO_CHANNEL_LAYOUT,
@@ -11,6 +14,7 @@ import {
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     getCustomAudioChannelLayout,
+    isSelectableCustomAudioDownmixRequired,
     mixCustomAudioToStereo,
     prepareCustomAudioOutputChannelData
 } from './CustomAudioChannelLayout';
@@ -81,19 +85,71 @@ describe('CustomAudioChannelLayout', () => {
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT
         );
         expect(output[0][0]).toBeCloseTo(
-            (Math.SQRT2 - 1) + 3 * (1 - Math.SQRT2 / 2)
-                + 5 * (1 - Math.SQRT2 / 2),
+            FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN
+                + 3 * FIVE_POINT_ONE_MIXED_CHANNEL_GAIN
+                + 5 * FIVE_POINT_ONE_MIXED_CHANNEL_GAIN,
             6
         );
         expect(output[1][0]).toBeCloseTo(
-            2 * (Math.SQRT2 - 1) + 3 * (1 - Math.SQRT2 / 2)
-                + 6 * (1 - Math.SQRT2 / 2),
+            2 * FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN
+                + 3 * FIVE_POINT_ONE_MIXED_CHANNEL_GAIN
+                + 6 * FIVE_POINT_ONE_MIXED_CHANNEL_GAIN,
             6
         );
         expect(() => mixCustomAudioToStereo(
             channels.slice(0, 2),
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT
         )).toThrow('5.1-side audio requires exactly 6 input channels');
+    });
+
+    it('selects 5.1 and 7.1 matrices only for required stereo fallback', () => {
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            2
+        )).toBe(true);
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+            2
+        )).toBe(true);
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            6
+        )).toBe(false);
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+            8
+        )).toBe(false);
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
+            2
+        )).toBe(false);
+        expect(isSelectableCustomAudioDownmixRequired(
+            CUSTOM_STEREO_CHANNEL_LAYOUT,
+            2
+        )).toBe(false);
+    });
+
+    it('applies the selected matrix only when stereo conversion is required', () => {
+        const channels = [ 1, 2, 3, 4, 5, 6 ].map(value => (
+            new Float32Array([ value ])
+        ));
+
+        const stereoOutput = prepareCustomAudioOutputChannelData(
+            channels,
+            CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            2,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue
+        );
+        const nativeOutput = prepareCustomAudioOutputChannelData(
+            channels,
+            CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            6,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue
+        );
+
+        expect(stereoOutput[0][0]).toBeCloseTo(1 * 0.3 + 3 + 5 * 0.3, 6);
+        expect(stereoOutput[1][0]).toBeCloseTo(2 * 0.3 + 3 + 6 * 0.3, 6);
+        expect(nativeOutput).toBe(channels);
     });
 
     it('uses the shared 7.1 matrix in explicit WAVE channel order', () => {

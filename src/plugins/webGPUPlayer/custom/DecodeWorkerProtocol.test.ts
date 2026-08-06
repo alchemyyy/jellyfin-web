@@ -15,6 +15,7 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT
 } from './DecodeWorkerProtocol';
+import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
     MAXIMUM_DOLBY_VISION_RPU_NAL_UNIT_COUNT
@@ -873,6 +874,19 @@ describe('DecodeWorkerProtocol', () => {
             videoTrackIndex: 0
         } as const;
         expect(isDecodeWorkerRequest(decodedAudioStartRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845
+        })).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioDownmixAlgorithm: 'unsupported'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            audioOutputMode: 'native-media'
+        })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...decodedAudioStartRequest,
             decodedAudioOutputChannelCount: 7
