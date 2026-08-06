@@ -15,7 +15,7 @@ import {
 import {
     DTS_SUPPORTED_INPUT_ROUTES,
     EAC3_SUPPORTED_INPUT_ROUTES,
-    TRUEHD_CAPABILITY_FIXTURE_ROUTES,
+    TRUEHD_SUPPORTED_INPUT_ROUTES,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
@@ -65,7 +65,7 @@ const CUSTOM_DTS_INPUT_CHANNEL_COUNTS: readonly number[] = [
     ...new Set(DTS_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount))
 ];
 const CUSTOM_TRUEHD_INPUT_CHANNEL_COUNTS: readonly number[] = [
-    ...new Set(TRUEHD_CAPABILITY_FIXTURE_ROUTES
+    ...new Set(TRUEHD_SUPPORTED_INPUT_ROUTES
         .filter(route => route.codec === 'truehd')
         .map(route => route.channelCount))
 ];

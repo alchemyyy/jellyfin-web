@@ -35,7 +35,7 @@ import {
     DTS_DIRECT_PLAY_PROFILE_TOKENS,
     DTS_PROFILE_VALUE_BY_TOKEN,
     DTS_SUPPORTED_INPUT_ROUTES,
-    TRUEHD_CAPABILITY_FIXTURE_ROUTES,
+    TRUEHD_SUPPORTED_INPUT_ROUTES,
     isDTSDirectPlayProfileToken,
     type DTSDirectPlayProfileToken
 } from './CustomCompressedAudioRoute';
@@ -2256,9 +2256,21 @@ function createMeasuredTrueHDRouteProfiles(
 ): CodecProfile[] {
     const measuredProfiles: CodecProfile[] = [];
     const channelCounts: number[] = [];
-    for (const route of TRUEHD_CAPABILITY_FIXTURE_ROUTES) {
+    const exactSampleRatesByChannelCount = new Map<number, number[]>();
+    for (const route of TRUEHD_SUPPORTED_INPUT_ROUTES) {
         if (route.codec === codec && !channelCounts.includes(route.channelCount)) {
             channelCounts.push(route.channelCount);
+        }
+        if (route.codec !== codec || route.sampleRateConstraint !== 'exact') {
+            continue;
+        }
+        let sampleRates = exactSampleRatesByChannelCount.get(route.channelCount);
+        if (!sampleRates) {
+            sampleRates = [];
+            exactSampleRatesByChannelCount.set(route.channelCount, sampleRates);
+        }
+        if (!sampleRates.includes(route.sampleRate)) {
+            sampleRates.push(route.sampleRate);
         }
     }
     channelCounts.sort((left, right) => left - right);
@@ -2270,6 +2282,14 @@ function createMeasuredTrueHDRouteProfiles(
         createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, channelCounts),
         ...createAudioSampleRateConditions({ kind: 'bounded' })
     ]));
+    for (const [ channelCount, sampleRates ] of exactSampleRatesByChannelCount) {
+        sampleRates.sort((left, right) => left - right);
+        measuredProfiles.push(createMeasuredExactAudioRouteProfile(
+            codec,
+            [ createRequiredAudioRouteCondition(AUDIO_SAMPLE_RATE_PROPERTY, sampleRates) ],
+            [ createRequiredAudioRouteCondition(AUDIO_CHANNELS_PROPERTY, [ channelCount ]) ]
+        ));
+    }
     return measuredProfiles;
 }
 

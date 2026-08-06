@@ -24,7 +24,17 @@ export type DTSInputRoute = Readonly<{
 export type TrueHDCapabilityFixtureRoute = Readonly<{
     channelCount: 2 | 6
     codec: 'mlp' | 'truehd'
+    metadataLayouts: null
     sampleRate: 48_000 | 96_000 | 192_000
+    sampleRateConstraint: 'bounded'
+}>;
+
+export type TrueHDInputRoute = Readonly<{
+    channelCount: 2 | 6 | 8
+    codec: 'mlp' | 'truehd'
+    metadataLayouts: readonly string[] | null
+    sampleRate: 48_000 | 96_000 | 192_000
+    sampleRateConstraint: 'bounded' | 'exact'
 }>;
 
 export const EAC3_SUPPORTED_INPUT_ROUTES = Object.freeze([
@@ -109,11 +119,51 @@ export const DTS_SUPPORTED_INPUT_ROUTES = Object.freeze([
 ] as const) satisfies readonly DTSInputRoute[];
 
 export const TRUEHD_CAPABILITY_FIXTURE_ROUTES = Object.freeze([
-    Object.freeze({ channelCount: 2, codec: 'truehd', sampleRate: 48_000 }),
-    Object.freeze({ channelCount: 6, codec: 'truehd', sampleRate: 96_000 }),
-    Object.freeze({ channelCount: 6, codec: 'truehd', sampleRate: 192_000 }),
-    Object.freeze({ channelCount: 2, codec: 'mlp', sampleRate: 48_000 })
+    Object.freeze({
+        channelCount: 2,
+        codec: 'truehd',
+        metadataLayouts: null,
+        sampleRate: 48_000,
+        sampleRateConstraint: 'bounded'
+    }),
+    Object.freeze({
+        channelCount: 6,
+        codec: 'truehd',
+        metadataLayouts: null,
+        sampleRate: 96_000,
+        sampleRateConstraint: 'bounded'
+    }),
+    Object.freeze({
+        channelCount: 6,
+        codec: 'truehd',
+        metadataLayouts: null,
+        sampleRate: 192_000,
+        sampleRateConstraint: 'bounded'
+    }),
+    Object.freeze({
+        channelCount: 2,
+        codec: 'mlp',
+        metadataLayouts: null,
+        sampleRate: 48_000,
+        sampleRateConstraint: 'bounded'
+    })
 ] as const) satisfies readonly TrueHDCapabilityFixtureRoute[];
+
+const TRUEHD_COMPOSED_INPUT_ROUTES = Object.freeze([
+    Object.freeze({
+        channelCount: 8,
+        codec: 'truehd',
+        metadataLayouts: Object.freeze([ '7.1' ] as const),
+        sampleRate: 48_000,
+        sampleRateConstraint: 'exact'
+    })
+] as const) satisfies readonly TrueHDInputRoute[];
+
+/** Production routes backed by exact decoder and decoded channel-layout evidence. */
+export const TRUEHD_SUPPORTED_INPUT_ROUTES = Object.freeze([
+    ...TRUEHD_CAPABILITY_FIXTURE_ROUTES,
+    ...TRUEHD_COMPOSED_INPUT_ROUTES
+] as const) satisfies readonly TrueHDInputRoute[];
 
 /** Returns whether a DTS profile is stable enough for production direct play. */
 export function isDTSDirectPlayProfileToken(
@@ -178,7 +228,24 @@ export function isSupportedEAC3InputRoute(
     return false;
 }
 
-/** Accepts measured TrueHD/MLP codec/layout pairs at any bounded source rate. */
+function doesTrueHDInputRouteMatch(
+    route: TrueHDInputRoute,
+    codec: string,
+    channelCount: unknown,
+    sampleRate: number
+): boolean {
+    if (route.codec !== codec || route.channelCount !== channelCount) {
+        return false;
+    }
+    switch (route.sampleRateConstraint) {
+        case 'bounded':
+            return true;
+        case 'exact':
+            return route.sampleRate === sampleRate;
+    }
+}
+
+/** Accepts only production-qualified TrueHD/MLP codec, channel, and rate tuples. */
 export function isSupportedTrueHDInputRoute(
     codec: string,
     channelCount: unknown,
@@ -187,11 +254,37 @@ export function isSupportedTrueHDInputRoute(
     if (!isSupportedCustomAudioSampleRate(sampleRate)) {
         return false;
     }
-    for (const route of TRUEHD_CAPABILITY_FIXTURE_ROUTES) {
-        if (route.codec === codec
-            && route.channelCount === channelCount) {
+    for (const route of TRUEHD_SUPPORTED_INPUT_ROUTES) {
+        if (doesTrueHDInputRouteMatch(route, codec, channelCount, sampleRate)) {
             return true;
         }
+    }
+    return false;
+}
+
+/** Adds Jellyfin channel-layout metadata qualification to a supported TrueHD route. */
+export function isSupportedTrueHDMetadataRoute(
+    codec: string,
+    channelCount: unknown,
+    sampleRate: unknown,
+    channelLayout: unknown
+): boolean {
+    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
+        return false;
+    }
+    for (const route of TRUEHD_SUPPORTED_INPUT_ROUTES) {
+        if (!doesTrueHDInputRouteMatch(route, codec, channelCount, sampleRate)) {
+            continue;
+        }
+        if (route.metadataLayouts === null) {
+            return true;
+        }
+        if (typeof channelLayout !== 'string') {
+            return false;
+        }
+        const normalizedLayout = channelLayout.trim().toLowerCase();
+        const metadataLayouts: readonly string[] = route.metadataLayouts;
+        return metadataLayouts.includes(normalizedLayout);
     }
     return false;
 }

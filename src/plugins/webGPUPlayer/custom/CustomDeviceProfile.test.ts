@@ -1492,10 +1492,27 @@ describe('augmentDeviceProfileForCustomDecode', () => {
                     Condition: 'EqualsAny',
                     IsRequired: true,
                     Property: 'AudioChannels',
-                    Value: '2|6'
+                    Value: '2|6|8'
                 },
                 ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],
+            Container: 'mkv',
+            Type: 'VideoAudio'
+        });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            ApplyConditions: [ {
+                Condition: 'Equals',
+                IsRequired: true,
+                Property: 'AudioChannels',
+                Value: '8'
+            } ],
+            Codec: 'truehd',
+            Conditions: [ {
+                Condition: 'Equals',
+                IsRequired: true,
+                Property: 'AudioSampleRate',
+                Value: '48000'
+            } ],
             Container: 'mkv',
             Type: 'VideoAudio'
         });
@@ -1525,6 +1542,16 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             profile: null,
             sampleRate: 48_000
         })).toBe(true);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'truehd', {
+            channelCount: 8,
+            profile: 'Dolby TrueHD + Dolby Atmos',
+            sampleRate: 48_000
+        })).toBe(true);
+        expect(acceptsMeasuredAudioRoute(codecProfiles, 'truehd', {
+            channelCount: 8,
+            profile: 'Dolby TrueHD + Dolby Atmos',
+            sampleRate: 96_000
+        })).toBe(false);
         expect(acceptsMeasuredAudioRoute(codecProfiles, 'truehd', {
             channelCount: 6,
             profile: null,

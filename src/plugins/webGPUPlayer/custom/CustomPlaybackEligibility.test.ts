@@ -3232,12 +3232,13 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        [ 'mkv', 'truehd', 'Dolby TrueHD', 2, 48_000 ],
-        [ 'matroska', 'truehd', 'Dolby TrueHD + Dolby Atmos', 6, 96_000 ],
-        [ 'mkv', 'mlp', undefined, 2, 48_000 ]
+        [ 'mkv', 'truehd', 'Dolby TrueHD', 2, 48_000, undefined ],
+        [ 'matroska', 'truehd', 'Dolby TrueHD + Dolby Atmos', 6, 96_000, undefined ],
+        [ 'mkv', 'truehd', 'Dolby TrueHD + Dolby Atmos', 8, 48_000, '7.1' ],
+        [ 'mkv', 'mlp', undefined, 2, 48_000, undefined ]
     ] as const)(
-        'selects the fixture-derived %s/%s TrueHD channel-bed route',
-        (container, codec, profile, channelCount, sampleRate) => {
+        'selects the qualified %s/%s TrueHD channel-bed route',
+        (container, codec, profile, channelCount, sampleRate, channelLayout) => {
             const options = createOptions();
             const mediaSource = options.mediaSource as {
                 Container: string
@@ -3248,6 +3249,7 @@ describe('CustomPlaybackEligibility', () => {
             mediaSource.MediaStreams[1].Codec = codec;
             mediaSource.MediaStreams[1].Profile = profile;
             mediaSource.MediaStreams[1].SampleRate = sampleRate;
+            mediaSource.MediaStreams[1].ChannelLayout = channelLayout;
             const bundledRuntime: CustomPlaybackRuntimeAvailability = {
                 available: true,
                 environment: {
@@ -3288,7 +3290,24 @@ describe('CustomPlaybackEligibility', () => {
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
 
+        mediaSource.MediaStreams[1].ChannelLayout = '7.1(wide)';
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+
+        mediaSource.MediaStreams[1].ChannelLayout = '7.1';
+        mediaSource.MediaStreams[1].SampleRate = 96_000;
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+
         mediaSource.MediaStreams[1].Channels = 6;
+        mediaSource.MediaStreams[1].ChannelLayout = undefined;
+        mediaSource.MediaStreams[1].SampleRate = 48_000;
         const baseCapabilities = createCapabilities();
         const capabilitiesWithoutExactEvidence: CustomDecodeCapabilities = {
             ...baseCapabilities,

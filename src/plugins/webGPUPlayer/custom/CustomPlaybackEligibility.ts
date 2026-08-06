@@ -48,7 +48,7 @@ import {
 import {
     isSupportedDTSInputRoute,
     isSupportedEAC3InputRoute,
-    isSupportedTrueHDInputRoute
+    isSupportedTrueHDMetadataRoute
 } from './CustomCompressedAudioRoute';
 import {
     getH264ProfileFromJellyfinValue,
@@ -518,7 +518,12 @@ function hasQualifiedDecodedPCMInputLayout(
             && exactCapability.objectAudioRendered === false
             && exactCapability.passthrough === false
             && exactCapability.codecs.includes(codec)
-            && isSupportedTrueHDInputRoute(codec, stream.Channels, stream.SampleRate);
+            && isSupportedTrueHDMetadataRoute(
+                codec,
+                stream.Channels,
+                stream.SampleRate,
+                stream.ChannelLayout
+            );
     }
     if (stream.Channels !== 6) {
         return true;

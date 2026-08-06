@@ -83,19 +83,20 @@ describe('CustomAudioOutputPolicy', () => {
         expect(isSupportedCustomAudioInputLayout('dts', 8, 192_001)).toBe(false);
     });
 
-    it('accepts measured TrueHD channel beds at every bounded sample rate', () => {
-        expect(getSupportedCustomAudioInputChannelCounts('truehd')).toEqual([ 2, 6 ]);
+    it('accepts fixture and composed TrueHD channel-bed routes', () => {
+        expect(getSupportedCustomAudioInputChannelCounts('truehd')).toEqual([ 2, 6, 8 ]);
         for (const [ channelCount, sampleRate ] of [
             [ 2, 48_000 ],
             [ 2, 96_000 ],
             [ 6, 44_100 ],
             [ 6, 96_000 ],
-            [ 6, 192_000 ]
+            [ 6, 192_000 ],
+            [ 8, 48_000 ]
         ] as const) {
             expect(isSupportedCustomAudioInputLayout('truehd', channelCount, sampleRate))
                 .toBe(true);
         }
-        expect(isSupportedCustomAudioInputLayout('truehd', 8, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('truehd', 8, 96_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('truehd', 6, 192_001)).toBe(false);
         expect(getSupportedCustomAudioInputChannelCounts('mlp')).toEqual([ 2 ]);
         expect(isSupportedCustomAudioInputLayout('mlp', 2, 48_000)).toBe(true);
