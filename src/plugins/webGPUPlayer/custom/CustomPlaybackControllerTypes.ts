@@ -6,6 +6,7 @@ import type {
 } from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
+import type { AudioDownmixSettings } from './CustomAudioDownmix';
 import type { CustomAudioDownmixAlgorithm } from './CustomAudioDownmixAlgorithm';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
@@ -56,6 +57,7 @@ export type CustomPlaybackFallbackDisposition =
 
 export type CustomPlaybackPlayOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
+    audioDownmixSettings?: AudioDownmixSettings
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
@@ -123,6 +125,7 @@ export type CustomVideoDecodeSession = {
     start: (options: CustomDecodeSessionStartOptions) => void
     stop: () => Promise<void>
     takeFrame: (targetTimeMicroseconds: Microseconds) => DecodedPresentationFrame | null
+    updateAudioDownmixSettings: (settings: AudioDownmixSettings) => boolean
 };
 
 export type CustomVideoDecodeSessionFactory = (

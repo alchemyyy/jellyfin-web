@@ -7,7 +7,9 @@ import { runInThisContext } from 'node:vm';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createHEVCExactCapabilityWorkerTierRequests } from './HEVCExactCapabilityFixtures';
+import {
+    createHEVCExactCapabilityWorkerQualificationRequests
+} from './HEVCExactCapabilityFixtures';
 import {
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     type HEVCExactCapabilityWorkerRequest
@@ -52,20 +54,6 @@ function loadActualModuleFactory(): EmscriptenModuleFactory {
     return loadGlue(createRequire(import.meta.url), HEVC_GLUE_PATH, dirname(HEVC_GLUE_PATH));
 }
 
-function getExpectedQualificationReason(
-    decodeMilliseconds: number,
-    framesPerSecond: number,
-    maximumDecodeMilliseconds: number
-): 'decode-output-verified' | 'throughput-insufficient' | 'time-budget-exceeded' {
-    if (decodeMilliseconds > maximumDecodeMilliseconds) {
-        return 'time-budget-exceeded';
-    }
-    if (framesPerSecond < 30) {
-        return 'throughput-insufficient';
-    }
-    return 'decode-output-verified';
-}
-
 afterEach(() => {
     vi.unstubAllGlobals();
 });
@@ -77,7 +65,7 @@ describe('exact HEVC capability probe integration', () => {
             decoderGlueURL: HEVC_GLUE_PATH,
             decoderWASMURL: HEVC_WASM_PATH,
             requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-            tiers: createHEVCExactCapabilityWorkerTierRequests(
+            qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
                 Uint8Array.from(readFileSync(MAIN10_4K_QUALIFICATION_PATH)).buffer
             ),
             type: 'probe'
@@ -105,10 +93,10 @@ describe('exact HEVC capability probe integration', () => {
             decodedFrameCount: 8,
             decodedByteLength: 6_220_800,
             levelIDC: 120,
-            measuredFrameCount: 7,
-            minimumFramesPerSecond: 30,
             profileIDC: 1,
-            tier: 'main-1080p',
+            reason: 'decode-output-verified',
+            supported: true,
+            fixture: 'main-1080p',
             totalDecodedByteLength: 49_766_400
         });
         expect(response.results[1]).toMatchObject({
@@ -130,10 +118,10 @@ describe('exact HEVC capability probe integration', () => {
             decodedFrameCount: 8,
             decodedByteLength: 6_220_800,
             levelIDC: 120,
-            measuredFrameCount: 7,
-            minimumFramesPerSecond: 30,
             profileIDC: 2,
-            tier: 'main10-1080p',
+            reason: 'decode-output-verified',
+            supported: true,
+            fixture: 'main10-1080p',
             totalDecodedByteLength: 49_766_400
         });
         expect(response.results[2]).toMatchObject({
@@ -155,31 +143,11 @@ describe('exact HEVC capability probe integration', () => {
             decodedFrameCount: 8,
             decodedByteLength: 24_883_200,
             levelIDC: 153,
-            measuredFrameCount: 7,
-            minimumFramesPerSecond: 30,
             profileIDC: 2,
-            tier: 'main10-4k',
+            reason: 'decode-output-verified',
+            supported: true,
+            fixture: 'main10-4k',
             totalDecodedByteLength: 199_065_600
         });
-        const qualificationResults = [
-            { maximumDecodeMilliseconds: 1_750, result: response.results[0] },
-            { maximumDecodeMilliseconds: 1_750, result: response.results[1] },
-            { maximumDecodeMilliseconds: 2_750, result: response.results[2] }
-        ] as const;
-        for (const qualification of qualificationResults) {
-            const decodeMilliseconds = qualification.result.decodeMilliseconds;
-            const framesPerSecond = qualification.result.framesPerSecond;
-            expect(decodeMilliseconds).not.toBeNull();
-            expect(framesPerSecond).not.toBeNull();
-            const expectedReason = getExpectedQualificationReason(
-                decodeMilliseconds as number,
-                framesPerSecond as number,
-                qualification.maximumDecodeMilliseconds
-            );
-            expect(qualification.result.reason).toBe(expectedReason);
-            expect(qualification.result.supported).toBe(
-                expectedReason === 'decode-output-verified'
-            );
-        }
     }, 15_000);
 });

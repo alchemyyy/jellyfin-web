@@ -42,12 +42,10 @@ function createFailureResponse(
     return {
         codedHeight: null,
         codedWidth: null,
-        decodeMilliseconds: null,
         decodedFrameByteLength: null,
         decodedFrameCount: null,
         decodedI420Fingerprint: null,
         decodedTotalByteLength: null,
-        measuredFramesPerSecond: null,
         reason,
         requestID,
         supported: false,
@@ -167,7 +165,6 @@ async function runProbe(
     });
     const samples: VideoSample[] = [];
     let decodeError: unknown = null;
-    let measurementStartMilliseconds: number | null = null;
     let decoder: LegacySoftwareVideoDecoder | null = null;
     try {
         const qualifiedTrack = await getQualifiedTrack(input, qualification);
@@ -184,9 +181,6 @@ async function runProbe(
             },
             onSample: (sample: VideoSample): void => {
                 samples.push(sample);
-                if (samples.length === qualification.warmupFrameCount) {
-                    measurementStartMilliseconds = performance.now();
-                }
             }
         }, createDependencies(request));
         await decoder.init();
@@ -195,45 +189,30 @@ async function runProbe(
             decoder.decode(packet);
         }
         decoder.flush();
-        const measurementEndMilliseconds = performance.now();
         if (decodeError !== null) {
             throw decodeError;
         }
-        if (
-            samples.length !== qualification.frameCount
-            || measurementStartMilliseconds === null
-        ) {
+        if (samples.length !== qualification.frameCount) {
             throw new TypeError('The legacy video qualification frame count is invalid');
         }
-        const decodeMilliseconds = measurementEndMilliseconds
-            - measurementStartMilliseconds;
-        const measuredFrameCount = qualification.frameCount
-            - qualification.warmupFrameCount;
-        const measuredFramesPerSecond = measuredFrameCount * 1_000 / decodeMilliseconds;
         const fingerprints = await fingerprintSamples(samples);
         const outputMatches = fingerprints.decodedFrameByteLength
                 === qualification.frameByteLength
             && fingerprints.decodedTotalByteLength === qualification.totalByteLength
             && fingerprints.decodedI420Fingerprint === qualification.fingerprint;
-        const throughputMatches = measuredFramesPerSecond
-            >= qualification.minimumFramesPerSecond;
         let reason: LegacyVideoExactCapabilityWorkerResponse['reason'];
         if (!outputMatches) {
             reason = 'output-mismatch';
-        } else if (!throughputMatches) {
-            reason = 'throughput-insufficient';
         } else {
             reason = 'decode-output-verified';
         }
         return {
             codedHeight: qualification.codedHeight,
             codedWidth: qualification.codedWidth,
-            decodeMilliseconds,
             decodedFrameByteLength: fingerprints.decodedFrameByteLength,
             decodedFrameCount: samples.length,
             decodedI420Fingerprint: fingerprints.decodedI420Fingerprint,
             decodedTotalByteLength: fingerprints.decodedTotalByteLength,
-            measuredFramesPerSecond,
             reason,
             requestID: qualification.requestID,
             supported: reason === 'decode-output-verified',

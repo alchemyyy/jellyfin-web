@@ -2,8 +2,8 @@ import {
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
     isHEVCExactCapabilityWorkerRequest,
     type HEVCExactCapabilityWorkerRequest,
-    type HEVCExactCapabilityWorkerResponse,
-    type HEVCExactCapabilityWorkerTierResult
+    type HEVCExactCapabilityWorkerQualificationResult,
+    type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 import { runHEVCExactCapabilityWorkerRequest } from './HEVCExactCapabilityWorkerRuntime';
 
@@ -18,27 +18,22 @@ let probeStarted = false;
 function createDecodeErrorResponse(
     request: HEVCExactCapabilityWorkerRequest
 ): HEVCExactCapabilityWorkerResponse {
-    const results: HEVCExactCapabilityWorkerTierResult[] = [];
-    for (const tierRequest of request.tiers) {
+    const results: HEVCExactCapabilityWorkerQualificationResult[] = [];
+    for (const qualificationRequest of request.qualifications) {
         results.push({
             bitDepth: null,
             chromaHeight: null,
             chromaWidth: null,
             codedHeight: null,
             codedWidth: null,
-            decodeMilliseconds: null,
             decodedFrameFingerprints: null,
             decodedFrameCount: null,
             decodedByteLength: null,
-            framesPerSecond: null,
             levelIDC: null,
-            measuredFrameCount: null,
-            minimumFramesPerSecond: null,
             profileIDC: null,
             reason: 'decode-error',
-            steadyStateDecodeMilliseconds: null,
             supported: false,
-            tier: tierRequest.tier,
+            fixture: qualificationRequest.fixture,
             totalDecodedByteLength: null
         });
     }

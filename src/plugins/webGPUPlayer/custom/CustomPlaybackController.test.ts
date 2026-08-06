@@ -11,6 +11,7 @@ import type {
 } from '../WebGPUPresenter';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
+import type { AudioDownmixSettings } from './CustomAudioDownmix';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
 import type {
@@ -83,6 +84,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
 }
 
 class FakeVideoDecodeSession implements CustomVideoDecodeSession {
+    private activeGeneration: number | null = null;
     private nativeAudioTimeMicroseconds: Microseconds | null = null;
     private pendingFrameCount = 0;
     private readonly queuedFrames: DecodedPresentationFrame[] = [];
@@ -92,7 +94,9 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     public readonly setNativeAudioMuted = vi.fn();
     public readonly setNativeAudioPlaying = vi.fn(async (): Promise<void> => undefined);
     public readonly setNativeAudioVolume = vi.fn();
+    public readonly updateAudioDownmixSettings = vi.fn((): boolean => false);
     public readonly stop = vi.fn((): Promise<void> => {
+        this.activeGeneration = null;
         for (const queuedFrame of this.queuedFrames) {
             if (queuedFrame.outputMode === 'video-frame') {
                 queuedFrame.frame.close();
@@ -139,6 +143,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     public getTelemetry(): CustomDecodeSessionTelemetry {
         return {
             ...createDecodeTelemetry(),
+            activeGeneration: this.activeGeneration,
             pendingFrameCount: this.pendingFrameCount,
             queuedFrameCount: this.queuedFrames.length
         };
@@ -172,6 +177,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     }
 
     public start(options: CustomDecodeSessionStartOptions): void {
+        this.activeGeneration = options.generation;
         this.starts.push({ ...options });
     }
 }
@@ -618,6 +624,13 @@ describe('CustomPlaybackController', () => {
         const harness = createControllerHarness(true);
         const options = createPlayOptions(0);
         options.audioDownmixAlgorithm = CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845;
+        const audioDownmixSettings: AudioDownmixSettings = {
+            centerLevel: 0.4,
+            outputGain: 0.6,
+            surroundLevel: 0.5,
+            version: 1
+        };
+        options.audioDownmixSettings = audioDownmixSettings;
         options.decodedAudioOutputChannelCount = 8;
 
         const startPromise = harness.controller.play(options);
@@ -625,12 +638,125 @@ describe('CustomPlaybackController', () => {
 
         expect(harness.videoDecodeSession.starts[0]).toMatchObject({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            audioDownmixSettings,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8
         });
 
         await harness.controller.stop();
         await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('retains a pending-startup gain update for the new decode generation', async () => {
+        const harness = createControllerHarness(true);
+        const decoderStop = createDeferred<void>();
+        harness.videoDecodeSession.stop.mockImplementationOnce(
+            (): Promise<void> => decoderStop.promise
+        );
+        const startPromise = harness.controller.play(createPlayOptions(0));
+        await flushAsyncWork();
+        const settings: {
+            centerLevel: number
+            outputGain: number
+            surroundLevel: number
+            version: 1
+        } = {
+            centerLevel: 0.75,
+            outputGain: 1.5,
+            surroundLevel: 0.5,
+            version: 1
+        };
+
+        expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(false);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
+            .not.toHaveBeenCalled();
+        settings.outputGain = 9;
+        decoderStop.resolve();
+        await flushAsyncWork();
+
+        expect(harness.videoDecodeSession.starts).toHaveLength(1);
+        expect(harness.videoDecodeSession.starts[0].audioDownmixSettings).toEqual({
+            centerLevel: 0.75,
+            outputGain: 1.5,
+            surroundLevel: 0.5,
+            version: 1
+        });
+
+        await harness.controller.stop();
+        await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('delegates to the current configured worker while overall startup remains pending', async () => {
+        const harness = createControllerHarness(true);
+        const startPromise = harness.controller.play(createPlayOptions(0));
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts[0]?.generation;
+        if (!generation) {
+            throw new Error('Video decode did not start');
+        }
+        harness.videoDecodeSession.emit({
+            audio: {
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: 48_000,
+                sourceChannelCount: 6,
+                sourceSampleRate: 48_000
+            },
+            codec: 'avc1.640028',
+            generation,
+            type: 'configured'
+        });
+        harness.videoDecodeSession.updateAudioDownmixSettings.mockReturnValueOnce(true);
+        const settings: AudioDownmixSettings = {
+            centerLevel: 0.75,
+            outputGain: 1.5,
+            surroundLevel: 0.5,
+            version: 1
+        };
+
+        expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(true);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
+            .toHaveBeenCalledWith(settings);
+        expect(harness.controller.playbackState).toBe('starting');
+
+        await harness.controller.stop();
+        await expect(startPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('persists a live gain snapshot across a client-side audio switch', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        harness.videoDecodeSession.updateAudioDownmixSettings.mockReturnValueOnce(true);
+        const settings: {
+            centerLevel: number
+            outputGain: number
+            surroundLevel: number
+            version: 1
+        } = {
+            centerLevel: 0.5,
+            outputGain: 1.25,
+            surroundLevel: 0.75,
+            version: 1
+        };
+
+        expect(harness.controller.updateAudioDownmixSettings(settings)).toBe(true);
+        expect(harness.videoDecodeSession.updateAudioDownmixSettings)
+            .toHaveBeenCalledWith(settings);
+        settings.centerLevel = 2;
+        const switchPromise = harness.controller.setAudioStreamIndex(2);
+        await flushAsyncWork();
+
+        expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
+            audioDownmixSettings: {
+                centerLevel: 0.5,
+                outputGain: 1.25,
+                surroundLevel: 0.75,
+                version: 1
+            },
+            audioTrackIndex: 2
+        });
+        await harness.controller.stop();
+        await expect(switchPromise).resolves.toMatchObject({ status: 'stopped' });
     });
 
     it('owns decode, PCM output, clock controls, events, and telemetry', async () => {

@@ -10,6 +10,10 @@ import type {
 import AudioWorkletController from './AudioWorkletController';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from './CustomAudioOutputPolicy';
+import {
+    assertValidAudioDownmixSettings,
+    type AudioDownmixSettings
+} from './CustomAudioDownmix';
 import { isCustomAudioDownmixAlgorithm } from './CustomAudioDownmixAlgorithm';
 import CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import CustomDecodeSession, {
@@ -145,6 +149,19 @@ function validateCodedDimension(
     }
 }
 
+function validateAudioDownmixSettings(
+    options: CustomPlaybackPlayOptions,
+    audioOutputMode: CustomDecodeAudioOutputMode
+): void {
+    if (options.audioDownmixSettings === undefined) {
+        return;
+    }
+    if (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm') {
+        throw new TypeError('Audio downmix settings require decoded PCM audio');
+    }
+    assertValidAudioDownmixSettings(options.audioDownmixSettings);
+}
+
 function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioTrackIndex !== null) {
         validateTrackIndex(options.audioTrackIndex, 'Audio track index');
@@ -175,6 +192,7 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
         && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
         throw new TypeError('Decoded audio output channels require decoded PCM audio');
     }
+    validateAudioDownmixSettings(options, audioOutputMode);
 }
 
 function validateHDRColorNeutralization(options: CustomPlaybackPlayOptions): void {
@@ -289,6 +307,9 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
         audioDownmixAlgorithm: options.audioDownmixAlgorithm,
+        audioDownmixSettings: options.audioDownmixSettings ?
+            { ...options.audioDownmixSettings } :
+            undefined,
         audioOutputMode: options.audioOutputMode,
         audioTrackIndex: options.audioTrackIndex,
         decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
@@ -630,6 +651,33 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.applyOutputGain();
     }
 
+    /** Applies live gains only to an owned decoded multichannel stereo route. */
+    public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
+        this.requireUsable();
+        assertValidAudioDownmixSettings(settings);
+
+        const currentSource = this.currentSource;
+        if (!currentSource
+            || (currentSource.audioOutputMode ?? 'decoded-pcm') !== 'decoded-pcm'
+            || currentSource.audioTrackIndex === null
+            || (currentSource.decodedAudioOutputChannelCount ?? 2) !== 2) {
+            return false;
+        }
+
+        const settingsSnapshot: AudioDownmixSettings = { ...settings };
+        this.currentSource = {
+            ...currentSource,
+            audioDownmixSettings: settingsSnapshot
+        };
+        const activeGeneration = this.activeGeneration;
+        if (activeGeneration === null
+            || this.videoDecodeSession.getTelemetry().activeGeneration
+                !== activeGeneration) {
+            return false;
+        }
+        return this.videoDecodeSession.updateAudioDownmixSettings(settingsSnapshot);
+    }
+
     public setMuted(muted: boolean): void {
         this.requireUsable();
         this.muted = muted;
@@ -650,7 +698,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         audioStreamIndex: number,
         audioOutputMode: CustomDecodeAudioOutputMode =
         this.currentSource?.audioOutputMode ?? 'decoded-pcm',
-        decodedAudioOutputChannelCount = this.currentSource?.decodedAudioOutputChannelCount
+        decodedAudioOutputChannelCount = this.currentSource?.decodedAudioOutputChannelCount,
+        audioDownmixSettings: AudioDownmixSettings | undefined =
+        this.currentSource?.audioDownmixSettings
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
@@ -668,6 +718,9 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         const switchTimeMicroseconds = this.currentTimeMicroseconds;
         const switchOptions: CustomPlaybackPlayOptions = {
             ...this.currentSource,
+            audioDownmixSettings: audioOutputMode === 'decoded-pcm' ?
+                audioDownmixSettings :
+                undefined,
             audioOutputMode,
             audioTrackIndex: audioStreamIndex,
             decodedAudioOutputChannelCount: audioOutputMode === 'decoded-pcm' ?
@@ -982,24 +1035,30 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             if (!this.isGenerationActive(generation)) {
                 return;
             }
+            const activeOptions = this.currentSource;
+            if (!activeOptions) {
+                return;
+            }
             this.videoDecodeSession.start({
-                audioDownmixAlgorithm: options.audioDownmixAlgorithm,
-                audioOutputMode: options.audioOutputMode,
-                audioTrackIndex: options.audioTrackIndex,
-                decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
-                durationMicroseconds: options.durationMicroseconds,
-                dolbyVisionProfile: options.dolbyVisionProfile,
+                audioDownmixAlgorithm: activeOptions.audioDownmixAlgorithm,
+                audioDownmixSettings: activeOptions.audioDownmixSettings,
+                audioOutputMode: activeOptions.audioOutputMode,
+                audioTrackIndex: activeOptions.audioTrackIndex,
+                decodedAudioOutputChannelCount:
+                    activeOptions.decodedAudioOutputChannelCount,
+                durationMicroseconds: activeOptions.durationMicroseconds,
+                dolbyVisionProfile: activeOptions.dolbyVisionProfile,
                 generation,
-                maximumCodedHeight: options.maximumCodedHeight,
-                maximumCodedWidth: options.maximumCodedWidth,
-                nativeHDRTransfer: options.nativeHDRTransfer,
-                neutralizeHDRColorMetadata: options.neutralizeHDRColorMetadata,
-                rawVideoFrameFormat: options.rawVideoFrameFormat,
-                startTimeMicroseconds: options.startTimeMicroseconds,
-                url: options.url,
-                videoDecoderBackend: options.videoDecoderBackend,
-                videoOutputMode: options.videoOutputMode,
-                videoTrackIndex: options.videoTrackIndex
+                maximumCodedHeight: activeOptions.maximumCodedHeight,
+                maximumCodedWidth: activeOptions.maximumCodedWidth,
+                nativeHDRTransfer: activeOptions.nativeHDRTransfer,
+                neutralizeHDRColorMetadata: activeOptions.neutralizeHDRColorMetadata,
+                rawVideoFrameFormat: activeOptions.rawVideoFrameFormat,
+                startTimeMicroseconds: activeOptions.startTimeMicroseconds,
+                url: activeOptions.url,
+                videoDecoderBackend: activeOptions.videoDecoderBackend,
+                videoOutputMode: activeOptions.videoOutputMode,
+                videoTrackIndex: activeOptions.videoTrackIndex
             });
         } catch (error) {
             this.activateFallback(

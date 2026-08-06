@@ -114,6 +114,43 @@ function createCompoundRawFrames(): {
 }
 
 describe('DecodeWorkerProtocol', () => {
+    it('accepts only generation-scoped validated live downmix settings', () => {
+        const request = {
+            audioDownmixSettings: {
+                centerLevel: 0.75,
+                outputGain: 1.25,
+                surroundLevel: 0.5,
+                version: 1
+            },
+            generation: 4,
+            type: 'update-audio-downmix-settings'
+        } as const;
+
+        expect(isDecodeWorkerRequest(request)).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            generation: 0
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            audioDownmixSettings: {
+                ...request.audioDownmixSettings,
+                outputGain: 11
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...request,
+            audioDownmixSettings: {
+                ...request.audioDownmixSettings,
+                version: 2
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            generation: request.generation,
+            type: request.type
+        })).toBe(false);
+    });
+
     it('selects acceleration for native raw output and the bundled HEVC backend', () => {
         expect(getCustomDecodeHardwareAcceleration('raw-planes')).toBe('no-preference');
         expect(getCustomDecodeHardwareAcceleration('video-frame')).toBe('prefer-hardware');
@@ -854,6 +891,12 @@ describe('DecodeWorkerProtocol', () => {
 
     it('validates bounded planar PCM and independent audio credits', () => {
         const decodedAudioStartRequest = {
+            audioDownmixSettings: {
+                centerLevel: 0.4,
+                outputGain: 0.6,
+                surroundLevel: 0.5,
+                version: 1
+            },
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             audioTrackIndex: 1,
             decodedAudioOutputChannelCount: 8,
@@ -890,6 +933,25 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             ...decodedAudioStartRequest,
             decodedAudioOutputChannelCount: 7
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioDownmixSettings: {
+                ...decodedAudioStartRequest.audioDownmixSettings,
+                outputGain: 10.01
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioDownmixSettings: {
+                ...decodedAudioStartRequest.audioDownmixSettings,
+                version: 2
+            }
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            audioOutputMode: 'native-media',
+            decodedAudioOutputChannelCount: undefined
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 2,

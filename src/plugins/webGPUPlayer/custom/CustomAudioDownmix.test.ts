@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    AUDIO_DOWNMIX_SETTING_RANGES,
     FIVE_POINT_ONE_DIRECT_CHANNEL_GAIN,
     FIVE_POINT_ONE_MAXIMUM_CORRELATED_PEAK,
     FIVE_POINT_ONE_MIXED_CHANNEL_GAIN,
     SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN,
     SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK,
     SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN,
+    createDefaultAudioDownmixSettings,
     downmixFivePointOneToStereo,
     downmixSixPointOneToStereo,
     downmixSevenPointOneToStereo,
@@ -176,6 +178,14 @@ describe('downmixSixPointOneToStereo', () => {
 });
 
 describe('downmixSevenPointOneToStereo', () => {
+    it('exposes bounded boost ranges for user controls', () => {
+        expect(AUDIO_DOWNMIX_SETTING_RANGES).toMatchObject({
+            centerLevel: { maximum: 2, minimum: 0, step: 0.01 },
+            outputGain: { maximum: 10, minimum: 0, step: 0.01 },
+            surroundLevel: { maximum: 2, minimum: 0, step: 0.01 }
+        });
+    });
+
     it('maps front, center, back, and side channels to the correct stereo side', () => {
         const channelData = [ 1, 2, 3, 40, 5, 6, 7, 8 ].map(value => (
             createConstantChannel(value)
@@ -293,6 +303,78 @@ describe('downmixSevenPointOneToStereo', () => {
 
         expect(outputLeft[0]).toBeCloseTo(expectedLeft, 6);
         expect(outputRight[0]).toBeCloseTo(expectedRight, 6);
+    });
+
+    it('preserves the exact qualified output with explicit defaults', () => {
+        const channelData = [ 1, 2, 3, 40, 5, 6, 7, 8 ].map(value => (
+            createConstantChannel(value, 4)
+        ));
+
+        expect(downmixSevenPointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            createDefaultAudioDownmixSettings()
+        )).toEqual(downmixSevenPointOneToStereo(channelData));
+    });
+
+    it('applies independent center, surround, and output amplification', () => {
+        const channelData = [ 1, 0, 1, 100, 1, 0, 1, 0 ].map(value => (
+            createConstantChannel(value, 1)
+        ));
+        const [ outputLeft ] = downmixSevenPointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            {
+                centerLevel: 1.5,
+                outputGain: 3,
+                surroundLevel: 2,
+                version: 1
+            }
+        );
+
+        expect(outputLeft[0]).toBeCloseTo((
+            SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN
+            + 1.5 * SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN
+            + 4 * SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN
+        ) * 3, 6);
+        expect(outputLeft[0]).toBeGreaterThan(1);
+    });
+
+    it('rejects settings above the supported boost ranges', () => {
+        const channelData = Array.from({ length: 8 }, (): Float32Array => (
+            createConstantChannel(0, 1)
+        ));
+
+        expect(() => downmixSevenPointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            {
+                centerLevel: 1,
+                outputGain: 10.01,
+                surroundLevel: 1,
+                version: 1
+            }
+        )).toThrow('Audio downmix output gain must be between zero and ten');
+        expect(() => downmixSevenPointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            {
+                centerLevel: 2.01,
+                outputGain: 1,
+                surroundLevel: 1,
+                version: 1
+            }
+        )).toThrow('Audio downmix center level must be between zero and two');
+        expect(() => downmixSevenPointOneToStereo(
+            channelData,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            {
+                centerLevel: 1,
+                outputGain: 1,
+                surroundLevel: 2.01,
+                version: 1
+            }
+        )).toThrow('Audio downmix surround level must be between zero and two');
     });
 
     it('is sample-exact across arbitrary input chunk boundaries', () => {

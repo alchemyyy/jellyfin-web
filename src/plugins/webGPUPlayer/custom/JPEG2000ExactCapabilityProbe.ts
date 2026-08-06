@@ -4,8 +4,6 @@ import {
     JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
     JPEG2000_QUALIFICATION_CODED_HEIGHT,
     JPEG2000_QUALIFICATION_CODED_WIDTH,
-    JPEG2000_QUALIFICATION_MAXIMUM_FRAMES_PER_SECOND,
-    JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
     JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH,
     JPEG2000_QUALIFICATION_RGBA_FINGERPRINT,
     type JPEG2000ExactCapabilityWorkerRequest,
@@ -18,12 +16,8 @@ export {
     JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
     JPEG2000_QUALIFICATION_CODED_HEIGHT,
     JPEG2000_QUALIFICATION_CODED_WIDTH,
-    JPEG2000_QUALIFICATION_FRAME_COUNT,
-    JPEG2000_QUALIFICATION_MAXIMUM_FRAMES_PER_SECOND,
-    JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
     JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH,
     JPEG2000_QUALIFICATION_RGBA_FINGERPRINT,
-    JPEG2000_QUALIFICATION_WARMUP_FRAME_COUNT,
     type JPEG2000ExactCapabilityWorkerRequest,
     type JPEG2000ExactCapabilityWorkerResponse
 } from './JPEG2000ExactCapabilityProtocol';
@@ -40,7 +34,6 @@ export type JPEG2000ExactCapabilityReason =
     | 'decode-output-verified'
     | 'output-mismatch'
     | 'probe-timeout'
-    | 'throughput-insufficient'
     | 'worker-create-failed'
     | 'worker-error'
     | 'worker-message-invalid';
@@ -49,13 +42,8 @@ export type JPEG2000ExactCapability = Readonly<{
     bitDepth: 8
     codec: 'jpeg2000'
     codecString: 'mjp2'
-    decodeMilliseconds: number | null
     decodedRGBAByteLength: number | null
     decodedRGBAFingerprint: number | null
-    maximumCodedHeight: number
-    maximumCodedWidth: number
-    maximumFramesPerSecond: 24 | 0
-    measuredFramesPerSecond: number | null
     reason: JPEG2000ExactCapabilityReason
     status: 'supported' | 'unsupported' | 'unknown'
 }>;
@@ -140,14 +128,9 @@ function createCapability(
         && response.codedWidth === JPEG2000_QUALIFICATION_CODED_WIDTH
         && response.decodedRGBAByteLength === JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH
         && response.decodedRGBAFingerprint === JPEG2000_QUALIFICATION_RGBA_FINGERPRINT;
-    const exactThroughputMatches = response?.measuredFramesPerSecond !== null
-        && response?.measuredFramesPerSecond !== undefined
-        && response.measuredFramesPerSecond
-            >= JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND;
     const supported = reason === 'decode-output-verified'
         && response?.supported === true
-        && exactOutputMatches
-        && exactThroughputMatches;
+        && exactOutputMatches;
     let status: JPEG2000ExactCapability['status'];
     if (supported) {
         status = 'supported';
@@ -166,21 +149,14 @@ function createCapability(
         bitDepth: 8,
         codec: 'jpeg2000',
         codecString: 'mjp2',
-        decodeMilliseconds: response?.decodeMilliseconds ?? null,
         decodedRGBAByteLength: response?.decodedRGBAByteLength ?? null,
         decodedRGBAFingerprint: response?.decodedRGBAFingerprint ?? null,
-        maximumCodedHeight: JPEG2000_QUALIFICATION_CODED_HEIGHT,
-        maximumCodedWidth: JPEG2000_QUALIFICATION_CODED_WIDTH,
-        maximumFramesPerSecond: supported ?
-            JPEG2000_QUALIFICATION_MAXIMUM_FRAMES_PER_SECOND :
-            0,
-        measuredFramesPerSecond: response?.measuredFramesPerSecond ?? null,
         reason: resolvedReason,
         status
     });
 }
 
-/** Owns one cached, fail-closed OpenJPEG exact-output and throughput probe. */
+/** Owns one cached, fail-closed OpenJPEG exact-output probe. */
 export default class JPEG2000ExactCapabilityProbe {
     private cachedProbe: Promise<JPEG2000ExactCapability> | null = null;
 

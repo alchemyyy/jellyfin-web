@@ -6,11 +6,11 @@ import {
     type HEVCExactCapabilityProbeWorker
 } from './HEVCExactCapabilityProbe';
 import {
+    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
-    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS,
-    type HEVCExactCapabilityTier,
-    type HEVCExactCapabilityWorkerResponse,
-    type HEVCExactCapabilityWorkerTierResult
+    type HEVCExactCapabilityFixture,
+    type HEVCExactCapabilityWorkerQualificationResult,
+    type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 
 type WorkerEventType = 'error' | 'message' | 'messageerror';
@@ -66,19 +66,19 @@ class MockCapabilityWorker implements HEVCExactCapabilityProbeWorker {
     }
 }
 
-function getExpectedDecodedByteLength(tier: HEVCExactCapabilityTier): number {
-    const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
+function getExpectedDecodedByteLength(fixture: HEVCExactCapabilityFixture): number {
+    const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture];
     return (
         (definition.codedWidth * definition.codedHeight)
         + (2 * Math.ceil(definition.codedWidth / 2) * Math.ceil(definition.codedHeight / 2))
     ) * Uint16Array.BYTES_PER_ELEMENT;
 }
 
-function createSuccessfulTierResult(
-    tier: HEVCExactCapabilityTier,
-    overrides: Partial<HEVCExactCapabilityWorkerTierResult> = {}
-): HEVCExactCapabilityWorkerTierResult {
-    const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
+function createSuccessfulQualificationResult(
+    fixture: HEVCExactCapabilityFixture,
+    overrides: Partial<HEVCExactCapabilityWorkerQualificationResult> = {}
+): HEVCExactCapabilityWorkerQualificationResult {
+    const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture];
     const decodedFrameFingerprints = overrides.decodedFrameFingerprints === undefined ?
         definition.decodedFrameFingerprints :
         overrides.decodedFrameFingerprints;
@@ -88,19 +88,14 @@ function createSuccessfulTierResult(
         chromaWidth: Math.ceil(definition.codedWidth / 2),
         codedHeight: definition.codedHeight,
         codedWidth: definition.codedWidth,
-        decodeMilliseconds: 80,
         decodedFrameCount: definition.qualificationFrameCount,
-        decodedByteLength: getExpectedDecodedByteLength(tier),
-        framesPerSecond: 100,
+        decodedByteLength: getExpectedDecodedByteLength(fixture),
+        fixture,
         levelIDC: definition.levelIDC,
-        measuredFrameCount: definition.qualificationFrameCount - definition.warmupFrameCount,
-        minimumFramesPerSecond: definition.minimumFramesPerSecond,
         profileIDC: definition.profileIDC,
         reason: 'decode-output-verified',
-        steadyStateDecodeMilliseconds: 70,
         supported: true,
-        tier,
-        totalDecodedByteLength: getExpectedDecodedByteLength(tier)
+        totalDecodedByteLength: getExpectedDecodedByteLength(fixture)
             * definition.qualificationFrameCount,
         ...overrides,
         decodedFrameFingerprints
@@ -111,9 +106,9 @@ function createSuccessfulResponse(): HEVCExactCapabilityWorkerResponse {
     return {
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
         results: [
-            createSuccessfulTierResult('main-1080p'),
-            createSuccessfulTierResult('main10-1080p'),
-            createSuccessfulTierResult('main10-4k')
+            createSuccessfulQualificationResult('main-1080p'),
+            createSuccessfulQualificationResult('main10-1080p'),
+            createSuccessfulQualificationResult('main10-4k')
         ],
         type: 'result'
     };
@@ -123,7 +118,7 @@ function createEnvironment(
     worker: MockCapabilityWorker,
     overrides: Partial<HEVCExactCapabilityProbeEnvironment> = {}
 ): HEVCExactCapabilityProbeEnvironment {
-    const qualificationByteLength = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[
+    const qualificationByteLength = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[
         'main10-4k'
     ].qualificationAccessUnitByteLengths.reduce(
         (totalByteLength, byteLength) => totalByteLength + byteLength,
@@ -170,40 +165,34 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         const capabilities = await firstPromise;
 
         expect(capabilities).toMatchObject({
-            reason: 'complete',
-            tiers: {
+            qualifications: {
                 'main-1080p': {
                     format: 'I420',
-                    maximumCodedHeight: 1_080,
-                    maximumCodedWidth: 1_920,
                     reason: 'decode-output-verified',
                     status: 'supported'
                 },
                 'main10-4k': {
                     format: 'I420P10',
-                    maximumCodedHeight: 2_160,
-                    maximumCodedWidth: 3_840,
                     reason: 'decode-output-verified',
                     status: 'supported'
                 },
                 'main10-1080p': {
                     format: 'I420P10',
-                    maximumCodedHeight: 1_080,
-                    maximumCodedWidth: 1_920,
                     reason: 'decode-output-verified',
                     status: 'supported'
                 }
-            }
+            },
+            reason: 'complete'
         });
         expect(Object.isFrozen(capabilities)).toBe(true);
-        expect(Object.isFrozen(capabilities.tiers)).toBe(true);
-        expect(Object.isFrozen(capabilities.tiers['main10-4k'])).toBe(true);
+        expect(Object.isFrozen(capabilities.qualifications)).toBe(true);
+        expect(Object.isFrozen(capabilities.qualifications['main10-4k'])).toBe(true);
         expect(worker.terminateCount).toBe(1);
         expect(worker.listenerCount()).toBe(0);
         expect(await probe.probe()).toBe(capabilities);
     });
 
-    it('preserves an independently failed tier as a partial result', async () => {
+    it('preserves an independently failed qualification as a partial result', async () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
@@ -219,19 +208,14 @@ describe('BundledHEVCExactCapabilityProbe', () => {
                     chromaWidth: null,
                     codedHeight: null,
                     codedWidth: null,
-                    decodeMilliseconds: 6_001,
                     decodedFrameFingerprints: null,
                     decodedFrameCount: null,
                     decodedByteLength: null,
-                    framesPerSecond: null,
                     levelIDC: null,
-                    measuredFrameCount: null,
-                    minimumFramesPerSecond: null,
                     profileIDC: null,
-                    reason: 'time-budget-exceeded',
-                    steadyStateDecodeMilliseconds: null,
+                    reason: 'decode-error',
                     supported: false,
-                    tier: 'main10-4k',
+                    fixture: 'main10-4k',
                     totalDecodedByteLength: null
                 }
             ]
@@ -239,15 +223,14 @@ describe('BundledHEVCExactCapabilityProbe', () => {
 
         const capabilities = await resultPromise;
         expect(capabilities.reason).toBe('partial');
-        expect(capabilities.tiers['main-1080p'].status).toBe('supported');
-        expect(capabilities.tiers['main10-4k']).toMatchObject({
-            decodeMilliseconds: 6_001,
-            reason: 'time-budget-exceeded',
+        expect(capabilities.qualifications['main-1080p'].status).toBe('supported');
+        expect(capabilities.qualifications['main10-4k']).toMatchObject({
+            reason: 'decode-error',
             status: 'unsupported'
         });
     });
 
-    it('rejects a worker success summary that contradicts the exact tier', async () => {
+    it('rejects a worker success summary that contradicts its fixture', async () => {
         const worker = new MockCapabilityWorker();
         const probe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const resultPromise = probe.probe();
@@ -257,13 +240,13 @@ describe('BundledHEVCExactCapabilityProbe', () => {
             results: [
                 response.results[0],
                 response.results[1],
-                createSuccessfulTierResult('main10-4k', { codedWidth: 1_920 })
+                createSuccessfulQualificationResult('main10-4k', { codedWidth: 1_920 })
             ]
         });
 
         const capabilities = await resultPromise;
         expect(capabilities.reason).toBe('partial');
-        expect(capabilities.tiers['main10-4k']).toMatchObject({
+        expect(capabilities.qualifications['main10-4k']).toMatchObject({
             reason: 'output-mismatch',
             status: 'unsupported'
         });
@@ -280,8 +263,8 @@ describe('BundledHEVCExactCapabilityProbe', () => {
 
         const capabilities = await resultPromise;
         expect(capabilities.reason).toBe('failed');
-        expect(capabilities.tiers['main-1080p'].reason).toBe(reason);
-        expect(capabilities.tiers['main10-4k'].reason).toBe(reason);
+        expect(capabilities.qualifications['main-1080p'].reason).toBe(reason);
+        expect(capabilities.qualifications['main10-4k'].reason).toBe(reason);
         expect(worker.terminateCount).toBe(1);
         expect(worker.listenerCount()).toBe(0);
     });
@@ -294,8 +277,8 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         await vi.advanceTimersByTimeAsync(50);
 
         const capabilities = await resultPromise;
-        expect(capabilities.tiers['main-1080p'].reason).toBe('probe-timeout');
-        expect(capabilities.tiers['main10-4k'].reason).toBe('probe-timeout');
+        expect(capabilities.qualifications['main-1080p'].reason).toBe('probe-timeout');
+        expect(capabilities.qualifications['main10-4k'].reason).toBe('probe-timeout');
         expect(worker.terminateCount).toBe(1);
         expect(worker.listenerCount()).toBe(0);
     });
@@ -310,7 +293,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
 
         const capabilities = await probe.probe();
         expect(capabilities.reason).toBe('unavailable');
-        expect(capabilities.tiers['main-1080p'].reason).toBe('api-unavailable');
+        expect(capabilities.qualifications['main-1080p'].reason).toBe('api-unavailable');
         expect(createWorker).not.toHaveBeenCalled();
     });
 
@@ -322,14 +305,16 @@ describe('BundledHEVCExactCapabilityProbe', () => {
             }
         });
         const creationResult = await creationProbe.probe();
-        expect(creationResult.tiers['main10-4k'].reason).toBe('worker-create-failed');
+        expect(creationResult.qualifications['main10-4k'].reason).toBe(
+            'worker-create-failed'
+        );
         expect(await creationProbe.probe()).toBe(creationResult);
 
         const worker = new MockCapabilityWorker();
         worker.postMessageError = new Error('post failed');
         const postProbe = new BundledHEVCExactCapabilityProbe(createEnvironment(worker));
         const postResult = await postProbe.probe();
-        expect(postResult.tiers['main10-4k'].reason).toBe('worker-error');
+        expect(postResult.qualifications['main10-4k'].reason).toBe('worker-error');
         expect(worker.terminateCount).toBe(1);
         expect(worker.listenerCount()).toBe(0);
     });
@@ -349,7 +334,7 @@ describe('BundledHEVCExactCapabilityProbe', () => {
             'https://example.test/web/libraries/hevcjs/main10-4k-qualification.bin'
         );
         expect(capabilities.reason).toBe('failed');
-        expect(capabilities.tiers['main10-4k'].reason).toBe('worker-error');
+        expect(capabilities.qualifications['main10-4k'].reason).toBe('worker-error');
         expect(worker.postedMessages).toHaveLength(0);
         expect(worker.terminateCount).toBe(1);
     });
@@ -362,7 +347,9 @@ describe('BundledHEVCExactCapabilityProbe', () => {
         worker.emit('message', createSuccessfulResponse());
 
         const capabilities = await resultPromise;
-        expect(capabilities.tiers['main10-4k'].reason).toBe('worker-message-invalid');
+        expect(capabilities.qualifications['main10-4k'].reason).toBe(
+            'worker-message-invalid'
+        );
         expect(worker.terminateCount).toBe(1);
     });
 });

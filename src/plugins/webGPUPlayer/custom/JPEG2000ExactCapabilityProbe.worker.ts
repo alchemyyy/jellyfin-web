@@ -8,11 +8,8 @@ import {
     JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
     JPEG2000_QUALIFICATION_CODED_HEIGHT,
     JPEG2000_QUALIFICATION_CODED_WIDTH,
-    JPEG2000_QUALIFICATION_FRAME_COUNT,
-    JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
     JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH,
     JPEG2000_QUALIFICATION_RGBA_FINGERPRINT,
-    JPEG2000_QUALIFICATION_WARMUP_FRAME_COUNT,
     type JPEG2000ExactCapabilityWorkerRequest,
     type JPEG2000ExactCapabilityWorkerResponse
 } from './JPEG2000ExactCapabilityProtocol';
@@ -45,10 +42,8 @@ function createFailureResponse(
     return {
         codedHeight: null,
         codedWidth: null,
-        decodeMilliseconds: null,
         decodedRGBAByteLength: null,
         decodedRGBAFingerprint: null,
-        measuredFramesPerSecond: null,
         reason,
         requestID: JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
         supported: false,
@@ -99,59 +94,33 @@ async function runProbe(
     const decoder = new JPEG2000SoftwareVideoDecoder(createDependencies(request));
     try {
         await decoder.init();
-        const frameDecodeMilliseconds: number[] = [];
-        let decodedRGBAByteLength: number | null = null;
-        let decodedRGBAFingerprint: number | null = null;
-        for (
-            let frameIndex = 0;
-            frameIndex < JPEG2000_QUALIFICATION_FRAME_COUNT;
-            frameIndex += 1
-        ) {
-            const startMilliseconds = performance.now();
-            const image = decoder.decodeToRGBA(
-                new Uint8Array(request.fixture),
-                QUALIFICATION_GEOMETRY
-            );
-            const frame = decoder.createVideoFrame(
-                image,
-                requireMicroseconds(frameIndex * 41_667),
-                requireMicroseconds(41_667),
-                QUALIFICATION_GEOMETRY
-            );
-            frame.close();
-            frameDecodeMilliseconds.push(performance.now() - startMilliseconds);
-            if (frameIndex === 0) {
-                decodedRGBAByteLength = image.rgba.byteLength;
-                decodedRGBAFingerprint = getJPEG2000RGBAFingerprint(image.rgba);
-            }
-        }
-        const measuredDecodeMilliseconds = frameDecodeMilliseconds
-            .slice(JPEG2000_QUALIFICATION_WARMUP_FRAME_COUNT)
-            .reduce((total: number, value: number): number => total + value, 0);
-        const measuredFrameCount = JPEG2000_QUALIFICATION_FRAME_COUNT
-            - JPEG2000_QUALIFICATION_WARMUP_FRAME_COUNT;
-        const measuredFramesPerSecond = measuredFrameCount * 1_000
-            / measuredDecodeMilliseconds;
+        const image = decoder.decodeToRGBA(
+            new Uint8Array(request.fixture),
+            QUALIFICATION_GEOMETRY
+        );
+        const frame = decoder.createVideoFrame(
+            image,
+            requireMicroseconds(0),
+            requireMicroseconds(41_667),
+            QUALIFICATION_GEOMETRY
+        );
+        frame.close();
+        const decodedRGBAByteLength = image.rgba.byteLength;
+        const decodedRGBAFingerprint = getJPEG2000RGBAFingerprint(image.rgba);
         const outputMatches = decodedRGBAByteLength
                 === JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH
             && decodedRGBAFingerprint === JPEG2000_QUALIFICATION_RGBA_FINGERPRINT;
-        const throughputMatches = measuredFramesPerSecond
-            >= JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND;
         let reason: JPEG2000ExactCapabilityWorkerResponse['reason'];
         if (!outputMatches) {
             reason = 'output-mismatch';
-        } else if (!throughputMatches) {
-            reason = 'throughput-insufficient';
         } else {
             reason = 'decode-output-verified';
         }
         return {
             codedHeight: JPEG2000_QUALIFICATION_CODED_HEIGHT,
             codedWidth: JPEG2000_QUALIFICATION_CODED_WIDTH,
-            decodeMilliseconds: measuredDecodeMilliseconds,
             decodedRGBAByteLength,
             decodedRGBAFingerprint,
-            measuredFramesPerSecond,
             reason,
             requestID: JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
             supported: reason === 'decode-output-verified',

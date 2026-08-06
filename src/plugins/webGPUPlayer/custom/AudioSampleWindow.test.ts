@@ -56,4 +56,18 @@ describe('getAudioSampleWindow', () => {
         });
         expect(sampleWindow?.mediaTimeMicroseconds).toBeGreaterThanOrEqual(10_001);
     });
+
+    it('sample-exactly trims a DTS seek boundary packet', () => {
+        expect(getAudioSampleWindow(
+            secondsToMicroseconds(1_052.31975),
+            512,
+            48_000,
+            secondsToMicroseconds(1_052.326)
+        )).toEqual({
+            durationMicroseconds: 4_417,
+            frameCount: 212,
+            frameOffset: 300,
+            mediaTimeMicroseconds: 1_052_326_000
+        });
+    });
 });

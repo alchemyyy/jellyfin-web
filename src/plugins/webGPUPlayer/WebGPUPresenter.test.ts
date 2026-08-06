@@ -1271,6 +1271,70 @@ describe('WebGPUPresenter', () => {
         expect(new Uint32Array(renderSettingsWrite.buffer)[3]).toBe(0);
     });
 
+    it('keeps a manual input peak authoritative over per-frame HDR10+ metadata', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const metadata = createPQColorMetadata();
+        const manualSettings = createHDRToSDRRenderSettings({
+            toneMapping: { inputPeakNits: 4_000 }
+        });
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            automaticInputPeakNits: false,
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: manualSettings
+        }, 1)).resolves.toBe(true);
+        const deviceHarness = gpuHarness.devices[0];
+        deviceHarness.queueWriteBuffer.mockClear();
+
+        const frame = createRawFrame('I420P10', metadata);
+        expect(presenter.presentDecodedFrame({
+            HDR10PlusMetadata: parseHEVCHDR10PlusMetadata(
+                createHDR10PlusHEVCFixture('valid'),
+                { kind: 'annex-b' }
+            ),
+            durationMicroseconds: frame.durationMicroseconds
+                ?? secondsToMicroseconds(0),
+            frame,
+            mediaTimeMicroseconds: frame.timestampMicroseconds,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        const renderSettingsWrites = deviceHarness.queueWriteBuffer.mock.calls
+            .map((call: unknown[]): unknown => call[2])
+            .filter((value: unknown): value is Uint8Array<ArrayBuffer> => (
+                value instanceof Uint8Array
+                && value.byteLength === RENDER_SETTINGS_UNIFORM_BYTE_LENGTH
+            ));
+        const renderSettingsWrite = renderSettingsWrites.at(-1);
+        expect(renderSettingsWrite).toBeDefined();
+        const uniformData = renderSettingsWrite as Uint8Array<ArrayBuffer>;
+        expect(new Uint32Array(uniformData.buffer)[3]).toBe(2);
+        expect(new Float32Array(uniformData.buffer)[6]).toBe(4_000);
+        expect(new Uint32Array(uniformData.buffer)[16]).toBe(2);
+        expect(presenter.getRenderSettings()).toEqual(manualSettings);
+        expect(presenter.getTelemetry()).toMatchObject({
+            appliedHDR10PlusFrameCount: 1,
+            lastHDR10PlusInputPeakNits: 4_000,
+            lastHDR10PlusMetadataStatus: 'valid',
+            staticFallbackHDR10PlusFrameCount: 0
+        });
+    });
+
     it('composes the visible rectangle, reuses matching plane textures, and releases them', async () => {
         webSettingsMockState.hdrToneMappingEnabled = true;
         const gpuHarness = createGPUHarness();

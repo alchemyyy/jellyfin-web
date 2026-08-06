@@ -5,45 +5,36 @@ export const HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_INPUT_BYTE_LENGTH = 1024 * 1024
 export const HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH = 285 * 1024 * 1024;
 export const HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 7_000;
 export const HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT = 8;
-export const HEVC_EXACT_CAPABILITY_WARMUP_FRAME_COUNT = 1;
-export const HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND = 24;
-export const HEVC_EXACT_CAPABILITY_THROUGHPUT_HEADROOM_FACTOR = 1.25;
-export const HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND =
-    HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND
-    * HEVC_EXACT_CAPABILITY_THROUGHPUT_HEADROOM_FACTOR;
 
-export const HEVC_EXACT_CAPABILITY_TIERS = Object.freeze([
+export const HEVC_EXACT_CAPABILITY_FIXTURES = Object.freeze([
     'main-1080p',
     'main10-1080p',
     'main10-4k'
 ] as const);
 
-export type HEVCExactCapabilityTier = typeof HEVC_EXACT_CAPABILITY_TIERS[number];
+export type HEVCExactCapabilityFixture = typeof HEVC_EXACT_CAPABILITY_FIXTURES[number];
 export type HEVCExactCapabilityProfile = 'main' | 'main10';
 export type HEVCExactCapabilityFormat = 'I420' | 'I420P10';
 
-export type HEVCExactCapabilityTierDefinition = Readonly<{
+export type HEVCExactCapabilityFixtureDefinition = Readonly<{
     bitDepth: 8 | 10
     codecString: 'hvc1.1.6.L120.B0' | 'hvc1.2.4.L120.B0' | 'hvc1.2.4.L153.B0'
     codedHeight: 1_080 | 2_160
     codedWidth: 1_920 | 3_840
     decodedFrameFingerprints: readonly number[]
     format: HEVCExactCapabilityFormat
-    maximumDecodeMilliseconds: number
-    minimumFramesPerSecond: number
     profile: HEVCExactCapabilityProfile
     profileIDC: 1 | 2
     qualificationAccessUnitByteLengths: readonly number[]
     qualificationFrameCount: number
     qualificationVCLNALUnitTypes: readonly (1 | 20)[]
     levelIDC: 120 | 153
-    tier: HEVCExactCapabilityTier
-    warmupFrameCount: number
+    fixture: HEVCExactCapabilityFixture
 }>;
 
-export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
-    HEVCExactCapabilityTier,
-    HEVCExactCapabilityTierDefinition
+export const HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS: Readonly<Record<
+    HEVCExactCapabilityFixture,
+    HEVCExactCapabilityFixtureDefinition
 >> = Object.freeze({
     'main-1080p': Object.freeze({
         bitDepth: 8,
@@ -62,8 +53,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420',
         levelIDC: 120,
-        maximumDecodeMilliseconds: 1_750,
-        minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main',
         profileIDC: 1,
         qualificationAccessUnitByteLengths: Object.freeze([
@@ -73,8 +62,7 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         qualificationVCLNALUnitTypes: Object.freeze([
             20, 1, 20, 1, 20, 1, 20, 1
         ] as const),
-        tier: 'main-1080p',
-        warmupFrameCount: HEVC_EXACT_CAPABILITY_WARMUP_FRAME_COUNT
+        fixture: 'main-1080p'
     }),
     'main10-1080p': Object.freeze({
         bitDepth: 10,
@@ -93,8 +81,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420P10',
         levelIDC: 120,
-        maximumDecodeMilliseconds: 1_750,
-        minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main10',
         profileIDC: 2,
         qualificationAccessUnitByteLengths: Object.freeze([
@@ -104,8 +90,7 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         qualificationVCLNALUnitTypes: Object.freeze([
             20, 1, 20, 1, 20, 1, 20, 1
         ] as const),
-        tier: 'main10-1080p',
-        warmupFrameCount: HEVC_EXACT_CAPABILITY_WARMUP_FRAME_COUNT
+        fixture: 'main10-1080p'
     }),
     'main10-4k': Object.freeze({
         bitDepth: 10,
@@ -124,8 +109,6 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         ]),
         format: 'I420P10',
         levelIDC: 153,
-        maximumDecodeMilliseconds: 2_750,
-        minimumFramesPerSecond: HEVC_EXACT_CAPABILITY_MINIMUM_QUALIFIED_FRAMES_PER_SECOND,
         profile: 'main10',
         profileIDC: 2,
         qualificationAccessUnitByteLengths: Object.freeze([
@@ -135,72 +118,57 @@ export const HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS: Readonly<Record<
         qualificationVCLNALUnitTypes: Object.freeze([
             20, 1, 1, 1, 1, 1, 1, 1
         ] as const),
-        tier: 'main10-4k',
-        warmupFrameCount: HEVC_EXACT_CAPABILITY_WARMUP_FRAME_COUNT
+        fixture: 'main10-4k'
     })
 });
 
-export type HEVCExactCapabilityWorkerTierRequest = Readonly<{
+export type HEVCExactCapabilityWorkerQualificationRequest = Readonly<{
     accessUnit: ArrayBuffer
     bitDepth: 8 | 10
     codedHeight: number
     codedWidth: number
     levelIDC: number
-    maximumDecodeMilliseconds: number
-    minimumFramesPerSecond: number
     profileIDC: number
     qualificationAccessUnits: readonly ArrayBuffer[]
     qualificationFrameCount: number
-    tier: HEVCExactCapabilityTier
-    warmupFrameCount: number
+    fixture: HEVCExactCapabilityFixture
 }>;
 
 export type HEVCExactCapabilityWorkerRequest = Readonly<{
     decoderGlueURL: string
     decoderWASMURL: string
     requestID: typeof HEVC_EXACT_CAPABILITY_REQUEST_ID
-    tiers: readonly HEVCExactCapabilityWorkerTierRequest[]
+    qualifications: readonly HEVCExactCapabilityWorkerQualificationRequest[]
     type: 'probe'
 }>;
 
-export type HEVCExactCapabilityWorkerTierReason =
+export type HEVCExactCapabilityWorkerQualificationReason =
     | 'decode-error'
     | 'decode-output-verified'
-    | 'output-mismatch'
-    | 'throughput-insufficient'
-    | 'time-budget-exceeded';
+    | 'output-mismatch';
 
-export type HEVCExactCapabilityWorkerTierResult = Readonly<{
+export type HEVCExactCapabilityWorkerQualificationResult = Readonly<{
     bitDepth: number | null
     chromaHeight: number | null
     chromaWidth: number | null
     codedHeight: number | null
     codedWidth: number | null
-    decodeMilliseconds: number | null
     decodedFrameFingerprints: readonly number[] | null
     decodedFrameCount: number | null
     decodedByteLength: number | null
-    framesPerSecond: number | null
     levelIDC: number | null
-    measuredFrameCount: number | null
-    minimumFramesPerSecond: number | null
     profileIDC: number | null
-    reason: HEVCExactCapabilityWorkerTierReason
+    reason: HEVCExactCapabilityWorkerQualificationReason
     supported: boolean
-    tier: HEVCExactCapabilityTier
-    steadyStateDecodeMilliseconds: number | null
+    fixture: HEVCExactCapabilityFixture
     totalDecodedByteLength: number | null
 }>;
 
 export type HEVCExactCapabilityWorkerResponse = Readonly<{
     requestID: typeof HEVC_EXACT_CAPABILITY_REQUEST_ID
-    results: readonly HEVCExactCapabilityWorkerTierResult[]
+    results: readonly HEVCExactCapabilityWorkerQualificationResult[]
     type: 'result'
 }>;
-
-function isFiniteNonNegativeNumber(value: unknown): value is number {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
 
 function isNullableNonNegativeSafeInteger(value: unknown): value is number | null {
     return value === null || (Number.isSafeInteger(value) && (value as number) >= 0);
@@ -218,19 +186,19 @@ function isNullableFingerprintArray(value: unknown): value is readonly number[] 
     );
 }
 
-function isTier(value: unknown): value is HEVCExactCapabilityTier {
+function isFixture(value: unknown): value is HEVCExactCapabilityFixture {
     return value === 'main-1080p'
         || value === 'main10-1080p'
         || value === 'main10-4k';
 }
 
-function isWorkerTierReason(value: unknown): value is HEVCExactCapabilityWorkerTierReason {
+function isWorkerQualificationReason(
+    value: unknown
+): value is HEVCExactCapabilityWorkerQualificationReason {
     switch (value) {
         case 'decode-error':
         case 'decode-output-verified':
         case 'output-mismatch':
-        case 'throughput-insufficient':
-        case 'time-budget-exceeded':
             return true;
         default:
             return false;
@@ -238,12 +206,12 @@ function isWorkerTierReason(value: unknown): value is HEVCExactCapabilityWorkerT
 }
 
 function getQualificationInputByteLength(
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
-    definition: HEVCExactCapabilityTierDefinition
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
+    definition: HEVCExactCapabilityFixtureDefinition
 ): number | null {
     if (
-        !Array.isArray(tierRequest.qualificationAccessUnits)
-        || tierRequest.qualificationAccessUnits.length
+        !Array.isArray(qualificationRequest.qualificationAccessUnits)
+        || qualificationRequest.qualificationAccessUnits.length
             !== definition.qualificationAccessUnitByteLengths.length
     ) {
         return null;
@@ -252,10 +220,12 @@ function getQualificationInputByteLength(
     let inputByteLength = 0;
     for (
         let accessUnitIndex = 0;
-        accessUnitIndex < tierRequest.qualificationAccessUnits.length;
+        accessUnitIndex < qualificationRequest.qualificationAccessUnits.length;
         accessUnitIndex += 1
     ) {
-        const qualificationAccessUnit = tierRequest.qualificationAccessUnits[accessUnitIndex];
+        const qualificationAccessUnit = qualificationRequest.qualificationAccessUnits[
+            accessUnitIndex
+        ];
         if (
             !(qualificationAccessUnit instanceof ArrayBuffer)
             || qualificationAccessUnit.byteLength
@@ -285,50 +255,48 @@ export function isHEVCExactCapabilityWorkerRequest(
         || request.decoderGlueURL.length === 0
         || typeof request.decoderWASMURL !== 'string'
         || request.decoderWASMURL.length === 0
-        || !Array.isArray(request.tiers)
-        || request.tiers.length !== HEVC_EXACT_CAPABILITY_TIERS.length
+        || !Array.isArray(request.qualifications)
+        || request.qualifications.length !== HEVC_EXACT_CAPABILITY_FIXTURES.length
     ) {
         return false;
     }
 
-    const seenTiers = new Set<HEVCExactCapabilityTier>();
+    const seenFixtures = new Set<HEVCExactCapabilityFixture>();
     let totalDecodedByteLength = 0;
     let totalInputByteLength = 0;
-    for (const tierRequest of request.tiers) {
-        if (!tierRequest || typeof tierRequest !== 'object') {
+    for (const qualificationRequest of request.qualifications) {
+        if (!qualificationRequest || typeof qualificationRequest !== 'object') {
             return false;
         }
-        const tier = (tierRequest as { tier?: unknown }).tier;
-        if (!isTier(tier)) {
+        const fixture = (qualificationRequest as { fixture?: unknown }).fixture;
+        if (!isFixture(fixture)) {
             return false;
         }
-        const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
+        const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture];
         if (
-            seenTiers.has(tier)
-            || !(tierRequest.accessUnit instanceof ArrayBuffer)
-            || tierRequest.accessUnit.byteLength === 0
-            || tierRequest.accessUnit.byteLength
+            seenFixtures.has(fixture)
+            || !(qualificationRequest.accessUnit instanceof ArrayBuffer)
+            || qualificationRequest.accessUnit.byteLength === 0
+            || qualificationRequest.accessUnit.byteLength
                 > HEVC_EXACT_CAPABILITY_MAXIMUM_ACCESS_UNIT_BYTE_LENGTH
-            || tierRequest.bitDepth !== definition.bitDepth
-            || tierRequest.codedHeight !== definition.codedHeight
-            || tierRequest.codedWidth !== definition.codedWidth
-            || tierRequest.levelIDC !== definition.levelIDC
-            || tierRequest.maximumDecodeMilliseconds !== definition.maximumDecodeMilliseconds
-            || tierRequest.minimumFramesPerSecond !== definition.minimumFramesPerSecond
-            || tierRequest.profileIDC !== definition.profileIDC
+            || qualificationRequest.bitDepth !== definition.bitDepth
+            || qualificationRequest.codedHeight !== definition.codedHeight
+            || qualificationRequest.codedWidth !== definition.codedWidth
+            || qualificationRequest.levelIDC !== definition.levelIDC
+            || qualificationRequest.profileIDC !== definition.profileIDC
             || definition.decodedFrameFingerprints.length
                 !== definition.qualificationFrameCount
             || definition.qualificationAccessUnitByteLengths.length
                 !== definition.qualificationFrameCount
             || definition.qualificationVCLNALUnitTypes.length
                 !== definition.qualificationFrameCount
-            || tierRequest.qualificationFrameCount !== definition.qualificationFrameCount
-            || tierRequest.warmupFrameCount !== definition.warmupFrameCount
+            || qualificationRequest.qualificationFrameCount
+                !== definition.qualificationFrameCount
         ) {
             return false;
         }
         const qualificationInputByteLength = getQualificationInputByteLength(
-            tierRequest,
+            qualificationRequest,
             definition
         );
         if (qualificationInputByteLength === null) {
@@ -341,7 +309,7 @@ export function isHEVCExactCapabilityWorkerRequest(
             (definition.codedWidth * definition.codedHeight)
             + (2 * chromaWidth * chromaHeight)
         ) * Uint16Array.BYTES_PER_ELEMENT;
-        totalInputByteLength += tierRequest.accessUnit.byteLength;
+        totalInputByteLength += qualificationRequest.accessUnit.byteLength;
         totalDecodedByteLength += decodedFrameByteLength
             * definition.qualificationFrameCount;
         if (
@@ -352,9 +320,9 @@ export function isHEVCExactCapabilityWorkerRequest(
         ) {
             return false;
         }
-        seenTiers.add(tier);
+        seenFixtures.add(fixture);
     }
-    return seenTiers.size === HEVC_EXACT_CAPABILITY_TIERS.length;
+    return seenFixtures.size === HEVC_EXACT_CAPABILITY_FIXTURES.length;
 }
 
 /** Checks the bounded summary returned by the capability worker. */
@@ -369,20 +337,20 @@ export function isHEVCExactCapabilityWorkerResponse(
         response.type !== 'result'
         || response.requestID !== HEVC_EXACT_CAPABILITY_REQUEST_ID
         || !Array.isArray(response.results)
-        || response.results.length !== HEVC_EXACT_CAPABILITY_TIERS.length
+        || response.results.length !== HEVC_EXACT_CAPABILITY_FIXTURES.length
     ) {
         return false;
     }
 
-    const seenTiers = new Set<HEVCExactCapabilityTier>();
+    const seenFixtures = new Set<HEVCExactCapabilityFixture>();
     for (const result of response.results) {
         if (
             !result
             || typeof result !== 'object'
-            || !isTier(result.tier)
-            || seenTiers.has(result.tier)
+            || !isFixture(result.fixture)
+            || seenFixtures.has(result.fixture)
             || typeof result.supported !== 'boolean'
-            || !isWorkerTierReason(result.reason)
+            || !isWorkerQualificationReason(result.reason)
             || !isNullableNonNegativeSafeInteger(result.bitDepth)
             || !isNullableNonNegativeSafeInteger(result.chromaHeight)
             || !isNullableNonNegativeSafeInteger(result.chromaWidth)
@@ -392,25 +360,8 @@ export function isHEVCExactCapabilityWorkerResponse(
             || !isNullableNonNegativeSafeInteger(result.decodedFrameCount)
             || !isNullableNonNegativeSafeInteger(result.decodedByteLength)
             || !isNullableNonNegativeSafeInteger(result.levelIDC)
-            || !isNullableNonNegativeSafeInteger(result.measuredFrameCount)
             || !isNullableNonNegativeSafeInteger(result.profileIDC)
             || !isNullableNonNegativeSafeInteger(result.totalDecodedByteLength)
-            || (
-                result.decodeMilliseconds !== null
-                && !isFiniteNonNegativeNumber(result.decodeMilliseconds)
-            )
-            || (
-                result.framesPerSecond !== null
-                && !isFiniteNonNegativeNumber(result.framesPerSecond)
-            )
-            || (
-                result.minimumFramesPerSecond !== null
-                && !isFiniteNonNegativeNumber(result.minimumFramesPerSecond)
-            )
-            || (
-                result.steadyStateDecodeMilliseconds !== null
-                && !isFiniteNonNegativeNumber(result.steadyStateDecodeMilliseconds)
-            )
         ) {
             return false;
         }
@@ -424,25 +375,20 @@ export function isHEVCExactCapabilityWorkerResponse(
                     || result.chromaWidth === null
                     || result.codedHeight === null
                     || result.codedWidth === null
-                    || result.decodeMilliseconds === null
                     || result.decodedFrameFingerprints === null
                     || result.decodedFrameFingerprints.length
                         !== HEVC_EXACT_CAPABILITY_QUALIFICATION_FRAME_COUNT
                     || result.decodedFrameCount === null
                     || result.decodedByteLength === null
-                    || result.framesPerSecond === null
                     || result.levelIDC === null
-                    || result.measuredFrameCount === null
-                    || result.minimumFramesPerSecond === null
                     || result.profileIDC === null
-                    || result.steadyStateDecodeMilliseconds === null
                     || result.totalDecodedByteLength === null
                 )
             )
         ) {
             return false;
         }
-        seenTiers.add(result.tier);
+        seenFixtures.add(result.fixture);
     }
-    return seenTiers.size === HEVC_EXACT_CAPABILITY_TIERS.length;
+    return seenFixtures.size === HEVC_EXACT_CAPABILITY_FIXTURES.length;
 }

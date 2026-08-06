@@ -32,10 +32,18 @@ import {
 } from './PresentationInput';
 import {
     createDefaultRenderSettings,
-    createHDRToSDRRenderSettings,
     type HDRToSDRRenderSettings,
     type RenderSettings
 } from './RenderSettings';
+import {
+    createConfiguredHDRRenderSettings,
+    loadWebGPUUserSettings,
+    type WebGPUUserSettings
+} from './WebGPUUserSettings';
+import {
+    assertValidAudioDownmixSettings,
+    type AudioDownmixSettings
+} from './custom/CustomAudioDownmix';
 import {
     createPQColorMetadata,
     type InputColorMetadata
@@ -180,6 +188,13 @@ type DeviceProfileItem = {
 type DeviceProfileMediaSource = {
     Id?: unknown
     MediaStreams?: unknown
+};
+
+type PlayerSettingsMenuItem = {
+    id: string
+    name: string
+    onSelect: () => unknown
+    secondaryText?: string
 };
 
 type HDRDeviceProfileProbeScope =
@@ -574,10 +589,14 @@ function getSelectedAudioSampleRate(options: unknown): number | null {
 
 function selectDecodedAudioOutputChannelCount(
     eligibility: EligibleCustomPlayback,
-    audioContext: AudioContext | null
+    audioContext: AudioContext | null,
+    forceStereoDownmix: boolean
 ): 2 | 6 | 8 | undefined {
     if (eligibility.audioOutputMode !== 'decoded-pcm') {
         return undefined;
+    }
+    if (forceStereoDownmix) {
+        return 2;
     }
     return selectCustomAudioOutputChannelCount(
         audioContext,
@@ -590,6 +609,15 @@ function selectAudioDownmixAlgorithm(
     selectedAlgorithm: CustomAudioDownmixAlgorithm
 ): CustomAudioDownmixAlgorithm | undefined {
     return audioTrackIndex === null ? undefined : selectedAlgorithm;
+}
+
+function getDecodedAudioDownmixSettings(
+    eligibility: EligibleCustomPlayback,
+    settings: WebGPUUserSettings
+): AudioDownmixSettings | undefined {
+    return eligibility.audioOutputMode === 'decoded-pcm' ?
+        settings.audio.downmix :
+        undefined;
 }
 
 /**
@@ -617,6 +645,7 @@ export default class WebGPUPlayer {
     private backendPlayPendingGeneration: number | null = null;
     private backendSessionActive = false;
     private customPlaybackController: CustomPlaybackController | null = null;
+    private customPlaybackAudioSettings: WebGPUUserSettings['audio'] | null = null;
     private customPlaybackBackendGeneration: number | null = null;
     private customPlaybackAudioPrewarm: CustomPlaybackAudioPrewarm | null = null;
     private customPlaybackFallbackPromise: Promise<unknown> | null = null;
@@ -646,6 +675,7 @@ export default class WebGPUPlayer {
     private currentDolbyVisionPresentationDescriptor: DolbyVisionPresentationDescriptor | null =
         null;
     private currentPresentationColorMetadata: InputColorMetadata | null = null;
+    private activeDetectedInputPeakNits: number | null = null;
     private colorValidationDecision: ColorValidationCapabilityDecision | null = null;
     private colorValidationDevice: GPUDevice | null = null;
     private colorValidationRunner: WebGPUExternalTextureValidationRunner | null = null;
@@ -722,6 +752,18 @@ export default class WebGPUPlayer {
     supportsPlayMethod(playMethod: string, item: unknown): boolean {
         const backend = this.htmlDelegate.player as unknown as HTMLPlayerSelectionContract;
         return backend.supportsPlayMethod(playMethod, item);
+    }
+
+    /** Contributes one plugin-owned settings surface to Jellyfin's generic menu seam. */
+    getSettingsMenuItems(): readonly PlayerSettingsMenuItem[] {
+        return [ {
+            id: 'webgpu-playback-settings',
+            name: 'WebGPU Settings',
+            onSelect: (): Promise<void> => import(
+                /* webpackChunkName: "webgpu-playback-settings" */
+                './ui/WebGPUPlaybackSettingsDialog'
+            ).then(module => module.showWebGPUPlaybackSettingsPanel(this))
+        } ];
     }
 
     /** Blocks HLS video copy for Dolby Vision sources while preserving direct play. */
@@ -877,6 +919,7 @@ export default class WebGPUPlayer {
         this.lastCustomPlaybackEligibility = null;
         this.lastCustomPlaybackTelemetry = null;
         this.currentPlaybackOptions = options;
+        this.activeDetectedInputPeakNits = null;
         this.lastKnownTimeMicroseconds = getPlaybackStartTimeMicroseconds(options);
         this.currentPlaybackRequiresSourceRenegotiation =
             this.customProfileAugmentationAvailable
@@ -1501,16 +1544,47 @@ export default class WebGPUPlayer {
     }
 
     /** Applies live HDR display controls without rebuilding the shader pipeline. */
-    updateRenderSettings(settings: HDRToSDRRenderSettings): boolean {
+    updateRenderSettings(
+        settings: HDRToSDRRenderSettings,
+        automaticInputPeakNits: boolean =
+        loadWebGPUUserSettings().render.automaticInputPeakNits
+    ): boolean {
         return this.presenter.updateRenderSettings(
             settings,
-            this.presentationGeneration
+            this.presentationGeneration,
+            automaticInputPeakNits
         );
+    }
+
+    /** Applies live gain changes to an active WebGPU stereo downmix when available. */
+    updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
+        assertValidAudioDownmixSettings(settings);
+        const customPlaybackController = this.getActiveCustomPlaybackController();
+        const audioSettings = this.customPlaybackAudioSettings;
+        if (!customPlaybackController || !audioSettings) {
+            return false;
+        }
+
+        const settingsSnapshot: AudioDownmixSettings = { ...settings };
+        this.customPlaybackAudioSettings = {
+            ...audioSettings,
+            downmix: { ...settingsSnapshot }
+        };
+        return customPlaybackController.updateAudioDownmixSettings(settingsSnapshot);
     }
 
     /** Returns a detached renderer-settings snapshot for diagnostics and UI. */
     getRenderSettings(): RenderSettings {
         return this.presenter.getRenderSettings();
+    }
+
+    /** Returns the retained source peak used when automatic metadata tracking is enabled. */
+    getDetectedInputPeakNits(): number | null {
+        if (!this.backendSessionActive
+            || !this.webGPUPresentationEnabled) {
+            return null;
+        }
+        return this.activeDetectedInputPeakNits;
     }
 
     /** Supplies a measured external-texture decision for later HDR sessions. */
@@ -1717,6 +1791,33 @@ export default class WebGPUPlayer {
         });
     }
 
+    private createHDRRenderConfiguration(
+        detectedInputPeakNits: number
+    ): Readonly<{
+            automaticInputPeakNits: boolean
+            settings: HDRToSDRRenderSettings
+        }> {
+        const userSettings = loadWebGPUUserSettings();
+        const automaticUserSettings: WebGPUUserSettings = {
+            ...userSettings,
+            render: {
+                ...userSettings.render,
+                automaticInputPeakNits: true
+            }
+        };
+        const automaticSettings = createConfiguredHDRRenderSettings(
+            automaticUserSettings,
+            detectedInputPeakNits
+        );
+        this.activeDetectedInputPeakNits = automaticSettings.toneMapping.inputPeakNits;
+        return {
+            automaticInputPeakNits: userSettings.render.automaticInputPeakNits,
+            settings: userSettings.render.automaticInputPeakNits ?
+                automaticSettings :
+                createConfiguredHDRRenderSettings(userSettings, detectedInputPeakNits)
+        };
+    }
+
     private configureDolbyVisionPresentationColorPipeline(
         dolbyVisionDescriptor: DolbyVisionPresentationDescriptor,
         generation: number,
@@ -1729,23 +1830,19 @@ export default class WebGPUPlayer {
             && rawVideoFrameFormat === null
         ) {
             return this.presenter.configureColorPipeline({
+                ...this.createHDRRenderConfiguration(4_000),
                 inputMode: 'external-dolby-vision',
-                profile: 5,
-                settings: createHDRToSDRRenderSettings({
-                    toneMapping: { inputPeakNits: 4_000 }
-                })
+                profile: 5
             }, generation);
         }
         if (videoOutputMode !== 'raw-planes' || rawVideoFrameFormat !== 'I420P10') {
             return Promise.resolve(false);
         }
         return this.presenter.configureColorPipeline({
+            ...this.createHDRRenderConfiguration(4_000),
             inputMode: 'raw-dolby-vision',
             profile: dolbyVisionDescriptor.profile,
-            rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings({
-                toneMapping: { inputPeakNits: 4_000 }
-            })
+            rawFrameFormat: 'I420P10'
         }, generation);
     }
 
@@ -1804,13 +1901,9 @@ export default class WebGPUPlayer {
             return Promise.resolve(false);
         }
         return this.presenter.configureColorPipeline({
+            ...this.createHDRRenderConfiguration(colorMetadata.nominalPeakNits),
             inputMode: 'external-hdr',
-            metadata: colorMetadata,
-            settings: createHDRToSDRRenderSettings({
-                toneMapping: {
-                    inputPeakNits: colorMetadata.nominalPeakNits
-                }
-            })
+            metadata: colorMetadata
         }, generation);
     }
 
@@ -1824,6 +1917,7 @@ export default class WebGPUPlayer {
             return Promise.resolve(false);
         }
         if (metadata.transfer === 'sdr') {
+            this.activeDetectedInputPeakNits = null;
             if (videoOutputMode !== 'video-frame' || rawVideoFrameFormat !== null) {
                 return Promise.resolve(false);
             }
@@ -1834,11 +1928,9 @@ export default class WebGPUPlayer {
 
         if (videoOutputMode === 'video-frame' && rawVideoFrameFormat === null) {
             return this.presenter.configureColorPipeline({
+                ...this.createHDRRenderConfiguration(metadata.nominalPeakNits),
                 inputMode: 'external-hdr',
-                metadata,
-                settings: createHDRToSDRRenderSettings({
-                    toneMapping: { inputPeakNits: metadata.nominalPeakNits }
-                })
+                metadata
             }, generation);
         }
 
@@ -1860,12 +1952,10 @@ export default class WebGPUPlayer {
         }
 
         return this.presenter.configureColorPipeline({
+            ...this.createHDRRenderConfiguration(metadata.nominalPeakNits),
             inputMode: 'raw-yuv',
             metadata,
-            rawFrameFormat: rawVideoFrameFormat,
-            settings: createHDRToSDRRenderSettings({
-                toneMapping: { inputPeakNits: metadata.nominalPeakNits }
-            })
+            rawFrameFormat: rawVideoFrameFormat
         }, generation);
     }
 
@@ -1884,23 +1974,23 @@ export default class WebGPUPlayer {
         }
 
         const inputPeakNits = getStaticHDRToneMappingPeakNits(metadata);
-        const currentSettings = this.presenter.getRenderSettings();
-        if (inputPeakNits === null
-            || currentSettings.mode !== 'hdr-to-sdr'
-            || currentSettings.toneMapping.inputPeakNits === inputPeakNits) {
+        if (inputPeakNits === null) {
             return;
         }
-        const updatedSettings = createHDRToSDRRenderSettings({
-            display: currentSettings.display,
-            outputTransfer: currentSettings.outputTransfer,
-            toneMapping: {
-                ...currentSettings.toneMapping,
-                inputPeakNits
-            }
-        });
+        const configuration = this.createHDRRenderConfiguration(inputPeakNits);
+        if (!configuration.automaticInputPeakNits) {
+            return;
+        }
+        const currentSettings = this.presenter.getRenderSettings();
+        if (currentSettings.mode !== 'hdr-to-sdr'
+            || currentSettings.toneMapping.inputPeakNits
+                === configuration.settings.toneMapping.inputPeakNits) {
+            return;
+        }
         if (!this.presenter.updateRenderSettings(
-            updatedSettings,
-            this.presentationGeneration
+            configuration.settings,
+            this.presentationGeneration,
+            true
         )) {
             console.warn('WebGPU could not apply static HDR luminance metadata');
         }
@@ -2153,9 +2243,11 @@ export default class WebGPUPlayer {
             eligibility.audioOutputMode,
             backendGeneration
         );
+        const webGPUUserSettings = loadWebGPUUserSettings();
         const decodedAudioOutputChannelCount = selectDecodedAudioOutputChannelCount(
             eligibility,
-            audioPrewarm?.audioContext ?? null
+            audioPrewarm?.audioContext ?? null,
+            webGPUUserSettings.audio.forceStereoDownmix
         );
 
         let completedStartResult: CustomPlaybackStartResult | null = null;
@@ -2243,6 +2335,10 @@ export default class WebGPUPlayer {
                 backendGeneration
             );
             this.customPlaybackController = customPlaybackController;
+            this.customPlaybackAudioSettings = {
+                downmix: { ...webGPUUserSettings.audio.downmix },
+                forceStereoDownmix: webGPUUserSettings.audio.forceStereoDownmix
+            };
             this.customPlaybackBackendGeneration = backendGeneration;
             this.customPlaybackFrameGeneration = presentationGeneration;
             this.customPlaybackEmitUnpause = true;
@@ -2258,6 +2354,10 @@ export default class WebGPUPlayer {
 
             const startResult = await customPlaybackController.play({
                 audioDownmixAlgorithm,
+                audioDownmixSettings: getDecodedAudioDownmixSettings(
+                    eligibility,
+                    webGPUUserSettings
+                ),
                 audioOutputMode: eligibility.audioOutputMode ?? undefined,
                 audioTrackIndex: eligibility.audioTrackIndex,
                 decodedAudioOutputChannelCount,
@@ -3037,13 +3137,20 @@ export default class WebGPUPlayer {
             return;
         }
 
+        const audioSettings = this.customPlaybackAudioSettings;
+        if (!audioSettings) {
+            throw new Error('Custom playback audio settings snapshot is unavailable');
+        }
+        const audioOutputMode = eligibility.audioOutputMode ?? 'decoded-pcm';
         const result = await customPlaybackController.setAudioStreamIndex(
             eligibility.audioTrackIndex,
-            eligibility.audioOutputMode ?? 'decoded-pcm',
+            audioOutputMode,
             selectDecodedAudioOutputChannelCount(
                 eligibility,
-                this.getCustomPlaybackAudioPrewarm(backendGeneration)?.audioContext ?? null
-            )
+                this.getCustomPlaybackAudioPrewarm(backendGeneration)?.audioContext ?? null,
+                audioSettings.forceStereoDownmix
+            ),
+            audioOutputMode === 'decoded-pcm' ? audioSettings.downmix : undefined
         );
         if (!this.isCustomPlaybackAudioSelectionCurrent(
             customPlaybackController,
@@ -3062,6 +3169,7 @@ export default class WebGPUPlayer {
     private detachCustomPlaybackController(): Promise<void> | null {
         const customPlaybackController = this.customPlaybackController;
         if (!customPlaybackController) {
+            this.customPlaybackAudioSettings = null;
             const fallbackPromise = this.customPlaybackFallbackPromise;
             if (fallbackPromise) {
                 return fallbackPromise.then(() => undefined, () => undefined);
@@ -3100,6 +3208,7 @@ export default class WebGPUPlayer {
         this.cancelPendingPausedPresentationRefresh();
         this.cancelCustomPlaybackFrameCallback();
         this.customPlaybackController = null;
+        this.customPlaybackAudioSettings = null;
         this.customPlaybackAudioSelectionRevision += 1;
         this.customPlaybackSeekRevision += 1;
         this.customPlaybackBackendGeneration = null;
@@ -3208,6 +3317,7 @@ export default class WebGPUPlayer {
         ) {
             return;
         }
+
         this.customPlaybackTerminalErrorGeneration = backendGeneration;
         console.warn('WebGPU playback fallback failed', error);
         Events.trigger(this, PlayerEvent.Error, [{ type: MediaError.PLAYER_ERROR }]);

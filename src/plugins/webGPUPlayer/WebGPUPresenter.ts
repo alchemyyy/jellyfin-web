@@ -232,12 +232,16 @@ export type ExternalHDRColorPipelineConfiguration = {
     settings: HDRToSDRRenderSettings
 };
 
-export type PresentationColorPipelineConfiguration =
+export type PresentationColorPipelineConfiguration = (
     | ExternalDolbyVisionColorPipelineConfiguration
     | ExternalHDRColorPipelineConfiguration
     | IdentityColorPipelineConfiguration
     | RawDolbyVisionColorPipelineConfiguration
-    | RawHDRColorPipelineConfiguration;
+    | RawHDRColorPipelineConfiguration
+) & {
+    /** Defaults to true for callers without a persisted manual peak policy. */
+    automaticInputPeakNits?: boolean
+};
 
 type PresentationInputMode =
     | 'external-dolby-vision'
@@ -581,6 +585,7 @@ export default class WebGPUPresenter {
     private readonly rawHDRAuthorization = new RawHDRPresentationAuthorizationRegistry();
 
     private activeGeneration = 0;
+    private automaticInputPeakNits = true;
     private activeDolbyVisionProfile: 5 | 7 | 8 | null = null;
     private activeDolbyVisionFELReconstruction = false;
     private activeInputColorMetadata: InputColorMetadata | null = null;
@@ -651,6 +656,7 @@ export default class WebGPUPresenter {
         this.destroyDolbyVisionEnhancementUniformBuffer();
 
         this.activeGeneration = generation;
+        this.automaticInputPeakNits = true;
         this.activeDolbyVisionProfile = null;
         this.activeDolbyVisionFELReconstruction = false;
         this.activeInputColorMetadata = null;
@@ -733,6 +739,7 @@ export default class WebGPUPresenter {
         this.activeGeneration = generation;
         this.colorConfigurationRevision += 1;
         this.sessionActive = false;
+        this.automaticInputPeakNits = true;
         this.activeDolbyVisionProfile = null;
         this.activeDolbyVisionFELReconstruction = false;
         this.activeInputColorMetadata = null;
@@ -1183,6 +1190,7 @@ export default class WebGPUPresenter {
             { ...preparedPipeline.inputColorMetadata } :
             null;
         this.activeRawFrameFormat = preparedPipeline.rawFrameFormat;
+        this.automaticInputPeakNits = configuration.automaticInputPeakNits ?? true;
         this.settings = preparedPipeline.settings;
         this.telemetry.mode = preparedPipeline.settings.mode;
         this.pendingColorConfiguration = null;
@@ -1243,10 +1251,12 @@ export default class WebGPUPresenter {
             && frameMetadata.metadata
         ) {
             const sceneLuminance = getHDR10PlusSceneLuminance(frameMetadata.metadata);
-            const inputPeakNits = Math.max(
-                this.settings.toneMapping.paperWhiteNits,
-                sceneLuminance.peakNits ?? this.settings.toneMapping.inputPeakNits
-            );
+            const inputPeakNits = this.automaticInputPeakNits ?
+                Math.max(
+                    this.settings.toneMapping.paperWhiteNits,
+                    sceneLuminance.peakNits ?? this.settings.toneMapping.inputPeakNits
+                ) :
+                this.settings.toneMapping.inputPeakNits;
             const averageNits = Math.min(
                 inputPeakNits,
                 Math.max(0, sceneLuminance.averageNits ?? 0)
@@ -1281,7 +1291,8 @@ export default class WebGPUPresenter {
     /** Updates live HDR controls through uniforms without rebuilding the shader. */
     updateRenderSettings(
         settings: HDRToSDRRenderSettings,
-        generation: number
+        generation: number,
+        automaticInputPeakNits: boolean = this.automaticInputPeakNits
     ): boolean {
         if (
             !this.isCurrent(generation)
@@ -1293,6 +1304,9 @@ export default class WebGPUPresenter {
         }
 
         try {
+            if (typeof automaticInputPeakNits !== 'boolean') {
+                throw new TypeError('Automatic input peak policy must be boolean');
+            }
             assertValidRenderSettings(settings);
             if (!this.writeRenderSettingsUniform(settings)) {
                 return false;
@@ -1304,6 +1318,7 @@ export default class WebGPUPresenter {
         }
 
         this.settings = cloneRenderSettings(settings);
+        this.automaticInputPeakNits = automaticInputPeakNits;
         this.requestDecodedPresentationRefresh(generation);
         return true;
     }

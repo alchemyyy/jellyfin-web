@@ -84,54 +84,36 @@ function createH264ProfileCapabilities(supported: boolean): H264ProfileCapabilit
 
 function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['bundledHEVC']> {
     return {
-        reason: 'complete',
-        tiers: {
+        qualifications: {
             'main-1080p': {
                 bitDepth: 8,
                 codecString: 'hvc1.1.6.L120.B0',
-                decodeMilliseconds: 20,
+                fixture: 'main-1080p',
                 format: 'I420',
-                framesPerSecond: 40,
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumLevel: 120,
-                minimumFramesPerSecond: 30,
                 profile: 'main',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main-1080p'
+                status: 'supported'
             },
             'main10-1080p': {
                 bitDepth: 10,
                 codecString: 'hvc1.2.4.L120.B0',
-                decodeMilliseconds: 25,
+                fixture: 'main10-1080p',
                 format: 'I420P10',
-                framesPerSecond: 40,
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumLevel: 120,
-                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main10-1080p'
+                status: 'supported'
             },
             'main10-4k': {
                 bitDepth: 10,
                 codecString: 'hvc1.2.4.L153.B0',
-                decodeMilliseconds: 30,
+                fixture: 'main10-4k',
                 format: 'I420P10',
-                framesPerSecond: 40,
-                maximumCodedHeight: 2_160,
-                maximumCodedWidth: 3_840,
-                maximumLevel: 153,
-                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main10-4k'
+                status: 'supported'
             }
-        }
+        },
+        reason: 'complete'
     };
 }
 
@@ -212,13 +194,8 @@ function createBundledJPEG2000Capability(): NonNullable<
         bitDepth: 8,
         codec: 'jpeg2000',
         codecString: 'mjp2',
-        decodeMilliseconds: 200,
         decodedRGBAByteLength: 2_073_600,
         decodedRGBAFingerprint: 1_076_220_778,
-        maximumCodedHeight: 540,
-        maximumCodedWidth: 960,
-        maximumFramesPerSecond: 24,
-        measuredFramesPerSecond: 40,
         reason: 'decode-output-verified',
         status: 'supported'
     });
@@ -238,15 +215,10 @@ function createBundledLegacyVideoCapability(): NonNullable<
 > {
     return Object.freeze({
         codec: 'mpeg2video',
-        decodeMilliseconds: 400,
         decodedFrameByteLength: 3_110_400,
         decodedFrameCount: 12,
         decodedI420Fingerprint: 544_635_241,
         decodedTotalByteLength: 37_324_800,
-        maximumCodedHeight: 1_080,
-        maximumCodedWidth: 1_920,
-        maximumFramesPerSecond: 24,
-        measuredFramesPerSecond: 35,
         reason: 'decode-output-verified',
         status: 'supported'
     });
@@ -273,8 +245,7 @@ function createBundledVC1CapabilityProperties(
         bundledVC1: Object.freeze({
             ...createBundledLegacyVideoCapability(),
             codec: 'vc1',
-            decodedI420Fingerprint: 182_587_665,
-            measuredFramesPerSecond: 30
+            decodedI420Fingerprint: 182_587_665
         })
     };
 }
@@ -351,8 +322,6 @@ function createNativeUltraHDVideoCapabilityHarness(
             bitDepth: 8,
             codec,
             codecString: codecStrings[codec],
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
             reason: supported ? 'decode-output-verified' : 'decode-output-missing',
             status: supported ? 'supported' : 'unsupported'
         };
@@ -402,10 +371,6 @@ function createCapabilities(
             codec,
             codecString: bundledHEVC ? 'hvc1.2.4.L153.B0' : codec,
             format: 'I420P10',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 30,
-            measuredFramesPerSecond: 40,
             reason: capabilityReason,
             status: supported ? 'supported' : 'unsupported'
         };
@@ -429,11 +394,6 @@ function createCapabilities(
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hev1.2.4.H150.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 24,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 30,
             profile: 5,
             reason: nativeDolbyVisionSupported ?
                 'decode-output-verified' :
@@ -725,14 +685,15 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
         expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
-            expect.objectContaining({ Property: 'Width', Value: '1920' }),
-            expect.objectContaining({ Property: 'Height', Value: '1080' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
             expect.objectContaining({ Property: 'VideoProfile', Value: 'main' }),
             expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
         ]));
         expect(measuredProfile?.Conditions?.some(condition => (
             condition.Property === 'VideoBitrate'
+            || condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
         ))).toBe(false);
     });
 
@@ -763,12 +724,15 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             });
             expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
                 expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
-                expect.objectContaining({ Property: 'Width', Value: '1920' }),
-                expect.objectContaining({ Property: 'Height', Value: '1080' }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
                 expect.objectContaining({ Property: 'VideoProfile', Value: 'advanced' }),
                 expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
             ]));
+            expect(measuredProfile?.Conditions?.some(condition => (
+                condition.Property === 'Width'
+                || condition.Property === 'Height'
+                || condition.Property === 'VideoLevel'
+                || condition.Property === 'VideoFramerate'
+            ))).toBe(false);
         }
     );
 
@@ -797,11 +761,14 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         });
         expect(measuredProfile?.Conditions).toEqual(expect.arrayContaining([
             expect.objectContaining({ Property: 'VideoBitDepth', Value: '8' }),
-            expect.objectContaining({ Property: 'Width', Value: '960' }),
-            expect.objectContaining({ Property: 'Height', Value: '540' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
             expect.objectContaining({ Property: 'IsInterlaced', Value: 'false' })
         ]));
+        expect(measuredProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
     });
 
     it('sanitizes a non-custom WebGPU selection profile without mutation', () => {
@@ -839,14 +806,20 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         const result = augmentDeviceProfileForCustomDecode(createBaseProfile(), capabilities);
 
         expect(result.telemetry.supportedVideoCodecs).toContain('hevc');
-        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
-            Codec: 'hevc',
-            Conditions: expect.arrayContaining([
-                expect.objectContaining({ Property: 'VideoProfile', Value: 'main' }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-                expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
-            ])
-        }));
+        const hevcProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoProfile'
+                && condition.Value === 'main'
+            ))
+        ));
+        expect(hevcProfile).toBeDefined();
+        expect(hevcProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
     });
 
     it('removes all bitrate inputs from WebGPU playback negotiation', () => {
@@ -2172,65 +2145,37 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ]));
     });
 
-    it.each([ 24 as const, 30 as const, 60 as const ])(
-        'does not export the %i fps native raw HDR fixture as a source ceiling',
-        maximumFramesPerSecond => {
-            const original = createBaseProfile();
-            original.CodecProfiles = [ {
-                Codec: 'vp9',
-                Conditions: [ {
-                    Condition: 'EqualsAny',
-                    IsRequired: false,
-                    Property: 'VideoRangeType',
-                    Value: 'SDR'
-                } ],
-                Type: 'Video'
-            } ];
-            const capabilities = createCapabilities(
-                [ 'vp9' ],
-                [ 'opus' ],
-                [ 'vp9' ]
-            );
-            capabilities.rawHDRVideo = {
-                ...capabilities.rawHDRVideo,
-                vp9: {
-                    ...capabilities.rawHDRVideo.vp9,
-                    maximumFramesPerSecond,
-                    measuredFramesPerSecond: maximumFramesPerSecond * 1.25
-                }
-            };
+    it('does not export raw HDR fixture geometry or frame rate as source ceilings', () => {
+        const result = augmentDeviceProfileForCustomDecode(
+            createBaseProfile(),
+            createCapabilities([ 'vp9' ], [ 'opus' ], [ 'vp9' ]),
+            RAW_HDR_PROFILE_OPTIONS
+        );
 
-            const result = augmentDeviceProfileForCustomDecode(
-                original,
-                capabilities,
-                RAW_HDR_PROFILE_OPTIONS
-            );
+        const rawHDRProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'vp9'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'HDR10|HLG'
+            ))
+        ));
+        expect(rawHDRProfile).toBeDefined();
+        expect(rawHDRProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
+    });
 
-            const rawHDRProfile = result.profile.CodecProfiles?.find(profile => (
-                profile.Codec === 'vp9'
-                && profile.Conditions?.some(condition => (
-                    condition.Property === 'VideoRangeType'
-                    && condition.Value === 'HDR10|HLG'
-                ))
-            ));
-            expect(rawHDRProfile).toBeDefined();
-            expect(rawHDRProfile?.Conditions?.some(condition => (
-                condition.Property === 'Width'
-                || condition.Property === 'Height'
-                || condition.Property === 'VideoLevel'
-                || condition.Property === 'VideoFramerate'
-            ))).toBe(false);
-        }
-    );
-
-    it('rejects malformed native raw HDR qualification evidence', () => {
+    it('rejects unsupported native raw HDR qualification evidence', () => {
         const capabilities = createCapabilities([ 'vp9' ], [ 'opus' ], [ 'vp9' ]);
         capabilities.rawHDRVideo = {
             ...capabilities.rawHDRVideo,
             vp9: {
                 ...capabilities.rawHDRVideo.vp9,
-                maximumFramesPerSecond: 0,
-                measuredFramesPerSecond: null
+                reason: 'output-copy-unsupported',
+                status: 'unsupported'
             }
         };
 
@@ -2384,39 +2329,10 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([], [ 'flac' ], [ 'hevc' ]);
-        capabilities.rawHDRVideo = {
-            ...capabilities.rawHDRVideo,
-            hevc: {
-                ...capabilities.rawHDRVideo.hevc,
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumFramesPerSecond: 24
-            }
-        };
-        const bundledHEVC = capabilities.bundledHEVC as NonNullable<
-            CustomDecodeCapabilities['bundledHEVC']
-        >;
-        capabilities.bundledHEVC = {
-            ...bundledHEVC,
-            tiers: {
-                ...bundledHEVC.tiers,
-                'main10-4k': {
-                    ...bundledHEVC.tiers['main10-4k'],
-                    maximumCodedHeight: 1_080,
-                    maximumCodedWidth: 1_920,
-                    maximumLevel: 120
-                }
-            }
-        };
         capabilities.nativeHDRHEVC = {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 30,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 75,
             reason: 'decode-output-verified',
             status: 'supported'
         };
@@ -2479,7 +2395,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }));
     });
 
-    it('keeps native HDR dimension-neutral while retaining bundled raw limits', () => {
+    it('keeps native and bundled raw HDR routes dimension-neutral', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
@@ -2497,36 +2413,13 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             hevc: {
                 ...capabilities.rawHDRVideo.hevc,
                 codecString: 'hvc1.2.4.L153.B0',
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumFramesPerSecond: 24,
                 reason: 'bundled-software-decoder'
-            }
-        };
-        const bundledHEVC = capabilities.bundledHEVC as NonNullable<
-            CustomDecodeCapabilities['bundledHEVC']
-        >;
-        capabilities.bundledHEVC = {
-            ...bundledHEVC,
-            tiers: {
-                ...bundledHEVC.tiers,
-                'main10-4k': {
-                    ...bundledHEVC.tiers['main10-4k'],
-                    maximumCodedHeight: 1_080,
-                    maximumCodedWidth: 1_920,
-                    maximumLevel: 120
-                }
             }
         };
         capabilities.nativeHDRHEVC = {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 80,
             reason: 'decode-output-verified',
             status: 'supported'
         };
@@ -2579,12 +2472,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             || condition.Property === 'VideoLevel'
             || condition.Property === 'VideoFramerate'
         ))).toBe(false);
-        expect(rawPQProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '24' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
-            expect.objectContaining({ Property: 'Width', Value: '1920' }),
-            expect.objectContaining({ Property: 'Height', Value: '1080' })
-        ]));
+        expect(rawPQProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
     });
 
     it('advertises authorized Dolby Vision ranges only for raw HEVC', () => {
@@ -2691,17 +2584,10 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([ 'hevc' ], [ 'flac' ], [ 'hevc' ]);
-        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
-        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
         capabilities.nativeHDRHEVC = {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 80,
             reason: 'decode-output-verified',
             status: 'supported'
         };
@@ -2748,17 +2634,10 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Type: 'Video'
         } ];
         const capabilities = createCapabilities([ 'hevc' ], [ 'truehd' ], [ 'hevc' ]);
-        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
-        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
         capabilities.nativeHDRHEVC = {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 80,
             reason: 'decode-output-verified',
             status: 'supported'
         };
@@ -2792,73 +2671,65 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         )))).toBe(true);
     });
 
-    it.each([ 24 as const, 30 as const, 60 as const ])(
-        'does not export the %i fps native Profile 5 fixture as a source ceiling',
-        maximumFramesPerSecond => {
-            const original = createBaseProfile();
-            original.CodecProfiles = [ {
-                Codec: 'hevc',
-                Conditions: [ {
-                    Condition: 'EqualsAny',
-                    IsRequired: false,
-                    Property: 'VideoRangeType',
-                    Value: 'SDR'
-                } ],
-                Type: 'Video'
-            } ];
-            const capabilities = createCapabilities([], [ 'aac' ], [], true);
-            const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
-            if (!nativeDolbyVisionHEVC) {
-                throw new Error('The native Dolby Vision capability fixture is missing');
-            }
-            capabilities.nativeDolbyVisionHEVC = {
-                ...nativeDolbyVisionHEVC,
-                maximumFramesPerSecond,
-                measuredFramesPerSecond: maximumFramesPerSecond * 1.25
-            };
-            const result = augmentDeviceProfileForCustomDecode(
-                original,
-                capabilities,
-                { allowNativeDolbyVision: true, allowRawHDR: false }
-            );
-            const nativeProfile = result.profile.CodecProfiles?.find(profile => (
-                profile.Codec === 'hevc'
-                && profile.Conditions?.some(condition => (
-                    condition.Property === 'VideoRangeType'
-                    && condition.Value === 'DOVI'
-                ))
-                && profile.Conditions.some(condition => (
-                    condition.Property === 'IsInterlaced'
-                    && condition.Value === 'false'
-                ))
-            ));
-
-            expect(nativeProfile).toBeDefined();
-            expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
-                expect.objectContaining({
-                    Condition: 'EqualsAny',
-                    Property: 'VideoRangeType',
-                    Value: 'DOVI'
-                }),
-                expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
-                expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
-            ]));
-            expect(nativeProfile?.Conditions?.some(condition => (
-                condition.Property === 'Width'
-                || condition.Property === 'Height'
-                || condition.Property === 'VideoLevel'
-                || condition.Property === 'VideoFramerate'
-            ))).toBe(false);
-            expect(result.profile.CodecProfiles?.some(profile => (
-                profile.Conditions?.some(condition => (
-                    condition.Value?.includes('DOVIWithHDR10')
-                    || condition.Value?.includes('DOVIWithHLG')
-                ))
-            ))).toBe(false);
+    it('does not export native Profile 5 fixture limits as source ceilings', () => {
+        const original = createBaseProfile();
+        original.CodecProfiles = [ {
+            Codec: 'hevc',
+            Conditions: [ {
+                Condition: 'EqualsAny',
+                IsRequired: false,
+                Property: 'VideoRangeType',
+                Value: 'SDR'
+            } ],
+            Type: 'Video'
+        } ];
+        const capabilities = createCapabilities([], [ 'aac' ], [], true);
+        const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
+        if (!nativeDolbyVisionHEVC) {
+            throw new Error('The native Dolby Vision capability fixture is missing');
         }
-    );
+        const result = augmentDeviceProfileForCustomDecode(
+            original,
+            capabilities,
+            { allowNativeDolbyVision: true, allowRawHDR: false }
+        );
+        const nativeProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'DOVI'
+            ))
+            && profile.Conditions.some(condition => (
+                condition.Property === 'IsInterlaced'
+                && condition.Value === 'false'
+            ))
+        ));
 
-    it('rejects malformed native Profile 5 qualification evidence', () => {
+        expect(nativeProfile).toBeDefined();
+        expect(nativeProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                Condition: 'EqualsAny',
+                Property: 'VideoRangeType',
+                Value: 'DOVI'
+            }),
+            expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
+            expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
+        ]));
+        expect(nativeProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
+        expect(result.profile.CodecProfiles?.some(profile => (
+            profile.Conditions?.some(condition => (
+                condition.Value?.includes('DOVIWithHDR10')
+                || condition.Value?.includes('DOVIWithHLG')
+            ))
+        ))).toBe(false);
+    });
+
+    it('rejects unsupported native Profile 5 qualification evidence', () => {
         const capabilities = createCapabilities([], [ 'aac' ], [], true);
         const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
         if (!nativeDolbyVisionHEVC) {
@@ -2866,8 +2737,8 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         }
         capabilities.nativeDolbyVisionHEVC = {
             ...nativeDolbyVisionHEVC,
-            maximumFramesPerSecond: 0,
-            measuredFramesPerSecond: null
+            reason: 'decode-output-missing',
+            status: 'unsupported'
         };
 
         const result = augmentDeviceProfileForCustomDecode(
@@ -2908,7 +2779,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ))).toBe(false);
     });
 
-    it('keeps stronger native Profile 5 limits separate from raw Dolby Vision limits', () => {
+    it('keeps native and raw Dolby Vision routes dimension-neutral', () => {
         const original = createBaseProfile();
         original.CodecProfiles = [ {
             Codec: 'hevc',
@@ -2922,8 +2793,6 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         } ];
         const capabilities = createCapabilities([], [ 'aac' ], [ 'hevc' ], true);
         capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
-        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
-        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
         const result = augmentDeviceProfileForCustomDecode(
             original,
             capabilities,
@@ -2952,12 +2821,12 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             || condition.Property === 'VideoLevel'
             || condition.Property === 'VideoFramerate'
         ))).toBe(false);
-        expect(rawProfile?.Conditions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ Property: 'Width', Value: '1920' }),
-            expect.objectContaining({ Property: 'Height', Value: '1080' }),
-            expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-            expect.objectContaining({ Property: 'VideoLevel', Value: '120' })
-        ]));
+        expect(rawProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
     });
 
     it('keeps non-custom containers on the original native video range constraints', () => {
@@ -3507,35 +3376,37 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(result.profile.DirectPlayProfiles?.some(directPlayProfile => (
             directPlayProfile.Container === 'webm'
         ))).toBe(false);
-        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
-            Codec: 'hevc',
-            Conditions: expect.arrayContaining([
-                expect.objectContaining({
-                    Property: 'VideoRangeType',
-                    Value: 'HDR10|HLG|HDR10Plus'
-                }),
-                expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-                expect.objectContaining({ Property: 'VideoLevel', Value: '153' }),
-                expect.objectContaining({ Property: 'Width', Value: '3840' }),
-                expect.objectContaining({ Property: 'Height', Value: '2160' }),
-                expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
-            ])
-        }));
+        const rawHEVCProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'HDR10|HLG|HDR10Plus'
+            ))
+        ));
+        expect(rawHEVCProfile?.Conditions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ Property: 'VideoBitDepth', Value: '10' }),
+            expect.objectContaining({ Property: 'VideoProfile', Value: 'main 10' })
+        ]));
+        expect(rawHEVCProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
+        ))).toBe(false);
         expect(result.telemetry.supportedVideoCodecs).toEqual([ 'hevc' ]);
     });
 
-    it('advertises only the qualified bundled HEVC Main10 1080p tier', () => {
+    it('does not export bundled HEVC qualification resolution as a source ceiling', () => {
         const capabilities = createCapabilities([], [ 'aac' ], [ 'hevc' ]);
         const bundledHEVC = createBundledHEVCCapabilities();
         capabilities.bundledHEVC = {
             ...bundledHEVC,
             reason: 'partial',
-            tiers: {
-                ...bundledHEVC.tiers,
+            qualifications: {
+                ...bundledHEVC.qualifications,
                 'main10-4k': {
-                    ...bundledHEVC.tiers['main10-4k'],
-                    reason: 'throughput-insufficient',
+                    ...bundledHEVC.qualifications['main10-4k'],
+                    reason: 'output-mismatch',
                     status: 'unsupported'
                 }
             }
@@ -3544,9 +3415,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             ...capabilities.rawHDRVideo,
             hevc: {
                 ...capabilities.rawHDRVideo.hevc,
-                codecString: 'hvc1.2.4.L120.B0',
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920
+                codecString: 'hvc1.2.4.L120.B0'
             }
         };
 
@@ -3556,24 +3425,19 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             RAW_HDR_PROFILE_OPTIONS
         );
 
-        expect(result.profile.CodecProfiles).toContainEqual(expect.objectContaining({
-            Codec: 'hevc',
-            Conditions: expect.arrayContaining([
-                expect.objectContaining({
-                    Property: 'VideoRangeType',
-                    Value: 'HDR10|HLG|HDR10Plus'
-                }),
-                expect.objectContaining({ Property: 'VideoFramerate', Value: '30' }),
-                expect.objectContaining({ Property: 'VideoLevel', Value: '120' }),
-                expect.objectContaining({ Property: 'Width', Value: '1920' }),
-                expect.objectContaining({ Property: 'Height', Value: '1080' })
-            ])
-        }));
-        expect(result.profile.CodecProfiles?.some(codecProfile => (
-            codecProfile.Codec === 'hevc'
-            && codecProfile.Conditions?.some(condition => (
-                condition.Property === 'Width' && condition.Value === '3840'
+        const rawHEVCProfile = result.profile.CodecProfiles?.find(profile => (
+            profile.Codec === 'hevc'
+            && profile.Conditions?.some(condition => (
+                condition.Property === 'VideoRangeType'
+                && condition.Value === 'HDR10|HLG|HDR10Plus'
             ))
+        ));
+        expect(rawHEVCProfile).toBeDefined();
+        expect(rawHEVCProfile?.Conditions?.some(condition => (
+            condition.Property === 'Width'
+            || condition.Property === 'Height'
+            || condition.Property === 'VideoLevel'
+            || condition.Property === 'VideoFramerate'
         ))).toBe(false);
     });
 

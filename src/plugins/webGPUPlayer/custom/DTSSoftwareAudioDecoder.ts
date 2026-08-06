@@ -12,6 +12,8 @@ const DTS_SUPPORTED_BITS_PER_SAMPLE = new Set<number>([ 16, 24 ]);
 const DTS_FNV1A_OFFSET_BASIS = 2_166_136_261;
 const DTS_FNV1A_PRIME = 16_777_619;
 
+export const DTS_DECODER_NO_SYNC_STATUS = -5;
+
 export const DTS_PROFILE_DIGITAL_SURROUND = 0x01;
 export const DTS_PROFILE_DIGITAL_SURROUND_96_24 = 0x02;
 export const DTS_PROFILE_DIGITAL_SURROUND_ES = 0x04;
@@ -38,6 +40,16 @@ export type DTSDecodedAudioOutput = Readonly<{
     profile: DTSDecodedProfile
     sampleRate: number
 }>;
+
+/** Identifies libdcadec's stateful XLL synchronization wait. */
+export class DTSDecoderSynchronizationError extends Error {
+    public readonly status: number = DTS_DECODER_NO_SYNC_STATUS;
+
+    public constructor() {
+        super(`Bundled DTS decode is awaiting synchronization with status ${DTS_DECODER_NO_SYNC_STATUS}`);
+        this.name = 'DTSDecoderSynchronizationError';
+    }
+}
 
 type LibDCADECFunctionTable = {
     clear: (decoder: number) => void
@@ -136,6 +148,15 @@ function requirePositiveSafeInteger(value: number, name: string): number {
     return value;
 }
 
+function requireSuccessfulDTSDecodeStatus(decodeStatus: number): void {
+    if (decodeStatus === DTS_DECODER_NO_SYNC_STATUS) {
+        throw new DTSDecoderSynchronizationError();
+    }
+    if (decodeStatus < 0) {
+        throw new Error(`Bundled DTS decode failed with status ${decodeStatus}`);
+    }
+}
+
 /** Fingerprints exact integer PCM output in stable channel-major order. */
 export function getDTSDecodedAudioFingerprint(output: DTSDecodedAudioOutput): number {
     const sampleScale = 2 ** (output.bitsPerSample - 1);
@@ -207,9 +228,7 @@ export default class DTSSoftwareAudioDecoder {
         }
         this.module.HEAPU8.set(data, packetPointer);
         const decodeStatus = this.functions.decodePacket(this.decoder, data.byteLength);
-        if (decodeStatus < 0) {
-            throw new Error(`Bundled DTS decode failed with status ${decodeStatus}`);
-        }
+        requireSuccessfulDTSDecodeStatus(decodeStatus);
 
         const frameCount = this.functions.getSampleCount(this.decoder);
         if (!Number.isSafeInteger(frameCount)

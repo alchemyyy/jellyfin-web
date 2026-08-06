@@ -21,13 +21,9 @@ export {
     LEGACY_VIDEO_QUALIFICATION_FINGERPRINT,
     LEGACY_VIDEO_QUALIFICATION_FRAME_BYTE_LENGTH,
     LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT,
-    LEGACY_VIDEO_QUALIFICATION_MAXIMUM_FRAMES_PER_SECOND,
-    LEGACY_VIDEO_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
     LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH,
-    LEGACY_VIDEO_QUALIFICATION_WARMUP_FRAME_COUNT,
     VC1_EXACT_CAPABILITY_REQUEST_ID,
     VC1_VIDEO_QUALIFICATION_FINGERPRINT,
-    VC1_VIDEO_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND,
     type LegacyVideoCodec,
     type LegacyVideoQualification,
     type LegacyVideoExactCapabilityWorkerRequest,
@@ -51,22 +47,16 @@ export type LegacyVideoExactCapabilityReason =
     | 'decode-output-verified'
     | 'output-mismatch'
     | 'probe-timeout'
-    | 'throughput-insufficient'
     | 'worker-create-failed'
     | 'worker-error'
     | 'worker-message-invalid';
 
 export type LegacyVideoExactCapability = Readonly<{
     codec: LegacyVideoCodec
-    decodeMilliseconds: number | null
     decodedFrameByteLength: number | null
     decodedFrameCount: number | null
     decodedI420Fingerprint: number | null
     decodedTotalByteLength: number | null
-    maximumCodedHeight: number
-    maximumCodedWidth: number
-    maximumFramesPerSecond: 24 | 0
-    measuredFramesPerSecond: number | null
     reason: LegacyVideoExactCapabilityReason
     status: 'supported' | 'unsupported' | 'unknown'
 }>;
@@ -151,9 +141,7 @@ function responseMatchesQualification(
         && response.decodedFrameByteLength === qualification.frameByteLength
         && response.decodedFrameCount === qualification.frameCount
         && response.decodedI420Fingerprint === qualification.fingerprint
-        && response.decodedTotalByteLength === qualification.totalByteLength
-        && response.measuredFramesPerSecond !== null
-        && response.measuredFramesPerSecond >= qualification.minimumFramesPerSecond;
+        && response.decodedTotalByteLength === qualification.totalByteLength;
 }
 
 function createCapability(
@@ -176,23 +164,16 @@ function createCapability(
         reason;
     return Object.freeze({
         codec: qualification.codec,
-        decodeMilliseconds: response?.decodeMilliseconds ?? null,
         decodedFrameByteLength: response?.decodedFrameByteLength ?? null,
         decodedFrameCount: response?.decodedFrameCount ?? null,
         decodedI420Fingerprint: response?.decodedI420Fingerprint ?? null,
         decodedTotalByteLength: response?.decodedTotalByteLength ?? null,
-        maximumCodedHeight: qualification.codedHeight,
-        maximumCodedWidth: qualification.codedWidth,
-        maximumFramesPerSecond: supported ?
-            qualification.maximumFramesPerSecond :
-            0,
-        measuredFramesPerSecond: response?.measuredFramesPerSecond ?? null,
         reason: resolvedReason,
         status
     });
 }
 
-/** Owns one cached, fail-closed MPEG-2 exact-output and throughput probe. */
+/** Owns one cached, fail-closed MPEG-2 exact-output probe. */
 export default class LegacyVideoExactCapabilityProbe {
     private cachedProbe: Promise<LegacyVideoExactCapability> | null = null;
     private readonly qualification: LegacyVideoQualification;

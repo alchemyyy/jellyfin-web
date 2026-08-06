@@ -29,6 +29,10 @@ import {
 } from './StaticHDRMetadata';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import {
+    assertValidAudioDownmixSettings,
+    type AudioDownmixSettings
+} from './CustomAudioDownmix';
+import {
     isCustomAudioDownmixAlgorithm,
     type CustomAudioDownmixAlgorithm
 } from './CustomAudioDownmixAlgorithm';
@@ -91,6 +95,8 @@ export type CustomDecodeFailureKind =
 export type DecodeWorkerStartRequest = {
     /** Applies only when decoded multichannel PCM must be presented as stereo. */
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
+    /** Applies user channel and output gains after selecting the downmix matrix. */
+    audioDownmixSettings?: AudioDownmixSettings
     /** Defaults to decoded-pcm for compatibility with existing session callers. */
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioSampleCredits: number
@@ -128,6 +134,12 @@ export type DecodeWorkerAudioPullRequest = {
     type: 'pull-audio'
 };
 
+export type DecodeWorkerUpdateAudioDownmixSettingsRequest = {
+    audioDownmixSettings: AudioDownmixSettings
+    generation: number
+    type: 'update-audio-downmix-settings'
+};
+
 export type DecodeWorkerRecycleFrameRequest = {
     buffer: ArrayBuffer
     generation: number
@@ -144,7 +156,8 @@ export type DecodeWorkerRequest =
     | DecodeWorkerPullRequest
     | DecodeWorkerRecycleFrameRequest
     | DecodeWorkerStartRequest
-    | DecodeWorkerStopRequest;
+    | DecodeWorkerStopRequest
+    | DecodeWorkerUpdateAudioDownmixSettingsRequest;
 
 export type DecodeWorkerAudioConfiguration = {
     channelCount: number
@@ -341,16 +354,32 @@ function isDecodedAudioOutputChannelCount(
     return value === 2 || value === 6 || value === 8;
 }
 
+function isAudioDownmixSettings(value: unknown): value is AudioDownmixSettings {
+    if (!isRecord(value)) {
+        return false;
+    }
+    try {
+        assertValidAudioDownmixSettings(value as AudioDownmixSettings);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function isValidDecodedAudioOutputSelection(
     value: Record<string, unknown>,
     audioOutputMode: unknown,
     hasAudioTrack: boolean
 ): boolean {
     if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
-        return value.decodedAudioOutputChannelCount === undefined;
+        return value.audioDownmixSettings === undefined
+            && value.decodedAudioOutputChannelCount === undefined;
     }
-    return value.decodedAudioOutputChannelCount === undefined
+    const hasValidOutputChannelCount = value.decodedAudioOutputChannelCount === undefined
         || isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount);
+    return hasValidOutputChannelCount
+        && (value.audioDownmixSettings === undefined
+            || isAudioDownmixSettings(value.audioDownmixSettings));
 }
 
 function isValidAudioDownmixAlgorithmSelection(
@@ -759,6 +788,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             return value.buffer instanceof ArrayBuffer && value.buffer.byteLength > 0;
         case 'stop':
             return true;
+        case 'update-audio-downmix-settings':
+            return isAudioDownmixSettings(value.audioDownmixSettings);
         default:
             return false;
     }

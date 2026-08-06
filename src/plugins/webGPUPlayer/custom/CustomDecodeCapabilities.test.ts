@@ -12,7 +12,6 @@ import CustomDecodeCapabilityProbe, {
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     CUSTOM_WEB_CODECS_AUDIO_CODECS,
-    getQualifiedHDRMaximumFramesPerSecond,
     type NativeDolbyVisionVideoOutputProbeRequest,
     type NativeDolbyVisionVideoOutputProbeResult,
     type RawHDRVideoOutputProbeResult,
@@ -20,9 +19,9 @@ import CustomDecodeCapabilityProbe, {
 } from './CustomDecodeCapabilities';
 import type {
     BundledHEVCExactCapabilities,
-    BundledHEVCExactTierCapability
+    BundledHEVCExactQualification
 } from './HEVCExactCapabilityProbe';
-import type { HEVCExactCapabilityTier } from './HEVCExactCapabilityProtocol';
+import type { HEVCExactCapabilityFixture } from './HEVCExactCapabilityProtocol';
 
 type CapabilityEnvironmentHarness = {
     audioProbe: ReturnType<typeof vi.fn>
@@ -42,31 +41,10 @@ type NativeSurroundAudioSupport = Readonly<{
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 
-describe('raw HDR frame-rate qualification', () => {
-    it.each([
-        { expected: 60, measuredFramesPerSecond: 75 },
-        { expected: 30, measuredFramesPerSecond: 74.999 },
-        { expected: 30, measuredFramesPerSecond: 37.5 },
-        { expected: 24, measuredFramesPerSecond: 37.499 },
-        { expected: 24, measuredFramesPerSecond: 30 },
-        { expected: null, measuredFramesPerSecond: 29.999 },
-        { expected: null, measuredFramesPerSecond: 0 },
-        { expected: null, measuredFramesPerSecond: Number.NaN },
-        { expected: null, measuredFramesPerSecond: Number.POSITIVE_INFINITY }
-    ])(
-        'maps $measuredFramesPerSecond measured fps to $expected',
-        ({ expected, measuredFramesPerSecond }) => {
-            expect(getQualifiedHDRMaximumFramesPerSecond(
-                measuredFramesPerSecond
-            )).toBe(expected);
-        }
-    );
-});
-
 function getBundledHEVCCodecString(
-    tier: HEVCExactCapabilityTier
-): BundledHEVCExactTierCapability['codecString'] {
-    switch (tier) {
+    fixture: HEVCExactCapabilityFixture
+): BundledHEVCExactQualification['codecString'] {
+    switch (fixture) {
         case 'main-1080p':
             return 'hvc1.1.6.L120.B0';
         case 'main10-1080p':
@@ -76,26 +54,19 @@ function getBundledHEVCCodecString(
     }
 }
 
-function createBundledHEVCTier(
-    tier: HEVCExactCapabilityTier,
+function createBundledHEVCQualification(
+    fixture: HEVCExactCapabilityFixture,
     supported: boolean
-): BundledHEVCExactTierCapability {
-    const main10 = tier !== 'main-1080p';
-    const ultraHD = tier === 'main10-4k';
+): BundledHEVCExactQualification {
+    const main10 = fixture !== 'main-1080p';
     return Object.freeze({
         bitDepth: main10 ? 10 : 8,
-        codecString: getBundledHEVCCodecString(tier),
-        decodeMilliseconds: supported ? 100 : null,
+        codecString: getBundledHEVCCodecString(fixture),
+        fixture,
         format: main10 ? 'I420P10' : 'I420',
-        framesPerSecond: supported ? 40 : null,
-        maximumCodedHeight: ultraHD ? 2_160 : 1_080,
-        maximumCodedWidth: ultraHD ? 3_840 : 1_920,
-        maximumLevel: ultraHD ? 153 : 120,
-        minimumFramesPerSecond: 30,
         profile: main10 ? 'main10' : 'main',
         reason: supported ? 'decode-output-verified' : 'decode-error',
-        status: supported ? 'supported' : 'unsupported',
-        tier
+        status: supported ? 'supported' : 'unsupported'
     });
 }
 
@@ -114,15 +85,21 @@ function createBundledHEVCCapabilities(
         reason = 'partial';
     }
     return Object.freeze({
-        reason,
-        tiers: Object.freeze({
-            'main-1080p': createBundledHEVCTier('main-1080p', mainSupported),
-            'main10-1080p': createBundledHEVCTier(
+        qualifications: Object.freeze({
+            'main-1080p': createBundledHEVCQualification(
+                'main-1080p',
+                mainSupported
+            ),
+            'main10-1080p': createBundledHEVCQualification(
                 'main10-1080p',
                 main10FullHDSupported
             ),
-            'main10-4k': createBundledHEVCTier('main10-4k', main10UltraHDSupported)
-        })
+            'main10-4k': createBundledHEVCQualification(
+                'main10-4k',
+                main10UltraHDSupported
+            )
+        }),
+        reason
     });
 }
 
@@ -172,46 +149,33 @@ const UNSUPPORTED_JPEG2000_EXACT_CAPABILITY = Object.freeze({
     bitDepth: 8 as const,
     codec: 'jpeg2000' as const,
     codecString: 'mjp2' as const,
-    decodeMilliseconds: 400,
     decodedRGBAByteLength: 2_073_600,
     decodedRGBAFingerprint: 1_076_220_778,
-    maximumCodedHeight: 540,
-    maximumCodedWidth: 960,
-    maximumFramesPerSecond: 0 as const,
-    measuredFramesPerSecond: 20,
-    reason: 'throughput-insufficient' as const,
+    reason: 'output-mismatch' as const,
     status: 'unsupported' as const
 });
 const SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY = Object.freeze({
     codec: 'mpeg2video' as const,
-    decodeMilliseconds: 400,
     decodedFrameByteLength: 3_110_400,
     decodedFrameCount: 12,
     decodedI420Fingerprint: 544_635_241,
     decodedTotalByteLength: 37_324_800,
-    maximumCodedHeight: 1_080,
-    maximumCodedWidth: 1_920,
-    maximumFramesPerSecond: 24 as const,
-    measuredFramesPerSecond: 35,
     reason: 'decode-output-verified' as const,
     status: 'supported' as const
 });
 const UNSUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY = Object.freeze({
     ...SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY,
-    maximumFramesPerSecond: 0 as const,
     reason: 'output-mismatch' as const,
     status: 'unsupported' as const
 });
 const SUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
     ...SUPPORTED_LEGACY_VIDEO_EXACT_CAPABILITY,
     codec: 'vc1' as const,
-    decodedI420Fingerprint: 182_587_665,
-    measuredFramesPerSecond: 30
+    decodedI420Fingerprint: 182_587_665
 });
 const UNSUPPORTED_VC1_EXACT_CAPABILITY = Object.freeze({
     ...SUPPORTED_VC1_EXACT_CAPABILITY,
-    maximumFramesPerSecond: 0 as const,
-    reason: 'throughput-insufficient' as const,
+    reason: 'output-mismatch' as const,
     status: 'unsupported' as const
 });
 
@@ -242,23 +206,15 @@ function createEnvironment(
         codec: string
     }): Promise<RawHDRVideoOutputProbeResult> => {
         const outputCopySupported = rawHDRVideoOutputSupport.has(probeRequest.codec);
-        return {
-            maximumFramesPerSecond: outputCopySupported ? 60 : null,
-            measuredFramesPerSecond: outputCopySupported ? 80 : null,
-            outputCopySupported
-        };
+        return { outputCopySupported };
     });
     const nativeDolbyVisionVideoOutputProbe = vi.fn(
         async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
-            maximumFramesPerSecond: nativeDolbyVisionVideoOutputSupported ? 60 : null,
-            measuredFramesPerSecond: nativeDolbyVisionVideoOutputSupported ? 80 : null,
             outputSupported: nativeDolbyVisionVideoOutputSupported
         })
     );
     const nativeHDRVideoOutputProbe = vi.fn(
         async (): Promise<NativeDolbyVisionVideoOutputProbeResult> => ({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: null,
             outputSupported: false
         })
     );
@@ -370,15 +326,11 @@ describe('CustomDecodeCapabilityProbe', () => {
         );
         harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(
             () => observeHeavyProbe({
-                maximumFramesPerSecond: 60 as const,
-                measuredFramesPerSecond: 80,
                 outputSupported: true
             })
         );
         harness.environment.nativeHDRVideoOutputProbe = vi.fn(
             () => observeHeavyProbe({
-                maximumFramesPerSecond: 60 as const,
-                measuredFramesPerSecond: 80,
                 outputSupported: true
             })
         );
@@ -387,8 +339,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         );
         harness.environment.rawHDRVideoOutputProbe = vi.fn(
             () => observeHeavyProbe({
-                maximumFramesPerSecond: 60 as const,
-                measuredFramesPerSecond: 80,
                 outputCopySupported: true
             })
         );
@@ -525,11 +475,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
         expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
             bitDepth: 10,
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 0,
-            maximumLevel: 153,
-            measuredFramesPerSecond: null,
             profile: 5,
             reason: 'config-unsupported',
             status: 'unsupported'
@@ -537,11 +482,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.nativeHDRHEVC).toMatchObject({
             bitDepth: 10,
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 0,
-            maximumLevel: 153,
-            measuredFramesPerSecond: null,
             reason: 'config-unsupported',
             status: 'unsupported'
         });
@@ -567,14 +507,10 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.rawHDRVideo).toMatchObject({
             av1: { reason: 'config-unsupported', status: 'unsupported' },
             hevc: {
-                maximumFramesPerSecond: 30,
-                measuredFramesPerSecond: 40,
                 reason: 'bundled-software-decoder',
                 status: 'supported'
             },
             vp9: {
-                maximumFramesPerSecond: 60,
-                measuredFramesPerSecond: 80,
                 reason: 'output-copy-supported',
                 status: 'supported'
             }
@@ -625,8 +561,6 @@ describe('CustomDecodeCapabilityProbe', () => {
             vp9: {
                 bitDepth: 8,
                 codecString: 'vp09.00.51.08',
-                maximumCodedHeight: 2_160,
-                maximumCodedWidth: 3_840,
                 reason: 'decode-output-verified',
                 status: 'supported'
             }
@@ -966,8 +900,6 @@ describe('CustomDecodeCapabilityProbe', () => {
                 bitDepth: 8,
                 codec,
                 codecString,
-                maximumCodedHeight: 2_160,
-                maximumCodedWidth: 3_840,
                 reason: 'decode-output-verified',
                 status: 'supported'
             });
@@ -1314,7 +1246,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         const unavailable = await new CustomDecodeCapabilityProbe({
             bundledVC1ExactProbe: null
         }).probe();
-        const throughputInsufficient = await new CustomDecodeCapabilityProbe({
+        const outputMismatch = await new CustomDecodeCapabilityProbe({
             bundledVC1ExactProbe: {
                 probe: vi.fn(async () => UNSUPPORTED_VC1_EXACT_CAPABILITY)
             }
@@ -1330,8 +1262,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             status: 'unknown'
         });
         expect(unavailable.bundledVC1).toBeUndefined();
-        expect(throughputInsufficient.video.vc1).toMatchObject({
-            reason: 'throughput-insufficient',
+        expect(outputMismatch.video.vc1).toMatchObject({
+            reason: 'decode-output-missing',
             status: 'unsupported'
         });
         expect(supported.video.vc1).toMatchObject({
@@ -1364,42 +1296,30 @@ describe('CustomDecodeCapabilityProbe', () => {
                 ))
             }
         }).probe();
-        const bothTiers = await new CustomDecodeCapabilityProbe({
+        const allQualifications = await new CustomDecodeCapabilityProbe({
             bundledHEVCExactProbe: {
                 probe: vi.fn(async () => BUNDLED_HEVC_EXACT_CAPABILITIES)
             }
         }).probe();
 
         expect(unavailable.rawHDRVideo.hevc).toMatchObject({
-            maximumCodedHeight: 0,
-            maximumCodedWidth: 0,
             reason: 'runtime-unavailable',
             status: 'unknown'
         });
-        expect(mainOnly.bundledHEVC?.tiers['main-1080p']).toMatchObject({
+        expect(mainOnly.bundledHEVC?.qualifications['main-1080p']).toMatchObject({
             reason: 'decode-output-verified',
             status: 'supported'
         });
         expect(mainOnly.rawHDRVideo.hevc).toMatchObject({
-            maximumCodedHeight: 0,
-            maximumCodedWidth: 0,
-            reason: 'runtime-insufficient',
+            reason: 'output-copy-unsupported',
             status: 'unsupported'
         });
         expect(main10FullHDOnly.rawHDRVideo.hevc).toMatchObject({
             codecString: 'hvc1.2.4.L120.B0',
-            maximumCodedHeight: 1_080,
-            maximumCodedWidth: 1_920,
-            maximumFramesPerSecond: 30,
-            measuredFramesPerSecond: 40,
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
-        expect(bothTiers.rawHDRVideo.hevc).toMatchObject({
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 30,
-            measuredFramesPerSecond: 40,
+        expect(allQualifications.rawHDRVideo.hevc).toMatchObject({
             reason: 'bundled-software-decoder',
             status: 'supported'
         });
@@ -1416,10 +1336,6 @@ describe('CustomDecodeCapabilityProbe', () => {
 
         expect(capabilities.rawHDRVideo.hevc).toMatchObject({
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            measuredFramesPerSecond: 80,
             reason: 'output-copy-supported',
             status: 'supported'
         });
@@ -1432,38 +1348,30 @@ describe('CustomDecodeCapabilityProbe', () => {
         });
     });
 
-    it('records copyable raw HDR output below the minimum throughput as unsupported', async () => {
+    it('qualifies raw HDR output without a startup throughput benchmark', async () => {
         const harness = createEnvironment(
             new Set([ 'vp09.02.10.10' ]),
             new Set()
         );
         harness.environment.rawHDRVideoOutputProbe = vi.fn(async () => ({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: 29,
             outputCopySupported: true
         }));
 
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.rawHDRVideo.vp9).toMatchObject({
-            maximumFramesPerSecond: 0,
-            measuredFramesPerSecond: 29,
-            reason: 'throughput-insufficient',
-            status: 'unsupported'
+            reason: 'output-copy-supported',
+            status: 'supported'
         });
     });
 
     it.each([
         {
-            maximumFramesPerSecond: 60,
-            measuredFramesPerSecond: 80,
             outputSupported: true,
             reason: 'decode-output-verified',
             status: 'supported'
         },
         {
-            maximumFramesPerSecond: 0,
-            measuredFramesPerSecond: null,
             outputSupported: false,
             reason: 'decode-output-missing',
             status: 'unsupported'
@@ -1471,8 +1379,6 @@ describe('CustomDecodeCapabilityProbe', () => {
     ] as const)(
         'requires decoded native Profile 5 output: $status',
         async ({
-            maximumFramesPerSecond,
-            measuredFramesPerSecond,
             outputSupported,
             reason,
             status
@@ -1489,8 +1395,6 @@ describe('CustomDecodeCapabilityProbe', () => {
             ).probe();
 
             expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
-                maximumFramesPerSecond,
-                measuredFramesPerSecond,
                 reason,
                 status
             });
@@ -1512,7 +1416,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         }
     );
 
-    it('requires exact decoded native Main10 HDR output and throughput', async () => {
+    it('requires exact decoded native Main10 HDR output', async () => {
         const harness = createEnvironment(
             new Set([ 'hvc1.2.4.L153.B0' ]),
             new Set()
@@ -1520,8 +1424,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         const nativeHDRVideoOutputProbe = vi.fn(async (
             probeRequest: NativeDolbyVisionVideoOutputProbeRequest
         ) => ({
-            maximumFramesPerSecond: 60 as const,
-            measuredFramesPerSecond: 80,
             outputSupported: probeRequest.expectedCodedWidth === 3_840
         }));
         harness.environment.nativeHDRVideoOutputProbe = nativeHDRVideoOutputProbe;
@@ -1533,11 +1435,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(capabilities.nativeHDRHEVC).toMatchObject({
             bitDepth: 10,
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 80,
             reason: 'decode-output-verified',
             status: 'supported'
         });
@@ -1557,24 +1454,20 @@ describe('CustomDecodeCapabilityProbe', () => {
             .toBeInstanceOf(Uint8Array);
     });
 
-    it('rejects native Profile 5 output without qualified throughput', async () => {
+    it('qualifies native Profile 5 without a startup throughput benchmark', async () => {
         const harness = createEnvironment(
             new Set([ 'hev1.2.4.H150.B0' ]),
             new Set()
         );
         harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(async () => ({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: 29,
             outputSupported: true
         }));
 
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({
-            maximumFramesPerSecond: 0,
-            measuredFramesPerSecond: 29,
-            reason: 'throughput-insufficient',
-            status: 'unsupported'
+            reason: 'decode-output-verified',
+            status: 'supported'
         });
     });
 
@@ -1846,60 +1739,24 @@ describe('CustomDecodeCapabilityProbe', () => {
         {
             codedHeight: 2_160,
             codedWidth: 3_840,
-            elapsedMilliseconds: 90,
-            expectedFrameCount: 8,
-            expectedMaximumFramesPerSecond: 60,
-            outputSupported: true
-        },
-        {
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            elapsedMilliseconds: 140,
-            expectedFrameCount: 8,
-            expectedMaximumFramesPerSecond: 30,
-            outputSupported: true
-        },
-        {
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            elapsedMilliseconds: 210,
-            expectedFrameCount: 8,
-            expectedMaximumFramesPerSecond: 24,
-            outputSupported: true
-        },
-        {
-            codedHeight: 2_160,
-            codedWidth: 3_840,
-            elapsedMilliseconds: 240,
-            expectedFrameCount: 8,
-            expectedMaximumFramesPerSecond: null,
             outputSupported: true
         },
         {
             codedHeight: 1_080,
             codedWidth: 1_920,
-            elapsedMilliseconds: 90,
-            expectedFrameCount: 1,
-            expectedMaximumFramesPerSecond: null,
             outputSupported: false
         },
         {
             codedHeight: 2_160,
             codedWidth: 3_840,
-            elapsedMilliseconds: 90,
-            expectedFrameCount: 1,
-            expectedMaximumFramesPerSecond: null,
             outputSupported: false,
             timestampOffset: 1
         }
     ])(
-        'qualifies native Profile 5 output at $elapsedMilliseconds ms',
+        'qualifies native Profile 5 exact output: $outputSupported',
         async ({
             codedHeight,
             codedWidth,
-            elapsedMilliseconds,
-            expectedFrameCount,
-            expectedMaximumFramesPerSecond,
             outputSupported,
             timestampOffset = 0
         }) => {
@@ -1946,12 +1803,8 @@ describe('CustomDecodeCapabilityProbe', () => {
                     this.timestamp = Number(init.timestamp);
                 }
             }
-            const now = vi.fn()
-                .mockReturnValueOnce(0)
-                .mockReturnValueOnce(elapsedMilliseconds);
             vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
             vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-            vi.stubGlobal('performance', { now });
             const outputProbe = createNativeDolbyVisionVideoOutputProbe();
 
             const result = await outputProbe?.({
@@ -1964,24 +1817,13 @@ describe('CustomDecodeCapabilityProbe', () => {
                 expectedCodedHeight: 2_160,
                 expectedCodedWidth: 3_840
             });
-            expect(result).toMatchObject({
-                maximumFramesPerSecond: expectedMaximumFramesPerSecond,
-                outputSupported
-            });
-            if (outputSupported) {
-                expect(result?.measuredFramesPerSecond).toBeCloseTo(
-                    7_000 / elapsedMilliseconds
-                );
-            } else {
-                expect(result?.measuredFramesPerSecond).toBeNull();
-            }
-            expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCount);
+            expect(result).toEqual({ outputSupported });
+            expect(closeFrame).toHaveBeenCalledOnce();
         }
     );
 
-    it('measures native Main10 output before one final decoder flush', async () => {
+    it('decodes one native Main10 frame and flushes once', async () => {
         const closeFrame = vi.fn();
-        let clockMilliseconds = 0;
         let flushCount = 0;
         let maximumQueuedFrameCount = 0;
         let queuedFrameCount = 0;
@@ -2016,9 +1858,6 @@ describe('CustomDecodeCapabilityProbe', () => {
                 );
                 void Promise.resolve().then((): void => {
                     queuedFrameCount -= 1;
-                    if (chunk.timestamp > 0) {
-                        clockMilliseconds += 80 / 7;
-                    }
                     this.callbacks.output(
                         new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
                     );
@@ -2027,7 +1866,6 @@ describe('CustomDecodeCapabilityProbe', () => {
 
             public flush(): Promise<void> {
                 flushCount += 1;
-                clockMilliseconds += 10_000;
                 return Promise.resolve();
             }
         }
@@ -2038,10 +1876,8 @@ describe('CustomDecodeCapabilityProbe', () => {
                 this.timestamp = init.timestamp;
             }
         }
-        const now = vi.fn((): number => clockMilliseconds);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-        vi.stubGlobal('performance', { now });
         const outputProbe = createNativeDolbyVisionVideoOutputProbe();
 
         await expect(outputProbe?.({
@@ -2053,20 +1889,16 @@ describe('CustomDecodeCapabilityProbe', () => {
             encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840
-        })).resolves.toMatchObject({
-            maximumFramesPerSecond: 60,
-            outputSupported: true
-        });
+        })).resolves.toEqual({ outputSupported: true });
         expect(flushCount).toBe(1);
-        expect(maximumQueuedFrameCount).toBe(4);
-        expect(closeFrame).toHaveBeenCalledTimes(8);
+        expect(maximumQueuedFrameCount).toBe(1);
+        expect(closeFrame).toHaveBeenCalledOnce();
     });
 
-    it('keeps qualified native throughput when the final flush stalls', async () => {
+    it('fails native output qualification when the decoder flush stalls', async () => {
         vi.useFakeTimers();
         const closeDecoder = vi.fn();
         const closeFrame = vi.fn();
-        let clockMilliseconds = 0;
         let flushCount = 0;
         class FakeVideoFrame {
             public readonly codedHeight = 2_160;
@@ -2092,9 +1924,6 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
 
             public decode(chunk: { timestamp: number }): void {
-                if (chunk.timestamp > 0) {
-                    clockMilliseconds += 80 / 7;
-                }
                 this.callbacks.output(
                     new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
                 );
@@ -2114,7 +1943,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         }
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-        vi.stubGlobal('performance', { now: (): number => clockMilliseconds });
         const outputProbe = createNativeDolbyVisionVideoOutputProbe();
         const probePromise = outputProbe?.({
             configuration: {
@@ -2131,48 +1959,24 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(flushCount).toBe(1);
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(probePromise).resolves.toMatchObject({
-            maximumFramesPerSecond: 60,
-            outputSupported: true
-        });
-        expect(closeFrame).toHaveBeenCalledTimes(8);
+        await expect(probePromise).resolves.toEqual({ outputSupported: false });
+        expect(closeFrame).toHaveBeenCalledOnce();
         expect(closeDecoder).toHaveBeenCalledOnce();
     });
 
-    it('fails cleanly when a scheduled native decode throws synchronously', async () => {
-        const closeFrame = vi.fn();
-        let decodeCount = 0;
-        class FakeVideoFrame {
-            public readonly codedHeight = 2_160;
-            public readonly codedWidth = 3_840;
-            public readonly displayHeight = 2_160;
-            public readonly displayWidth = 3_840;
-
-            public constructor(public readonly timestamp: number) {}
-
-            public close(): void {
-                closeFrame();
-            }
-        }
+    it('fails cleanly when native decode throws synchronously', async () => {
+        const closeDecoder = vi.fn();
         class FakeVideoDecoder {
-            public constructor(private readonly callbacks: VideoDecoderInit) {}
-
             public close(): void {
-                return;
+                closeDecoder();
             }
 
             public configure(): void {
                 return;
             }
 
-            public decode(chunk: { timestamp: number }): void {
-                decodeCount += 1;
-                if (decodeCount > 1) {
-                    throw new DOMException('Decoder queue rejected input', 'OperationError');
-                }
-                this.callbacks.output(
-                    new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
-                );
+            public decode(): void {
+                throw new DOMException('Decoder queue rejected input', 'OperationError');
             }
 
             public flush(): Promise<void> {
@@ -2199,12 +2003,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840
-        })).resolves.toEqual({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: null,
-            outputSupported: false
-        });
-        expect(closeFrame).toHaveBeenCalledOnce();
+        })).resolves.toEqual({ outputSupported: false });
+        expect(closeDecoder).toHaveBeenCalledOnce();
     });
 
     it('rejects and closes duplicate native Profile 5 output', async () => {
@@ -2265,11 +2065,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             encodedKeyFrame: new Uint8Array([ 1, 2, 3 ]),
             expectedCodedHeight: 2_160,
             expectedCodedWidth: 3_840
-        })).resolves.toEqual({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: null,
-            outputSupported: false
-        });
+        })).resolves.toEqual({ outputSupported: false });
         expect(closeFrame).toHaveBeenCalledTimes(2);
     });
 
@@ -2310,11 +2106,7 @@ describe('CustomDecodeCapabilityProbe', () => {
 
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(probePromise).resolves.toEqual({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: null,
-            outputSupported: false
-        });
+        await expect(probePromise).resolves.toEqual({ outputSupported: false });
         expect(closeDecoder).toHaveBeenCalledOnce();
     });
 
@@ -2507,60 +2299,24 @@ describe('CustomDecodeCapabilityProbe', () => {
 
     it.each([
         {
-            elapsedMilliseconds: 90,
-            expectedMaximumFramesPerSecond: 60,
             expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 8,
             outputCopySupported: true
         },
         {
-            elapsedMilliseconds: 140,
-            expectedMaximumFramesPerSecond: 30,
-            expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 8,
-            outputCopySupported: true
-        },
-        {
-            elapsedMilliseconds: 210,
-            expectedMaximumFramesPerSecond: 24,
-            expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 8,
-            outputCopySupported: true
-        },
-        {
-            elapsedMilliseconds: 240,
-            expectedMaximumFramesPerSecond: null,
-            expectedDecodedFrameFingerprint: 667_501_752,
-            expectedFrameCopyCount: 8,
-            outputCopySupported: true
-        },
-        {
-            elapsedMilliseconds: 90,
-            expectedMaximumFramesPerSecond: null,
             expectedDecodedFrameFingerprint: 667_501_753,
-            expectedFrameCopyCount: 1,
             outputCopySupported: false
         }
     ])(
-        'requires multi-frame raw HDR decode and copy throughput: $elapsedMilliseconds ms',
+        'requires exact raw HDR decode and copy output: $outputCopySupported',
         async ({
-            elapsedMilliseconds,
-            expectedMaximumFramesPerSecond,
             expectedDecodedFrameFingerprint,
-            expectedFrameCopyCount,
             outputCopySupported
         }) => {
-            let clockMilliseconds = 0;
-            let copiedFrameCount = 0;
             let flushCount = 0;
             let openFrameCount = 0;
             let maximumOpenFrameCount = 0;
             const closeFrame = vi.fn();
             const copyFrame = vi.fn(async (): Promise<readonly PlaneLayout[]> => {
-                if (copiedFrameCount > 0) {
-                    clockMilliseconds += elapsedMilliseconds / 7;
-                }
-                copiedFrameCount += 1;
                 return [
                     { offset: 0, stride: 7_680 },
                     { offset: 16_588_800, stride: 3_840 },
@@ -2606,14 +2362,14 @@ describe('CustomDecodeCapabilityProbe', () => {
                 }
 
                 public decode(chunk: { timestamp: number }): void {
+                    const frame = new FakeVideoFrame(chunk.timestamp);
                     this.callbacks.output(
-                        new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame
+                        frame as unknown as VideoFrame
                     );
                 }
 
                 public flush(): Promise<void> {
                     flushCount += 1;
-                    clockMilliseconds += 10_000;
                     return Promise.resolve(undefined);
                 }
             }
@@ -2624,10 +2380,8 @@ describe('CustomDecodeCapabilityProbe', () => {
                     this.timestamp = init.timestamp;
                 }
             }
-            const now = vi.fn((): number => clockMilliseconds);
             vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
             vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-            vi.stubGlobal('performance', { now });
             const outputProbe = createRawHDRVideoOutputProbe();
 
             const result = await outputProbe?.({
@@ -2643,21 +2397,12 @@ describe('CustomDecodeCapabilityProbe', () => {
                 expectedDecodedFrameFingerprint,
                 expectedFormat: 'I420P10'
             });
-            expect(result).toMatchObject({
-                maximumFramesPerSecond: expectedMaximumFramesPerSecond,
-                outputCopySupported
-            });
-            if (outputCopySupported) {
-                expect(result?.measuredFramesPerSecond).toBeCloseTo(
-                    7_000 / elapsedMilliseconds
-                );
-            } else {
-                expect(result?.measuredFramesPerSecond).toBeNull();
-            }
-            expect(copyFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
-            expect(closeFrame).toHaveBeenCalledTimes(expectedFrameCopyCount);
-            expect(flushCount).toBe(outputCopySupported ? 1 : 0);
-            expect(maximumOpenFrameCount).toBe(outputCopySupported ? 2 : 1);
+            expect(result).toEqual({ outputCopySupported });
+            expect(copyFrame).toHaveBeenCalledOnce();
+            expect(closeFrame).toHaveBeenCalledOnce();
+            expect(flushCount).toBe(1);
+            expect(maximumOpenFrameCount).toBe(1);
+            expect(openFrameCount).toBe(0);
         }
     );
 
@@ -2723,22 +2468,16 @@ describe('CustomDecodeCapabilityProbe', () => {
 
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(probePromise).resolves.toEqual({
-            maximumFramesPerSecond: null,
-            measuredFramesPerSecond: null,
-            outputCopySupported: false
-        });
+        await expect(probePromise).resolves.toEqual({ outputCopySupported: false });
         expect(copyFrame).toHaveBeenCalledOnce();
         expect(closeFrame).toHaveBeenCalledOnce();
         expect(closeDecoder).toHaveBeenCalledOnce();
     });
 
-    it('keeps qualified raw throughput when the final flush stalls', async () => {
+    it('fails raw output qualification when the decoder flush stalls', async () => {
         vi.useFakeTimers();
         const closeDecoder = vi.fn();
         const closeFrame = vi.fn();
-        let clockMilliseconds = 0;
-        let copiedFrameCount = 0;
         let flushCount = 0;
         class FakeVideoFrame {
             public readonly codedHeight = 2_160;
@@ -2756,10 +2495,6 @@ describe('CustomDecodeCapabilityProbe', () => {
             }
 
             public async copyTo(): Promise<readonly PlaneLayout[]> {
-                if (copiedFrameCount > 0) {
-                    clockMilliseconds += 80 / 7;
-                }
-                copiedFrameCount += 1;
                 return [
                     { offset: 0, stride: 7_680 },
                     { offset: 16_588_800, stride: 3_840 },
@@ -2797,7 +2532,6 @@ describe('CustomDecodeCapabilityProbe', () => {
         }
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-        vi.stubGlobal('performance', { now: (): number => clockMilliseconds });
         const outputProbe = createRawHDRVideoOutputProbe();
         const probePromise = outputProbe?.({
             codec: 'vp9',
@@ -2817,11 +2551,8 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(flushCount).toBe(1);
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(probePromise).resolves.toMatchObject({
-            maximumFramesPerSecond: 60,
-            outputCopySupported: true
-        });
-        expect(closeFrame).toHaveBeenCalledTimes(8);
+        await expect(probePromise).resolves.toEqual({ outputCopySupported: false });
+        expect(closeFrame).toHaveBeenCalledOnce();
         expect(closeDecoder).toHaveBeenCalledOnce();
     });
 });

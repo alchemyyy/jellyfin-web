@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import { millisecondsToMicroseconds, type Microseconds } from '../MediaTime';
 import DTSSoftwareAudioDecoder, {
+    DTS_DECODER_NO_SYNC_STATUS,
+    DTSDecoderSynchronizationError,
     DTS_PROFILE_HD_HIGH_RESOLUTION,
     DTS_PROFILE_HD_MASTER_AUDIO,
     type DTSDecoderModuleFactory,
@@ -178,7 +180,7 @@ describe('DTSSoftwareAudioDecoder', () => {
     });
 
     it.each([
-        [ 'jellyfin_dts_decode_packet', () => -5, 'decode failed' ],
+        [ 'jellyfin_dts_decode_packet', () => -4, 'decode failed' ],
         [ 'jellyfin_dts_get_sample_count', () => 16_385, 'frame count' ],
         [ 'jellyfin_dts_get_sample_rate', () => 192_001, 'outside the supported range' ],
         [ 'jellyfin_dts_get_bits_per_sample', () => 20, 'unsupported' ],
@@ -209,6 +211,28 @@ describe('DTSSoftwareAudioDecoder', () => {
 
         expect(output.lossless).toBe(false);
         decoder.close();
+    });
+
+    it('reports the libdcadec no-sync status as a typed synchronization error', async () => {
+        const fakeDecoder = createFakeDTSDecoder({
+            jellyfin_dts_decode_packet: () => DTS_DECODER_NO_SYNC_STATUS
+        });
+        const decoder = await DTSSoftwareAudioDecoder.create(fakeDecoder.moduleFactory);
+
+        try {
+            decoder.decode(
+                new Uint8Array([ 1 ]),
+                millisecondsToMicroseconds(0)
+            );
+            throw new Error('Expected DTS synchronization failure');
+        } catch (error) {
+            expect(error).toBeInstanceOf(DTSDecoderSynchronizationError);
+            expect((error as DTSDecoderSynchronizationError).status).toBe(
+                DTS_DECODER_NO_SYNC_STATUS
+            );
+        } finally {
+            decoder.close();
+        }
     });
 
     it('accepts 5.1 DTS-HD High Resolution output', async () => {

@@ -78,10 +78,8 @@ function createSuccessfulResponse(
     return {
         codedHeight: JPEG2000_QUALIFICATION_CODED_HEIGHT,
         codedWidth: JPEG2000_QUALIFICATION_CODED_WIDTH,
-        decodeMilliseconds: 200,
         decodedRGBAByteLength: JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH,
         decodedRGBAFingerprint: JPEG2000_QUALIFICATION_RGBA_FINGERPRINT,
-        measuredFramesPerSecond: 40,
         reason: 'decode-output-verified',
         requestID: JPEG2000_EXACT_CAPABILITY_REQUEST_ID,
         supported: true,
@@ -109,12 +107,12 @@ describe('JPEG2000ExactCapabilityProbe', () => {
         const capability = await firstPromise;
 
         expect(capability).toMatchObject({
-            maximumCodedHeight: 540,
-            maximumCodedWidth: 960,
-            maximumFramesPerSecond: 24,
             reason: 'decode-output-verified',
             status: 'supported'
         });
+        expect(capability).not.toHaveProperty('maximumCodedHeight');
+        expect(capability).not.toHaveProperty('maximumCodedWidth');
+        expect(capability).not.toHaveProperty('maximumFramesPerSecond');
         expect(Object.isFrozen(capability)).toBe(true);
         expect(worker.terminateCount).toBe(1);
     });
@@ -130,7 +128,6 @@ describe('JPEG2000ExactCapabilityProbe', () => {
         }));
 
         await expect(capabilityPromise).resolves.toMatchObject({
-            maximumFramesPerSecond: 0,
             reason: 'output-mismatch',
             status: 'unsupported'
         });

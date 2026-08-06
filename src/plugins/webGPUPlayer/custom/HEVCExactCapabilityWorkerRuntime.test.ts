@@ -5,11 +5,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createHEVCExactCapabilityWorkerTierRequests } from './HEVCExactCapabilityFixtures';
 import {
+    createHEVCExactCapabilityWorkerQualificationRequests
+} from './HEVCExactCapabilityFixtures';
+import {
+    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
-    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS,
-    type HEVCExactCapabilityTier,
+    type HEVCExactCapabilityFixture,
     type HEVCExactCapabilityWorkerRequest
 } from './HEVCExactCapabilityProtocol';
 import type { HEVCDecoderBackend } from './HEVCDecoderBackend';
@@ -28,15 +30,15 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASMURL: 'https://example.test/hevc-decode.wasm',
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        tiers: createHEVCExactCapabilityWorkerTierRequests(
+        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
             MAIN10_4K_QUALIFICATION_BITSTREAM
         ),
         type: 'probe'
     };
 }
 
-function createFrame(tier: HEVCExactCapabilityTier, poc = 0): HEVCFrame {
-    const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
+function createFrame(fixture: HEVCExactCapabilityFixture, poc = 0): HEVCFrame {
+    const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture];
     const chromaWidth = Math.ceil(definition.codedWidth / 2);
     const chromaHeight = Math.ceil(definition.codedHeight / 2);
     return {
@@ -52,8 +54,8 @@ function createFrame(tier: HEVCExactCapabilityTier, poc = 0): HEVCFrame {
     };
 }
 
-function createStreamInfo(tier: HEVCExactCapabilityTier): HEVCStreamInfo {
-    const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier];
+function createStreamInfo(fixture: HEVCExactCapabilityFixture): HEVCStreamInfo {
+    const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture];
     return {
         bitDepth: definition.bitDepth,
         chromaFormat: 1,
@@ -65,7 +67,7 @@ function createStreamInfo(tier: HEVCExactCapabilityTier): HEVCStreamInfo {
 }
 
 function createBackend(
-    tier: HEVCExactCapabilityTier,
+    fixture: HEVCExactCapabilityFixture,
     destroy: () => void,
     options: {
         feedError?: Error
@@ -76,7 +78,7 @@ function createBackend(
     let nextPOC = 0;
     return {
         get info(): HEVCStreamInfo {
-            return options.info ?? createStreamInfo(tier);
+            return options.info ?? createStreamInfo(fixture);
         },
         destroy,
         drain: (frameHandler): number => {
@@ -84,7 +86,7 @@ function createBackend(
                 return 0;
             }
             pendingFrame = false;
-            frameHandler(createFrame(tier, nextPOC));
+            frameHandler(createFrame(fixture, nextPOC));
             nextPOC += 1;
             return 1;
         },
@@ -100,21 +102,12 @@ function createBackend(
 
 function fingerprintFrame(frame: HEVCFrame): number {
     if (frame.width === 3_840) {
-        return HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS['main10-4k']
+        return HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS['main10-4k']
             .decodedFrameFingerprints[frame.poc];
     }
-    const tier = frame.bitDepth === 10 ? 'main10-1080p' : 'main-1080p';
-    return HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tier]
+    const fixture = frame.bitDepth === 10 ? 'main10-1080p' : 'main-1080p';
+    return HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[fixture]
         .decodedFrameFingerprints[frame.poc];
-}
-
-function createNow(values: readonly number[]): () => number {
-    let valueIndex = 0;
-    return (): number => {
-        const value = values[valueIndex];
-        valueIndex += 1;
-        return value;
-    };
 }
 
 describe('runHEVCExactCapabilityWorkerRequest', () => {
@@ -141,8 +134,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 decoderIndex += 1;
                 return backend;
             },
-            fingerprintFrame,
-            now: createNow([ 0, 10, 80, 100, 110, 180, 200, 210, 280 ])
+            fingerprintFrame
         };
 
         const response = await runHEVCExactCapabilityWorkerRequest(createRequest(), dependencies);
@@ -154,21 +146,16 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 960,
                 codedHeight: 1_080,
                 codedWidth: 1_920,
-                decodeMilliseconds: 80,
                 decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS['main-1080p']
+                    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS['main-1080p']
                         .decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 6_220_800,
-                framesPerSecond: 100,
                 levelIDC: 120,
-                measuredFrameCount: 7,
-                minimumFramesPerSecond: 30,
                 profileIDC: 1,
                 reason: 'decode-output-verified',
-                steadyStateDecodeMilliseconds: 70,
                 supported: true,
-                tier: 'main-1080p',
+                fixture: 'main-1080p',
                 totalDecodedByteLength: 49_766_400
             },
             {
@@ -177,21 +164,16 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 960,
                 codedHeight: 1_080,
                 codedWidth: 1_920,
-                decodeMilliseconds: 80,
                 decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS['main10-1080p']
+                    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS['main10-1080p']
                         .decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 6_220_800,
-                framesPerSecond: 100,
                 levelIDC: 120,
-                measuredFrameCount: 7,
-                minimumFramesPerSecond: 30,
                 profileIDC: 2,
                 reason: 'decode-output-verified',
-                steadyStateDecodeMilliseconds: 70,
                 supported: true,
-                tier: 'main10-1080p',
+                fixture: 'main10-1080p',
                 totalDecodedByteLength: 49_766_400
             },
             {
@@ -200,21 +182,16 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 chromaWidth: 1_920,
                 codedHeight: 2_160,
                 codedWidth: 3_840,
-                decodeMilliseconds: 80,
                 decodedFrameFingerprints:
-                    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS['main10-4k']
+                    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS['main10-4k']
                         .decodedFrameFingerprints,
                 decodedFrameCount: 8,
                 decodedByteLength: 24_883_200,
-                framesPerSecond: 100,
                 levelIDC: 153,
-                measuredFrameCount: 7,
-                minimumFramesPerSecond: 30,
                 profileIDC: 2,
                 reason: 'decode-output-verified',
-                steadyStateDecodeMilliseconds: 70,
                 supported: true,
-                tier: 'main10-4k',
+                fixture: 'main10-4k',
                 totalDecodedByteLength: 199_065_600
             }
         ]);
@@ -223,7 +200,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
         expect(main10Destroy).toHaveBeenCalledOnce();
     });
 
-    it('fails tiers independently on metadata mismatch and decode failure', async () => {
+    it('fails qualifications independently on metadata mismatch and decode failure', async () => {
         const mainDestroy = vi.fn();
         const main10Destroy = vi.fn();
         let decoderIndex = 0;
@@ -254,8 +231,7 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
                 decoderIndex += 1;
                 return backend;
             },
-            fingerprintFrame,
-            now: createNow([ 0, 10, 20, 30, 40, 50, 60 ])
+            fingerprintFrame
         };
 
         const response = await runHEVCExactCapabilityWorkerRequest(createRequest(), dependencies);
@@ -263,185 +239,20 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
         expect(response.results[0]).toMatchObject({
             reason: 'output-mismatch',
             supported: false,
-            tier: 'main-1080p'
+            fixture: 'main-1080p'
         });
         expect(response.results[1]).toMatchObject({
             reason: 'decode-error',
             supported: false,
-            tier: 'main10-1080p'
+            fixture: 'main10-1080p'
         });
         expect(response.results[2]).toMatchObject({
             reason: 'decode-output-verified',
             supported: true,
-            tier: 'main10-4k'
+            fixture: 'main10-4k'
         });
         expect(mainDestroy).toHaveBeenCalledOnce();
         expect(main10Destroy).toHaveBeenCalledOnce();
-    });
-
-    it('fails closed when exact decode exceeds a tier time budget', async () => {
-        let decoderIndex = 0;
-        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
-            createDecoder: async (): Promise<HEVCDecoderBackend> => {
-                const tier = [
-                    'main-1080p',
-                    'main10-1080p',
-                    'main10-4k'
-                ][decoderIndex] as HEVCExactCapabilityTier;
-                decoderIndex += 1;
-                return createBackend(tier, () => undefined);
-            },
-            fingerprintFrame,
-            now: createNow([
-                0, 10, 4_001,
-                5_000, 5_010, 11_001,
-                12_000, 12_010, 18_001
-            ])
-        };
-
-        const response = await runHEVCExactCapabilityWorkerRequest(createRequest(), dependencies);
-        expect(response.results[0]).toMatchObject({
-            decodeMilliseconds: 4_001,
-            reason: 'time-budget-exceeded',
-            supported: false
-        });
-        expect(response.results[1]).toMatchObject({
-            decodeMilliseconds: 6_001,
-            reason: 'time-budget-exceeded',
-            supported: false
-        });
-        expect(response.results[2]).toMatchObject({
-            decodeMilliseconds: 6_001,
-            reason: 'time-budget-exceeded',
-            supported: false
-        });
-    });
-
-    it('requires 24 fps plus conservative throughput headroom', async () => {
-        let decoderIndex = 0;
-        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
-            createDecoder: async (): Promise<HEVCDecoderBackend> => {
-                const tier = [
-                    'main-1080p',
-                    'main10-1080p',
-                    'main10-4k'
-                ][decoderIndex] as HEVCExactCapabilityTier;
-                decoderIndex += 1;
-                return createBackend(tier, () => undefined);
-            },
-            fingerprintFrame,
-            now: createNow([ 0, 10, 310, 400, 410, 480, 500, 510, 580 ])
-        };
-
-        const response = await runHEVCExactCapabilityWorkerRequest(createRequest(), dependencies);
-        expect(response.results[0]).toMatchObject({
-            decodedFrameCount: 8,
-            framesPerSecond: 70 / 3,
-            measuredFrameCount: 7,
-            minimumFramesPerSecond: 30,
-            reason: 'throughput-insufficient',
-            steadyStateDecodeMilliseconds: 300,
-            supported: false
-        });
-        expect(response.results[1]).toMatchObject({
-            framesPerSecond: 100,
-            reason: 'decode-output-verified',
-            supported: true
-        });
-        expect(response.results[2]).toMatchObject({
-            framesPerSecond: 100,
-            reason: 'decode-output-verified',
-            supported: true
-        });
-    });
-
-    it('retries a borderline cold 4K throughput result', async () => {
-        let decoderIndex = 0;
-        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
-            createDecoder: async (): Promise<HEVCDecoderBackend> => {
-                let tier: HEVCExactCapabilityTier;
-                switch (decoderIndex) {
-                    case 0:
-                        tier = 'main-1080p';
-                        break;
-                    case 1:
-                        tier = 'main10-1080p';
-                        break;
-                    default:
-                        tier = 'main10-4k';
-                        break;
-                }
-                decoderIndex += 1;
-                return createBackend(tier, () => undefined);
-            },
-            fingerprintFrame,
-            now: createNow([
-                0, 10, 80,
-                100, 110, 180,
-                200, 210, 460,
-                500, 510, 710
-            ])
-        };
-
-        const response = await runHEVCExactCapabilityWorkerRequest(
-            createRequest(),
-            dependencies
-        );
-
-        expect(decoderIndex).toBe(4);
-        expect(response.results[2]).toMatchObject({
-            decodeMilliseconds: 210,
-            framesPerSecond: 35,
-            reason: 'decode-output-verified',
-            steadyStateDecodeMilliseconds: 200,
-            supported: true,
-            tier: 'main10-4k'
-        });
-    });
-
-    it('bounds 4K warm retries and retains the fastest insufficient result', async () => {
-        let decoderIndex = 0;
-        const dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = {
-            createDecoder: async (): Promise<HEVCDecoderBackend> => {
-                let tier: HEVCExactCapabilityTier;
-                switch (decoderIndex) {
-                    case 0:
-                        tier = 'main-1080p';
-                        break;
-                    case 1:
-                        tier = 'main10-1080p';
-                        break;
-                    default:
-                        tier = 'main10-4k';
-                        break;
-                }
-                decoderIndex += 1;
-                return createBackend(tier, () => undefined);
-            },
-            fingerprintFrame,
-            now: createNow([
-                0, 10, 80,
-                100, 110, 180,
-                200, 210, 460,
-                500, 510, 750,
-                800, 810, 1_055
-            ])
-        };
-
-        const response = await runHEVCExactCapabilityWorkerRequest(
-            createRequest(),
-            dependencies
-        );
-
-        expect(decoderIndex).toBe(5);
-        expect(response.results[2]).toMatchObject({
-            decodeMilliseconds: 250,
-            framesPerSecond: 175 / 6,
-            reason: 'throughput-insufficient',
-            steadyStateDecodeMilliseconds: 240,
-            supported: false,
-            tier: 'main10-4k'
-        });
     });
 
     it('rejects malformed requests before creating decoder memory', async () => {
@@ -449,16 +260,15 @@ describe('runHEVCExactCapabilityWorkerRequest', () => {
         const request = createRequest();
         const malformedRequest = {
             ...request,
-            tiers: [
-                { ...request.tiers[0], codedWidth: 1_280 },
-                request.tiers[1]
+            qualifications: [
+                { ...request.qualifications[0], codedWidth: 1_280 },
+                request.qualifications[1]
             ]
         } as unknown as HEVCExactCapabilityWorkerRequest;
 
         await expect(runHEVCExactCapabilityWorkerRequest(malformedRequest, {
             createDecoder,
-            fingerprintFrame,
-            now: (): number => 0
+            fingerprintFrame
         })).rejects.toThrow('request is invalid');
         expect(createDecoder).not.toHaveBeenCalled();
     });

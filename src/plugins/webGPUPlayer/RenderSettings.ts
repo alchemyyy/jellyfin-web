@@ -1,10 +1,16 @@
 export const RENDER_SETTINGS_VERSION = 7;
 export const RENDER_SETTINGS_UNIFORM_BYTE_LENGTH = 144;
 
-const MAXIMUM_LUMINANCE_NITS = 10_000;
-const MINIMUM_LUMINANCE_NITS = 1;
-const MAXIMUM_EXPOSURE_STOPS = 16;
-const MINIMUM_EXPOSURE_STOPS = -16;
+export const HDR_RENDER_SETTING_RANGES = Object.freeze({
+    brightness: Object.freeze({ maximum: 1, minimum: -1, step: 0.01 }),
+    contrast: Object.freeze({ maximum: 4, minimum: 0, step: 0.01 }),
+    desaturationStrength: Object.freeze({ maximum: 1, minimum: 0, step: 0.01 }),
+    exposure: Object.freeze({ maximum: 16, minimum: -16, step: 0.1 }),
+    inputPeakNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    outputPeakNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    paperWhiteNits: Object.freeze({ maximum: 10_000, minimum: 1, step: 1 }),
+    saturation: Object.freeze({ maximum: 4, minimum: 0, step: 0.01 })
+});
 
 export type RenderMode = 'hdr-to-sdr' | 'identity-sdr';
 // The configured WebGPU canvas uses the sRGB output color space
@@ -143,34 +149,39 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
         throw new RangeError('Tone mapping settings must be finite');
     }
     if (
-        toneMapping.inputPeakNits < MINIMUM_LUMINANCE_NITS
-        || toneMapping.inputPeakNits > MAXIMUM_LUMINANCE_NITS
-        || toneMapping.outputPeakNits < MINIMUM_LUMINANCE_NITS
-        || toneMapping.outputPeakNits > MAXIMUM_LUMINANCE_NITS
+        toneMapping.inputPeakNits < HDR_RENDER_SETTING_RANGES.inputPeakNits.minimum
+        || toneMapping.inputPeakNits > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
+        || toneMapping.outputPeakNits < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
+        || toneMapping.outputPeakNits > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
     ) {
         throw new RangeError('Tone mapping peak luminance must be from 1 through 10000 nits');
     }
-    if (toneMapping.paperWhiteNits < MINIMUM_LUMINANCE_NITS
-        || toneMapping.paperWhiteNits > MAXIMUM_LUMINANCE_NITS
+    if (toneMapping.paperWhiteNits < HDR_RENDER_SETTING_RANGES.paperWhiteNits.minimum
+        || toneMapping.paperWhiteNits > HDR_RENDER_SETTING_RANGES.paperWhiteNits.maximum
         || toneMapping.paperWhiteNits > toneMapping.inputPeakNits) {
         throw new RangeError('Paper white must be within the input luminance range');
     }
     if (
-        toneMapping.exposure < MINIMUM_EXPOSURE_STOPS
-        || toneMapping.exposure > MAXIMUM_EXPOSURE_STOPS
+        toneMapping.exposure < HDR_RENDER_SETTING_RANGES.exposure.minimum
+        || toneMapping.exposure > HDR_RENDER_SETTING_RANGES.exposure.maximum
     ) {
         throw new RangeError('Exposure must be from negative 16 through 16 stops');
     }
-    if (toneMapping.desaturationStrength < 0 || toneMapping.desaturationStrength > 1) {
+    if (toneMapping.desaturationStrength < HDR_RENDER_SETTING_RANGES.desaturationStrength.minimum
+        || toneMapping.desaturationStrength
+            > HDR_RENDER_SETTING_RANGES.desaturationStrength.maximum) {
         throw new RangeError('Desaturation strength must be between zero and one');
     }
-    if (settings.display.brightness < -1 || settings.display.brightness > 1) {
+    if (settings.display.brightness < HDR_RENDER_SETTING_RANGES.brightness.minimum
+        || settings.display.brightness > HDR_RENDER_SETTING_RANGES.brightness.maximum) {
         throw new RangeError('Display brightness must be between negative one and one');
     }
-    if (settings.display.contrast < 0 || settings.display.contrast > 4) {
+    if (settings.display.contrast < HDR_RENDER_SETTING_RANGES.contrast.minimum
+        || settings.display.contrast > HDR_RENDER_SETTING_RANGES.contrast.maximum) {
         throw new RangeError('Display contrast must be between zero and four');
     }
-    if (settings.display.saturation < 0 || settings.display.saturation > 4) {
+    if (settings.display.saturation < HDR_RENDER_SETTING_RANGES.saturation.minimum
+        || settings.display.saturation > HDR_RENDER_SETTING_RANGES.saturation.maximum) {
         throw new RangeError('Display saturation must be between zero and four');
     }
 }
@@ -258,14 +269,15 @@ export function createRenderSettingsUniformData(
             || dynamicFrameSettings.averageNits > dynamicFrameSettings.inputPeakNits
             || !Number.isFinite(dynamicFrameSettings.inputPeakNits)
             || dynamicFrameSettings.inputPeakNits < settings.toneMapping.paperWhiteNits
-            || dynamicFrameSettings.inputPeakNits > MAXIMUM_LUMINANCE_NITS
+            || dynamicFrameSettings.inputPeakNits
+                > HDR_RENDER_SETTING_RANGES.inputPeakNits.maximum
             || !Number.isFinite(
                 dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
             )
             || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
-                < MINIMUM_LUMINANCE_NITS
+                < HDR_RENDER_SETTING_RANGES.outputPeakNits.minimum
             || dynamicFrameSettings.targetedSystemDisplayMaximumLuminanceNits
-                > MAXIMUM_LUMINANCE_NITS
+                > HDR_RENDER_SETTING_RANGES.outputPeakNits.maximum
             || anchors.length > MAXIMUM_DYNAMIC_ANCHOR_COUNT
             || anchors.some((anchor: number): boolean => (
                 !Number.isFinite(anchor) || anchor < 0 || anchor > 1

@@ -3,6 +3,7 @@ import {
     DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     type CustomAudioDownmixAlgorithm as CustomAudioDownmixAlgorithmValue
 } from './CustomAudioDownmixAlgorithm';
+import type { AudioDownmixSettingsRamp } from './StreamingAudioDownmixSettings';
 
 const FIVE_POINT_ONE_CHANNEL_COUNT = 6;
 const SIX_POINT_ONE_CHANNEL_COUNT = 7;
@@ -24,6 +25,8 @@ const SIX_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX = 6;
 const SIX_POINT_ONE_DIRECT_CHANNEL_GAIN = 1 / (1 + 3 / Math.SQRT2);
 const SIX_POINT_ONE_MIXED_CHANNEL_GAIN =
     SIX_POINT_ONE_DIRECT_CHANNEL_GAIN / Math.SQRT2;
+const MAXIMUM_CHANNEL_LEVEL = 2;
+const MAXIMUM_OUTPUT_GAIN = 10;
 const STEREO_FINGERPRINT_OFFSET_BASIS = 0x811c9dc5;
 const STEREO_FINGERPRINT_PRIME = 0x01000193;
 
@@ -163,6 +166,24 @@ export const FIVE_POINT_ONE_MAXIMUM_CORRELATED_PEAK =
     + 2 * FIVE_POINT_ONE_MIXED_CHANNEL_GAIN;
 export const SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN = 1;
 export const SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN = STANDARD_MIXED_CHANNEL_GAIN;
+export const AUDIO_DOWNMIX_SETTINGS_VERSION = 1;
+export const AUDIO_DOWNMIX_SETTING_RANGES = Object.freeze({
+    centerLevel: Object.freeze({
+        maximum: MAXIMUM_CHANNEL_LEVEL,
+        minimum: 0,
+        step: 0.01
+    }),
+    outputGain: Object.freeze({
+        maximum: MAXIMUM_OUTPUT_GAIN,
+        minimum: 0,
+        step: 0.01
+    }),
+    surroundLevel: Object.freeze({
+        maximum: MAXIMUM_CHANNEL_LEVEL,
+        minimum: 0,
+        step: 0.01
+    })
+});
 export const SEVEN_POINT_ONE_MAXIMUM_CORRELATED_PEAK =
     SEVEN_POINT_ONE_DIRECT_CHANNEL_GAIN
     + 3 * SEVEN_POINT_ONE_MIXED_CHANNEL_GAIN;
@@ -206,6 +227,53 @@ function getSevenPointOneDownmixCoefficients(
     }
 }
 
+export type AudioDownmixSettings = Readonly<{
+    centerLevel: number
+    outputGain: number
+    surroundLevel: number
+    version: typeof AUDIO_DOWNMIX_SETTINGS_VERSION
+}>;
+
+/** Returns unity user gains for the selected downmix matrix. */
+export function createDefaultAudioDownmixSettings(): AudioDownmixSettings {
+    return {
+        centerLevel: 1,
+        outputGain: 1,
+        surroundLevel: 1,
+        version: AUDIO_DOWNMIX_SETTINGS_VERSION
+    };
+}
+
+/** Rejects settings outside the supported user-adjustment ranges. */
+export function assertValidAudioDownmixSettings(
+    settings: AudioDownmixSettings
+): void {
+    if (settings.version !== AUDIO_DOWNMIX_SETTINGS_VERSION) {
+        throw new RangeError('Unsupported audio downmix settings version');
+    }
+
+    const numericSettings = [
+        settings.centerLevel,
+        settings.outputGain,
+        settings.surroundLevel
+    ];
+    if (!numericSettings.every(Number.isFinite)) {
+        throw new RangeError('Audio downmix settings must be finite');
+    }
+    if (settings.centerLevel < AUDIO_DOWNMIX_SETTING_RANGES.centerLevel.minimum
+        || settings.centerLevel > AUDIO_DOWNMIX_SETTING_RANGES.centerLevel.maximum) {
+        throw new RangeError('Audio downmix center level must be between zero and two');
+    }
+    if (settings.surroundLevel < AUDIO_DOWNMIX_SETTING_RANGES.surroundLevel.minimum
+        || settings.surroundLevel > AUDIO_DOWNMIX_SETTING_RANGES.surroundLevel.maximum) {
+        throw new RangeError('Audio downmix surround level must be between zero and two');
+    }
+    if (settings.outputGain < AUDIO_DOWNMIX_SETTING_RANGES.outputGain.minimum
+        || settings.outputGain > AUDIO_DOWNMIX_SETTING_RANGES.outputGain.maximum) {
+        throw new RangeError('Audio downmix output gain must be between zero and ten');
+    }
+}
+
 function requireFivePointOnePlanarInput(
     channelData: readonly Float32Array[]
 ): number {
@@ -229,8 +297,11 @@ function requireFivePointOnePlanarInput(
 export function downmixFivePointOneToStereo(
     channelData: readonly Float32Array[],
     algorithm: CustomAudioDownmixAlgorithmValue =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
+    settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
+    assertValidAudioDownmixSettings(settings);
     const frameCount = requireFivePointOnePlanarInput(channelData);
     const coefficients = getFivePointOneDownmixCoefficients(algorithm);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
@@ -241,20 +312,37 @@ export function downmixFivePointOneToStereo(
     const surroundRight = channelData[SURROUND_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
+    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
+    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
+    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
+    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        if (settingsRamp && frameIndex < settingsRampFrameCount) {
+            if (frameIndex + 1 === settingsRampFrameCount) {
+                centerLevel = settings.centerLevel;
+                outputGain = settings.outputGain;
+                surroundLevel = settings.surroundLevel;
+            } else {
+                centerLevel += settingsRamp.centerLevelStep;
+                outputGain += settingsRamp.outputGainStep;
+                surroundLevel += settingsRamp.surroundLevelStep;
+            }
+        }
         outputLeft[frameIndex] =
-            frontLeft[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center
+            (frontLeft[frameIndex] * coefficients.direct
+            + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + surroundLeft[frameIndex] * coefficients.surround
-            + surroundRight[frameIndex] * coefficients.oppositeSurround;
+            + surroundLeft[frameIndex] * coefficients.surround * surroundLevel
+            + surroundRight[frameIndex] * coefficients.oppositeSurround
+                * surroundLevel) * outputGain;
         outputRight[frameIndex] =
-            frontRight[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center
+            (frontRight[frameIndex] * coefficients.direct
+            + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + surroundRight[frameIndex] * coefficients.surround
-            + surroundLeft[frameIndex] * coefficients.oppositeSurround;
+            + surroundRight[frameIndex] * coefficients.surround * surroundLevel
+            + surroundLeft[frameIndex] * coefficients.oppositeSurround
+                * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];
@@ -278,11 +366,15 @@ function requireSixPointOnePlanarInput(
 
 /**
  * Downmixes WAVE-order 6.1 planar PCM (FL, FR, FC, LFE, BC, SL, SR) to
- * bounded stereo. The LFE channel is intentionally omitted from the Lo/Ro mix.
+ * bounded stereo before optional user gain. The LFE channel is intentionally
+ * omitted from the Lo/Ro mix.
  */
 export function downmixSixPointOneToStereo(
-    channelData: readonly Float32Array[]
+    channelData: readonly Float32Array[],
+    settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
+    settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
+    assertValidAudioDownmixSettings(settings);
     const frameCount = requireSixPointOnePlanarInput(channelData);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
     const frontRight = channelData[FRONT_RIGHT_CHANNEL_INDEX];
@@ -292,18 +384,39 @@ export function downmixSixPointOneToStereo(
     const sideRight = channelData[SIX_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
+    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
+    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
+    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
+    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        if (settingsRamp && frameIndex < settingsRampFrameCount) {
+            if (frameIndex + 1 === settingsRampFrameCount) {
+                centerLevel = settings.centerLevel;
+                outputGain = settings.outputGain;
+                surroundLevel = settings.surroundLevel;
+            } else {
+                centerLevel += settingsRamp.centerLevelStep;
+                outputGain += settingsRamp.outputGainStep;
+                surroundLevel += settingsRamp.surroundLevelStep;
+            }
+        }
         outputLeft[frameIndex] =
-            frontLeft[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
+            (frontLeft[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
             + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
+                * centerLevel
             + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN;
+                * surroundLevel
+            + sideLeft[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
+                * surroundLevel) * outputGain;
         outputRight[frameIndex] =
-            frontRight[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
+            (frontRight[frameIndex] * SIX_POINT_ONE_DIRECT_CHANNEL_GAIN
             + frontCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
+                * centerLevel
             + backCenter[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
-            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN;
+                * surroundLevel
+            + sideRight[frameIndex] * SIX_POINT_ONE_MIXED_CHANNEL_GAIN
+                * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];
@@ -356,8 +469,11 @@ function requireSevenPointOnePlanarInput(
 export function downmixSevenPointOneToStereo(
     channelData: readonly Float32Array[],
     algorithm: CustomAudioDownmixAlgorithmValue =
-    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    settings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
+    settingsRamp: AudioDownmixSettingsRamp | null = null
 ): StereoChannelData {
+    assertValidAudioDownmixSettings(settings);
     const frameCount = requireSevenPointOnePlanarInput(channelData);
     const coefficients = getSevenPointOneDownmixCoefficients(algorithm);
     const frontLeft = channelData[FRONT_LEFT_CHANNEL_INDEX];
@@ -370,24 +486,41 @@ export function downmixSevenPointOneToStereo(
     const sideRight = channelData[SEVEN_POINT_ONE_SIDE_RIGHT_CHANNEL_INDEX];
     const outputLeft = new Float32Array(frameCount);
     const outputRight = new Float32Array(frameCount);
+    const settingsRampFrameCount = settingsRamp?.frameCount ?? 0;
+    let centerLevel = settingsRamp?.initialCenterLevel ?? settings.centerLevel;
+    let outputGain = settingsRamp?.initialOutputGain ?? settings.outputGain;
+    let surroundLevel = settingsRamp?.initialSurroundLevel ?? settings.surroundLevel;
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        if (settingsRamp && frameIndex < settingsRampFrameCount) {
+            if (frameIndex + 1 === settingsRampFrameCount) {
+                centerLevel = settings.centerLevel;
+                outputGain = settings.outputGain;
+                surroundLevel = settings.surroundLevel;
+            } else {
+                centerLevel += settingsRamp.centerLevelStep;
+                outputGain += settingsRamp.outputGainStep;
+                surroundLevel += settingsRamp.surroundLevelStep;
+            }
+        }
         outputLeft[frameIndex] =
-            frontLeft[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center
+            (frontLeft[frameIndex] * coefficients.direct
+            + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + backLeft[frameIndex] * coefficients.back
-            + backRight[frameIndex] * coefficients.oppositeBack
-            + sideLeft[frameIndex] * coefficients.side
-            + sideRight[frameIndex] * coefficients.oppositeSide;
+            + backLeft[frameIndex] * coefficients.back * surroundLevel
+            + backRight[frameIndex] * coefficients.oppositeBack * surroundLevel
+            + sideLeft[frameIndex] * coefficients.side * surroundLevel
+            + sideRight[frameIndex] * coefficients.oppositeSide
+                * surroundLevel) * outputGain;
         outputRight[frameIndex] =
-            frontRight[frameIndex] * coefficients.direct
-            + frontCenter[frameIndex] * coefficients.center
+            (frontRight[frameIndex] * coefficients.direct
+            + frontCenter[frameIndex] * coefficients.center * centerLevel
             + lfe[frameIndex] * coefficients.lfe
-            + backRight[frameIndex] * coefficients.back
-            + backLeft[frameIndex] * coefficients.oppositeBack
-            + sideRight[frameIndex] * coefficients.side
-            + sideLeft[frameIndex] * coefficients.oppositeSide;
+            + backRight[frameIndex] * coefficients.back * surroundLevel
+            + backLeft[frameIndex] * coefficients.oppositeBack * surroundLevel
+            + sideRight[frameIndex] * coefficients.side * surroundLevel
+            + sideLeft[frameIndex] * coefficients.oppositeSide
+                * surroundLevel) * outputGain;
     }
 
     return [ outputLeft, outputRight ];

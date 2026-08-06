@@ -9,6 +9,11 @@ import {
     RENDER_SETTINGS_VERSION,
     type HDRToSDRRenderSettings
 } from './RenderSettings';
+import {
+    createConfiguredHDRRenderSettings,
+    createDefaultWebGPUUserSettings
+} from './WebGPUUserSettings';
+import { createDefaultAudioDownmixSettings } from './custom/CustomAudioDownmix';
 import type {
     NativeMediaAudioCapabilities,
     NativeMediaAudioChannelCount,
@@ -57,7 +62,8 @@ const webSettingsMockState = vi.hoisted(() => ({
 }));
 const userSettingsMockState = vi.hoisted(() => ({
     audioDownmixAlgorithm: 'standard-lo-ro',
-    audioNormalizationMode: 'TrackGain'
+    audioNormalizationMode: 'TrackGain',
+    webGPUPlaybackSettings: null as string | null
 }));
 const customDecodeMockState = vi.hoisted(() => ({
     audioEligibilityOverride: null as ((
@@ -133,6 +139,12 @@ vi.mock('scripts/settings/webSettings', () => ({
 }));
 
 vi.mock('scripts/settings/userSettings', () => ({
+    currentSettings: {
+        get: vi.fn(() => userSettingsMockState.webGPUPlaybackSettings),
+        set: vi.fn((_name: string, value: string) => {
+            userSettingsMockState.webGPUPlaybackSettings = value;
+        })
+    },
     selectAudioNormalization: vi.fn(() => userSettingsMockState.audioNormalizationMode),
     webGPUAudioDownmixAlgorithm: vi.fn(() => userSettingsMockState.audioDownmixAlgorithm)
 }));
@@ -426,6 +438,7 @@ vi.mock('./custom/CustomPlaybackController', () => {
         notifyFrameDiscarded = vi.fn(() => true);
         notifyFramePresented = vi.fn(() => true);
         canSetAudioStreamIndex = vi.fn(() => true);
+        updateAudioDownmixSettings = vi.fn(() => true);
         setAudioStreamIndex = vi.fn(() => Promise.resolve({
             fallbackReason: null,
             generation: 2,
@@ -859,6 +872,7 @@ type MockCustomPlaybackController = {
     notifyFrameDiscarded: MockFunction
     notifyFramePresented: MockFunction
     canSetAudioStreamIndex: MockFunction
+    updateAudioDownmixSettings: MockFunction
     setAudioStreamIndex: MockFunction
     setVolume: MockFunction
     setNormalizationGain: MockFunction
@@ -1242,6 +1256,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.hdrToneMappingEnabled = false;
         userSettingsMockState.audioNormalizationMode = 'TrackGain';
         userSettingsMockState.audioDownmixAlgorithm = 'standard-lo-ro';
+        userSettingsMockState.webGPUPlaybackSettings = null;
         customDecodeMockState.audioEligibilityOverride = null;
         customDecodeMockState.eligible = false;
         customDecodeMockState.dolbyVision = false;
@@ -1340,14 +1355,6 @@ describe('WebGPUPlayer HTML delegation', () => {
             SampleRate: 48_000,
             Type: 'Audio'
         }]) ],
-        [ 'high-frame-rate progressive MPEG-2', createPlaybackSelectionItem('mpeg2-30fps', {
-            AverageFrameRate: 29.97003,
-            BitDepth: 8,
-            Codec: 'MPEG2VIDEO',
-            Height: 540,
-            Profile: 'Main',
-            Width: 720
-        }) ],
         [ '10-bit SDR AV1 with Opus 5.1', createPlaybackSelectionItem('av1-10bit-sdr', {
             AverageFrameRate: 24,
             BitDepth: 10,
@@ -1378,6 +1385,38 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(player.canPlayItem(item, playOptions)).toBe(false);
         expect(canPlayItem).toHaveBeenCalledTimes(2);
         expect(canPlayItem).toHaveBeenLastCalledWith(item, playOptions);
+    });
+
+    it('keeps high-frame-rate progressive MPEG-2 metadata eligible with custom decode enabled', () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const canPlayItem = vi.fn(() => true);
+        backend.canPlayItem = canPlayItem;
+        const playOptions = { fullscreen: true };
+        const item = createPlaybackSelectionItem('mpeg2-30fps', {
+            AverageFrameRate: 29.97003,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 540,
+            Profile: 'Main',
+            Width: 720
+        });
+
+        webSettingsMockState.customDecodeEnabled = true;
+        expect(player.canPlayItem(item, playOptions)).toBe(true);
+        expect(canPlayItem).toHaveBeenCalledOnce();
+        expect(canPlayItem).toHaveBeenCalledWith(item, playOptions);
+    });
+
+    it('contributes one plugin-owned playback settings action', () => {
+        const player = new WebGPUPlayer();
+
+        expect(player.getSettingsMenuItems()).toEqual([ expect.objectContaining({
+            id: 'webgpu-playback-settings',
+            name: 'WebGPU Settings',
+            onSelect: expect.any(Function)
+        }) ]);
+        expect(player.getSettingsMenuItems()[0]).not.toHaveProperty('secondaryText');
     });
 
     it('keeps exact VC-1 video available while later checks own audio and subtitles', () => {
@@ -2207,6 +2246,20 @@ describe('WebGPUPlayer HTML delegation', () => {
         customDecodeMockState.hdr = true;
         customDecodeMockState.videoDecoderBackend = 'bundled-hevc';
         customDecodeMockState.videoOutputMode = 'raw-planes';
+        const defaults = createDefaultWebGPUUserSettings();
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            render: {
+                automaticInputPeakNits: false,
+                settings: {
+                    ...defaults.render.settings,
+                    toneMapping: {
+                        ...defaults.render.settings.toneMapping,
+                        inputPeakNits: 2_500
+                    }
+                }
+            }
+        });
 
         const options = createKnownHDRPlayOptions({ playMethod: 'DirectPlay' });
         await player.play(options);
@@ -2214,6 +2267,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: false,
             inputMode: 'raw-yuv',
             metadata: expect.objectContaining({
                 bitDepth: 10,
@@ -2224,9 +2278,11 @@ describe('WebGPUPlayer HTML delegation', () => {
             rawFrameFormat: 'I420P10',
             settings: expect.objectContaining({
                 mode: 'hdr-to-sdr',
-                outputTransfer: 'srgb'
+                outputTransfer: 'srgb',
+                toneMapping: expect.objectContaining({ inputPeakNits: 2_500 })
             })
         }, 1);
+        expect(player.getDetectedInputPeakNits()).toBe(1_000);
         expect(customPlaybackController.play).toHaveBeenCalledWith(
             expect.objectContaining({
                 dolbyVisionProfile: null,
@@ -2262,6 +2318,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: true,
             inputMode: 'external-hdr',
             metadata: expect.objectContaining({
                 bitDepth: 10,
@@ -2337,7 +2394,68 @@ describe('WebGPUPlayer HTML delegation', () => {
                 mode: 'hdr-to-sdr',
                 toneMapping: expect.objectContaining({ inputPeakNits: 4_000 })
             }),
-            1
+            1,
+            true
+        );
+
+        presenter.updateRenderSettings.mockClear();
+        customPlaybackController.eventHandler({
+            generation: 1,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: 100,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 100,
+                maximumFrameAverageLightLevelNits: 50
+            },
+            type: 'static-hdr-metadata'
+        });
+        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(
+            expect.objectContaining({
+                toneMapping: expect.objectContaining({
+                    inputPeakNits: 100,
+                    paperWhiteNits: 100
+                })
+            }),
+            1,
+            true
+        );
+
+        const defaults = createDefaultWebGPUUserSettings();
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            render: {
+                ...defaults.render,
+                automaticInputPeakNits: false
+            }
+        });
+        presenter.updateRenderSettings.mockClear();
+        customPlaybackController.eventHandler({
+            generation: 1,
+            metadata: {
+                masteringDisplayMaximumLuminanceNits: 3_000,
+                masteringDisplayMinimumLuminanceNits: 0.005,
+                maximumContentLightLevelNits: 400,
+                maximumFrameAverageLightLevelNits: 150
+            },
+            type: 'static-hdr-metadata'
+        });
+        expect(presenter.updateRenderSettings).not.toHaveBeenCalled();
+        const detectedInputPeakNits = player.getDetectedInputPeakNits();
+        expect(detectedInputPeakNits).toBe(3_000);
+        if (detectedInputPeakNits === null) {
+            throw new Error('Expected a retained detected input peak');
+        }
+        const restoredAutomaticSettings = createConfiguredHDRRenderSettings(
+            defaults,
+            detectedInputPeakNits
+        );
+        expect(player.updateRenderSettings(restoredAutomaticSettings, true)).toBe(true);
+        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(
+            expect.objectContaining({
+                toneMapping: expect.objectContaining({ inputPeakNits: 3_000 })
+            }),
+            1,
+            true
         );
     });
 
@@ -2365,6 +2483,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.prewarmDolbyVisionPresentationAuthorization).toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: true,
             inputMode: 'raw-dolby-vision',
             profile: 8,
             rawFrameFormat: 'I420P10',
@@ -2409,6 +2528,7 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: true,
             inputMode: 'raw-dolby-vision',
             profile: 7,
             rawFrameFormat: 'I420P10',
@@ -2454,6 +2574,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.prewarmExternalHDRPresentationAuthorization).toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: true,
             inputMode: 'external-hdr',
             metadata: expect.objectContaining({
                 bitDepth: 10,
@@ -2509,6 +2630,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(backend.play).not.toHaveBeenCalled();
         expect(presenter.prewarmExternalHDRPresentationAuthorization).toHaveBeenCalled();
         expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+            automaticInputPeakNits: true,
             inputMode: 'external-hdr',
             metadata: expect.objectContaining({
                 bitDepth: 10,
@@ -2602,6 +2724,120 @@ describe('WebGPUPlayer HTML delegation', () => {
             ]);
         }
     );
+
+    it('forces stereo and forwards a persisted bounded downmix snapshot', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+        customDecodeMockState.audioSourceChannelCount = 8;
+        audioPrewarmMockState.maximumChannelCount = 8;
+        const defaults = createDefaultWebGPUUserSettings();
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            audio: {
+                downmix: {
+                    centerLevel: 0.5,
+                    outputGain: 0.75,
+                    surroundLevel: 0.25,
+                    version: 1
+                },
+                forceStereoDownmix: true
+            }
+        });
+
+        await player.play(createKnownSDRAudioPlayOptions());
+
+        expect(getCustomPlaybackController().play).toHaveBeenCalledWith(
+            expect.objectContaining({
+                audioDownmixSettings: {
+                    centerLevel: 0.5,
+                    outputGain: 0.75,
+                    surroundLevel: 0.25,
+                    version: 1
+                },
+                decodedAudioOutputChannelCount: 2
+            })
+        );
+    });
+
+    it('rejects invalid live downmix settings and safely ignores inactive playback', () => {
+        const player = new WebGPUPlayer();
+
+        expect(player.updateAudioDownmixSettings(
+            createDefaultAudioDownmixSettings()
+        )).toBe(false);
+        expect(() => player.updateAudioDownmixSettings({
+            centerLevel: 1,
+            outputGain: 11,
+            surroundLevel: 1,
+            version: 1
+        })).toThrow(RangeError);
+    });
+
+    it('forwards live downmix settings and retains attempted gains for track changes', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+        customDecodeMockState.audioTrackIndex = 1;
+        customDecodeMockState.audioSourceChannelCount = 6;
+
+        await player.play(createKnownSDRAudioPlayOptions());
+
+        const customPlaybackController = getCustomPlaybackController();
+        const appliedSettings = {
+            centerLevel: 0.5,
+            outputGain: 0.75,
+            surroundLevel: 0.25,
+            version: 1 as const
+        };
+        expect(player.updateAudioDownmixSettings(appliedSettings)).toBe(true);
+        expect(customPlaybackController.updateAudioDownmixSettings).toHaveBeenCalledWith(
+            appliedSettings
+        );
+        expect(customPlaybackController.updateAudioDownmixSettings.mock.calls[0][0])
+            .not.toBe(appliedSettings);
+
+        const attemptedSettings = {
+            centerLevel: 0.4,
+            outputGain: 0.8,
+            surroundLevel: 0.6,
+            version: 1 as const
+        };
+        customPlaybackController.updateAudioDownmixSettings.mockReturnValueOnce(false);
+        expect(player.updateAudioDownmixSettings(attemptedSettings)).toBe(false);
+        expect(customPlaybackController.updateAudioDownmixSettings).toHaveBeenLastCalledWith(
+            attemptedSettings
+        );
+        expect(customPlaybackController.updateAudioDownmixSettings.mock.calls[1][0])
+            .not.toBe(attemptedSettings);
+
+        attemptedSettings.centerLevel = 1.5;
+        player.setAudioStreamIndex(3);
+        await vi.waitFor(() => (
+            expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
+                1,
+                'decoded-pcm',
+                2,
+                {
+                    centerLevel: 0.4,
+                    outputGain: 0.8,
+                    surroundLevel: 0.6,
+                    version: 1
+                }
+            )
+        ));
+    });
 
     it.each([
         { expectedOutput: 6, maximumOutput: 6, sourceChannels: 6 },
@@ -3482,7 +3718,8 @@ describe('WebGPUPlayer HTML delegation', () => {
             expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
                 1,
                 'decoded-pcm',
-                2
+                2,
+                createDefaultAudioDownmixSettings()
             )
         ));
 
@@ -3502,7 +3739,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
             1,
             'decoded-pcm',
-            2
+            2,
+            createDefaultAudioDownmixSettings()
         );
         expect(backend.notifyCustomPlaybackVolumeChange).not.toHaveBeenCalled();
         expect(player.getVolume()).toBe(80);
@@ -3592,9 +3830,37 @@ describe('WebGPUPlayer HTML delegation', () => {
         webSettingsMockState.customDecodeEnabled = true;
         customDecodeMockState.eligible = true;
         customDecodeMockState.audioTrackIndex = 1;
+        customDecodeMockState.audioSourceChannelCount = 8;
+        audioPrewarmMockState.maximumChannelCount = 8;
+        const defaults = createDefaultWebGPUUserSettings();
+        const sessionDownmixSettings = {
+            centerLevel: 0.4,
+            outputGain: 0.6,
+            surroundLevel: 0.5,
+            version: 1 as const
+        };
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            audio: {
+                downmix: sessionDownmixSettings,
+                forceStereoDownmix: false
+            }
+        });
         await player.play(createKnownSDRAudioPlayOptions());
         expect(player.getCustomPlaybackSelectedAudioStreamIndex()).toBe(1);
         const customPlaybackController = getCustomPlaybackController();
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            audio: {
+                downmix: {
+                    centerLevel: 0,
+                    outputGain: 0,
+                    surroundLevel: 0,
+                    version: 1
+                },
+                forceStereoDownmix: true
+            }
+        });
         const firstSelection = createDeferred<boolean>();
         const secondSelection = createDeferred<boolean>();
         webSettingsMockState.customDecodeEnabledPromises.push(
@@ -3617,7 +3883,8 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
             1,
             'decoded-pcm',
-            2
+            8,
+            sessionDownmixSettings
         );
     });
 
@@ -3657,7 +3924,7 @@ describe('WebGPUPlayer HTML delegation', () => {
         });
         expect(backend.getStats).not.toHaveBeenCalled();
         expect(player.updateRenderSettings(settings)).toBe(true);
-        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(settings, 1);
+        expect(presenter.updateRenderSettings).toHaveBeenCalledWith(settings, 1, true);
         expect(player.getRenderSettings()).toEqual({
             mode: 'identity-sdr',
             version: RENDER_SETTINGS_VERSION
@@ -3690,7 +3957,8 @@ describe('WebGPUPlayer HTML delegation', () => {
             expect(customPlaybackController.setAudioStreamIndex).toHaveBeenCalledWith(
                 1,
                 'decoded-pcm',
-                2
+                2,
+                createDefaultAudioDownmixSettings()
             )
         ));
         await customPlaybackController.fallbackHook({
@@ -3816,6 +4084,14 @@ describe('WebGPUPlayer HTML delegation', () => {
         backend.presentationSurface = { container, video };
         webSettingsMockState.customDecodeEnabled = true;
         customDecodeMockState.eligible = true;
+        const defaults = createDefaultWebGPUUserSettings();
+        userSettingsMockState.webGPUPlaybackSettings = JSON.stringify({
+            ...defaults,
+            render: {
+                ...defaults.render,
+                automaticInputPeakNits: false
+            }
+        });
         const errorListener = vi.fn();
         Events.on(player, 'error', errorListener);
 

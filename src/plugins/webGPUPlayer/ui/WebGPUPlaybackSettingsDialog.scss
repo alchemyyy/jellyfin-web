@@ -1,0 +1,225 @@
+.webgpuSettingsPanel {
+    --webgpu-settings-top: 5em;
+
+    position: fixed;
+    top: var(--webgpu-settings-top);
+    display: flex;
+    width: min(42em, calc(100% - 3em));
+    max-height: calc(100vh - var(--webgpu-settings-top) - 1.5em);
+    overflow: hidden;
+    flex-direction: column;
+    background: rgba(28, 28, 28, 0.8);
+    border-radius: 0.3em;
+    color: #fff;
+    pointer-events: auto;
+    z-index: 100001;
+
+    [dir="ltr"] & {
+        left: 1.5em;
+    }
+
+    [dir="rtl"] & {
+        right: 1.5em;
+    }
+
+    .webgpuSettingsContent {
+        padding: 0.65em 1em 0.85em;
+        overflow-y: auto;
+        font-size: 84%;
+        overscroll-behavior: contain;
+    }
+
+    .webgpuSettingsTitle,
+    .webgpuSettingsSectionTitle {
+        font-size: 100%;
+        font-weight: 500;
+    }
+
+    .webgpuSettingsTitle {
+        margin: 0 2.75em 0.45em 0;
+    }
+
+    .webgpuSettingsSectionTitle {
+        margin: 0.55em 0 0.3em;
+    }
+
+    .webgpuSettingsClose {
+        position: absolute;
+        top: 0.25em;
+        color: #ccc;
+        z-index: 1;
+
+        [dir="ltr"] & {
+            right: 0.25em;
+        }
+
+        [dir="rtl"] & {
+            left: 0.25em;
+        }
+    }
+
+    .webgpuSettingsSection {
+        margin: 0;
+        padding: 0 0 0.65em;
+        border-bottom: 0.0625em solid rgba(255, 255, 255, 0.18);
+    }
+
+    .webgpuSettingsCheckboxDescription {
+        margin: 0 0 0.4em 2.4em;
+    }
+
+    .webgpuSettingsNumericControl {
+        margin: 0.2em 0;
+    }
+
+    .webgpuSettingsControlLabel {
+        display: block;
+        margin: 0;
+        font-weight: 500;
+    }
+
+    .webgpuSettingsNumericRow {
+        display: grid;
+        grid-template-columns: 12em minmax(8em, 1fr) 5.5em auto;
+        gap: 0.45em;
+        align-items: center;
+    }
+
+    .webgpuSettingsControlDescription {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        border: 0;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+    }
+
+    .webgpuSettingsSelectRow,
+    .webgpuSettingsCheckboxRow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 0.45em;
+        align-items: center;
+    }
+
+    .webgpuSettingsSelectRow {
+        margin-bottom: 0.35em;
+        align-items: end;
+    }
+
+    .webgpuSettingsSelectContainer,
+    .webgpuSettingsCheckboxRow .checkboxContainer {
+        margin-bottom: 0;
+    }
+
+    .webgpuSettingsSelectContainer > .selectLabel {
+        margin-bottom: 0.1em;
+        font-weight: 500;
+    }
+
+    .webgpuSettingsCheckboxRow .emby-checkbox-label {
+        height: 2.1em;
+    }
+
+    .webgpuSettingsDefaultButton,
+    .webgpuSettingsResetRender,
+    .webgpuSettingsResetAudio,
+    .webgpuSettingsResetAll {
+        margin: 0;
+        padding: 0.35em 0.65em;
+        font-weight: 500;
+    }
+
+    .webgpuSettingsDefaultButton {
+        min-width: 4.8em;
+        justify-self: end;
+    }
+
+    .webgpuSettingsSlider {
+        width: 100%;
+    }
+
+    .webgpuSettingsSliderContainer.mdl-slider-container {
+        height: 1.6em;
+    }
+
+    .webgpuSettingsNumberContainer > .inputLabel {
+        display: none;
+    }
+
+    .webgpuSettingsNumber {
+        min-width: 0;
+        width: 100%;
+        padding: 0.25em 0.35em;
+    }
+
+    .fieldDescription,
+    .webgpuSettingsStatus {
+        font-size: 90%;
+        line-height: 1.25;
+    }
+
+    .fieldDescription {
+        margin-top: 0.1em;
+        color: #ddd;
+    }
+
+    .webgpuSettingsSafetyDescription {
+        margin: 0.35em 0;
+    }
+
+    .webgpuSettingsStatus {
+        margin: 0.35em 0;
+        color: #ddd;
+    }
+
+    .webgpuSettingsStatus:empty {
+        display: none;
+    }
+
+    .webgpuSettingsFooter {
+        display: flex;
+        gap: 0.45em;
+        margin-top: 0.55em;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+}
+
+.webgpuSettingsPanel-tv {
+    --webgpu-settings-top: 4em;
+
+    .webgpuSettingsContent {
+        font-size: 60%;
+    }
+}
+
+@media all and (max-width: 40em) {
+    .webgpuSettingsPanel {
+        width: calc(100% - 1em);
+        max-height: calc(100vh - var(--webgpu-settings-top) - 0.5em);
+
+        [dir="ltr"] & {
+            left: 0.5em;
+        }
+
+        [dir="rtl"] & {
+            right: 0.5em;
+        }
+    }
+}
+
+@media all and (max-width: 30em) {
+    .webgpuSettingsPanel {
+        .webgpuSettingsNumericRow {
+            grid-template-columns: minmax(0, 1fr) 5.5em auto;
+        }
+
+        .webgpuSettingsControlLabel {
+            grid-column: 1 / -1;
+        }
+    }
+}

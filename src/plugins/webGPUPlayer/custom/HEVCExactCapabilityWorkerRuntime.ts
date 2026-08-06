@@ -11,29 +11,24 @@ import {
 import {
     HEVC_EXACT_CAPABILITY_MAXIMUM_DECODED_BYTE_LENGTH,
     HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH,
-    HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
-    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS,
+    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS,
     isHEVCExactCapabilityWorkerRequest,
+    type HEVCExactCapabilityWorkerQualificationRequest,
+    type HEVCExactCapabilityWorkerQualificationResult,
     type HEVCExactCapabilityWorkerRequest,
-    type HEVCExactCapabilityWorkerResponse,
-    type HEVCExactCapabilityWorkerTierRequest,
-    type HEVCExactCapabilityWorkerTierResult
+    type HEVCExactCapabilityWorkerResponse
 } from './HEVCExactCapabilityProtocol';
 
 export type HEVCExactCapabilityWorkerRuntimeDependencies = Readonly<{
     createDecoder: (options: DecoderOptions) => Promise<HEVCDecoderBackend>
     fingerprintFrame: (frame: HEVCFrame) => number
-    now: () => number
 }>;
 
 const DEFAULT_DEPENDENCIES: HEVCExactCapabilityWorkerRuntimeDependencies = Object.freeze({
     createDecoder: createHEVCDecoderBackend,
-    fingerprintFrame: createFrameFingerprint,
-    now: (): number => globalThis.performance.now()
+    fingerprintFrame: createFrameFingerprint
 });
-
-const HEVC_ULTRA_HD_MAXIMUM_PROBE_ATTEMPT_COUNT = 3;
 
 type AnnexBStartCode = Readonly<{
     byteLength: 3 | 4
@@ -127,29 +122,26 @@ function parseFixtureMetadata(accessUnit: ArrayBuffer): HEVCExactFixtureMetadata
 }
 
 function createFailureResult(
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
-    reason: Exclude<HEVCExactCapabilityWorkerTierResult['reason'], 'decode-output-verified'>,
-    decodeMilliseconds: number | null = null
-): HEVCExactCapabilityWorkerTierResult {
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
+    reason: Exclude<
+        HEVCExactCapabilityWorkerQualificationResult['reason'],
+        'decode-output-verified'
+    >
+): HEVCExactCapabilityWorkerQualificationResult {
     return {
         bitDepth: null,
         chromaHeight: null,
         chromaWidth: null,
         codedHeight: null,
         codedWidth: null,
-        decodeMilliseconds,
         decodedFrameFingerprints: null,
         decodedFrameCount: null,
         decodedByteLength: null,
-        framesPerSecond: null,
         levelIDC: null,
-        measuredFrameCount: null,
-        minimumFramesPerSecond: null,
         profileIDC: null,
         reason,
-        steadyStateDecodeMilliseconds: null,
         supported: false,
-        tier: tierRequest.tier,
+        fixture: qualificationRequest.fixture,
         totalDecodedByteLength: null
     };
 }
@@ -242,43 +234,52 @@ function frameMatchesRequest(
     frame: HEVCFrame,
     streamInfo: HEVCStreamInfo | null,
     fixtureMetadata: HEVCExactFixtureMetadata,
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     decodedByteLength: number,
     decodedFrameFingerprint: number,
     outputFrameIndex: number
 ): boolean {
-    const expectedChromaWidth = Math.ceil(tierRequest.codedWidth / 2);
-    const expectedChromaHeight = Math.ceil(tierRequest.codedHeight / 2);
-    const expectedLumaSampleCount = tierRequest.codedWidth * tierRequest.codedHeight;
+    const expectedChromaWidth = Math.ceil(qualificationRequest.codedWidth / 2);
+    const expectedChromaHeight = Math.ceil(qualificationRequest.codedHeight / 2);
+    const expectedLumaSampleCount = qualificationRequest.codedWidth
+        * qualificationRequest.codedHeight;
     const expectedChromaSampleCount = expectedChromaWidth * expectedChromaHeight;
     const expectedDecodedByteLength = (
         expectedLumaSampleCount + (2 * expectedChromaSampleCount)
     ) * Uint16Array.BYTES_PER_ELEMENT;
-    const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tierRequest.tier];
+    const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[
+        qualificationRequest.fixture
+    ];
 
-    return frame.width === tierRequest.codedWidth
-        && frame.height === tierRequest.codedHeight
+    return frame.width === qualificationRequest.codedWidth
+        && frame.height === qualificationRequest.codedHeight
         && frame.chromaWidth === expectedChromaWidth
         && frame.chromaHeight === expectedChromaHeight
-        && frame.bitDepth === tierRequest.bitDepth
+        && frame.bitDepth === qualificationRequest.bitDepth
         && frame.y.length === expectedLumaSampleCount
         && frame.cb.length === expectedChromaSampleCount
         && frame.cr.length === expectedChromaSampleCount
         && decodedByteLength === expectedDecodedByteLength
         && decodedFrameFingerprint === definition.decodedFrameFingerprints[outputFrameIndex]
-        && fixtureMetadata.levelIDC === tierRequest.levelIDC
+        && fixtureMetadata.levelIDC === qualificationRequest.levelIDC
         && fixtureMetadata.mainTier
         && fixtureMetadata.progressive
-        && fixtureMetadata.profileIDC === tierRequest.profileIDC
+        && fixtureMetadata.profileIDC === qualificationRequest.profileIDC
         && (
             streamInfo === null
             || (
-                streamInfo.width === tierRequest.codedWidth
-                && streamInfo.height === tierRequest.codedHeight
-                && streamInfo.bitDepth === tierRequest.bitDepth
+                streamInfo.width === qualificationRequest.codedWidth
+                && streamInfo.height === qualificationRequest.codedHeight
+                && streamInfo.bitDepth === qualificationRequest.bitDepth
                 && streamInfo.chromaFormat === 1
-                && (streamInfo.profile === 0 || streamInfo.profile === tierRequest.profileIDC)
-                && (streamInfo.level === 0 || streamInfo.level === tierRequest.levelIDC)
+                && (
+                    streamInfo.profile === 0
+                    || streamInfo.profile === qualificationRequest.profileIDC
+                )
+                && (
+                    streamInfo.level === 0
+                    || streamInfo.level === qualificationRequest.levelIDC
+                )
             )
         );
 }
@@ -301,21 +302,17 @@ type HEVCExactQualificationState = {
 };
 
 type HEVCExactQualificationEvidence = Readonly<{
-    decodeMilliseconds: number
     decodedFrameFingerprints: readonly number[]
     decodedFrameCount: number
-    framesPerSecond: number
     geometry: HEVCExactOutputGeometry
-    measuredFrameCount: number
-    steadyStateDecodeMilliseconds: number
     totalDecodedByteLength: number
 }>;
 
 function createQualificationResult(
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     evidence: HEVCExactQualificationEvidence,
-    reason: HEVCExactCapabilityWorkerTierResult['reason']
-): HEVCExactCapabilityWorkerTierResult {
+    reason: HEVCExactCapabilityWorkerQualificationResult['reason']
+): HEVCExactCapabilityWorkerQualificationResult {
     const supported = reason === 'decode-output-verified';
     return {
         bitDepth: evidence.geometry.bitDepth,
@@ -323,19 +320,14 @@ function createQualificationResult(
         chromaWidth: evidence.geometry.chromaWidth,
         codedHeight: evidence.geometry.codedHeight,
         codedWidth: evidence.geometry.codedWidth,
-        decodeMilliseconds: evidence.decodeMilliseconds,
         decodedFrameFingerprints: evidence.decodedFrameFingerprints,
         decodedFrameCount: evidence.decodedFrameCount,
         decodedByteLength: evidence.geometry.decodedByteLength,
-        framesPerSecond: evidence.framesPerSecond,
-        levelIDC: tierRequest.levelIDC,
-        measuredFrameCount: evidence.measuredFrameCount,
-        minimumFramesPerSecond: tierRequest.minimumFramesPerSecond,
-        profileIDC: tierRequest.profileIDC,
+        levelIDC: qualificationRequest.levelIDC,
+        profileIDC: qualificationRequest.profileIDC,
         reason,
-        steadyStateDecodeMilliseconds: evidence.steadyStateDecodeMilliseconds,
         supported,
-        tier: tierRequest.tier,
+        fixture: qualificationRequest.fixture,
         totalDecodedByteLength: evidence.totalDecodedByteLength
     };
 }
@@ -344,12 +336,12 @@ function consumeFrame(
     frame: HEVCFrame,
     streamInfo: HEVCStreamInfo | null,
     fixtureMetadata: HEVCExactFixtureMetadata,
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     state: HEVCExactQualificationState,
     fingerprintFrame: (frame: HEVCFrame) => number
 ): void {
     const outputFrameIndex = state.decodedFrameCount;
-    if (outputFrameIndex >= tierRequest.qualificationFrameCount) {
+    if (outputFrameIndex >= qualificationRequest.qualificationFrameCount) {
         throw new TypeError('The exact HEVC probe returned too many frames');
     }
     const decodedByteLength = getDecodedByteLength(frame);
@@ -376,27 +368,23 @@ function consumeFrame(
         frame,
         streamInfo,
         fixtureMetadata,
-        tierRequest,
+        qualificationRequest,
         decodedByteLength,
         decodedFrameFingerprint,
         outputFrameIndex
     );
 }
 
-async function probeTier(
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
+async function probeQualification(
+    qualificationRequest: HEVCExactCapabilityWorkerQualificationRequest,
     decoderWASMURL: string,
     dependencies: HEVCExactCapabilityWorkerRuntimeDependencies
-): Promise<HEVCExactCapabilityWorkerTierResult> {
+): Promise<HEVCExactCapabilityWorkerQualificationResult> {
     let decoder: HEVCDecoderBackend | null = null;
-    const startMilliseconds = dependencies.now();
-    if (!Number.isFinite(startMilliseconds)) {
-        return createFailureResult(tierRequest, 'decode-error');
-    }
 
     try {
         const fixtureMetadata = parseFixtureMetadata(
-            tierRequest.qualificationAccessUnits[0]
+            qualificationRequest.qualificationAccessUnits[0]
         );
         decoder = await dependencies.createDecoder({
             wasmBinaryUrl: decoderWASMURL
@@ -408,27 +396,23 @@ async function probeTier(
             outputMatches: true,
             totalDecodedByteLength: 0
         };
-        let decodedWarmupFrameCount = 0;
-        let steadyStateStartMilliseconds: number | null = null;
         for (
             let accessUnitIndex = 0;
-            accessUnitIndex < tierRequest.qualificationAccessUnits.length;
+            accessUnitIndex < qualificationRequest.qualificationAccessUnits.length;
             accessUnitIndex += 1
         ) {
-            const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[tierRequest.tier];
+            const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[
+                qualificationRequest.fixture
+            ];
             if (
                 findFirstVCLNALUnitType(
-                    tierRequest.qualificationAccessUnits[accessUnitIndex]
+                    qualificationRequest.qualificationAccessUnits[accessUnitIndex]
                 ) !== definition.qualificationVCLNALUnitTypes[accessUnitIndex]
             ) {
-                return createFailureResult(tierRequest, 'decode-error');
-            }
-            if (accessUnitIndex === tierRequest.warmupFrameCount) {
-                decodedWarmupFrameCount = state.decodedFrameCount;
-                steadyStateStartMilliseconds = dependencies.now();
+                return createFailureResult(qualificationRequest, 'decode-error');
             }
             decoder.feed(new Uint8Array(
-                tierRequest.qualificationAccessUnits[accessUnitIndex]
+                qualificationRequest.qualificationAccessUnits[accessUnitIndex]
             ));
             const streamInfo = decoder.info;
             decoder.drain((frame: HEVCFrame): void => {
@@ -436,7 +420,7 @@ async function probeTier(
                     frame,
                     streamInfo,
                     fixtureMetadata,
-                    tierRequest,
+                    qualificationRequest,
                     state,
                     dependencies.fingerprintFrame
                 );
@@ -448,139 +432,48 @@ async function probeTier(
                 frame,
                 finalStreamInfo,
                 fixtureMetadata,
-                tierRequest,
+                qualificationRequest,
                 state,
                 dependencies.fingerprintFrame
             );
         });
-        const finishMilliseconds = dependencies.now();
-        if (steadyStateStartMilliseconds === null) {
-            return createFailureResult(tierRequest, 'decode-error');
-        }
-        const decodeMilliseconds = finishMilliseconds - startMilliseconds;
-        const steadyStateDecodeMilliseconds = finishMilliseconds
-            - steadyStateStartMilliseconds;
-        const measuredFrameCount = state.decodedFrameCount - decodedWarmupFrameCount;
-        if (
-            !Number.isFinite(decodeMilliseconds)
-            || decodeMilliseconds < 0
-            || !Number.isFinite(steadyStateDecodeMilliseconds)
-            || steadyStateDecodeMilliseconds <= 0
-            || !Number.isSafeInteger(measuredFrameCount)
-            || measuredFrameCount < 0
-            || !state.geometry
-        ) {
-            return createFailureResult(tierRequest, 'decode-error');
-        }
-        const framesPerSecond = measuredFrameCount * 1_000
-            / steadyStateDecodeMilliseconds;
-        if (!Number.isFinite(framesPerSecond) || framesPerSecond < 0) {
-            return createFailureResult(tierRequest, 'decode-error');
+        if (!state.geometry) {
+            return createFailureResult(qualificationRequest, 'decode-error');
         }
         const evidence: HEVCExactQualificationEvidence = {
-            decodeMilliseconds,
             decodedFrameFingerprints: Object.freeze([
                 ...state.decodedFrameFingerprints
             ]),
             decodedFrameCount: state.decodedFrameCount,
-            framesPerSecond,
             geometry: state.geometry,
-            measuredFrameCount,
-            steadyStateDecodeMilliseconds,
             totalDecodedByteLength: state.totalDecodedByteLength
         };
-        if (decodeMilliseconds > tierRequest.maximumDecodeMilliseconds) {
-            return createQualificationResult(
-                tierRequest,
-                evidence,
-                'time-budget-exceeded'
-            );
-        }
         const expectedDecodedByteLength = state.geometry.decodedByteLength
-            * tierRequest.qualificationFrameCount;
+            * qualificationRequest.qualificationFrameCount;
         if (
-            decodedWarmupFrameCount !== tierRequest.warmupFrameCount
-            || state.decodedFrameCount !== tierRequest.qualificationFrameCount
-            || measuredFrameCount !== tierRequest.qualificationFrameCount
-                - tierRequest.warmupFrameCount
+            state.decodedFrameCount !== qualificationRequest.qualificationFrameCount
             || state.totalDecodedByteLength !== expectedDecodedByteLength
             || !state.outputMatches
         ) {
-            return createQualificationResult(tierRequest, evidence, 'output-mismatch');
-        }
-        if (framesPerSecond < tierRequest.minimumFramesPerSecond) {
             return createQualificationResult(
-                tierRequest,
+                qualificationRequest,
                 evidence,
-                'throughput-insufficient'
+                'output-mismatch'
             );
         }
-        return createQualificationResult(tierRequest, evidence, 'decode-output-verified');
+        return createQualificationResult(
+            qualificationRequest,
+            evidence,
+            'decode-output-verified'
+        );
     } catch {
-        return createFailureResult(tierRequest, 'decode-error');
+        return createFailureResult(qualificationRequest, 'decode-error');
     } finally {
         decoder?.destroy();
     }
 }
 
-function isBorderlineUltraHDThroughputFailure(
-    result: HEVCExactCapabilityWorkerTierResult
-): boolean {
-    return result.tier === 'main10-4k'
-        && result.reason === 'throughput-insufficient'
-        && result.framesPerSecond !== null
-        && result.framesPerSecond
-            >= HEVC_EXACT_CAPABILITY_MINIMUM_PLAYBACK_FRAMES_PER_SECOND;
-}
-
-function selectFasterThroughputFailure(
-    first: HEVCExactCapabilityWorkerTierResult,
-    second: HEVCExactCapabilityWorkerTierResult
-): HEVCExactCapabilityWorkerTierResult {
-    return (second.framesPerSecond ?? 0) > (first.framesPerSecond ?? 0) ?
-        second :
-        first;
-}
-
-async function probeTierWithWarmRetry(
-    tierRequest: HEVCExactCapabilityWorkerTierRequest,
-    decoderWASMURL: string,
-    dependencies: HEVCExactCapabilityWorkerRuntimeDependencies
-): Promise<HEVCExactCapabilityWorkerTierResult> {
-    let bestResult = await probeTier(tierRequest, decoderWASMURL, dependencies);
-    if (!isBorderlineUltraHDThroughputFailure(bestResult)) {
-        return bestResult;
-    }
-
-    // UHD allocation and WASM tiering can distort the first otherwise valid sample
-    for (
-        let attemptNumber = 2;
-        attemptNumber <= HEVC_ULTRA_HD_MAXIMUM_PROBE_ATTEMPT_COUNT;
-        attemptNumber += 1
-    ) {
-        const retryResult = await probeTier(
-            tierRequest,
-            decoderWASMURL,
-            dependencies
-        );
-        switch (retryResult.reason) {
-            case 'decode-output-verified':
-                return retryResult;
-            case 'throughput-insufficient':
-                bestResult = selectFasterThroughputFailure(bestResult, retryResult);
-                if (!isBorderlineUltraHDThroughputFailure(retryResult)) {
-                    return bestResult;
-                }
-                break;
-            default:
-                // Inconsistent decode or output evidence must still fail closed
-                return retryResult;
-        }
-    }
-    return bestResult;
-}
-
-/** Runs every exact HEVC decode tier through the bounded @hevcjs/core backend. */
+/** Runs every exact HEVC qualification fixture through the bounded decoder. */
 export async function runHEVCExactCapabilityWorkerRequest(
     request: HEVCExactCapabilityWorkerRequest,
     dependencies: HEVCExactCapabilityWorkerRuntimeDependencies = DEFAULT_DEPENDENCIES
@@ -589,11 +482,11 @@ export async function runHEVCExactCapabilityWorkerRequest(
         throw new TypeError('The exact HEVC capability worker request is invalid');
     }
 
-    const results: HEVCExactCapabilityWorkerTierResult[] = [];
+    const results: HEVCExactCapabilityWorkerQualificationResult[] = [];
     let totalDecodedByteLength = 0;
-    for (const tierRequest of request.tiers) {
-        const result = await probeTierWithWarmRetry(
-            tierRequest,
+    for (const qualificationRequest of request.qualifications) {
+        const result = await probeQualification(
+            qualificationRequest,
             request.decoderWASMURL,
             dependencies
         );
@@ -603,7 +496,7 @@ export async function runHEVCExactCapabilityWorkerRequest(
             || totalDecodedByteLength
                 > HEVC_EXACT_CAPABILITY_MAXIMUM_TOTAL_DECODED_BYTE_LENGTH
         ) {
-            results.push(createFailureResult(tierRequest, 'decode-error'));
+            results.push(createFailureResult(qualificationRequest, 'decode-error'));
             continue;
         }
         results.push(result);

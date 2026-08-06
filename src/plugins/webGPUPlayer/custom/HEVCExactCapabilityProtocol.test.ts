@@ -7,14 +7,13 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-    createHEVCExactCapabilityWorkerTierRequests,
+    createHEVCExactCapabilityWorkerQualificationRequests,
     HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256,
     HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256
 } from './HEVCExactCapabilityFixtures';
 import {
-    HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
     HEVC_EXACT_CAPABILITY_REQUEST_ID,
-    HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS,
+    HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS,
     isHEVCExactCapabilityWorkerRequest,
     isHEVCExactCapabilityWorkerResponse,
     type HEVCExactCapabilityWorkerRequest,
@@ -35,7 +34,7 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
         decoderGlueURL: 'https://example.test/hevc-decode.js',
         decoderWASMURL: 'https://example.test/hevc-decode.wasm',
         requestID: HEVC_EXACT_CAPABILITY_REQUEST_ID,
-        tiers: createHEVCExactCapabilityWorkerTierRequests(
+        qualifications: createHEVCExactCapabilityWorkerQualificationRequests(
             loadMain10UltraHDQualificationBitstream()
         ),
         type: 'probe'
@@ -43,30 +42,18 @@ function createRequest(): HEVCExactCapabilityWorkerRequest {
 }
 
 describe('exact HEVC capability fixtures and protocol', () => {
-    it('allows every sequential tier budget plus worker startup overhead', () => {
-        const totalTierBudgetMilliseconds = Object.values(
-            HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS
-        ).reduce((totalMilliseconds, definition) => (
-            totalMilliseconds + definition.maximumDecodeMilliseconds
-        ), 0);
-
-        expect(HEVC_EXACT_CAPABILITY_PROBE_TIMEOUT_MILLISECONDS).toBeGreaterThanOrEqual(
-            totalTierBudgetMilliseconds + 500
-        );
-    });
-
     it('recreates all pinned Main and Main10 access units with exact hashes', () => {
-        const firstRequests = createHEVCExactCapabilityWorkerTierRequests(
+        const firstRequests = createHEVCExactCapabilityWorkerQualificationRequests(
             loadMain10UltraHDQualificationBitstream()
         );
-        const secondRequests = createHEVCExactCapabilityWorkerTierRequests(
+        const secondRequests = createHEVCExactCapabilityWorkerQualificationRequests(
             loadMain10UltraHDQualificationBitstream()
         );
 
         expect(firstRequests).toHaveLength(3);
         for (let requestIndex = 0; requestIndex < firstRequests.length; requestIndex += 1) {
             const request = firstRequests[requestIndex];
-            const definition = HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS[request.tier];
+            const definition = HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS[request.fixture];
             expect(request).toMatchObject({
                 bitDepth: definition.bitDepth,
                 codedHeight: definition.codedHeight,
@@ -75,14 +62,14 @@ describe('exact HEVC capability fixtures and protocol', () => {
                 profileIDC: definition.profileIDC
             });
             expect(createHash('sha256').update(new Uint8Array(request.accessUnit)).digest('hex')).toBe(
-                HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256[request.tier]
+                HEVC_EXACT_CAPABILITY_ACCESS_UNIT_SHA256[request.fixture]
             );
             const qualificationHash = createHash('sha256');
             for (const accessUnit of request.qualificationAccessUnits) {
                 qualificationHash.update(new Uint8Array(accessUnit));
             }
             expect(qualificationHash.digest('hex')).toBe(
-                HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256[request.tier]
+                HEVC_EXACT_CAPABILITY_QUALIFICATION_BITSTREAM_SHA256[request.fixture]
             );
             expect(request.qualificationAccessUnits).toHaveLength(
                 definition.qualificationFrameCount
@@ -99,36 +86,40 @@ describe('exact HEVC capability fixtures and protocol', () => {
         expect(isHEVCExactCapabilityWorkerRequest(request)).toBe(true);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            tiers: [ request.tiers[0], request.tiers[0], request.tiers[2] ]
-        })).toBe(false);
-        expect(isHEVCExactCapabilityWorkerRequest({
-            ...request,
-            tiers: [
-                { ...request.tiers[0], codedWidth: 1_280 },
-                request.tiers[1],
-                request.tiers[2]
+            qualifications: [
+                request.qualifications[0],
+                request.qualifications[0],
+                request.qualifications[2]
             ]
         })).toBe(false);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            tiers: [
+            qualifications: [
+                { ...request.qualifications[0], codedWidth: 1_280 },
+                request.qualifications[1],
+                request.qualifications[2]
+            ]
+        })).toBe(false);
+        expect(isHEVCExactCapabilityWorkerRequest({
+            ...request,
+            qualifications: [
                 {
-                    ...request.tiers[0],
+                    ...request.qualifications[0],
                     qualificationAccessUnits: [
                         new ArrayBuffer(1),
-                        ...request.tiers[0].qualificationAccessUnits.slice(1)
+                        ...request.qualifications[0].qualificationAccessUnits.slice(1)
                     ]
                 },
-                request.tiers[1],
-                request.tiers[2]
+                request.qualifications[1],
+                request.qualifications[2]
             ]
         })).toBe(false);
         expect(isHEVCExactCapabilityWorkerRequest({
             ...request,
-            tiers: [
-                { ...request.tiers[0], accessUnit: new ArrayBuffer(0) },
-                request.tiers[1],
-                request.tiers[2]
+            qualifications: [
+                { ...request.qualifications[0], accessUnit: new ArrayBuffer(0) },
+                request.qualifications[1],
+                request.qualifications[2]
             ]
         })).toBe(false);
     });
@@ -143,21 +134,16 @@ describe('exact HEVC capability fixtures and protocol', () => {
                     chromaWidth: 960,
                     codedHeight: 1_080,
                     codedWidth: 1_920,
-                    decodeMilliseconds: 80,
                     decodedFrameFingerprints:
-                        HEVC_EXACT_CAPABILITY_TIER_DEFINITIONS['main-1080p']
+                        HEVC_EXACT_CAPABILITY_FIXTURE_DEFINITIONS['main-1080p']
                             .decodedFrameFingerprints,
                     decodedFrameCount: 8,
                     decodedByteLength: 6_220_800,
-                    framesPerSecond: 100,
                     levelIDC: 120,
-                    measuredFrameCount: 7,
-                    minimumFramesPerSecond: 30,
                     profileIDC: 1,
                     reason: 'decode-output-verified',
-                    steadyStateDecodeMilliseconds: 70,
                     supported: true,
-                    tier: 'main-1080p',
+                    fixture: 'main-1080p',
                     totalDecodedByteLength: 49_766_400
                 },
                 {
@@ -166,19 +152,14 @@ describe('exact HEVC capability fixtures and protocol', () => {
                     chromaWidth: null,
                     codedHeight: null,
                     codedWidth: null,
-                    decodeMilliseconds: null,
                     decodedFrameFingerprints: null,
                     decodedFrameCount: null,
                     decodedByteLength: null,
-                    framesPerSecond: null,
                     levelIDC: null,
-                    measuredFrameCount: null,
-                    minimumFramesPerSecond: null,
                     profileIDC: null,
                     reason: 'decode-error',
-                    steadyStateDecodeMilliseconds: null,
                     supported: false,
-                    tier: 'main10-1080p',
+                    fixture: 'main10-1080p',
                     totalDecodedByteLength: null
                 },
                 {
@@ -187,19 +168,14 @@ describe('exact HEVC capability fixtures and protocol', () => {
                     chromaWidth: null,
                     codedHeight: null,
                     codedWidth: null,
-                    decodeMilliseconds: null,
                     decodedFrameFingerprints: null,
                     decodedFrameCount: null,
                     decodedByteLength: null,
-                    framesPerSecond: null,
                     levelIDC: null,
-                    measuredFrameCount: null,
-                    minimumFramesPerSecond: null,
                     profileIDC: null,
                     reason: 'decode-error',
-                    steadyStateDecodeMilliseconds: null,
                     supported: false,
-                    tier: 'main10-4k',
+                    fixture: 'main10-4k',
                     totalDecodedByteLength: null
                 }
             ],

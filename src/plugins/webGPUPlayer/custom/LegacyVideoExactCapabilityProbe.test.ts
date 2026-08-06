@@ -82,12 +82,10 @@ function createSuccessfulResponse(
     return {
         codedHeight: LEGACY_VIDEO_QUALIFICATION_CODED_HEIGHT,
         codedWidth: LEGACY_VIDEO_QUALIFICATION_CODED_WIDTH,
-        decodeMilliseconds: 200,
         decodedFrameByteLength: LEGACY_VIDEO_QUALIFICATION_FRAME_BYTE_LENGTH,
         decodedFrameCount: LEGACY_VIDEO_QUALIFICATION_FRAME_COUNT,
         decodedI420Fingerprint: LEGACY_VIDEO_QUALIFICATION_FINGERPRINT,
         decodedTotalByteLength: LEGACY_VIDEO_QUALIFICATION_TOTAL_BYTE_LENGTH,
-        measuredFramesPerSecond: 50,
         reason: 'decode-output-verified',
         requestID: LEGACY_VIDEO_EXACT_CAPABILITY_REQUEST_ID,
         supported: true,
@@ -115,12 +113,12 @@ describe('LegacyVideoExactCapabilityProbe', () => {
         const capability = await firstPromise;
 
         expect(capability).toMatchObject({
-            maximumCodedHeight: 1_080,
-            maximumCodedWidth: 1_920,
-            maximumFramesPerSecond: 24,
             reason: 'decode-output-verified',
             status: 'supported'
         });
+        expect(capability).not.toHaveProperty('maximumCodedHeight');
+        expect(capability).not.toHaveProperty('maximumCodedWidth');
+        expect(capability).not.toHaveProperty('maximumFramesPerSecond');
         expect(Object.isFrozen(capability)).toBe(true);
         expect(worker.terminateCount).toBe(1);
     });
@@ -136,7 +134,6 @@ describe('LegacyVideoExactCapabilityProbe', () => {
         }));
 
         await expect(capabilityPromise).resolves.toMatchObject({
-            maximumFramesPerSecond: 0,
             reason: 'output-mismatch',
             status: 'unsupported'
         });
@@ -164,13 +161,11 @@ describe('LegacyVideoExactCapabilityProbe', () => {
         });
         worker.emit('message', createSuccessfulResponse({
             decodedI420Fingerprint: VC1_VIDEO_QUALIFICATION_FINGERPRINT,
-            measuredFramesPerSecond: 24,
             requestID: VC1_EXACT_CAPABILITY_REQUEST_ID
         }));
 
         await expect(capabilityPromise).resolves.toMatchObject({
             codec: 'vc1',
-            maximumFramesPerSecond: 24,
             reason: 'decode-output-verified',
             status: 'supported'
         });

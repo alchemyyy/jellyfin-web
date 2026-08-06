@@ -8,6 +8,10 @@ import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from './CustomDecodeNativeAudioBridge';
 import type { CustomAudioOutputChannelCount } from './CustomAudioChannelLayout';
 import {
+    assertValidAudioDownmixSettings,
+    type AudioDownmixSettings
+} from './CustomAudioDownmix';
+import {
     isCustomAudioDownmixAlgorithm,
     type CustomAudioDownmixAlgorithm
 } from './CustomAudioDownmixAlgorithm';
@@ -55,6 +59,7 @@ const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 
 export type CustomDecodeSessionStartOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
+    audioDownmixSettings?: AudioDownmixSettings
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
@@ -333,6 +338,12 @@ function validateDecodedAudioOutputChannelCount(
         && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
         throw new TypeError('Decoded audio output channels require decoded PCM audio');
     }
+    if (options.audioDownmixSettings !== undefined) {
+        if (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm') {
+            throw new TypeError('Audio downmix settings require decoded PCM audio');
+        }
+        assertValidAudioDownmixSettings(options.audioDownmixSettings);
+    }
 }
 
 function validateAudioDownmixAlgorithm(
@@ -521,6 +532,9 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
                 videoOutputMode: options.videoOutputMode,
                 videoTrackIndex: options.videoTrackIndex
             };
+            if (options.audioDownmixSettings !== undefined) {
+                startRequest.audioDownmixSettings = { ...options.audioDownmixSettings };
+            }
             if (workerRecord.audioOutputMode === 'native-media') {
                 startRequest.audioOutputMode = 'native-media';
             }
@@ -577,6 +591,39 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
             ...this.telemetry,
             queuedFrameCount: this.queuedFrames.length
         };
+    }
+
+    /** Posts a live gain snapshot only after a multichannel stereo worker is configured. */
+    public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
+        assertValidAudioDownmixSettings(settings);
+        const workerRecord = this.activeWorker;
+        if (!workerRecord
+            || !this.isWorkerCurrent(workerRecord)
+            || !workerRecord.configurationReceived
+            || (this.telemetry.state !== 'configured' && this.telemetry.state !== 'ready')
+            || workerRecord.audioOutputMode !== 'decoded-pcm'
+            || workerRecord.decodedAudioOutputChannelCount !== 2) {
+            return false;
+        }
+
+        const audioConfiguration = workerRecord.audioConfiguration;
+        if (!audioConfiguration
+            || isNativeMediaAudioConfiguration(audioConfiguration)
+            || audioConfiguration.channelCount !== 2
+            || (audioConfiguration.sourceChannelCount ?? 0) <= 2) {
+            return false;
+        }
+
+        try {
+            this.postRequest(workerRecord, {
+                audioDownmixSettings: { ...settings },
+                generation: workerRecord.generation,
+                type: 'update-audio-downmix-settings'
+            });
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /** Returns native audio time only after decoded element progress qualified it. */

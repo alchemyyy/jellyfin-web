@@ -190,4 +190,27 @@ describe('StreamingAudioOutputPipeline', () => {
 
         expect(replacementOutput[0].channelData[0][0]).toBe(0.5);
     });
+
+    it('keeps the limiter active before a later live gain boost', () => {
+        const pipeline = createPipeline(true);
+        const safe = new Float32Array(6_000);
+        safe.fill(0.25);
+        const outputs = pipeline.push({
+            channelData: [ safe, safe ],
+            mediaTimeMicroseconds: requireMicroseconds(0)
+        });
+
+        expect(pipeline.getTelemetry().peakLimiterEnabled).toBe(true);
+        const boosted = new Float32Array(6_000);
+        boosted.fill(3);
+        outputs.push(...pipeline.push({
+            channelData: [ boosted, boosted ],
+            mediaTimeMicroseconds: requireMicroseconds(125_000)
+        }));
+        outputs.push(...pipeline.finalize());
+
+        expect(getOutputFrameCount(outputs)).toBe(12_000);
+        expect(getMaximumPeak(outputs))
+            .toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + 1e-6);
+    });
 });

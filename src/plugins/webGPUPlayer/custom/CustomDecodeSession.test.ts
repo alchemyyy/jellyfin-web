@@ -7,6 +7,7 @@ import {
 } from '../MediaTime';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
+import type { AudioDownmixSettings } from './CustomAudioDownmix';
 import CustomDecodeNativeAudioBridge, {
     type OwnedNativeMediaAudioBackendPort
 } from './CustomDecodeNativeAudioBridge';
@@ -725,8 +726,15 @@ describe('CustomDecodeSession', () => {
             audioBridge
         );
 
+        const audioDownmixSettings: AudioDownmixSettings = {
+            centerLevel: 0.4,
+            outputGain: 0.6,
+            surroundLevel: 0.5,
+            version: 1
+        };
         session.start({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            audioDownmixSettings,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8,
             dolbyVisionProfile: null,
@@ -745,11 +753,237 @@ describe('CustomDecodeSession', () => {
 
         expect(worker.postedMessages[0]).toMatchObject({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
+            audioDownmixSettings,
             audioTrackIndex: 0,
             decodedAudioOutputChannelCount: 8,
             generation: 9,
             type: 'start'
         });
+    });
+
+    it('posts an isolated live downmix snapshot only after stereo downmix configuration', () => {
+        const worker = new MockWorker();
+        const audioBridge = {
+            enqueue: vi.fn(),
+            initialAudioSampleCredits: 2,
+            start: vi.fn(),
+            stop: vi.fn()
+        } as unknown as CustomDecodeAudioBridge;
+        const session = new CustomDecodeSession(
+            vi.fn(),
+            () => worker as unknown as Worker,
+            audioBridge
+        );
+        startSession(session, 39, 0);
+        const settings: {
+            centerLevel: number
+            outputGain: number
+            surroundLevel: number
+            version: 1
+        } = {
+            centerLevel: 0.75,
+            outputGain: 1.5,
+            surroundLevel: 0.5,
+            version: 1
+        };
+
+        expect(session.updateAudioDownmixSettings(settings)).toBe(false);
+        worker.emitMessage({
+            audio: {
+                channelCount: 2,
+                codec: 'opus',
+                sampleRate: 48_000,
+                sourceChannelCount: 6,
+                sourceSampleRate: 48_000
+            },
+            codec: 'avc1.640028',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 39,
+            type: 'ready'
+        });
+
+        expect(session.updateAudioDownmixSettings(settings)).toBe(true);
+        settings.outputGain = 9;
+        expect(worker.postedMessages).toContainEqual({
+            audioDownmixSettings: {
+                centerLevel: 0.75,
+                outputGain: 1.5,
+                surroundLevel: 0.5,
+                version: 1
+            },
+            generation: 39,
+            type: 'update-audio-downmix-settings'
+        });
+
+        worker.postMessage = (): void => {
+            throw new Error('Worker closed');
+        };
+        expect(session.updateAudioDownmixSettings({
+            centerLevel: 1,
+            outputGain: 2,
+            surroundLevel: 1,
+            version: 1
+        })).toBe(false);
+        expect(session.getTelemetry()).toMatchObject({
+            failureKind: null,
+            state: 'configured'
+        });
+        expect(() => session.updateAudioDownmixSettings({
+            centerLevel: 1,
+            outputGain: 11,
+            surroundLevel: 1,
+            version: 1
+        })).toThrow(RangeError);
+    });
+
+    it('declines live downmix changes for direct stereo and multichannel output', () => {
+        const settings: AudioDownmixSettings = {
+            centerLevel: 1,
+            outputGain: 2,
+            surroundLevel: 1,
+            version: 1
+        };
+        const configurations = [
+            {
+                channelCount: 2,
+                decodedAudioOutputChannelCount: 2 as const,
+                generation: 40,
+                sourceChannelCount: 2
+            },
+            {
+                channelCount: 8,
+                decodedAudioOutputChannelCount: 8 as const,
+                generation: 41,
+                sourceChannelCount: 8
+            }
+        ];
+
+        for (const configuration of configurations) {
+            const worker = new MockWorker();
+            const audioBridge = {
+                enqueue: vi.fn(),
+                initialAudioSampleCredits: 2,
+                start: vi.fn(),
+                stop: vi.fn()
+            } as unknown as CustomDecodeAudioBridge;
+            const session = new CustomDecodeSession(
+                vi.fn(),
+                () => worker as unknown as Worker,
+                audioBridge
+            );
+            session.start({
+                audioTrackIndex: 0,
+                decodedAudioOutputChannelCount:
+                    configuration.decodedAudioOutputChannelCount,
+                dolbyVisionProfile: null,
+                generation: configuration.generation,
+                maximumCodedHeight: 1_080,
+                maximumCodedWidth: 1_920,
+                nativeHDRTransfer: null,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: null,
+                startTimeMicroseconds: secondsToMicroseconds(1),
+                url: 'http://localhost/video.mkv?ApiKey=secret',
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame',
+                videoTrackIndex: 0
+            });
+            worker.emitMessage({
+                audio: {
+                    channelCount: configuration.channelCount,
+                    codec: 'opus',
+                    sampleRate: 48_000,
+                    sourceChannelCount: configuration.sourceChannelCount,
+                    sourceSampleRate: 48_000
+                },
+                codec: 'avc1.640028',
+                codedHeight: 1_080,
+                codedWidth: 1_920,
+                displayHeight: 1_080,
+                displayWidth: 1_920,
+                generation: configuration.generation,
+                type: 'ready'
+            });
+
+            expect(session.updateAudioDownmixSettings(settings)).toBe(false);
+            expect(worker.postedMessages.some(message => (
+                typeof message === 'object'
+                && message !== null
+                && 'type' in message
+                && message.type === 'update-audio-downmix-settings'
+            ))).toBe(false);
+        }
+    });
+
+    it('declines live downmix changes for configured native media audio', () => {
+        const worker = new MockWorker();
+        const nativeAudioBridge = {
+            initialAudioSegmentCredits: 2,
+            start: vi.fn(async (): Promise<boolean> => true),
+            stop: vi.fn(async (): Promise<void> => undefined)
+        } as unknown as CustomDecodeNativeAudioBridge;
+        const session = new CustomDecodeSession(
+            vi.fn(),
+            () => worker as unknown as Worker,
+            null,
+            null,
+            () => nativeAudioBridge
+        );
+        session.start({
+            audioOutputMode: 'native-media',
+            audioTrackIndex: 0,
+            dolbyVisionProfile: null,
+            durationMicroseconds: secondsToMicroseconds(10),
+            generation: 42,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: secondsToMicroseconds(1),
+            url: 'http://localhost/video.mp4?ApiKey=secret',
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        });
+        worker.emitMessage({
+            audio: {
+                channelCount: 6,
+                codec: 'ec-3',
+                mimeType: 'audio/mp4; codecs="ec-3"',
+                outputMode: 'native-media',
+                sampleRate: 48_000,
+                sourceChannelCount: 6,
+                sourceSampleRate: 48_000
+            },
+            codec: 'hev1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 42,
+            type: 'ready'
+        });
+
+        expect(session.updateAudioDownmixSettings({
+            centerLevel: 1,
+            outputGain: 2,
+            surroundLevel: 1,
+            version: 1
+        })).toBe(false);
+        expect(session.getTelemetry()).toMatchObject({
+            failureKind: null,
+            state: 'configured'
+        });
+        expect(worker.postedMessages.some(message => (
+            typeof message === 'object'
+            && message !== null
+            && 'type' in message
+            && message.type === 'update-audio-downmix-settings'
+        ))).toBe(false);
     });
 
     it('rejects a decoded output count that does not match the request', () => {

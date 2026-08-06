@@ -94,54 +94,36 @@ function createH264ProfileCapabilities(): H264ProfileCapabilities {
 
 function createBundledHEVCCapabilities(): NonNullable<CustomDecodeCapabilities['bundledHEVC']> {
     return {
-        reason: 'complete',
-        tiers: {
+        qualifications: {
             'main-1080p': {
                 bitDepth: 8,
                 codecString: 'hvc1.1.6.L120.B0',
-                decodeMilliseconds: 20,
+                fixture: 'main-1080p',
                 format: 'I420',
-                framesPerSecond: 40,
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumLevel: 120,
-                minimumFramesPerSecond: 30,
                 profile: 'main',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main-1080p'
+                status: 'supported'
             },
             'main10-1080p': {
                 bitDepth: 10,
                 codecString: 'hvc1.2.4.L120.B0',
-                decodeMilliseconds: 25,
+                fixture: 'main10-1080p',
                 format: 'I420P10',
-                framesPerSecond: 40,
-                maximumCodedHeight: 1_080,
-                maximumCodedWidth: 1_920,
-                maximumLevel: 120,
-                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main10-1080p'
+                status: 'supported'
             },
             'main10-4k': {
                 bitDepth: 10,
                 codecString: 'hvc1.2.4.L153.B0',
-                decodeMilliseconds: 30,
+                fixture: 'main10-4k',
                 format: 'I420P10',
-                framesPerSecond: 40,
-                maximumCodedHeight: 2_160,
-                maximumCodedWidth: 3_840,
-                maximumLevel: 153,
-                minimumFramesPerSecond: 30,
                 profile: 'main10',
                 reason: 'decode-output-verified',
-                status: 'supported',
-                tier: 'main10-4k'
+                status: 'supported'
             }
-        }
+        },
+        reason: 'complete'
     };
 }
 
@@ -203,13 +185,8 @@ function createBundledJPEG2000Capability(): NonNullable<
         bitDepth: 8,
         codec: 'jpeg2000',
         codecString: 'mjp2',
-        decodeMilliseconds: 200,
         decodedRGBAByteLength: 2_073_600,
         decodedRGBAFingerprint: 1_076_220_778,
-        maximumCodedHeight: 540,
-        maximumCodedWidth: 960,
-        maximumFramesPerSecond: 24,
-        measuredFramesPerSecond: 40,
         reason: 'decode-output-verified',
         status: 'supported'
     });
@@ -220,15 +197,10 @@ function createBundledLegacyVideoCapability(): NonNullable<
 > {
     return Object.freeze({
         codec: 'mpeg2video',
-        decodeMilliseconds: 400,
         decodedFrameByteLength: 3_110_400,
         decodedFrameCount: 12,
         decodedI420Fingerprint: 544_635_241,
         decodedTotalByteLength: 37_324_800,
-        maximumCodedHeight: 1_080,
-        maximumCodedWidth: 1_920,
-        maximumFramesPerSecond: 24,
-        measuredFramesPerSecond: 35,
         reason: 'decode-output-verified',
         status: 'supported'
     });
@@ -240,8 +212,7 @@ function createBundledVC1Capability(): NonNullable<
     return Object.freeze({
         ...createBundledLegacyVideoCapability(),
         codec: 'vc1',
-        decodedI420Fingerprint: 182_587_665,
-        measuredFramesPerSecond: 30
+        decodedI420Fingerprint: 182_587_665
     });
 }
 
@@ -253,10 +224,6 @@ function createCapabilities(): CustomDecodeCapabilities {
         codec,
         codecString: codec === 'hevc' ? 'hvc1.2.4.L153.B0' : codec,
         format: 'I420P10',
-        maximumCodedHeight: 2_160,
-        maximumCodedWidth: 3_840,
-        maximumFramesPerSecond: 30,
-        measuredFramesPerSecond: 40,
         reason: codec === 'hevc' ? 'bundled-software-decoder' : 'output-copy-supported',
         status: 'supported'
     });
@@ -277,11 +244,6 @@ function createCapabilities(): CustomDecodeCapabilities {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hev1.2.4.H150.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 24,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 30,
             profile: 5,
             reason: 'decode-output-verified',
             status: 'supported'
@@ -290,11 +252,6 @@ function createCapabilities(): CustomDecodeCapabilities {
             bitDepth: 10,
             codec: 'hevc',
             codecString: 'hvc1.2.4.L153.B0',
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
-            maximumFramesPerSecond: 60,
-            maximumLevel: 153,
-            measuredFramesPerSecond: 80,
             reason: 'decode-output-verified',
             status: 'supported'
         },
@@ -382,8 +339,6 @@ function createNativeUltraHDVideoCapabilities(
             bitDepth: 8,
             codec,
             codecString: codecStrings[codec],
-            maximumCodedHeight: 2_160,
-            maximumCodedWidth: 3_840,
             reason: supported ? 'decode-output-verified' : 'decode-output-missing',
             status: supported ? 'supported' : 'unsupported'
         };
@@ -511,14 +466,6 @@ describe('CustomPlaybackEligibility', () => {
             Profile: 'Main',
             Width: 720
         } ],
-        [ 'high-frame-rate progressive MPEG-2', {
-            AverageFrameRate: 29.97003,
-            BitDepth: 8,
-            Codec: 'MPEG2VIDEO',
-            Height: 540,
-            Profile: 'Main',
-            Width: 720
-        } ],
         [ '10-bit SDR AV1', {
             AverageFrameRate: 24,
             BitDepth: 10,
@@ -531,6 +478,19 @@ describe('CustomPlaybackEligibility', () => {
         const item = createPlaybackSelectionItem(videoStream);
 
         expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(false);
+    });
+
+    it('keeps high-frame-rate progressive MPEG-2 eligible for wrapper selection', () => {
+        const item = createPlaybackSelectionItem({
+            AverageFrameRate: 120,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 2_160,
+            Profile: 'Main',
+            Width: 3_840
+        });
+
+        expect(hasPotentialCustomPlaybackVideoRoute(item)).toBe(true);
     });
 
     it('keeps exact progressive Advanced VC-1 metadata eligible for selection', () => {
@@ -848,28 +808,28 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false ],
-        [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mkv', true ],
-        [ 'excessive width', { AverageFrameRate: 24, Width: 1_921 }, 'mkv', true ],
-        [ 'excessive height', { AverageFrameRate: 24, Height: 1_081 }, 'mkv', true ],
-        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true ],
-        [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true ],
-        [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true ],
-        [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true ],
-        [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true ],
-        [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true ],
-        [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true ],
-        [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true ],
-        [ 'MPEG-PS container', { AverageFrameRate: 24 }, 'mpegps', true ],
-        [ 'MPEG container', { AverageFrameRate: 24 }, 'mpeg', true ],
-        [ 'MPG container', { AverageFrameRate: 24 }, 'mpg', true ],
-        [ 'VOB container', { AverageFrameRate: 24 }, 'vob', true ],
-        [ 'MOV container', { AverageFrameRate: 24 }, 'mov', true ],
-        [ 'MP4 container', { AverageFrameRate: 24 }, 'mp4', true ],
-        [ 'other container', { AverageFrameRate: 24 }, 'webm', true ]
+        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mkv', false, false ],
+        [ 'high frame rate', { AverageFrameRate: 120 }, 'mkv', true, true ],
+        [ 'larger width', { AverageFrameRate: 24, Width: 7_680 }, 'mkv', true, true ],
+        [ 'larger height', { AverageFrameRate: 24, Height: 4_320 }, 'mkv', true, true ],
+        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mkv', true, false ],
+        [ 'non-Main profile', { AverageFrameRate: 24, Profile: 'Simple' }, 'mkv', true, false ],
+        [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, false ],
+        [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, false ],
+        [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, false ],
+        [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true, false ],
+        [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true, false ],
+        [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true, false ],
+        [ 'MPEG-PS container', { AverageFrameRate: 24 }, 'mpegps', true, false ],
+        [ 'MPEG container', { AverageFrameRate: 24 }, 'mpeg', true, false ],
+        [ 'MPG container', { AverageFrameRate: 24 }, 'mpg', true, false ],
+        [ 'VOB container', { AverageFrameRate: 24 }, 'vob', true, false ],
+        [ 'MOV container', { AverageFrameRate: 24 }, 'mov', true, false ],
+        [ 'MP4 container', { AverageFrameRate: 24 }, 'mp4', true, false ],
+        [ 'other container', { AverageFrameRate: 24 }, 'webm', true, false ]
     ] as const)(
-        'rejects MPEG-2 with %s',
-        (_label, metadataOverride, container, includeCapability) => {
+        'handles MPEG-2 with %s',
+        (_label, metadataOverride, container, includeCapability, expectedEligible) => {
             const baseCapabilities = createCapabilities();
             const capabilities: CustomDecodeCapabilities = {
                 ...baseCapabilities,
@@ -900,7 +860,7 @@ describe('CustomPlaybackEligibility', () => {
                 options,
                 capabilities,
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            ).eligible).toBe(false);
+            ).eligible).toBe(expectedEligible);
         }
     );
 
@@ -949,15 +909,15 @@ describe('CustomPlaybackEligibility', () => {
     );
 
     it.each([
-        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mj2', false ],
-        [ 'excessive frame rate', { AverageFrameRate: 24.001 }, 'mj2', true ],
-        [ 'excessive width', { AverageFrameRate: 24, Width: 961 }, 'mj2', true ],
-        [ 'excessive height', { AverageFrameRate: 24, Height: 541 }, 'mj2', true ],
-        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true ],
-        [ 'unqualified container', { AverageFrameRate: 24 }, 'mp4', true ]
+        [ 'unqualified runtime', { AverageFrameRate: 24 }, 'mj2', false, false ],
+        [ 'high frame rate', { AverageFrameRate: 120 }, 'mj2', true, true ],
+        [ 'larger width', { AverageFrameRate: 24, Width: 7_680 }, 'mj2', true, true ],
+        [ 'larger height', { AverageFrameRate: 24, Height: 4_320 }, 'mj2', true, true ],
+        [ 'high bit depth', { AverageFrameRate: 24, BitDepth: 10 }, 'mj2', true, false ],
+        [ 'unqualified container', { AverageFrameRate: 24 }, 'mp4', true, false ]
     ] as const)(
-        'rejects JPEG 2000 with %s',
-        (_label, metadataOverride, container, includeCapability) => {
+        'handles JPEG 2000 with %s',
+        (_label, metadataOverride, container, includeCapability, expectedEligible) => {
             const baseCapabilities = createCapabilities();
             const capabilities: CustomDecodeCapabilities = {
                 ...baseCapabilities,
@@ -987,14 +947,14 @@ describe('CustomPlaybackEligibility', () => {
                 options,
                 capabilities,
                 { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-            ).eligible).toBe(false);
+            ).eligible).toBe(expectedEligible);
         }
     );
 
     it.each([
         [ 'missing', undefined ],
         [ 'arbitrarily high', 1_500_000_000 ]
-    ])('uses the exact bundled HEVC Main tier with %s source bitrate', (_label, bitrate) => {
+    ])('uses the exact bundled HEVC Main qualification with %s source bitrate', (_label, bitrate) => {
         const baseCapabilities = createCapabilities();
         const capabilities: CustomDecodeCapabilities = {
             ...baseCapabilities,
@@ -1036,10 +996,10 @@ describe('CustomPlaybackEligibility', () => {
     it.each([
         [ 'missing frame rate', { AverageFrameRate: undefined } ],
         [ 'non-finite frame rate', { AverageFrameRate: Number.NaN } ],
-        [ 'excessive frame rate', { AverageFrameRate: 25 } ],
+        [ 'frame rate beyond the qualification fixture', { AverageFrameRate: 120 } ],
         [ 'missing level', { Level: undefined } ],
-        [ 'excessive level', { Level: 121 } ]
-    ])('rejects bundled HEVC Main with %s', (_label, metadataOverride) => {
+        [ 'level beyond the qualification fixture', { Level: 186 } ]
+    ])('accepts bundled HEVC Main independently of %s', (_label, metadataOverride) => {
         const baseCapabilities = createCapabilities();
         const capabilities: CustomDecodeCapabilities = {
             ...baseCapabilities,
@@ -1072,7 +1032,11 @@ describe('CustomPlaybackEligibility', () => {
             options,
             capabilities,
             { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        )).toMatchObject({
+            eligible: true,
+            videoDecoderBackend: 'bundled-hevc',
+            videoOutputMode: 'video-frame'
+        });
     });
 
     it.each([
@@ -1688,15 +1652,13 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
-        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
-        { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
-        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
-        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
-        { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
+        { expectedEligible: true, streamFrameRate: 24, supported: true },
+        { expectedEligible: true, streamFrameRate: 60, supported: true },
+        { expectedEligible: true, streamFrameRate: 120, supported: true },
+        { expectedEligible: false, streamFrameRate: 24, supported: false }
     ])(
-        'does not use the native Profile 5 $maximumFramesPerSecond fps fixture as a $streamFrameRate fps ceiling',
-        ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
+        'does not use a native Profile 5 fixture as a $streamFrameRate fps ceiling',
+        ({ expectedEligible, streamFrameRate, supported }) => {
             const capabilities = createCapabilities();
             const nativeDolbyVisionHEVC = capabilities.nativeDolbyVisionHEVC;
             if (!nativeDolbyVisionHEVC) {
@@ -1704,10 +1666,8 @@ describe('CustomPlaybackEligibility', () => {
             }
             capabilities.nativeDolbyVisionHEVC = {
                 ...nativeDolbyVisionHEVC,
-                maximumFramesPerSecond,
-                measuredFramesPerSecond: maximumFramesPerSecond > 0 ?
-                    maximumFramesPerSecond * 1.25 :
-                    null
+                reason: supported ? 'decode-output-verified' : 'decode-output-missing',
+                status: supported ? 'supported' : 'unsupported'
             };
             const options = createOptions({
                 mediaSource: {
@@ -1876,7 +1836,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('falls back from bounded raw Profile 7 to its authorized 4K HDR10 base', () => {
+    it('does not fall back from raw Profile 7 based on source resolution', () => {
         const profile7Options = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -1921,8 +1881,6 @@ describe('CustomPlaybackEligibility', () => {
         });
         const capabilities = createCapabilities();
         capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
-        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
-        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
         const eligibilityOptions = {
             allowDolbyVisionProfile7: true,
             allowNativeDolbyVisionProfile7HDR10Base: true,
@@ -1939,16 +1897,13 @@ describe('CustomPlaybackEligibility', () => {
             capabilities,
             eligibilityOptions
         )).toMatchObject({
-            dolbyVisionProfile: null,
+            dolbyVisionProfile: 7,
             eligible: true,
             hdr: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
-            nativeHDRTransfer: 'pq',
-            neutralizeHDRColorMetadata: true,
-            rawVideoFrameFormat: null,
-            videoDecoderBackend: 'native',
-            videoOutputMode: 'video-frame'
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
         });
 
         const mediaSource = profile7Options.mediaSource as {
@@ -1969,7 +1924,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('falls back from bounded raw Profile 8.1 to its authorized 4K HDR10 base', () => {
+    it('does not fall back from raw Profile 8.1 based on source resolution', () => {
         const profile8Options = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -2014,8 +1969,6 @@ describe('CustomPlaybackEligibility', () => {
         });
         const capabilities = createCapabilities();
         capabilities.rawHDRVideo.hevc.codecString = 'hvc1.2.4.L120.B0';
-        capabilities.rawHDRVideo.hevc.maximumCodedHeight = 1_080;
-        capabilities.rawHDRVideo.hevc.maximumCodedWidth = 1_920;
         const eligibilityOptions = {
             allowDolbyVision: true,
             allowNativeDolbyVisionProfile8HDR10Base: true,
@@ -2032,16 +1985,13 @@ describe('CustomPlaybackEligibility', () => {
             capabilities,
             eligibilityOptions
         )).toMatchObject({
-            dolbyVisionProfile: null,
+            dolbyVisionProfile: 8,
             eligible: true,
             hdr: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
-            nativeHDRTransfer: 'pq',
-            neutralizeHDRColorMetadata: true,
-            rawVideoFrameFormat: null,
-            videoDecoderBackend: 'native',
-            videoOutputMode: 'video-frame'
+            rawVideoFrameFormat: 'I420P10',
+            videoOutputMode: 'raw-planes'
         });
 
         const mediaSource = profile8Options.mediaSource as {
@@ -2059,20 +2009,6 @@ describe('CustomPlaybackEligibility', () => {
             eligible: true,
             rawVideoFrameFormat: 'I420P10',
             videoOutputMode: 'raw-planes'
-        });
-
-        mediaSource.MediaStreams[0].Height = 2_160;
-        mediaSource.MediaStreams[0].Level = 153;
-        mediaSource.MediaStreams[0].Width = 3_840;
-        mediaSource.MediaStreams[0].DvBlSignalCompatibilityId = 4;
-        mediaSource.MediaStreams[0].VideoRangeType = 'DOVIWithHLG';
-        expect(getCustomPlaybackEligibility(
-            profile8Options,
-            capabilities,
-            eligibilityOptions
-        )).toEqual({
-            eligible: false,
-            reason: 'hdr-codec-unsupported'
         });
     });
 
@@ -2459,63 +2395,7 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it.each([
-        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24 },
-        { expectedEligible: true, maximumFramesPerSecond: 24 as const, streamFrameRate: 24.001 },
-        { expectedEligible: true, maximumFramesPerSecond: 30 as const, streamFrameRate: 30 },
-        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60 },
-        { expectedEligible: true, maximumFramesPerSecond: 60 as const, streamFrameRate: 60.001 },
-        { expectedEligible: false, maximumFramesPerSecond: 0 as const, streamFrameRate: 24 }
-    ])(
-        'does not use the $maximumFramesPerSecond fps native raw fixture as a $streamFrameRate fps ceiling',
-        ({ expectedEligible, maximumFramesPerSecond, streamFrameRate }) => {
-            const capabilities = createCapabilities();
-            capabilities.rawHDRVideo = {
-                ...capabilities.rawHDRVideo,
-                vp9: {
-                    ...capabilities.rawHDRVideo.vp9,
-                    maximumFramesPerSecond,
-                    measuredFramesPerSecond: maximumFramesPerSecond > 0 ?
-                        maximumFramesPerSecond * 1.25 :
-                        null
-                }
-            };
-            const options = createOptions({
-                mediaSource: {
-                    Container: 'mkv',
-                    MediaStreams: [ {
-                        AverageFrameRate: streamFrameRate,
-                        BitDepth: 10,
-                        Codec: 'vp9',
-                        ColorPrimaries: 'bt2020',
-                        ColorSpace: 'bt2020nc',
-                        ColorTransfer: 'smpte2084',
-                        Height: 2_160,
-                        Index: 0,
-                        IsInterlaced: false,
-                        Profile: 'Profile 2',
-                        Type: 'Video',
-                        VideoRangeType: 'HDR10',
-                        Width: 3_840
-                    } ],
-                    RunTimeTicks: 60_000_000
-                }
-            });
-
-            const result = getCustomPlaybackEligibility(
-                options,
-                capabilities,
-                PQ_AUTHORIZATION
-            );
-
-            expect(result.eligible).toBe(expectedEligible);
-            if (!expectedEligible) {
-                expect(result).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
-            }
-        }
-    );
-
-    it('uses the exact qualified Main10 1080p tier without authorizing 4K', () => {
+    it('does not treat a Main10 qualification fixture as a 4K source ceiling', () => {
         const baseCapabilities = createCapabilities();
         const bundledHEVC = createBundledHEVCCapabilities();
         const capabilities: CustomDecodeCapabilities = {
@@ -2523,11 +2403,11 @@ describe('CustomPlaybackEligibility', () => {
             bundledHEVC: {
                 ...bundledHEVC,
                 reason: 'partial',
-                tiers: {
-                    ...bundledHEVC.tiers,
+                qualifications: {
+                    ...bundledHEVC.qualifications,
                     'main10-4k': {
-                        ...bundledHEVC.tiers['main10-4k'],
-                        reason: 'throughput-insufficient',
+                        ...bundledHEVC.qualifications['main10-4k'],
+                        reason: 'output-mismatch',
                         status: 'unsupported'
                     }
                 }
@@ -2536,9 +2416,7 @@ describe('CustomPlaybackEligibility', () => {
                 ...baseCapabilities.rawHDRVideo,
                 hevc: {
                     ...baseCapabilities.rawHDRVideo.hevc,
-                    codecString: 'hvc1.2.4.L120.B0',
-                    maximumCodedHeight: 1_080,
-                    maximumCodedWidth: 1_920
+                    codecString: 'hvc1.2.4.L120.B0'
                 }
             }
         };
@@ -2586,7 +2464,12 @@ describe('CustomPlaybackEligibility', () => {
             options,
             capabilities,
             PQ_AUTHORIZATION
-        )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+        )).toMatchObject({
+            eligible: true,
+            maximumCodedHeight: 2_160,
+            maximumCodedWidth: 3_840,
+            videoDecoderBackend: 'bundled-hevc'
+        });
     });
 
     it('uses source dimensions for native decode while retaining bit-depth and profile checks', () => {

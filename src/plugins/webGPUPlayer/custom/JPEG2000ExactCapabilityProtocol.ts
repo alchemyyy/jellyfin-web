@@ -1,9 +1,5 @@
 export const JPEG2000_QUALIFICATION_CODED_HEIGHT = 540;
 export const JPEG2000_QUALIFICATION_CODED_WIDTH = 960;
-export const JPEG2000_QUALIFICATION_FRAME_COUNT = 9;
-export const JPEG2000_QUALIFICATION_WARMUP_FRAME_COUNT = 1;
-export const JPEG2000_QUALIFICATION_MINIMUM_FRAMES_PER_SECOND = 30;
-export const JPEG2000_QUALIFICATION_MAXIMUM_FRAMES_PER_SECOND = 24;
 export const JPEG2000_QUALIFICATION_RGBA_BYTE_LENGTH = 2_073_600;
 export const JPEG2000_QUALIFICATION_RGBA_FINGERPRINT = 1_076_220_778;
 export const JPEG2000_EXACT_CAPABILITY_REQUEST_ID = 'jpeg2000-srgb-960x540-v1';
@@ -19,11 +15,9 @@ export type JPEG2000ExactCapabilityWorkerRequest = {
 export type JPEG2000ExactCapabilityWorkerResponse = {
     codedHeight: number | null
     codedWidth: number | null
-    decodeMilliseconds: number | null
     decodedRGBAByteLength: number | null
     decodedRGBAFingerprint: number | null
-    measuredFramesPerSecond: number | null
-    reason: 'decode-error' | 'decode-output-verified' | 'output-mismatch' | 'throughput-insufficient'
+    reason: 'decode-error' | 'decode-output-verified' | 'output-mismatch'
     requestID: typeof JPEG2000_EXACT_CAPABILITY_REQUEST_ID
     supported: boolean
     type: 'result'
@@ -31,14 +25,6 @@ export type JPEG2000ExactCapabilityWorkerResponse = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object';
-}
-
-function isFiniteNonNegativeNumber(value: unknown): value is number {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isNullableFiniteNonNegativeNumber(value: unknown): value is number | null {
-    return value === null || isFiniteNonNegativeNumber(value);
 }
 
 function isSafeNullableInteger(value: unknown): value is number | null {
@@ -52,7 +38,6 @@ function isWorkerReason(
         case 'decode-error':
         case 'decode-output-verified':
         case 'output-mismatch':
-        case 'throughput-insufficient':
             return true;
         default:
             return false;
@@ -87,7 +72,7 @@ export function isJPEG2000ExactCapabilityWorkerRequest(
         && isCodecAssetURL(value.decoderWASMURL);
 }
 
-/** Validates every exact-output and throughput field returned by the probe worker. */
+/** Validates every exact-output field returned by the probe worker. */
 export function isJPEG2000ExactCapabilityWorkerResponse(
     value: unknown
 ): value is JPEG2000ExactCapabilityWorkerResponse {
@@ -98,8 +83,6 @@ export function isJPEG2000ExactCapabilityWorkerResponse(
         && isWorkerReason(value.reason)
         && isSafeNullableInteger(value.codedHeight)
         && isSafeNullableInteger(value.codedWidth)
-        && isNullableFiniteNonNegativeNumber(value.decodeMilliseconds)
         && isSafeNullableInteger(value.decodedRGBAByteLength)
-        && isSafeNullableInteger(value.decodedRGBAFingerprint)
-        && isNullableFiniteNonNegativeNumber(value.measuredFramesPerSecond);
+        && isSafeNullableInteger(value.decodedRGBAFingerprint);
 }

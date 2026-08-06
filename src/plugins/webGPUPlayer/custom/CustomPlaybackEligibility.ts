@@ -12,18 +12,13 @@ import {
 } from '../MediaTime';
 import {
     CUSTOM_BUNDLED_AUDIO_CODECS,
-    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
-    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT,
-    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
     hasSupportedNativeSDRVideoCodec,
-    isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
     type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
     type CustomRawHDRVideoCodec,
-    type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
 import {
@@ -31,7 +26,6 @@ import {
     type NativeMediaAudioCapabilities,
     type NativeMediaAudioCodec
 } from './NativeMediaAudioCapabilities';
-import type { BundledHEVCExactTierCapability } from './HEVCExactCapabilityProbe';
 import {
     getCustomPlaybackRuntimeAvailability,
     type CustomPlaybackRuntimeAvailability,
@@ -78,9 +72,6 @@ import {
 } from './RawVideoFrameCopy';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
-const POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT = 540;
-const POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH = 960;
-const POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND = 24;
 const BUNDLED_AUDIO_CODEC_SET = new Set<CustomAudioCodec>(CUSTOM_BUNDLED_AUDIO_CODECS);
 const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
@@ -581,58 +572,13 @@ function selectAudioOutput(
     return { outputMode: 'decoded-pcm', status: 'selected' };
 }
 
-function getEffectiveVideoFrameRate(stream: MediaStream): number | null {
-    if (stream.RealFrameRate != null) {
-        if (typeof stream.RealFrameRate !== 'number'
-            || !Number.isFinite(stream.RealFrameRate)
-            || stream.RealFrameRate <= 0) {
-            return null;
-        }
-        return stream.RealFrameRate;
-    }
-
-    if (typeof stream.AverageFrameRate !== 'number'
-        || !Number.isFinite(stream.AverageFrameRate)
-        || stream.AverageFrameRate <= 0) {
-        return null;
-    }
-    return stream.AverageFrameRate;
-}
-
-function matchesBundledHEVCTier(
-    stream: MediaStream,
-    tier: BundledHEVCExactTierCapability,
-    maximumFramesPerSecond: number
-): boolean {
-    const frameRate = getEffectiveVideoFrameRate(stream);
-    return frameRate !== null
-        && frameRate <= maximumFramesPerSecond
-        && isPositiveSafeInteger(stream.Level)
-        && stream.Level <= tier.maximumLevel
-        && isPositiveSafeInteger(stream.Width)
-        && stream.Width <= tier.maximumCodedWidth
-        && isPositiveSafeInteger(stream.Height)
-        && stream.Height <= tier.maximumCodedHeight;
-}
-
-function getBundledRawHEVCTier(
+function hasSupportedBundledHEVCProfile(
     capabilities: CustomDecodeCapabilities,
-    capability: CustomRawHDRVideoCodecCapability
-): BundledHEVCExactTierCapability | null {
-    const bundledTiers = capabilities.bundledHEVC?.tiers;
-    if (!bundledTiers) {
-        return null;
-    }
-
-    for (const tier of [ bundledTiers['main10-4k'], bundledTiers['main10-1080p'] ]) {
-        if (tier.status === 'supported'
-            && tier.codecString === capability.codecString
-            && tier.maximumCodedWidth === capability.maximumCodedWidth
-            && tier.maximumCodedHeight === capability.maximumCodedHeight) {
-            return tier;
-        }
-    }
-    return null;
+    profile: 'main' | 'main10'
+): boolean {
+    return Object.values(capabilities.bundledHEVC?.qualifications ?? {}).some(qualification => (
+        qualification.profile === profile && qualification.status === 'supported'
+    ));
 }
 
 function normalizeMetadataToken(value: unknown): string | null {
@@ -695,17 +641,11 @@ function getJPEG2000SDRVideoSelection(
     bitDepth: number
 ): SDRVideoSelection | null {
     const capability = capabilities.bundledJPEG2000;
-    const frameRate = getEffectiveVideoFrameRate(stream);
     if (
         capability?.status !== 'supported'
         || capability.bitDepth !== bitDepth
-        || capability.maximumFramesPerSecond !== 24
-        || frameRate === null
-        || frameRate > capability.maximumFramesPerSecond
         || !isPositiveSafeInteger(stream.Width)
         || !isPositiveSafeInteger(stream.Height)
-        || stream.Width > capability.maximumCodedWidth
-        || stream.Height > capability.maximumCodedHeight
     ) {
         return null;
     }
@@ -726,18 +666,12 @@ function getLegacyVideoSDRSelection(
         capabilities.bundledVC1 :
         capabilities.bundledLegacyVideo;
     const requiredProfile = codec === 'vc1' ? 'ADVANCED' : 'MAIN';
-    const frameRate = getEffectiveVideoFrameRate(stream);
     if (
         capability?.status !== 'supported'
         || bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH
         || normalizeMetadataToken(stream.Profile) !== requiredProfile
-        || capability.maximumFramesPerSecond !== 24
-        || frameRate === null
-        || frameRate > capability.maximumFramesPerSecond
         || !isPositiveSafeInteger(stream.Width)
         || !isPositiveSafeInteger(stream.Height)
-        || stream.Width > capability.maximumCodedWidth
-        || stream.Height > capability.maximumCodedHeight
     ) {
         return null;
     }
@@ -779,13 +713,7 @@ function getOrdinarySDRVideoSelection(
                 return null;
             }
             if (!hasSupportedNativeSDRVideoCodec(codec, capabilities)) {
-                const bundledMain = capabilities.bundledHEVC?.tiers['main-1080p'];
-                if (bundledMain?.status !== 'supported'
-                    || !matchesBundledHEVCTier(
-                        stream,
-                        bundledMain,
-                        CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND
-                    )) {
+                if (!hasSupportedBundledHEVCProfile(capabilities, 'main')) {
                     return null;
                 }
                 videoDecoderBackend = 'bundled-hevc';
@@ -854,9 +782,6 @@ function supportsRawHDRVideo(
     if (capability.status !== 'supported'
         || capability.format !== format
         || capability.bitDepth !== stream.BitDepth
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )
         || !hasSupportedRawVideoProfile(codec, stream)) {
         return false;
     }
@@ -871,17 +796,7 @@ function supportsRawHDRVideo(
     if (capability.reason !== 'bundled-software-decoder') {
         return true;
     }
-
-    const frameRate = getEffectiveVideoFrameRate(stream);
-    if (frameRate === null) {
-        return false;
-    }
-    const bundledTier = getBundledRawHEVCTier(capabilities, capability);
-    return bundledTier !== null && matchesBundledHEVCTier(
-        stream,
-        bundledTier,
-        capability.maximumFramesPerSecond
-    );
+    return hasSupportedBundledHEVCProfile(capabilities, 'main10');
 }
 
 function supportsNativeDolbyVisionProfile5(
@@ -894,9 +809,6 @@ function supportsNativeDolbyVisionProfile5(
         && capability?.status === 'supported'
         && stream.BitDepth === capability.bitDepth
         && hasSupportedRawVideoProfile(videoCodec, stream)
-        && isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )
         && isPositiveSafeInteger(stream.Width)
         && isPositiveSafeInteger(stream.Height);
 }
@@ -910,9 +822,6 @@ function supportsNativeHDRHEVC(
         && capability?.status === 'supported'
         && stream.BitDepth === capability.bitDepth
         && hasSupportedRawVideoProfile(videoCodec, stream)
-        && isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )
         && isPositiveSafeInteger(stream.Width)
         && isPositiveSafeInteger(stream.Height);
 }
@@ -1327,20 +1236,10 @@ function selectPlaybackAudio(
 }
 
 function hasPotentialCustomVideoDimensions(
-    stream: MediaStream,
-    maximumCodedWidth: number | null = null,
-    maximumCodedHeight: number | null = null
+    stream: MediaStream
 ): boolean {
     return isPositiveSafeInteger(stream.Width)
-        && isPositiveSafeInteger(stream.Height)
-        && (maximumCodedWidth === null || stream.Width <= maximumCodedWidth)
-        && (maximumCodedHeight === null || stream.Height <= maximumCodedHeight);
-}
-
-function hasPotentialSoftwareVideoFrameRate(stream: MediaStream): boolean {
-    const frameRate = getEffectiveVideoFrameRate(stream);
-    return frameRate !== null
-        && frameRate <= POTENTIAL_SOFTWARE_VIDEO_MAXIMUM_FRAMES_PER_SECOND;
+        && isPositiveSafeInteger(stream.Height);
 }
 
 function hasPotentialSDRVideoRoute(
@@ -1359,20 +1258,10 @@ function hasPotentialSDRVideoRoute(
                 && normalizeMetadataToken(stream.Profile) === (
                     codec === 'vc1' ? 'ADVANCED' : 'MAIN'
                 )
-                && hasPotentialSoftwareVideoFrameRate(stream)
-                && hasPotentialCustomVideoDimensions(
-                    stream,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_WIDTH,
-                    CUSTOM_NATIVE_VIDEO_MAXIMUM_CODED_HEIGHT
-                );
+                && hasPotentialCustomVideoDimensions(stream);
         case 'jpeg2000':
             return containerTokens.some(container => container === 'MJ2' || container === 'MOV')
-                && hasPotentialSoftwareVideoFrameRate(stream)
-                && hasPotentialCustomVideoDimensions(
-                    stream,
-                    POTENTIAL_JPEG2000_MAXIMUM_CODED_WIDTH,
-                    POTENTIAL_JPEG2000_MAXIMUM_CODED_HEIGHT
-                );
+                && hasPotentialCustomVideoDimensions(stream);
         case 'h264':
             return getH264ProfileFromJellyfinValue(stream.Profile) !== null
                 && hasPotentialCustomVideoDimensions(stream);
@@ -1406,8 +1295,7 @@ function hasCompletePotentialSDRVideoMetadata(
         case 'jpeg2000':
         case 'mpeg2video':
         case 'vc1':
-            return getEffectiveVideoFrameRate(stream) !== null
-                && (codec === 'jpeg2000' || normalizeMetadataToken(stream.Profile) !== null);
+            return codec === 'jpeg2000' || normalizeMetadataToken(stream.Profile) !== null;
         case 'av1':
         case 'h264':
         case 'hevc':

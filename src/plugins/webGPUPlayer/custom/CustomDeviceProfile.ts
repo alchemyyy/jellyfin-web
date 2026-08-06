@@ -7,17 +7,13 @@ import type { SubtitleProfile } from '@jellyfin/sdk/lib/generated-client/models/
 
 import {
     CUSTOM_AUDIO_CODECS,
-    CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND,
     CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
     CUSTOM_RAW_HDR_VIDEO_CODECS,
     CUSTOM_VIDEO_CODECS,
     hasSupportedNativeSDRVideoCodec,
-    isCustomHDRVideoMaximumFramesPerSecond,
     type CustomAudioCodec,
     type CustomDecodeCapabilities,
-    type CustomNativeHDRHEVCCapability,
     type CustomNativeSurroundAudioCodecCapability,
-    type CustomRawHDRVideoCodecCapability,
     type CustomVideoCodec
 } from './CustomDecodeCapabilities';
 import {
@@ -47,7 +43,6 @@ import {
     type NativeMediaAudioCodec
 } from './NativeMediaAudioCapabilities';
 import { getSupportedH264JellyfinProfileNames } from './H264ProfileCapabilities';
-import type { BundledHEVCExactTierCapability } from './HEVCExactCapabilityProbe';
 import type {
     ExternalHDRAuthorizationRouteKey
 } from '../validation/ExternalHDRPresentationAuthorization';
@@ -119,7 +114,6 @@ type MeasuredVideoRouteOptions = {
 };
 
 type AuthorizedHEVCProfilePlan = {
-    limits: RawHDRCapabilityLimits
     rangeTypes: readonly string[]
 };
 
@@ -184,9 +178,6 @@ function getDolbyVisionVideoRangeTypes(
     if (
         allowNativeDolbyVision
         && capabilities.nativeDolbyVisionHEVC?.status === 'supported'
-        && isCustomHDRVideoMaximumFramesPerSecond(
-            capabilities.nativeDolbyVisionHEVC.maximumFramesPerSecond
-        )
     ) {
         rangeTypes.push('DOVI');
     }
@@ -286,32 +277,17 @@ function authorizeNativeDolbyVisionHDR10BaseRanges(
 type MeasuredVideoRoute = {
     bitDepth: number
     codec: CustomVideoCodec
-    maximumFrameRate: number | null
-    maximumHeight: number | null
-    maximumLevel: number | null
-    maximumWidth: number | null
     profiles: readonly string[]
     rangeTypes: readonly string[]
 };
 
-function getBundledRawHEVCTier(
+function hasSupportedBundledHEVCProfile(
     capabilities: CustomDecodeCapabilities,
-    capability: CustomRawHDRVideoCodecCapability
-): BundledHEVCExactTierCapability | null {
-    const bundledTiers = capabilities.bundledHEVC?.tiers;
-    if (!bundledTiers) {
-        return null;
-    }
-
-    for (const tier of [ bundledTiers['main10-4k'], bundledTiers['main10-1080p'] ]) {
-        if (tier.status === 'supported'
-            && tier.codecString === capability.codecString
-            && tier.maximumCodedWidth === capability.maximumCodedWidth
-            && tier.maximumCodedHeight === capability.maximumCodedHeight) {
-            return tier;
-        }
-    }
-    return null;
+    profile: 'main' | 'main10'
+): boolean {
+    return Object.values(capabilities.bundledHEVC?.qualifications ?? {}).some(qualification => (
+        qualification.profile === profile && qualification.status === 'supported'
+    ));
 }
 
 const NATIVE_VIDEO_PROFILES: Readonly<Record<CustomVideoCodec, readonly string[]>> = {
@@ -347,7 +323,7 @@ function supportsNativeVideoCodec(
             return getNativeVideoProfiles(codec, capabilities).length > 0;
         case 'hevc':
             return hasSupportedNativeSDRVideoCodec(codec, capabilities)
-                || capabilities.bundledHEVC?.tiers['main-1080p'].status === 'supported';
+                || hasSupportedBundledHEVCProfile(capabilities, 'main');
         case 'av1':
         case 'vp9':
             return hasSupportedNativeSDRVideoCodec(codec, capabilities);
@@ -546,22 +522,13 @@ function getSupportedVideoCodecs(
             || (allowDolbyVision && codec === 'hevc');
         if (supportsNativeVideoCodec(codec, capabilities)
             || (rawPresentationAllowed
-                && rawCapability?.status === 'supported'
-                && isCustomHDRVideoMaximumFramesPerSecond(
-                    rawCapability.maximumFramesPerSecond
-                ))
+                && rawCapability?.status === 'supported')
             || (allowNativeDolbyVision
                 && codec === 'hevc'
-                && capabilities.nativeDolbyVisionHEVC?.status === 'supported'
-                && isCustomHDRVideoMaximumFramesPerSecond(
-                    capabilities.nativeDolbyVisionHEVC.maximumFramesPerSecond
-                ))
+                && capabilities.nativeDolbyVisionHEVC?.status === 'supported')
             || (allowNativeHDR
                 && codec === 'hevc'
-                && capabilities.nativeHDRHEVC?.status === 'supported'
-                && isCustomHDRVideoMaximumFramesPerSecond(
-                    capabilities.nativeHDRHEVC.maximumFramesPerSecond
-                ))) {
+                && capabilities.nativeHDRHEVC?.status === 'supported')) {
             supportedCodecs.push(codec);
         }
     }
@@ -597,10 +564,7 @@ function getSupportedRawHDRVideoCodecs(
     const rawHDRVideoCapabilities = capabilities.rawHDRVideo;
 
     for (const codec of CUSTOM_RAW_HDR_VIDEO_CODECS) {
-        if (rawHDRVideoCapabilities[codec].status === 'supported'
-            && isCustomHDRVideoMaximumFramesPerSecond(
-                rawHDRVideoCapabilities[codec].maximumFramesPerSecond
-            )) {
+        if (rawHDRVideoCapabilities[codec].status === 'supported') {
             supportedCodecs.push(codec);
         }
     }
@@ -1044,67 +1008,6 @@ function bitDepthConditionCapsAtTenBit(condition: ProfileCondition): boolean {
     }
 }
 
-function numericConditionCapsAt(
-    condition: ProfileCondition,
-    property: string,
-    maximumValue: number
-): boolean {
-    if (condition.Property !== property) {
-        return false;
-    }
-    const conditionValue = parseFiniteNumber(condition.Value);
-    switch (condition.Condition) {
-        case 'Equals':
-        case LESS_THAN_EQUAL_CONDITION:
-            return conditionValue !== null && conditionValue <= maximumValue;
-        default:
-            return false;
-    }
-}
-
-function widenNumericMaximumCondition(
-    condition: ProfileCondition,
-    property: string,
-    maximumValue: number
-): ProfileCondition {
-    if (condition.Property !== property) {
-        return condition;
-    }
-
-    let conditionMaximum: number | null = null;
-    switch (condition.Condition) {
-        case 'Equals':
-        case LESS_THAN_EQUAL_CONDITION:
-            conditionMaximum = parseFiniteNumber(condition.Value);
-            break;
-        case EQUALS_ANY_CONDITION: {
-            const conditionValues = condition.Value?.split('|').map(parseFiniteNumber) ?? [];
-            if (conditionValues.length > 0 && conditionValues.every(value => value !== null)) {
-                conditionMaximum = Math.max(...conditionValues as number[]);
-            }
-            break;
-        }
-        default:
-            break;
-    }
-    if (conditionMaximum === null || conditionMaximum > maximumValue) {
-        return condition;
-    }
-    return {
-        ...condition,
-        Condition: LESS_THAN_EQUAL_CONDITION,
-        Value: String(maximumValue)
-    };
-}
-
-type RawHDRCapabilityLimits = {
-    dimensionsValidatedAtRuntime: boolean
-    maximumCodedHeight: number
-    maximumCodedWidth: number
-    maximumFramesPerSecond: number | null
-    maximumLevel: number | null
-};
-
 function getRawHDRVideoProfiles(rawHDRCodecs: readonly string[]): string[] {
     const profiles: string[] = [];
     for (const codec of rawHDRCodecs) {
@@ -1134,7 +1037,6 @@ function getRawHDRVideoProfiles(rawHDRCodecs: readonly string[]): string[] {
 function createRawHDRConditions(
     conditions: NonNullable<CodecProfile['Conditions']>,
     includeSDR: boolean,
-    limits: RawHDRCapabilityLimits,
     rawHDRCodecs: readonly string[],
     rawHDRVideoRangeTypes: readonly string[]
 ): NonNullable<CodecProfile['Conditions']> | null {
@@ -1150,8 +1052,7 @@ function createRawHDRConditions(
 
     const applicableConditions = conditions.filter(condition => (
         condition.Property !== VIDEO_PROFILE_PROPERTY
-        && (!limits.dimensionsValidatedAtRuntime
-            || !NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES.has(condition.Property ?? ''))
+        && !NATIVE_VIDEO_RUNTIME_CONDITION_PROPERTIES.has(condition.Property ?? '')
     ));
     const widenedConditions = applicableConditions.map(condition => {
         if (condition.Condition === EQUALS_ANY_CONDITION
@@ -1162,33 +1063,7 @@ function createRawHDRConditions(
             };
         }
 
-        let widenedCondition = limits.maximumFramesPerSecond === null ?
-            condition :
-            widenNumericMaximumCondition(
-                condition,
-                VIDEO_FRAMERATE_PROPERTY,
-                limits.maximumFramesPerSecond
-            );
-        if (limits.maximumLevel !== null) {
-            widenedCondition = widenNumericMaximumCondition(
-                widenedCondition,
-                VIDEO_LEVEL_PROPERTY,
-                limits.maximumLevel
-            );
-        }
-        if (!limits.dimensionsValidatedAtRuntime) {
-            widenedCondition = widenNumericMaximumCondition(
-                widenedCondition,
-                VIDEO_WIDTH_PROPERTY,
-                limits.maximumCodedWidth
-            );
-            widenedCondition = widenNumericMaximumCondition(
-                widenedCondition,
-                VIDEO_HEIGHT_PROPERTY,
-                limits.maximumCodedHeight
-            );
-        }
-        return widenedCondition;
+        return condition;
     });
     const hasVideoRangeCondition = conditions.some(condition => (
         condition.Property === VIDEO_RANGE_TYPE_PROPERTY
@@ -1231,62 +1106,6 @@ function createRawHDRConditions(
             Value: 'false'
         });
     }
-    const maximumFramesPerSecond = limits.maximumFramesPerSecond;
-    if (maximumFramesPerSecond !== null && !widenedConditions.some(condition => (
-        numericConditionCapsAt(
-            condition,
-            VIDEO_FRAMERATE_PROPERTY,
-            maximumFramesPerSecond
-        )
-    ))) {
-        widenedConditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_FRAMERATE_PROPERTY,
-            Value: String(maximumFramesPerSecond)
-        });
-    }
-    const maximumLevel = limits.maximumLevel;
-    if (maximumLevel !== null && !widenedConditions.some(condition => numericConditionCapsAt(
-        condition,
-        VIDEO_LEVEL_PROPERTY,
-        maximumLevel
-    ))) {
-        widenedConditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_LEVEL_PROPERTY,
-            Value: String(maximumLevel)
-        });
-    }
-    if (!limits.dimensionsValidatedAtRuntime && !widenedConditions.some(condition => (
-        numericConditionCapsAt(
-            condition,
-            VIDEO_WIDTH_PROPERTY,
-            limits.maximumCodedWidth
-        )
-    ))) {
-        widenedConditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_WIDTH_PROPERTY,
-            Value: String(limits.maximumCodedWidth)
-        });
-    }
-    if (!limits.dimensionsValidatedAtRuntime && !widenedConditions.some(condition => (
-        numericConditionCapsAt(
-            condition,
-            VIDEO_HEIGHT_PROPERTY,
-            limits.maximumCodedHeight
-        )
-    ))) {
-        widenedConditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_HEIGHT_PROPERTY,
-            Value: String(limits.maximumCodedHeight)
-        });
-    }
     return widenedConditions;
 }
 
@@ -1308,147 +1127,44 @@ function isMeasuredVideoRouteProfile(codecProfile: CodecProfile): boolean {
     )) === true;
 }
 
-function getRawHDRCapabilityLimits(
+function hasRawHDRCapabilities(
     rawHDRCodecs: readonly string[],
     capabilities: CustomDecodeCapabilities
-): RawHDRCapabilityLimits | null {
-    let dimensionsValidatedAtRuntime = false;
-    let maximumCodedHeight = Number.MAX_SAFE_INTEGER;
-    let maximumCodedWidth = Number.MAX_SAFE_INTEGER;
-    let maximumFramesPerSecond: number | null = null;
-    let maximumLevel: number | null = null;
+): boolean {
     for (const rawHDRCodec of rawHDRCodecs) {
         const capability = capabilities.rawHDRVideo[
             rawHDRCodec as 'av1' | 'hevc' | 'vp9'
         ];
-        if (!isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )) {
-            return null;
+        if (capability.status !== 'supported') {
+            return false;
         }
-        maximumCodedHeight = Math.min(
-            maximumCodedHeight,
-            capability.maximumCodedHeight
-        );
-        maximumCodedWidth = Math.min(
-            maximumCodedWidth,
-            capability.maximumCodedWidth
-        );
-        if (capability.reason !== 'bundled-software-decoder') {
-            dimensionsValidatedAtRuntime = true;
-            continue;
+        if (capability.reason === 'bundled-software-decoder'
+            && !hasSupportedBundledHEVCProfile(capabilities, 'main10')) {
+            return false;
         }
-
-        maximumFramesPerSecond = maximumFramesPerSecond === null ?
-            capability.maximumFramesPerSecond :
-            Math.min(maximumFramesPerSecond, capability.maximumFramesPerSecond);
-        const bundledTier = getBundledRawHEVCTier(capabilities, capability);
-        if (!bundledTier) {
-            return null;
-        }
-        maximumLevel = maximumLevel === null ?
-            bundledTier.maximumLevel :
-            Math.min(maximumLevel, bundledTier.maximumLevel);
     }
-
-    return {
-        dimensionsValidatedAtRuntime,
-        maximumCodedHeight,
-        maximumCodedWidth,
-        maximumFramesPerSecond: dimensionsValidatedAtRuntime ?
-            null :
-            maximumFramesPerSecond,
-        maximumLevel: dimensionsValidatedAtRuntime ? null : maximumLevel
-    };
+    return rawHDRCodecs.length > 0;
 }
 
-function getNativeDolbyVisionCapabilityLimits(
+function hasNativeDolbyVisionCapability(
     capabilities: CustomDecodeCapabilities,
     enabled: boolean
-): RawHDRCapabilityLimits | null {
-    if (!enabled) {
-        return null;
-    }
-    const capability = capabilities.nativeDolbyVisionHEVC;
-    if (capability?.status !== 'supported'
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )) {
-        return null;
-    }
-    return {
-        dimensionsValidatedAtRuntime: true,
-        maximumCodedHeight: capability.maximumCodedHeight,
-        maximumCodedWidth: capability.maximumCodedWidth,
-        maximumFramesPerSecond: null,
-        maximumLevel: null
-    };
+): boolean {
+    return enabled && capabilities.nativeDolbyVisionHEVC?.status === 'supported';
 }
 
-function getNativeHDRCapabilityLimits(
+function hasNativeHDRCapability(
     capabilities: CustomDecodeCapabilities,
     enabled: boolean
-): RawHDRCapabilityLimits | null {
-    if (!enabled) {
-        return null;
-    }
-    const capability: CustomNativeHDRHEVCCapability | undefined =
-        capabilities.nativeHDRHEVC;
-    if (capability?.status !== 'supported'
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )) {
-        return null;
-    }
-    return {
-        dimensionsValidatedAtRuntime: true,
-        maximumCodedHeight: capability.maximumCodedHeight,
-        maximumCodedWidth: capability.maximumCodedWidth,
-        maximumFramesPerSecond: null,
-        maximumLevel: null
-    };
-}
-
-function expandOptionalMaximum(first: number | null, second: number | null): number | null {
-    if (first === null || second === null) {
-        return null;
-    }
-    return Math.max(first, second);
-}
-
-function createCapabilityEnvelope(
-    first: RawHDRCapabilityLimits,
-    second: RawHDRCapabilityLimits
-): RawHDRCapabilityLimits {
-    return {
-        dimensionsValidatedAtRuntime: first.dimensionsValidatedAtRuntime
-            || second.dimensionsValidatedAtRuntime,
-        maximumCodedHeight: Math.max(
-            first.maximumCodedHeight,
-            second.maximumCodedHeight
-        ),
-        maximumCodedWidth: Math.max(
-            first.maximumCodedWidth,
-            second.maximumCodedWidth
-        ),
-        maximumFramesPerSecond: expandOptionalMaximum(
-            first.maximumFramesPerSecond,
-            second.maximumFramesPerSecond
-        ),
-        maximumLevel: expandOptionalMaximum(
-            first.maximumLevel,
-            second.maximumLevel
-        )
-    };
+): boolean {
+    return enabled && capabilities.nativeHDRHEVC?.status === 'supported';
 }
 
 function createRawHDRCodecProfilePlan(
     codecProfile: CodecProfile,
     supportedRawHDRCodecs: ReadonlySet<CustomVideoCodec>,
     supportedNativeVideoCodecs: ReadonlySet<CustomVideoCodec>,
-    capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[],
-    capabilityLimits: RawHDRCapabilityLimits | null = null
+    rawHDRVideoRangeTypes: readonly string[]
 ): RawHDRCodecProfilePlan | null {
     if (
         codecProfile.Type !== VIDEO_CODEC_PROFILE_TYPE
@@ -1483,9 +1199,7 @@ function createRawHDRCodecProfilePlan(
             rawHDRCodec as CustomVideoCodec,
             containerScope,
             supportedNativeVideoCodecs,
-            capabilities,
-            rawHDRVideoRangeTypes,
-            capabilityLimits
+            rawHDRVideoRangeTypes
         );
         profiles.push(...routePlan.profiles);
         widened ||= routePlan.widened;
@@ -1513,22 +1227,15 @@ function createRawHDRCodecRoutePlan(
     codec: CustomVideoCodec,
     containerScope: CustomContainerScope,
     supportedNativeVideoCodecs: ReadonlySet<CustomVideoCodec>,
-    capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[],
-    capabilityLimits: RawHDRCapabilityLimits | null
+    rawHDRVideoRangeTypes: readonly string[]
 ): RawHDRCodecRoutePlan {
-    const limits = capabilityLimits ?? getRawHDRCapabilityLimits(
-        [ codec ],
-        capabilities
-    );
     const conditions = codecProfile.Conditions ?? [];
-    const widenedConditions = limits ? createRawHDRConditions(
+    const widenedConditions = createRawHDRConditions(
         conditions,
         supportedNativeVideoCodecs.has(codec),
-        limits,
         [ codec ],
         rawHDRVideoRangeTypes
-    ) : null;
+    );
     const routeContainerSet = new Set(getCustomContainersForVideoCodec(codec));
     const customContainers = containerScope.customContainers.filter(container => (
         routeContainerSet.has(container)
@@ -1578,9 +1285,7 @@ function widenRawHDRCodecProfiles(
     profile: DeviceProfile,
     supportedRawHDRVideoCodecs: readonly CustomVideoCodec[],
     supportedNativeVideoCodecs: readonly CustomVideoCodec[],
-    capabilities: CustomDecodeCapabilities,
-    rawHDRVideoRangeTypes: readonly string[],
-    capabilityLimits: RawHDRCapabilityLimits | null = null
+    rawHDRVideoRangeTypes: readonly string[]
 ): number {
     const supportedRawHDRCodecs = new Set<CustomVideoCodec>(supportedRawHDRVideoCodecs);
     const supportedNativeCodecs = new Set<CustomVideoCodec>(supportedNativeVideoCodecs);
@@ -1595,9 +1300,7 @@ function widenRawHDRCodecProfiles(
             codecProfile,
             supportedRawHDRCodecs,
             supportedNativeCodecs,
-            capabilities,
-            rawHDRVideoRangeTypes,
-            capabilityLimits
+            rawHDRVideoRangeTypes
         );
         if (!plan) {
             widenedProfiles.push(codecProfile);
@@ -1645,36 +1348,6 @@ function createMeasuredRouteConditions(
         Property: VIDEO_BIT_DEPTH_PROPERTY,
         Value: String(route.bitDepth)
     });
-    if (route.maximumWidth !== null && route.maximumHeight !== null) {
-        conditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_WIDTH_PROPERTY,
-            Value: String(route.maximumWidth)
-        });
-        conditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_HEIGHT_PROPERTY,
-            Value: String(route.maximumHeight)
-        });
-    }
-    if (route.maximumFrameRate !== null) {
-        conditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_FRAMERATE_PROPERTY,
-            Value: String(route.maximumFrameRate)
-        });
-    }
-    if (route.maximumLevel !== null) {
-        conditions.push({
-            Condition: LESS_THAN_EQUAL_CONDITION,
-            IsRequired: true,
-            Property: VIDEO_LEVEL_PROPERTY,
-            Value: String(route.maximumLevel)
-        });
-    }
     conditions.push({
         Condition: 'Equals',
         IsRequired: true,
@@ -1710,19 +1383,12 @@ function createNativeMeasuredVideoRoute(
 
     if (codec === 'jpeg2000') {
         const capability = capabilities.bundledJPEG2000;
-        if (
-            capability?.status !== 'supported'
-            || capability.maximumFramesPerSecond !== 24
-        ) {
+        if (capability?.status !== 'supported') {
             return null;
         }
         return {
             bitDepth: capability.bitDepth,
             codec,
-            maximumFrameRate: capability.maximumFramesPerSecond,
-            maximumHeight: capability.maximumCodedHeight,
-            maximumLevel: null,
-            maximumWidth: capability.maximumCodedWidth,
             profiles: [],
             rangeTypes: [ 'SDR' ]
         };
@@ -1732,38 +1398,20 @@ function createNativeMeasuredVideoRoute(
         const capability = codec === 'vc1' ?
             capabilities.bundledVC1 :
             capabilities.bundledLegacyVideo;
-        if (
-            capability?.status !== 'supported'
-            || capability.maximumFramesPerSecond !== 24
-        ) {
+        if (capability?.status !== 'supported') {
             return null;
         }
         return {
             bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
             codec,
-            maximumFrameRate: capability.maximumFramesPerSecond,
-            maximumHeight: capability.maximumCodedHeight,
-            maximumLevel: null,
-            maximumWidth: capability.maximumCodedWidth,
             profiles: NATIVE_VIDEO_PROFILES[codec],
             rangeTypes: [ 'SDR' ]
         };
     }
 
-    let bundledMain: BundledHEVCExactTierCapability | null = null;
-    if (codec === 'hevc' && !hasSupportedNativeSDRVideoCodec(codec, capabilities)) {
-        const mainTier = capabilities.bundledHEVC?.tiers['main-1080p'];
-        bundledMain = mainTier?.status === 'supported' ? mainTier : null;
-    }
     return {
         bitDepth: CUSTOM_NATIVE_VIDEO_BIT_DEPTH,
         codec,
-        maximumFrameRate: bundledMain ?
-            CUSTOM_BUNDLED_HEVC_BASELINE_MAXIMUM_FRAMES_PER_SECOND :
-            null,
-        maximumHeight: bundledMain?.maximumCodedHeight ?? null,
-        maximumLevel: bundledMain?.maximumLevel ?? null,
-        maximumWidth: bundledMain?.maximumCodedWidth ?? null,
         profiles: getNativeVideoProfiles(codec, capabilities),
         rangeTypes: [ 'SDR' ]
     };
@@ -1780,25 +1428,16 @@ function createRawHDRMeasuredVideoRoute(
     }
 
     const rawCapability = capabilities.rawHDRVideo[codec];
-    if (rawCapability.status !== 'supported'
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            rawCapability.maximumFramesPerSecond
-        )) {
+    if (rawCapability.status !== 'supported') {
         return null;
     }
-    const bundledTier = rawCapability.reason === 'bundled-software-decoder' ?
-        getBundledRawHEVCTier(capabilities, rawCapability) :
-        null;
-    if (rawCapability.reason === 'bundled-software-decoder' && !bundledTier) {
+    if (rawCapability.reason === 'bundled-software-decoder'
+        && !hasSupportedBundledHEVCProfile(capabilities, 'main10')) {
         return null;
     }
     return {
         bitDepth: rawCapability.bitDepth,
         codec,
-        maximumFrameRate: bundledTier ? rawCapability.maximumFramesPerSecond : null,
-        maximumHeight: bundledTier?.maximumCodedHeight ?? null,
-        maximumLevel: bundledTier?.maximumLevel ?? null,
-        maximumWidth: bundledTier?.maximumCodedWidth ?? null,
         profiles: RAW_VIDEO_PROFILES[codec],
         rangeTypes: rawHDRVideoRangeTypes
     };
@@ -1816,19 +1455,12 @@ function createDolbyVisionMeasuredVideoRoute(
         || !enabled
         || dolbyVisionVideoRangeTypes.length === 0
         || capability?.status !== 'supported'
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )
     ) {
         return null;
     }
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumFrameRate: null,
-        maximumHeight: null,
-        maximumLevel: null,
-        maximumWidth: null,
         profiles: RAW_VIDEO_PROFILES.hevc,
         rangeTypes: dolbyVisionVideoRangeTypes
     };
@@ -1846,19 +1478,12 @@ function createNativeHDRMeasuredVideoRoute(
         || !enabled
         || nativeHDRVideoRangeTypes.length === 0
         || capability?.status !== 'supported'
-        || !isCustomHDRVideoMaximumFramesPerSecond(
-            capability.maximumFramesPerSecond
-        )
     ) {
         return null;
     }
     return {
         bitDepth: capability.bitDepth,
         codec,
-        maximumFrameRate: null,
-        maximumHeight: null,
-        maximumLevel: null,
-        maximumWidth: null,
         profiles: RAW_VIDEO_PROFILES.hevc,
         rangeTypes: nativeHDRVideoRangeTypes
     };
@@ -1968,38 +1593,26 @@ function appendMeasuredVideoRouteProfiles(
     }
 }
 
-function createCompatibilityCapabilityEnvelope(
-    candidates: readonly RawHDRCapabilityLimits[]
-): RawHDRCapabilityLimits | null {
-    let capabilityEnvelope: RawHDRCapabilityLimits | null = null;
-    for (const limits of candidates) {
-        capabilityEnvelope = capabilityEnvelope ?
-            createCapabilityEnvelope(capabilityEnvelope, limits) :
-            limits;
-    }
-    return capabilityEnvelope;
-}
-
 function getAuthorizedHEVCRangeTypes(
     authorizedRoutes: AuthorizedHDRRoutes,
-    rawHEVCLimits: RawHDRCapabilityLimits | null,
-    nativeHDRLimits: RawHDRCapabilityLimits | null,
-    nativeDolbyVisionLimits: RawHDRCapabilityLimits | null
+    rawHEVCSupported: boolean,
+    nativeHDRSupported: boolean,
+    nativeDolbyVisionSupported: boolean
 ): readonly string[] {
     const rangeTypes = new Set<string>();
-    if (rawHEVCLimits) {
+    if (rawHEVCSupported) {
         for (const rangeType of authorizedRoutes.rawHEVCHDRVideoRangeTypes) {
             rangeTypes.add(rangeType);
         }
     }
-    if (nativeHDRLimits) {
+    if (nativeHDRSupported) {
         for (const rangeType of authorizedRoutes.nativeHDRVideoRangeTypes) {
             rangeTypes.add(rangeType);
         }
     }
     if (
-        nativeDolbyVisionLimits
-        || (authorizedRoutes.allowRawDolbyVision && rawHEVCLimits)
+        nativeDolbyVisionSupported
+        || (authorizedRoutes.allowRawDolbyVision && rawHEVCSupported)
     ) {
         for (const rangeType of authorizedRoutes.dolbyVisionVideoRangeTypes) {
             rangeTypes.add(rangeType);
@@ -2013,11 +1626,11 @@ function createAuthorizedHEVCProfilePlan(
     supportedRawHDRVideoCodecs: readonly CustomVideoCodec[],
     authorizedRoutes: AuthorizedHDRRoutes
 ): AuthorizedHEVCProfilePlan | null {
-    const nativeDolbyVisionLimits = getNativeDolbyVisionCapabilityLimits(
+    const nativeDolbyVisionSupported = hasNativeDolbyVisionCapability(
         capabilities,
         authorizedRoutes.allowNativeDolbyVision
     );
-    const nativeHDRLimits = getNativeHDRCapabilityLimits(
+    const nativeHDRSupported = hasNativeHDRCapability(
         capabilities,
         authorizedRoutes.allowNativeHDR
     );
@@ -2026,36 +1639,27 @@ function createAuthorizedHEVCProfilePlan(
             !authorizedRoutes.rawHDRVideoRangeTypes.includes(rangeType)
         )
     );
-    const dedicatedRouteRequired = nativeDolbyVisionLimits !== null
-        || nativeHDRLimits !== null
+    const dedicatedRouteRequired = nativeDolbyVisionSupported
+        || nativeHDRSupported
         || authorizedRoutes.allowRawDolbyVision
         || hasHEVCSpecificRawRanges;
     const rawRouteAuthorized = authorizedRoutes.rawHEVCHDRVideoRangeTypes.length > 0
         || authorizedRoutes.allowRawDolbyVision;
-    const rawHEVCLimits = dedicatedRouteRequired
+    const rawHEVCSupported = dedicatedRouteRequired
         && rawRouteAuthorized
-        && supportedRawHDRVideoCodecs.includes('hevc') ?
-        getRawHDRCapabilityLimits([ 'hevc' ], capabilities) :
-        null;
-    const limitCandidates: RawHDRCapabilityLimits[] = [];
-    for (const limits of [ rawHEVCLimits, nativeHDRLimits, nativeDolbyVisionLimits ]) {
-        if (limits) {
-            limitCandidates.push(limits);
-        }
-    }
-    // This shared profile must not reimpose a weaker route's limits. Exact
-    // measured profiles below retain the per-range capability boundaries.
-    const combinedLimits = createCompatibilityCapabilityEnvelope(limitCandidates);
+        && supportedRawHDRVideoCodecs.includes('hevc')
+        && hasRawHDRCapabilities([ 'hevc' ], capabilities);
     const rangeTypes = getAuthorizedHEVCRangeTypes(
         authorizedRoutes,
-        rawHEVCLimits,
-        nativeHDRLimits,
-        nativeDolbyVisionLimits
+        rawHEVCSupported,
+        nativeHDRSupported,
+        nativeDolbyVisionSupported
     );
-    if (!combinedLimits || rangeTypes.length === 0) {
+    if ((!rawHEVCSupported && !nativeHDRSupported && !nativeDolbyVisionSupported)
+        || rangeTypes.length === 0) {
         return null;
     }
-    return { limits: combinedLimits, rangeTypes };
+    return { rangeTypes };
 }
 
 function widenAuthorizedHDRCodecProfiles(
@@ -2077,9 +1681,7 @@ function widenAuthorizedHDRCodecProfiles(
             profile,
             [ 'hevc' ],
             supportedNativeVideoCodecs,
-            capabilities,
-            authorizedHEVCProfilePlan.rangeTypes,
-            authorizedHEVCProfilePlan.limits
+            authorizedHEVCProfilePlan.rangeTypes
         );
     }
     if (authorizedRoutes.rawHDRVideoRangeTypes.length === 0) {
@@ -2091,7 +1693,6 @@ function widenAuthorizedHDRCodecProfiles(
             codec !== 'hevc' || !supportsAuthorizedHEVC
         )),
         supportedNativeVideoCodecs,
-        capabilities,
         authorizedRoutes.rawHDRVideoRangeTypes
     );
 }

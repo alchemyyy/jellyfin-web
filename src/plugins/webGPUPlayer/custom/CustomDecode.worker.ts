@@ -21,18 +21,20 @@ import { getAudioSampleWindow } from './AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 import {
-    customAudioDownmixAlgorithmUsesLimiter,
     DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     type CustomAudioDownmixAlgorithm
 } from './CustomAudioDownmixAlgorithm';
 import {
     assertCustomAudioOutputChannelLayout,
     getCustomAudioChannelLayout,
-    isSelectableCustomAudioDownmixRequired,
     prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout,
     type CustomAudioOutputChannelCount
 } from './CustomAudioChannelLayout';
+import {
+    createDefaultAudioDownmixSettings,
+    type AudioDownmixSettings
+} from './CustomAudioDownmix';
 import {
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
@@ -42,6 +44,7 @@ import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
 import StreamingAudioOutputPipeline, {
     type StreamingAudioResamplerOutput
 } from './StreamingAudioOutputPipeline';
+import StreamingAudioDownmixSettings from './StreamingAudioDownmixSettings';
 import {
     getCustomDecodeHardwareAcceleration,
     isDecodeWorkerRequest,
@@ -132,6 +135,7 @@ import JPEG2000SoftwareVideoDecoder from './JPEG2000SoftwareVideoDecoder';
 import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
 } from './DTSSoftwareAudioDecoder';
+import DTSSeekRecovery from './DTSSeekRecovery';
 import EAC3SoftwareAudioDecoder, {
     type EAC3DecodedAudioOutput
 } from './EAC3SoftwareAudioDecoder';
@@ -183,6 +187,7 @@ type MediaSampleIterator<Sample> = {
 };
 
 type DecodeRun = {
+    audioDownmixSettings: StreamingAudioDownmixSettings | null
     audioIterator: MediaSampleIterator<AudioSample> | MediaSampleIterator<EncodedPacket> | null
     audioSampleCredits: number
     cancelled: boolean
@@ -1632,12 +1637,45 @@ async function postVideoFrame(
     }
 }
 
+function prepareDecodedAudioOutputChannelData(
+    inputChannelData: readonly Float32Array[],
+    preparedAudioTrack: PreparedAudioTrack,
+    inputChannelLayout: CustomAudioChannelLayout,
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
+    downmixSettings: AudioDownmixSettings,
+    streamingDownmixSettings: StreamingAudioDownmixSettings | null
+): readonly Float32Array[] {
+    if (!streamingDownmixSettings) {
+        return prepareCustomAudioOutputChannelData(
+            inputChannelData,
+            inputChannelLayout,
+            preparedAudioTrack.outputChannelCount,
+            audioDownmixAlgorithm,
+            downmixSettings
+        );
+    }
+
+    const settingsBlock = streamingDownmixSettings.takeBlock(
+        inputChannelData[0]?.length ?? 0
+    );
+    return prepareCustomAudioOutputChannelData(
+        inputChannelData,
+        inputChannelLayout,
+        preparedAudioTrack.outputChannelCount,
+        audioDownmixAlgorithm,
+        settingsBlock.settings,
+        settingsBlock.ramp
+    );
+}
+
 function normalizeAudioSample(
     sample: AudioSample,
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
     outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
+    downmixSettings: AudioDownmixSettings,
+    streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
     try {
         const sampleTimeMicroseconds = requireMicroseconds(
@@ -1679,11 +1717,13 @@ function normalizeAudioSample(
             inputChannelData.push(channel);
         }
 
-        const channelData = prepareCustomAudioOutputChannelData(
+        const channelData = prepareDecodedAudioOutputChannelData(
             inputChannelData,
+            preparedAudioTrack,
             preparedAudioTrack.inputChannelLayout,
-            preparedAudioTrack.outputChannelCount,
-            audioDownmixAlgorithm
+            audioDownmixAlgorithm,
+            downmixSettings,
+            streamingDownmixSettings
         );
         return outputPipeline.push({
             channelData,
@@ -1699,7 +1739,9 @@ function normalizeDTSAudioOutput(
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
     outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
+    downmixSettings: AudioDownmixSettings,
+    streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
     if (output.channelData.length !== preparedAudioTrack.inputChannelCount
         || output.sampleRate !== preparedAudioTrack.sourceSampleRate
@@ -1727,11 +1769,13 @@ function normalizeDTSAudioOutput(
     for (const channel of output.channelData) {
         inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
     }
-    const channelData = prepareCustomAudioOutputChannelData(
+    const channelData = prepareDecodedAudioOutputChannelData(
         inputChannelData,
+        preparedAudioTrack,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount,
-        audioDownmixAlgorithm
+        audioDownmixAlgorithm,
+        downmixSettings,
+        streamingDownmixSettings
     );
     return outputPipeline.push({
         channelData,
@@ -1744,7 +1788,9 @@ function normalizeEAC3AudioOutput(
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
     outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
+    downmixSettings: AudioDownmixSettings,
+    streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
     if (preparedAudioTrack.decoderBackend !== 'eac3'
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1773,11 +1819,13 @@ function normalizeEAC3AudioOutput(
     for (const channel of output.channelData) {
         inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
     }
-    const channelData = prepareCustomAudioOutputChannelData(
+    const channelData = prepareDecodedAudioOutputChannelData(
         inputChannelData,
+        preparedAudioTrack,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount,
-        audioDownmixAlgorithm
+        audioDownmixAlgorithm,
+        downmixSettings,
+        streamingDownmixSettings
     );
     return outputPipeline.push({
         channelData,
@@ -1790,7 +1838,9 @@ function normalizeTrueHDAudioOutput(
     preparedAudioTrack: PreparedAudioTrack,
     startTimeMicroseconds: Microseconds,
     outputPipeline: StreamingAudioOutputPipeline,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
+    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm,
+    downmixSettings: AudioDownmixSettings,
+    streamingDownmixSettings: StreamingAudioDownmixSettings | null
 ): StreamingAudioResamplerOutput[] {
     if (output.codec !== preparedAudioTrack.decoderBackend
         || output.channelData.length !== preparedAudioTrack.inputChannelCount
@@ -1819,11 +1869,13 @@ function normalizeTrueHDAudioOutput(
     for (const channel of output.channelData) {
         inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
     }
-    const channelData = prepareCustomAudioOutputChannelData(
+    const channelData = prepareDecodedAudioOutputChannelData(
         inputChannelData,
+        preparedAudioTrack,
         output.channelLayout,
-        preparedAudioTrack.outputChannelCount,
-        audioDownmixAlgorithm
+        audioDownmixAlgorithm,
+        downmixSettings,
+        streamingDownmixSettings
     );
     return outputPipeline.push({
         channelData,
@@ -3161,15 +3213,13 @@ async function streamVideoFrames(
 
 function createStreamingAudioOutputPipeline(
     preparedAudioTrack: PreparedAudioTrack,
-    maximumTimestampQuantizationMicroseconds: number,
-    audioDownmixAlgorithm: CustomAudioDownmixAlgorithm
+    maximumTimestampQuantizationMicroseconds: number
 ): StreamingAudioOutputPipeline {
+    const multichannelDownmixRequired = preparedAudioTrack.outputChannelCount === 2
+        && preparedAudioTrack.inputChannelLayout.channels.length > 2;
+    // Retain lookahead state so a later live boost never creates an unprotected interval
     const peakLimiterEnabled = preparedAudioTrack.outputMode === 'decoded-pcm'
-        && isSelectableCustomAudioDownmixRequired(
-            preparedAudioTrack.inputChannelLayout,
-            preparedAudioTrack.outputChannelCount
-        )
-        && customAudioDownmixAlgorithmUsesLimiter(audioDownmixAlgorithm);
+        && multichannelDownmixRequired;
     return new StreamingAudioOutputPipeline({
         channelCount: preparedAudioTrack.outputChannelCount,
         maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
@@ -3181,6 +3231,25 @@ function createStreamingAudioOutputPipeline(
     });
 }
 
+function createStreamingAudioDownmixSettings(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack | null
+): StreamingAudioDownmixSettings | null {
+    if (!preparedAudioTrack
+        || preparedAudioTrack.outputMode !== 'decoded-pcm'
+        || preparedAudioTrack.outputChannelCount !== 2
+        || preparedAudioTrack.inputChannelCount <= 2) {
+        return null;
+    }
+
+    return new StreamingAudioDownmixSettings(
+        run.generation,
+        preparedAudioTrack.sourceSampleRate,
+        request.audioDownmixSettings ?? createDefaultAudioDownmixSettings()
+    );
+}
+
 async function streamAudioSamples(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -3188,11 +3257,12 @@ async function streamAudioSamples(
 ): Promise<void> {
     const audioDownmixAlgorithm = request.audioDownmixAlgorithm
         ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+    const downmixSettings = request.audioDownmixSettings
+        ?? createDefaultAudioDownmixSettings();
     const sampleSink = new AudioSampleSink(preparedAudioTrack.audioTrack);
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        audioDownmixAlgorithm
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
     );
     const iterator = sampleSink.samples(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3215,7 +3285,9 @@ async function streamAudioSamples(
             preparedAudioTrack,
             request.startTimeMicroseconds,
             audioOutputPipeline,
-            audioDownmixAlgorithm
+            audioDownmixAlgorithm,
+            downmixSettings,
+            run.audioDownmixSettings
         );
         if (!await postNormalizedAudioOutput(run, output, true)) {
             return;
@@ -3230,9 +3302,12 @@ async function streamDTSAudioPackets(
 ): Promise<void> {
     const audioDownmixAlgorithm = request.audioDownmixAlgorithm
         ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+    const downmixSettings = request.audioDownmixSettings
+        ?? createDefaultAudioDownmixSettings();
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const seekRecovery = new DTSSeekRecovery(request.startTimeMicroseconds);
     const startPacket = await packetSink.getPacket(
-        microsecondsToSeconds(request.startTimeMicroseconds)
+        microsecondsToSeconds(seekRecovery.prerollTimeMicroseconds)
     );
     const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
         MediaSampleIterator<EncodedPacket>;
@@ -3240,8 +3315,7 @@ async function streamDTSAudioPackets(
     const decoder = await DTSSoftwareAudioDecoder.create();
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        audioDownmixAlgorithm
+        DTS_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
     );
 
     try {
@@ -3251,23 +3325,37 @@ async function streamDTSAudioPackets(
                 return;
             }
             if (iteratorResult.done) {
+                seekRecovery.requireSynchronizationRecovered();
                 await postNormalizedAudioOutput(run, audioOutputPipeline.finalize(), true);
                 return;
             }
             const packet = iteratorResult.value;
-            const output = decoder.decode(
-                packet.data,
-                requireMicroseconds(
-                    packet.microsecondTimestamp,
-                    'Encoded DTS packet timestamp'
-                )
+            const packetTimeMicroseconds = requireMicroseconds(
+                packet.microsecondTimestamp,
+                'Encoded DTS packet timestamp'
             );
+            seekRecovery.requireSynchronizationRecoveredBefore(packetTimeMicroseconds);
+            let output: DTSDecodedAudioOutput;
+            try {
+                output = decoder.decode(packet.data, packetTimeMicroseconds);
+            } catch (error) {
+                if (!seekRecovery.shouldIgnore(error, packetTimeMicroseconds)) {
+                    throw error;
+                }
+                if (!await postNormalizedAudioOutput(run, [], true)) {
+                    return;
+                }
+                continue;
+            }
+            seekRecovery.markDecodeSucceeded();
             const normalizedOutput = normalizeDTSAudioOutput(
                 output,
                 preparedAudioTrack,
                 request.startTimeMicroseconds,
                 audioOutputPipeline,
-                audioDownmixAlgorithm
+                audioDownmixAlgorithm,
+                downmixSettings,
+                run.audioDownmixSettings
             );
             if (!await postNormalizedAudioOutput(run, normalizedOutput, true)) {
                 return;
@@ -3285,6 +3373,8 @@ async function streamEAC3AudioPackets(
 ): Promise<void> {
     const audioDownmixAlgorithm = request.audioDownmixAlgorithm
         ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+    const downmixSettings = request.audioDownmixSettings
+        ?? createDefaultAudioDownmixSettings();
     const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
     const startPacket = await packetSink.getPacket(
         microsecondsToSeconds(request.startTimeMicroseconds)
@@ -3295,8 +3385,7 @@ async function streamEAC3AudioPackets(
     const decoder = await EAC3SoftwareAudioDecoder.create();
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        audioDownmixAlgorithm
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
     );
 
     try {
@@ -3324,7 +3413,9 @@ async function streamEAC3AudioPackets(
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
                     audioOutputPipeline,
-                    audioDownmixAlgorithm
+                    audioDownmixAlgorithm,
+                    downmixSettings,
+                    run.audioDownmixSettings
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
@@ -3343,6 +3434,8 @@ async function streamTrueHDAudioPackets(
 ): Promise<void> {
     const audioDownmixAlgorithm = request.audioDownmixAlgorithm
         ?? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
+    const downmixSettings = request.audioDownmixSettings
+        ?? createDefaultAudioDownmixSettings();
     const decoderCodec = preparedAudioTrack.decoderBackend;
     if (decoderCodec !== 'truehd' && decoderCodec !== 'mlp') {
         throw new UnsupportedCustomDecodeSourceError('TrueHD decoder selection is unavailable');
@@ -3361,8 +3454,7 @@ async function streamTrueHDAudioPackets(
     const decoder = await TrueHDSoftwareAudioDecoder.create(decoderCodec);
     const audioOutputPipeline = createStreamingAudioOutputPipeline(
         preparedAudioTrack,
-        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
-        audioDownmixAlgorithm
+        DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS
     );
 
     try {
@@ -3390,7 +3482,9 @@ async function streamTrueHDAudioPackets(
                     preparedAudioTrack,
                     request.startTimeMicroseconds,
                     audioOutputPipeline,
-                    audioDownmixAlgorithm
+                    audioDownmixAlgorithm,
+                    downmixSettings,
+                    run.audioDownmixSettings
                 ));
             }
             if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
@@ -3577,6 +3671,11 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
 
+        run.audioDownmixSettings = createStreamingAudioDownmixSettings(
+            run,
+            request,
+            preparedAudioTrack
+        );
         postReadyResponse(run, preparedVideoTrack, preparedAudioTrack);
         const streamPromises: Array<Promise<void>> = [];
         streamPromises.push(streamVideoFrames(run, request, preparedVideoTrack));
@@ -3634,6 +3733,7 @@ function handleRequest(requestValue: unknown): void {
             registerRequiredVideoDecoder(requestValue);
 
             const run: DecodeRun = {
+                audioDownmixSettings: null,
                 audioIterator: null,
                 audioSampleCredits: requestValue.audioSampleCredits,
                 cancelled: false,
@@ -3691,6 +3791,12 @@ function handleRequest(requestValue: unknown): void {
             if (currentRun?.generation === requestValue.generation) {
                 stopRun(currentRun);
             }
+            break;
+        case 'update-audio-downmix-settings':
+            currentRun?.audioDownmixSettings?.update(
+                requestValue.generation,
+                requestValue.audioDownmixSettings
+            );
             break;
     }
 }
