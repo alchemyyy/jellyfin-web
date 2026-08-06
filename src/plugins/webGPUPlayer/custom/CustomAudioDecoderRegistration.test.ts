@@ -11,27 +11,21 @@ vi.mock('./MediabunnyPCMBuiltinDecoderAvailability', () => ({
 import { registerRequiredCustomAudioDecoder } from './CustomAudioDecoderRegistration';
 
 describe('registerRequiredCustomAudioDecoder', () => {
-    it.each([ 'ac3', 'eac3' ])(
-        'registers a supplied custom decoder for %s',
-        async (codec: string) => {
-            const registerCustomAudioDecoder = vi.fn(() => Promise.resolve());
+    it('registers a supplied custom decoder for AC-3', async () => {
+        const registerCustomAudioDecoder = vi.fn(() => Promise.resolve());
 
-            await registerRequiredCustomAudioDecoder(codec, registerCustomAudioDecoder);
+        await registerRequiredCustomAudioDecoder('ac3', registerCustomAudioDecoder);
 
-            expect(registerCustomAudioDecoder).toHaveBeenCalledOnce();
-        }
-    );
+        expect(registerCustomAudioDecoder).toHaveBeenCalledOnce();
+    });
 
-    it.each([ 'ac3', 'eac3' ])(
-        'loads the official Mediabunny decoder in an ordinary build for %s',
-        async (codec: string) => {
-            await registerRequiredCustomAudioDecoder(codec);
+    it('loads the official Mediabunny decoder in an ordinary build for AC-3', async () => {
+        await registerRequiredCustomAudioDecoder('ac3');
 
-            expect(registerAC3SoftwareAudioDecoder).toHaveBeenCalledOnce();
-        }
-    );
+        expect(registerAC3SoftwareAudioDecoder).toHaveBeenCalledOnce();
+    });
 
-    it.each([ 'aac', 'flac', 'mp3', 'opus', 'vorbis' ])(
+    it.each([ 'aac', 'eac3', 'flac', 'mp3', 'opus', 'vorbis' ])(
         'does not load a custom decoder for %s',
         async (codec: string) => {
             const registerCustomAudioDecoder = vi.fn(() => Promise.resolve());

@@ -38,7 +38,6 @@ describe('CustomAudioOutputPolicy', () => {
         for (const codec of [
             'aac',
             'ac3',
-            'eac3',
             'flac',
             'opus',
             'vorbis'
@@ -51,7 +50,10 @@ describe('CustomAudioOutputPolicy', () => {
         }
         expect(getSupportedCustomAudioInputChannelCounts('mp3')).toEqual([ 2 ]);
         expect(isSupportedCustomAudioInputLayout('mp3', 6, 48_000)).toBe(false);
-        expect(isSupportedCustomAudioInputLayout('eac3', 8, 48_000)).toBe(false);
+        expect(getSupportedCustomAudioInputChannelCounts('eac3')).toEqual([ 2, 6, 8 ]);
+        expect(isSupportedCustomAudioInputLayout('eac3', 2, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioInputLayout('eac3', 6, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioInputLayout('eac3', 8, 48_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 44_100)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 12_345)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('eac3', 6, 192_001)).toBe(false);

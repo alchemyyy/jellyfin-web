@@ -10,6 +10,11 @@ export type DTSProfileToken =
 
 export type DTSDirectPlayProfileToken = Exclude<DTSProfileToken, 'DTSES'>;
 
+export type EAC3InputRoute = Readonly<{
+    channelCount: 2 | 6 | 8
+    metadataLayouts: readonly string[] | null
+}>;
+
 export type DTSInputRoute = Readonly<{
     channelCount: 6 | 7 | 8
     profileTokens: readonly DTSProfileToken[]
@@ -21,6 +26,15 @@ export type TrueHDCapabilityFixtureRoute = Readonly<{
     codec: 'mlp' | 'truehd'
     sampleRate: 48_000 | 96_000 | 192_000
 }>;
+
+export const EAC3_SUPPORTED_INPUT_ROUTES = Object.freeze([
+    Object.freeze({ channelCount: 2, metadataLayouts: null }),
+    Object.freeze({ channelCount: 6, metadataLayouts: null }),
+    Object.freeze({
+        channelCount: 8,
+        metadataLayouts: Object.freeze([ '7.1' ] as const)
+    })
+] as const) satisfies readonly EAC3InputRoute[];
 
 export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string>> =
     Object.freeze({
@@ -134,6 +148,32 @@ export function isSupportedDTSInputRoute(
             && routeProfileTokens.includes(profileToken as DTSProfileToken)) {
             return true;
         }
+    }
+    return false;
+}
+
+/** Accepts only E-AC-3 routes whose eight-channel metadata identifies standard 7.1. */
+export function isSupportedEAC3InputRoute(
+    channelCount: unknown,
+    sampleRate: unknown,
+    channelLayout: unknown
+): boolean {
+    if (!isSupportedCustomAudioSampleRate(sampleRate)) {
+        return false;
+    }
+    for (const route of EAC3_SUPPORTED_INPUT_ROUTES) {
+        if (route.channelCount !== channelCount) {
+            continue;
+        }
+        if (route.metadataLayouts === null) {
+            return true;
+        }
+        if (typeof channelLayout !== 'string') {
+            return false;
+        }
+        const normalizedLayout = channelLayout.trim().toLowerCase();
+        const metadataLayouts: readonly string[] = route.metadataLayouts;
+        return metadataLayouts.includes(normalizedLayout);
     }
     return false;
 }

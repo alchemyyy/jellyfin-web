@@ -126,6 +126,9 @@ import JPEG2000SoftwareVideoDecoder from './JPEG2000SoftwareVideoDecoder';
 import DTSSoftwareAudioDecoder, {
     type DTSDecodedAudioOutput
 } from './DTSSoftwareAudioDecoder';
+import EAC3SoftwareAudioDecoder, {
+    type EAC3DecodedAudioOutput
+} from './EAC3SoftwareAudioDecoder';
 import TrueHDSoftwareAudioDecoder, {
     type TrueHDDecodedAudioOutput,
     type TrueHDDecoderCodec
@@ -237,7 +240,7 @@ type ContainerDolbyVisionTrackConfiguration = {
 type PreparedAudioTrack = {
     audioConfiguration: DecodeWorkerReadyAudioConfiguration
     audioTrack: InputAudioTrack
-    decoderBackend: 'dts' | 'mediabunny' | TrueHDDecoderCodec
+    decoderBackend: 'dts' | 'eac3' | 'mediabunny' | TrueHDDecoderCodec
     decoderConfig: AudioDecoderConfig | null
     inputChannelCount: number
     inputChannelLayout: CustomAudioChannelLayout
@@ -1067,6 +1070,46 @@ function prepareDTSAudioTrack(
     };
 }
 
+function prepareEAC3AudioTrack(
+    metadata: SelectedAudioTrackMetadata,
+    outputChannelCount: CustomAudioOutputChannelCount
+): PreparedAudioTrack {
+    const {
+        audioTrack,
+        channelCount,
+        codec,
+        decoderConfig,
+        inputChannelLayout,
+        sampleRate
+    } = metadata;
+    if (codec !== 'eac3'
+        || decoderConfig?.codec !== 'ec-3'
+        || !isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'The selected E-AC-3 track does not match a qualified decoded PCM route'
+        );
+    }
+    assertCustomAudioOutputChannelLayout(inputChannelLayout, outputChannelCount);
+
+    return {
+        audioConfiguration: {
+            channelCount: outputChannelCount,
+            codec: decoderConfig.codec,
+            sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+            sourceChannelCount: channelCount,
+            sourceSampleRate: sampleRate
+        },
+        audioTrack,
+        decoderBackend: 'eac3',
+        decoderConfig,
+        inputChannelCount: channelCount,
+        inputChannelLayout,
+        outputMode: 'decoded-pcm',
+        outputChannelCount,
+        sourceSampleRate: sampleRate
+    };
+}
+
 function prepareTrueHDAudioTrack(
     metadata: SelectedAudioTrackMetadata,
     outputChannelCount: CustomAudioOutputChannelCount
@@ -1173,6 +1216,9 @@ async function prepareAudioTrack(
         case 'decoded-pcm':
             if (metadata.isDTS) {
                 return prepareDTSAudioTrack(metadata, decodedAudioOutputChannelCount);
+            }
+            if (metadata.codec === 'eac3') {
+                return prepareEAC3AudioTrack(metadata, decodedAudioOutputChannelCount);
             }
             return metadata.trueHDDecoderCodec ?
                 prepareTrueHDAudioTrack(metadata, decodedAudioOutputChannelCount) :
@@ -1655,6 +1701,50 @@ function normalizeDTSAudioOutput(
         )) {
         throw new UnsupportedCustomDecodeSourceError(
             'Decoded DTS audio format changed during playback'
+        );
+    }
+    const sampleWindow = getAudioSampleWindow(
+        output.mediaTimeMicroseconds,
+        output.frameCount,
+        output.sampleRate,
+        startTimeMicroseconds
+    );
+    if (!sampleWindow) {
+        return [];
+    }
+
+    const inputChannelData: Float32Array[] = [];
+    const endFrame = sampleWindow.frameOffset + sampleWindow.frameCount;
+    for (const channel of output.channelData) {
+        inputChannelData.push(channel.slice(sampleWindow.frameOffset, endFrame));
+    }
+    const channelData = prepareCustomAudioOutputChannelData(
+        inputChannelData,
+        output.channelLayout,
+        preparedAudioTrack.outputChannelCount
+    );
+    return resampler.push({
+        channelData,
+        mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds
+    });
+}
+
+function normalizeEAC3AudioOutput(
+    output: EAC3DecodedAudioOutput,
+    preparedAudioTrack: PreparedAudioTrack,
+    startTimeMicroseconds: Microseconds,
+    resampler: StreamingAudioResampler
+): StreamingAudioResamplerOutput[] {
+    if (preparedAudioTrack.decoderBackend !== 'eac3'
+        || output.channelData.length !== preparedAudioTrack.inputChannelCount
+        || output.sampleRate !== preparedAudioTrack.sourceSampleRate
+        || !isSupportedCustomAudioInputLayout(
+            'eac3',
+            output.channelData.length,
+            output.sampleRate
+        )) {
+        throw new UnsupportedCustomDecodeSourceError(
+            'Decoded E-AC-3 audio format changed during playback'
         );
     }
     const sampleWindow = getAudioSampleWindow(
@@ -3154,6 +3244,65 @@ async function streamDTSAudioPackets(
     }
 }
 
+async function streamEAC3AudioPackets(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedAudioTrack: PreparedAudioTrack
+): Promise<void> {
+    const packetSink = new EncodedPacketSink(preparedAudioTrack.audioTrack);
+    const startPacket = await packetSink.getPacket(
+        microsecondsToSeconds(request.startTimeMicroseconds)
+    );
+    const iterator = packetSink.packets(startPacket ?? undefined) as unknown as
+        MediaSampleIterator<EncodedPacket>;
+    run.audioIterator = iterator;
+    const decoder = await EAC3SoftwareAudioDecoder.create();
+    const resampler = new StreamingAudioResampler({
+        channelCount: preparedAudioTrack.outputChannelCount,
+        maximumOutputFrameCount: MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
+        maximumTimestampQuantizationMicroseconds:
+            DEFAULT_AUDIO_TIMESTAMP_QUANTIZATION_MICROSECONDS,
+        minimumOutputFrameCount: MINIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT,
+        sourceSampleRate: preparedAudioTrack.sourceSampleRate,
+        targetSampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE
+    });
+
+    try {
+        while (await waitForAudioSampleCredit(run)) {
+            const iteratorResult = await iterator.next();
+            if (run.cancelled) {
+                return;
+            }
+            if (iteratorResult.done) {
+                await postNormalizedAudioOutput(run, resampler.finalize(), true);
+                return;
+            }
+            const packet = iteratorResult.value;
+            const decodedOutputs = decoder.decode(
+                packet.data,
+                requireMicroseconds(
+                    packet.microsecondTimestamp,
+                    'Encoded E-AC-3 packet timestamp'
+                )
+            );
+            const normalizedOutputs: StreamingAudioResamplerOutput[] = [];
+            for (const output of decodedOutputs) {
+                normalizedOutputs.push(...normalizeEAC3AudioOutput(
+                    output,
+                    preparedAudioTrack,
+                    request.startTimeMicroseconds,
+                    resampler
+                ));
+            }
+            if (!await postNormalizedAudioOutput(run, normalizedOutputs, true)) {
+                return;
+            }
+        }
+    } finally {
+        decoder.close();
+    }
+}
+
 async function streamTrueHDAudioPackets(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
@@ -3346,6 +3495,8 @@ function streamPreparedAudio(
             switch (preparedAudioTrack.decoderBackend) {
                 case 'dts':
                     return streamDTSAudioPackets(run, request, preparedAudioTrack);
+                case 'eac3':
+                    return streamEAC3AudioPackets(run, request, preparedAudioTrack);
                 case 'mlp':
                 case 'truehd':
                     return streamTrueHDAudioPackets(run, request, preparedAudioTrack);

@@ -1168,7 +1168,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         expect(addedProfiles.some(profile => profile.Container === 'webm')).toBe(false);
         expect(result.telemetry.supportedAudioCodecs).toEqual([ 'ac3', 'eac3' ]);
         expect(result.profile.CodecProfiles).toContainEqual({
-            Codec: 'ac3,eac3',
+            Codec: 'ac3',
             Conditions: [
                 {
                     Condition: 'EqualsAny',
@@ -1181,6 +1181,36 @@ describe('augmentDeviceProfileForCustomDecode', () => {
             Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
             Type: 'VideoAudio'
         });
+        expect(result.profile.CodecProfiles).toContainEqual({
+            Codec: 'eac3',
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2|6|8'
+                },
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
+            ],
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        const codecProfiles = result.profile.CodecProfiles ?? [];
+        const sevenPointOneRoute: AudioRouteFixture = {
+            channelCount: 8,
+            profile: null,
+            sampleRate: 48_000
+        };
+        expect(acceptsMeasuredAudioRoute(
+            codecProfiles,
+            'eac3',
+            sevenPointOneRoute
+        )).toBe(true);
+        expect(acceptsMeasuredAudioRoute(
+            codecProfiles,
+            'ac3',
+            sevenPointOneRoute
+        )).toBe(false);
     });
 
     it('direct-authorizes ordinary stereo E-AC-3 independently of source bitrate', () => {
@@ -1685,7 +1715,7 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         ));
         expect(measuredEAC3Profile?.Conditions).toContainEqual(expect.objectContaining({
             Property: 'AudioChannels',
-            Value: '2|6'
+            Value: '2|6|8'
         }));
     });
 
@@ -1883,13 +1913,27 @@ describe('augmentDeviceProfileForCustomDecode', () => {
         )) ?? [];
 
         expect(dolbyProfiles).toContainEqual({
-            Codec: 'ac3,eac3',
+            Codec: 'ac3',
             Conditions: [
                 {
                     Condition: 'EqualsAny',
                     IsRequired: true,
                     Property: 'AudioChannels',
                     Value: '2|6'
+                },
+                ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
+            ],
+            Container: 'mp4,m4v,mov,mj2,mkv,webm,ts,m2ts,mts',
+            Type: 'VideoAudio'
+        });
+        expect(dolbyProfiles).toContainEqual({
+            Codec: 'eac3',
+            Conditions: [
+                {
+                    Condition: 'EqualsAny',
+                    IsRequired: true,
+                    Property: 'AudioChannels',
+                    Value: '2|6|8'
                 },
                 ...TARGET_NEUTRAL_AUDIO_SAMPLE_RATE_CONDITIONS
             ],

@@ -25,7 +25,6 @@ export function registerRequiredCustomAudioDecoder(
 ): Promise<void> {
     switch (codec) {
         case 'ac3':
-        case 'eac3':
             return registerCustomAudioDecoder();
         case 'ulaw':
         case 'alaw':

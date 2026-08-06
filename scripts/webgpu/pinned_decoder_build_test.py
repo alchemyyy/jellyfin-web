@@ -253,11 +253,26 @@ class PinnedDecoderBuildTest(unittest.TestCase):
             / "ffmpeg_truehd_bridge.c",
         )
 
+        eac3_namespace = runpy.run_path(
+            str(SCRIPT_DIRECTORY / "build_eac3_decoder.py")
+        )
+        eac3_layout = eac3_namespace["resolve_build_layout"]()
+        self.assertEqual(eac3_layout[0], REPOSITORY_ROOT)
+        self.assertEqual(
+            eac3_layout[1],
+            REPOSITORY_ROOT
+            / "scripts"
+            / "webgpu"
+            / "eac3"
+            / "ffmpeg_eac3_bridge.c",
+        )
+
     def test_distributed_build_layouts_use_only_sibling_materials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             for file_name in (
                 "build_dts_decoder.py",
+                "build_eac3_decoder.py",
                 "build_truehd_decoder.py",
                 "pinned_ffmpeg_build.py",
             ):
@@ -267,6 +282,10 @@ class PinnedDecoderBuildTest(unittest.TestCase):
                 temporary_root / "libdcadec_bridge.c",
             )
             shutil.copy2(
+                SCRIPT_DIRECTORY / "eac3" / "ffmpeg_eac3_bridge.c",
+                temporary_root / "ffmpeg_eac3_bridge.c",
+            )
+            shutil.copy2(
                 SCRIPT_DIRECTORY / "truehd" / "ffmpeg_truehd_bridge.c",
                 temporary_root / "ffmpeg_truehd_bridge.c",
             )
@@ -274,11 +293,15 @@ class PinnedDecoderBuildTest(unittest.TestCase):
             dts_namespace = runpy.run_path(
                 str(temporary_root / "build_dts_decoder.py")
             )
+            eac3_namespace = runpy.run_path(
+                str(temporary_root / "build_eac3_decoder.py")
+            )
             truehd_namespace = runpy.run_path(
                 str(temporary_root / "build_truehd_decoder.py")
             )
             for namespace, bridge_name in (
                 (dts_namespace, "libdcadec_bridge.c"),
+                (eac3_namespace, "ffmpeg_eac3_bridge.c"),
                 (truehd_namespace, "ffmpeg_truehd_bridge.c"),
             ):
                 layout = namespace["resolve_build_layout"]()

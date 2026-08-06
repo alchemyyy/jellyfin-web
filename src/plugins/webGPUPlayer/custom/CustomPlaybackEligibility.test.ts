@@ -3015,6 +3015,46 @@ describe('CustomPlaybackEligibility', () => {
         }
     });
 
+    it('selects decoded PCM for exact standard 7.1 E-AC-3 metadata', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].ChannelLayout = '7.1';
+        mediaSource.MediaStreams[1].Channels = 8;
+        mediaSource.MediaStreams[1].Codec = 'eac3';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({
+            audioOutputMode: 'decoded-pcm',
+            audioSourceChannelCount: 8,
+            audioTrackIndex: 0,
+            eligible: true
+        });
+    });
+
+    it.each([ undefined, '7.1(wide)', '7.1(wide-side)', '5.1' ] as const)(
+        'rejects ambiguous eight-channel E-AC-3 metadata layout %s',
+        channelLayout => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[1].ChannelLayout = channelLayout;
+            mediaSource.MediaStreams[1].Channels = 8;
+            mediaSource.MediaStreams[1].Codec = 'eac3';
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+        }
+    );
+
     it.each([
         [ 'DTS', 6, 48_000 ],
         [ 'DTS 96/24', 6, 96_000 ],

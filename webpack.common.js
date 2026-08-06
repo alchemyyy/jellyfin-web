@@ -160,6 +160,53 @@ const config = {
                 {
                     from: path.resolve(
                         __dirname,
+                        'scripts/webgpu/eac3/artifacts/COPYING.LGPLv2.1'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/COPYING.LGPLv2.1'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/eac3/artifacts/REVISION'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/REVISION',
+                    toType: 'file'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/truehd/artifacts/ffmpeg-source.tar.gz'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/ffmpeg-source.tar.gz'
+                },
+                {
+                    from: path.resolve(__dirname, 'LICENSE'),
+                    to: 'libraries/ffmpeg-eac3/LICENSE.bridge.GPL-2.0.txt'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/eac3/ffmpeg_eac3_bridge.c'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/ffmpeg_eac3_bridge.c'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/build_eac3_decoder.py'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/build_eac3_decoder.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
+                        'scripts/webgpu/pinned_ffmpeg_build.py'
+                    ),
+                    to: 'libraries/ffmpeg-eac3/pinned_ffmpeg_build.py'
+                },
+                {
+                    from: path.resolve(
+                        __dirname,
                         'scripts/webgpu/dts/artifacts/COPYING.LGPLv2.1'
                     ),
                     to: 'libraries/libdcadec/COPYING.LGPLv2.1'

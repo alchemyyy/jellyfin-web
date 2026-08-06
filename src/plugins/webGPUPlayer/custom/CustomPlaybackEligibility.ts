@@ -47,6 +47,7 @@ import {
 } from './CustomContainerCodecSupport';
 import {
     isSupportedDTSInputRoute,
+    isSupportedEAC3InputRoute,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import {
@@ -137,6 +138,7 @@ type MediaStream = {
     AverageFrameRate?: unknown
     BitDepth?: unknown
     BitRate?: unknown
+    ChannelLayout?: unknown
     Channels?: unknown
     Codec?: unknown
     Height?: unknown
@@ -495,6 +497,13 @@ function hasQualifiedDecodedPCMInputLayout(
     if (isCustomMediabunnyPCMAudioCodec(codec)) {
         return true;
     }
+    if (codec === 'eac3') {
+        return isSupportedEAC3InputRoute(
+            stream.Channels,
+            stream.SampleRate,
+            stream.ChannelLayout
+        );
+    }
     if (codec === 'dts') {
         const profile = normalizeMetadataToken(stream.Profile);
         if (capabilities.bundledDTS?.status !== 'supported') {
@@ -517,7 +526,6 @@ function hasQualifiedDecodedPCMInputLayout(
 
     switch (codec) {
         case 'ac3':
-        case 'eac3':
             return true;
         case 'aac':
         case 'flac':

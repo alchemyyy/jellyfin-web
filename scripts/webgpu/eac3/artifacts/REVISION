@@ -1,0 +1,9 @@
+FFmpeg commit: a59498db085e3d635532397128550141ab87408a
+FFmpeg source SHA-256: fff68fd0b5061b1befba1cd9fc95357d9fc85eb3201bfed597c70d5f8033567e
+FFmpeg source archive: ../../truehd/artifacts/ffmpeg-source.tar.gz
+Emscripten: 4.0.13
+Emscripten revision: 2659582941bef14008476903f48941909db1b196
+Configured license: LGPL version 2.1 or later
+Bridge SHA-256: 492718e4d174d6a7c0ec8542f7ec8523664aacc237070ec5579f09da67041f16
+Runtime module SHA-256: ec7fbb3677f1beafc2f5dc3ea0878940ed4f24d574578ebb99bc99ba3960199f
+Isolated reproducible rebuild: verified

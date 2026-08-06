@@ -47,6 +47,11 @@ const PINNED_DTS_BRIDGE_SHA256 =
     'c559bfbe26cdda5d1a865df3124df788d6c9387d1edd46163ee2083e450d78d8';
 const PINNED_DTS_RUNTIME_SHA256 =
     'baffcd99728856cd7f8300e92425b0c59d444988e7d3370aa5dc9de72b446073';
+const EAC3_IMPLEMENTATION_SENTINEL = 'jellyfin_eac3_send_packet';
+const PINNED_EAC3_BRIDGE_SHA256 =
+    '492718e4d174d6a7c0ec8542f7ec8523664aacc237070ec5579f09da67041f16';
+const PINNED_EAC3_RUNTIME_SHA256 =
+    'ec7fbb3677f1beafc2f5dc3ea0878940ed4f24d574578ebb99bc99ba3960199f';
 const PINNED_TRUEHD_BRIDGE_SHA256 =
     'afc1314afac62f3985a814706ef2ec471d2015b61816cb5df751e9dae4711bf2';
 const PINNED_TRUEHD_RUNTIME_SHA256 =
@@ -145,6 +150,33 @@ const LEGACY_VIDEO_FILES = Object.freeze([
     [
         'scripts/webgpu/legacy-video-capability-fixtures/vc1-advanced-progressive-1920x1080.mkv',
         'libraries/legacy-video/vc1-advanced-progressive-1920x1080-qualification.bin'
+    ]
+]);
+const EAC3_FILES = Object.freeze([
+    [
+        'scripts/webgpu/eac3/artifacts/COPYING.LGPLv2.1',
+        'libraries/ffmpeg-eac3/COPYING.LGPLv2.1'
+    ],
+    [
+        'scripts/webgpu/eac3/artifacts/REVISION',
+        'libraries/ffmpeg-eac3/REVISION'
+    ],
+    [
+        'scripts/webgpu/truehd/artifacts/ffmpeg-source.tar.gz',
+        'libraries/ffmpeg-eac3/ffmpeg-source.tar.gz'
+    ],
+    [ 'LICENSE', 'libraries/ffmpeg-eac3/LICENSE.bridge.GPL-2.0.txt' ],
+    [
+        'scripts/webgpu/eac3/ffmpeg_eac3_bridge.c',
+        'libraries/ffmpeg-eac3/ffmpeg_eac3_bridge.c'
+    ],
+    [
+        'scripts/webgpu/build_eac3_decoder.py',
+        'libraries/ffmpeg-eac3/build_eac3_decoder.py'
+    ],
+    [
+        'scripts/webgpu/pinned_ffmpeg_build.py',
+        'libraries/ffmpeg-eac3/pinned_ffmpeg_build.py'
     ]
 ]);
 const OPENJPEG_FILES = Object.freeze([
@@ -252,6 +284,31 @@ async function createArtifactFixture() {
         repositoryRoot,
         'dist/libraries/libdcadec/REVISION',
         dtsRevision
+    );
+    for (const [ sourcePath, servedPath ] of EAC3_FILES) {
+        const contents = `artifact:${sourcePath}`;
+        await writeFixtureFile(repositoryRoot, sourcePath, contents);
+        await writeFixtureFile(repositoryRoot, join('dist', servedPath), contents);
+    }
+    const eac3Revision = [
+        `FFmpeg commit: ${PINNED_FFMPEG_COMMIT}`,
+        `FFmpeg source SHA-256: ${PINNED_FFMPEG_SOURCE_SHA256}`,
+        `Emscripten: ${PINNED_EMSCRIPTEN_VERSION}`,
+        `Emscripten revision: ${PINNED_EMSCRIPTEN_REVISION}`,
+        'Configured license: LGPL version 2.1 or later',
+        `Bridge SHA-256: ${PINNED_EAC3_BRIDGE_SHA256}`,
+        `Runtime module SHA-256: ${PINNED_EAC3_RUNTIME_SHA256}`,
+        'Isolated reproducible rebuild: verified'
+    ].join('\n');
+    await writeFixtureFile(
+        repositoryRoot,
+        'scripts/webgpu/eac3/artifacts/REVISION',
+        eac3Revision
+    );
+    await writeFixtureFile(
+        repositoryRoot,
+        'dist/libraries/ffmpeg-eac3/REVISION',
+        eac3Revision
     );
     for (const [ sourcePath, servedPath ] of TRUEHD_FILES) {
         const contents = `artifact:${sourcePath}`;
@@ -374,6 +431,11 @@ async function createArtifactFixture() {
     );
     await writeFixtureFile(
         repositoryRoot,
+        'dist/eac3.chunk.js',
+        `const decoderExport = "${EAC3_IMPLEMENTATION_SENTINEL}";`
+    );
+    await writeFixtureFile(
+        repositoryRoot,
         'dist/truehd.chunk.js',
         `const decoderExport = "${TRUEHD_IMPLEMENTATION_SENTINEL}";`
     );
@@ -392,6 +454,8 @@ test('accepts an ordinary build with Mediabunny AC-3 and its license', async () 
     assert.equal(result.dolbyVision.length, DOLBY_VISION_FILES.length);
     assert.equal(result.dts.implementationAssets.length, 1);
     assert.equal(result.dts.verifiedArtifacts.length, DTS_FILES.length);
+    assert.equal(result.eac3.implementationAssets.length, 1);
+    assert.equal(result.eac3.verifiedArtifacts.length, EAC3_FILES.length);
     assert.equal(result.hevc.length, HEVC_FILES.length + 1);
     assert.equal(result.legacyVideo.length, LEGACY_VIDEO_FILES.length + 1);
     assert.equal(result.pgsWorker.path, PGS_WORKER_SERVED);
@@ -757,6 +821,54 @@ test('requires the DTS decoder in executable JavaScript', async () => {
     await assert.rejects(
         verifyCustomCodecArtifacts(fixture),
         /ordinary build is missing the bundled DTS decoder/
+    );
+});
+
+test('rejects a copied E-AC-3 artifact that differs from its pinned source', async () => {
+    const fixture = await createArtifactFixture();
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        'dist/libraries/ffmpeg-eac3/REVISION',
+        'corrupt'
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts(fixture),
+        /E-AC-3 artifact hash mismatch/
+    );
+});
+
+test('rejects matching E-AC-3 revisions without exact release pins', async () => {
+    const fixture = await createArtifactFixture();
+    const incompleteRevision = 'Isolated reproducible rebuild: verified';
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        'scripts/webgpu/eac3/artifacts/REVISION',
+        incompleteRevision
+    );
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        'dist/libraries/ffmpeg-eac3/REVISION',
+        incompleteRevision
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts(fixture),
+        /E-AC-3 revision is missing pin/
+    );
+});
+
+test('requires the E-AC-3 decoder in executable JavaScript', async () => {
+    const fixture = await createArtifactFixture();
+    await writeFixtureFile(
+        fixture.repositoryRoot,
+        'dist/eac3.chunk.js',
+        'const decoderExport = "missing";'
+    );
+
+    await assert.rejects(
+        verifyCustomCodecArtifacts(fixture),
+        /ordinary build is missing the bundled E-AC-3 decoder/
     );
 });
 

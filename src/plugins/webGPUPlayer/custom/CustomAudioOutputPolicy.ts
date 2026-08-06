@@ -14,6 +14,7 @@ import {
 } from './CustomAudioChannelLayout';
 import {
     DTS_SUPPORTED_INPUT_ROUTES,
+    EAC3_SUPPORTED_INPUT_ROUTES,
     TRUEHD_CAPABILITY_FIXTURE_ROUTES,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
@@ -56,6 +57,9 @@ const CUSTOM_STEREO_INPUT_CHANNEL_COUNTS: readonly number[] = [
 const CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
+];
+const CUSTOM_EAC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
+    ...new Set(EAC3_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount))
 ];
 const CUSTOM_DTS_INPUT_CHANNEL_COUNTS: readonly number[] = [
     ...new Set(DTS_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount))
@@ -106,11 +110,12 @@ export function getSupportedCustomAudioInputChannelCounts(
     switch (codec) {
         case 'aac':
         case 'ac3':
-        case 'eac3':
         case 'flac':
         case 'opus':
         case 'vorbis':
             return CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS;
+        case 'eac3':
+            return CUSTOM_EAC3_INPUT_CHANNEL_COUNTS;
         case 'dts':
             return CUSTOM_DTS_INPUT_CHANNEL_COUNTS;
         case 'mlp':
@@ -146,11 +151,12 @@ export function isSupportedCustomAudioInputLayout(
     switch (codec) {
         case 'aac':
         case 'ac3':
-        case 'eac3':
         case 'flac':
         case 'opus':
         case 'vorbis':
             return CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS.includes(channelCount);
+        case 'eac3':
+            return CUSTOM_EAC3_INPUT_CHANNEL_COUNTS.includes(channelCount);
         case 'mp3':
             return CUSTOM_STEREO_INPUT_CHANNEL_COUNTS.includes(channelCount);
         default:

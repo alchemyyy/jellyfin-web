@@ -9,6 +9,7 @@ const AC3_IMPLEMENTATION_SENTINEL = 'jellyfin-webgpu-mediabunny-ac3-v2';
 const AC3_LICENSE_PATH = 'libraries/mediabunny-ac3/LICENSE.txt';
 const AC3_PACKAGE_ASSET_PATTERN =
     /(?:^|\/)node_modules\.@mediabunny\.ac3\.[a-f0-9]{8,}\.chunk\.js$/iu;
+const EAC3_IMPLEMENTATION_SENTINEL = 'jellyfin_eac3_send_packet';
 const DOLBY_VISION_ARTIFACTS = Object.freeze([
     {
         servedPath: 'libraries/libdovi/dovi-rpu-parser.wasm',
@@ -36,6 +37,10 @@ const PINNED_DTS_BRIDGE_SHA256 =
     'c559bfbe26cdda5d1a865df3124df788d6c9387d1edd46163ee2083e450d78d8';
 const PINNED_DTS_RUNTIME_SHA256 =
     'baffcd99728856cd7f8300e92425b0c59d444988e7d3370aa5dc9de72b446073';
+const PINNED_EAC3_BRIDGE_SHA256 =
+    '492718e4d174d6a7c0ec8542f7ec8523664aacc237070ec5579f09da67041f16';
+const PINNED_EAC3_RUNTIME_SHA256 =
+    'ec7fbb3677f1beafc2f5dc3ea0878940ed4f24d574578ebb99bc99ba3960199f';
 const PINNED_TRUEHD_BRIDGE_SHA256 =
     'afc1314afac62f3985a814706ef2ec471d2015b61816cb5df751e9dae4711bf2';
 const PINNED_TRUEHD_RUNTIME_SHA256 =
@@ -125,6 +130,36 @@ const HEVC_ARTIFACTS = Object.freeze([
     {
         servedPath: 'libraries/hevcjs/main10-4k-qualification.bin',
         sourcePath: 'scripts/webgpu/hevc-capability-fixtures/main10-4k-complex.hevc'
+    }
+]);
+const EAC3_ARTIFACTS = Object.freeze([
+    {
+        servedPath: 'libraries/ffmpeg-eac3/COPYING.LGPLv2.1',
+        sourcePath: 'scripts/webgpu/eac3/artifacts/COPYING.LGPLv2.1'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/REVISION',
+        sourcePath: 'scripts/webgpu/eac3/artifacts/REVISION'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/ffmpeg-source.tar.gz',
+        sourcePath: 'scripts/webgpu/truehd/artifacts/ffmpeg-source.tar.gz'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/LICENSE.bridge.GPL-2.0.txt',
+        sourcePath: 'LICENSE'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/ffmpeg_eac3_bridge.c',
+        sourcePath: 'scripts/webgpu/eac3/ffmpeg_eac3_bridge.c'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/build_eac3_decoder.py',
+        sourcePath: 'scripts/webgpu/build_eac3_decoder.py'
+    },
+    {
+        servedPath: 'libraries/ffmpeg-eac3/pinned_ffmpeg_build.py',
+        sourcePath: 'scripts/webgpu/pinned_ffmpeg_build.py'
     }
 ]);
 const PGS_WORKER_ARTIFACT = Object.freeze({
@@ -497,6 +532,60 @@ async function verifyDTSArtifacts(repositoryRoot, distDirectory) {
     return { implementationAssets, verifiedArtifacts };
 }
 
+async function verifyEAC3Artifacts(repositoryRoot, distDirectory) {
+    const verifiedArtifacts = [];
+    for (const artifact of EAC3_ARTIFACTS) {
+        const sourceArtifact = join(repositoryRoot, artifact.sourcePath);
+        const servedArtifact = join(distDirectory, artifact.servedPath);
+        await requireFile(sourceArtifact);
+        await requireFile(servedArtifact);
+        const [ sourceSHA256, servedSHA256 ] = await Promise.all([
+            hashFile(sourceArtifact),
+            hashFile(servedArtifact)
+        ]);
+        if (sourceSHA256 !== servedSHA256) {
+            throw new Error(`E-AC-3 artifact hash mismatch: ${artifact.servedPath}`);
+        }
+        verifiedArtifacts.push({
+            path: artifact.servedPath.replaceAll('\\', '/'),
+            sha256: servedSHA256
+        });
+    }
+
+    const revision = await readFile(
+        join(repositoryRoot, 'scripts/webgpu/eac3/artifacts/REVISION'),
+        'utf8'
+    );
+    requireRevisionMarkers(revision, [
+        PINNED_FFMPEG_COMMIT,
+        PINNED_FFMPEG_SOURCE_SHA256,
+        PINNED_EMSCRIPTEN_VERSION,
+        PINNED_EMSCRIPTEN_REVISION,
+        PINNED_EAC3_BRIDGE_SHA256,
+        PINNED_EAC3_RUNTIME_SHA256,
+        'LGPL version 2.1 or later',
+        'Isolated reproducible rebuild: verified'
+    ], 'E-AC-3');
+
+    const implementationAssets = [];
+    const files = await listFiles(distDirectory);
+    for (const filePath of files) {
+        if (!/\.js$/i.test(filePath)) {
+            continue;
+        }
+        const contents = await readFile(filePath, 'utf8');
+        if (contents.includes(EAC3_IMPLEMENTATION_SENTINEL)) {
+            implementationAssets.push(
+                relative(distDirectory, filePath).replaceAll('\\', '/')
+            );
+        }
+    }
+    if (implementationAssets.length === 0) {
+        throw new Error('The ordinary build is missing the bundled E-AC-3 decoder');
+    }
+    return { implementationAssets, verifiedArtifacts };
+}
+
 async function verifyTrueHDArtifacts(repositoryRoot, distDirectory) {
     const verifiedArtifacts = [];
     for (const artifact of TRUEHD_ARTIFACTS) {
@@ -635,6 +724,7 @@ export async function verifyCustomCodecArtifacts(options = {}) {
         ac3,
         dolbyVision,
         dts,
+        eac3,
         legacyVideo,
         pgsWorker,
         openjpeg,
@@ -644,6 +734,7 @@ export async function verifyCustomCodecArtifacts(options = {}) {
         verifyAC3Artifacts(repositoryRoot, distDirectory),
         verifyDolbyVisionArtifacts(repositoryRoot, distDirectory),
         verifyDTSArtifacts(repositoryRoot, distDirectory),
+        verifyEAC3Artifacts(repositoryRoot, distDirectory),
         verifyLegacyVideoArtifacts(repositoryRoot, distDirectory),
         verifyPGSWorkerArtifact(repositoryRoot, distDirectory),
         verifyOpenJPEGArtifacts(repositoryRoot, distDirectory),
@@ -653,6 +744,7 @@ export async function verifyCustomCodecArtifacts(options = {}) {
         ac3,
         dolbyVision,
         dts,
+        eac3,
         hevc,
         legacyVideo,
         openjpeg,
