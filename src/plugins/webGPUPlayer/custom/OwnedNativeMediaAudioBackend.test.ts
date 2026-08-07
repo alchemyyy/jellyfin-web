@@ -94,6 +94,11 @@ class FakeAudioElement extends EventTarget {
     public removeCalls = 0;
     public readonly removeAttribute = vi.fn();
     public readonly setAttribute = vi.fn();
+    public readonly setSinkId = vi.fn((sinkId: string): Promise<void> => {
+        this.sinkId = sinkId;
+        return Promise.resolve();
+    });
+    public sinkId = '';
     public src = '';
     public volume = 1;
 
@@ -185,6 +190,7 @@ describe('OwnedNativeMediaAudioBackend', () => {
         await startBackend(harness);
 
         expect(harness.audioElement.src).toBe('blob:native-audio');
+        expect(harness.audioElement.setSinkId).toHaveBeenCalledWith('');
         expect(harness.mediaSource.duration).toBe(60);
         expect(await harness.backend.appendInitializationSegment(
             1,

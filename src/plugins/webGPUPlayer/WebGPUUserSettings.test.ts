@@ -59,7 +59,8 @@ describe('WebGPUUserSettings', () => {
                     outputGain: 30,
                     surroundLevel: -2
                 },
-                forceStereoDownmix: true
+                forceStereoDownmix: true,
+                outputDeviceId: 'selected-output'
             },
             render: {
                 automaticInputPeakNits: false,
@@ -89,7 +90,8 @@ describe('WebGPUUserSettings', () => {
                 surroundLevel: 0,
                 version: 1
             },
-            forceStereoDownmix: true
+            forceStereoDownmix: true,
+            outputDeviceId: null
         });
         expect(normalized.render.settings.display).toEqual({
             brightness: 1,
@@ -113,7 +115,8 @@ describe('WebGPUUserSettings', () => {
             ...settings,
             audio: {
                 ...settings.audio,
-                forceStereoDownmix: true
+                forceStereoDownmix: true,
+                outputDeviceId: 'per-origin-output-id'
             }
         };
 
@@ -125,6 +128,51 @@ describe('WebGPUUserSettings', () => {
             false
         );
         expect(loadWebGPUUserSettings(storage)).toEqual(saved);
+    });
+
+    it('migrates v1 settings without losing render or downmix values', () => {
+        const defaults = createDefaultWebGPUUserSettings();
+        const migrated = normalizeWebGPUUserSettings({
+            ...defaults,
+            audio: {
+                downmix: {
+                    ...defaults.audio.downmix,
+                    centerLevel: 0.5
+                },
+                forceStereoDownmix: true,
+                outputDeviceId: 'selected-output'
+            },
+            render: {
+                ...defaults.render,
+                automaticInputPeakNits: false
+            },
+            version: 1
+        });
+
+        expect(migrated).toMatchObject({
+            audio: {
+                downmix: { centerLevel: 0.5 },
+                forceStereoDownmix: true,
+                outputDeviceId: null
+            },
+            render: { automaticInputPeakNits: false },
+            version: 2
+        });
+    });
+
+    it('rejects malformed and synthetic output device IDs', () => {
+        const defaults = createDefaultWebGPUUserSettings();
+        const syntheticDefault = normalizeWebGPUUserSettings({
+            ...defaults,
+            audio: { ...defaults.audio, outputDeviceId: 'default' }
+        });
+        const oversized = normalizeWebGPUUserSettings({
+            ...defaults,
+            audio: { ...defaults.audio, outputDeviceId: 'x'.repeat(1_025) }
+        });
+
+        expect(syntheticDefault.audio.outputDeviceId).toBeNull();
+        expect(oversized.audio.outputDeviceId).toBeNull();
     });
 
     it('applies detected input peaks only in automatic mode', () => {
@@ -163,7 +211,8 @@ describe('WebGPUUserSettings', () => {
                     surroundLevel: 0.2,
                     version: 1
                 },
-                forceStereoDownmix: true
+                forceStereoDownmix: true,
+                outputDeviceId: 'selected-output'
             },
             render: {
                 automaticInputPeakNits: false,

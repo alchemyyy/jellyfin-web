@@ -13,6 +13,9 @@ import 'elements/emby-button/paper-icon-button-light';
 
 import './playerstats.scss';
 
+const SESSION_CACHE_DURATION_MS = 10000;
+const RENDER_THROTTLE_MS = 700;
+
 function init(instance) {
     const parent = document.createElement('div');
 
@@ -91,24 +94,88 @@ function renderStats(elem, categories) {
     }).join('');
 }
 
-function getSession(instance, player) {
-    const now = new Date().getTime();
+function getPlaybackIdentity(player) {
+    const currentItem = playbackManager.currentItem(player) || {};
+    const currentMediaSource = playbackManager.currentMediaSource(player) || {};
 
-    if ((now - (instance.lastSessionTime || 0)) < 10000) {
+    return {
+        itemId: currentItem.Id,
+        mediaSourceId: currentMediaSource.Id,
+        playMethod: playbackManager.playMethod(player),
+        player: player,
+        playSessionId: playbackManager.playSessionId(player),
+        serverId: currentItem.ServerId
+    };
+}
+
+function playbackIdentitiesMatch(firstIdentity, secondIdentity) {
+    return Boolean(firstIdentity && secondIdentity)
+        && firstIdentity.itemId === secondIdentity.itemId
+        && firstIdentity.mediaSourceId === secondIdentity.mediaSourceId
+        && firstIdentity.playMethod === secondIdentity.playMethod
+        && firstIdentity.player === secondIdentity.player
+        && firstIdentity.playSessionId === secondIdentity.playSessionId
+        && firstIdentity.serverId === secondIdentity.serverId;
+}
+
+// SessionInfo omits PlaybackInfo's PlaySessionId, so match its stable route fields instead
+function findCurrentSession(sessions, playbackIdentity) {
+    const hasStableDiscriminator = Boolean(
+        playbackIdentity.itemId
+        || playbackIdentity.mediaSourceId
+        || playbackIdentity.playMethod
+    );
+
+    if (!hasStableDiscriminator) {
+        return undefined;
+    }
+
+    return sessions.find(function (session) {
+        const playState = session.PlayState || {};
+
+        return (!playbackIdentity.itemId || session.NowPlayingItem?.Id === playbackIdentity.itemId)
+            && (!playbackIdentity.mediaSourceId || playState.MediaSourceId === playbackIdentity.mediaSourceId)
+            && (!playbackIdentity.playMethod || playState.PlayMethod === playbackIdentity.playMethod);
+    });
+}
+
+function getSession(instance, player, playbackIdentity) {
+    const now = Date.now();
+
+    if (playbackIdentitiesMatch(playbackIdentity, instance.lastSessionIdentity)
+            && (now - (instance.lastSessionTime || 0)) < SESSION_CACHE_DURATION_MS) {
         return Promise.resolve(instance.lastSession);
     }
 
-    const apiClient = ServerConnections.getApiClient(playbackManager.currentItem(player).ServerId);
+    if (!playbackIdentity.serverId) {
+        return Promise.resolve({});
+    }
+
+    const apiClient = ServerConnections.getApiClient(playbackIdentity.serverId);
+    instance.sessionRequestId = (instance.sessionRequestId || 0) + 1;
+    const sessionRequestId = instance.sessionRequestId;
 
     return apiClient.getSessions({
         deviceId: apiClient.deviceId()
     }).then(function (sessions) {
-        instance.lastSession = sessions[0] || {};
-        instance.lastSessionTime = new Date().getTime();
+        if (!playbackIdentitiesMatch(playbackIdentity, getPlaybackIdentity(player))) {
+            return {};
+        }
 
-        return Promise.resolve(instance.lastSession);
+        const session = findCurrentSession(sessions, playbackIdentity);
+        if (!session) {
+            return {};
+        }
+
+        if (instance.sessionRequestId === sessionRequestId) {
+            instance.lastSession = session;
+            instance.lastSessionIdentity = playbackIdentity;
+            instance.lastSessionTime = Date.now();
+        }
+
+        return session;
     }, function () {
-        return Promise.resolve({});
+        return {};
     });
 }
 
@@ -374,9 +441,9 @@ function getSyncPlayStats() {
     return syncStats;
 }
 
-function getStats(instance, player) {
+function getStats(instance, player, playbackIdentity) {
     const statsPromise = player.getStats ? player.getStats() : Promise.resolve({});
-    const sessionPromise = getSession(instance, player);
+    const sessionPromise = getSession(instance, player, playbackIdentity);
 
     return Promise.all([statsPromise, sessionPromise]).then(function (responses) {
         const playerStatsResult = responses[0];
@@ -403,7 +470,9 @@ function getStats(instance, player) {
 
         const playerInfos = [];
         playerInfos.push(player.name);
-        playerInfos.push(`(${localizedDisplayMethod})`);
+        if (localizedDisplayMethod) {
+            playerInfos.push(`(${localizedDisplayMethod})`);
+        }
         baseCategory.stats.push({
             label: globalize.translate('LabelPlayer'),
             value: playerInfos.join('  ')
@@ -448,15 +517,31 @@ function getStats(instance, player) {
 }
 
 function renderPlayerStats(instance, player) {
-    const now = new Date().getTime();
+    if (!instance._enabled) {
+        return;
+    }
 
-    if ((now - (instance.lastRender || 0)) < 700) {
+    const now = Date.now();
+    const playbackIdentity = getPlaybackIdentity(player);
+    const playbackChanged = !playbackIdentitiesMatch(playbackIdentity, instance.lastRenderIdentity);
+
+    if (!playbackChanged && (now - (instance.lastRender || 0)) < RENDER_THROTTLE_MS) {
         return;
     }
 
     instance.lastRender = now;
+    instance.lastRenderIdentity = playbackIdentity;
+    instance.renderRequestId = (instance.renderRequestId || 0) + 1;
+    const renderRequestId = instance.renderRequestId;
 
-    getStats(instance, player).then(function (stats) {
+    getStats(instance, player, playbackIdentity).then(function (stats) {
+        if (!instance._enabled
+                || instance.renderRequestId !== renderRequestId
+                || instance.options?.player !== player
+                || !playbackIdentitiesMatch(playbackIdentity, getPlaybackIdentity(player))) {
+            return;
+        }
+
         const elem = instance.element;
         if (!elem) {
             return;
@@ -483,6 +568,19 @@ function unbindEvents(instance, player) {
     }
 }
 
+function invalidateStatsRequests(instance) {
+    instance.lastRender = 0;
+    instance.lastRenderIdentity = null;
+    instance.renderRequestId = (instance.renderRequestId || 0) + 1;
+}
+
+function clearRenderedStats(instance) {
+    const statsElement = instance.element?.querySelector('.playerStats-stats');
+    if (statsElement) {
+        statsElement.innerHTML = '';
+    }
+}
+
 class PlayerStats {
     constructor(options) {
         this.options = options;
@@ -503,13 +601,19 @@ class PlayerStats {
             return;
         }
 
+        if (this._enabled === enabled) {
+            return;
+        }
+
         this._enabled = enabled;
+        invalidateStatsRequests(this);
         if (enabled) {
             this.element.classList.remove('hide');
             bindEvents(this, options.player);
         } else {
             this.element.classList.add('hide');
             unbindEvents(this, options.player);
+            clearRenderedStats(this);
         }
     }
 
@@ -519,6 +623,9 @@ class PlayerStats {
 
     destroy() {
         const options = this.options;
+
+        invalidateStatsRequests(this);
+        this._enabled = false;
 
         if (options) {
             this.options = null;

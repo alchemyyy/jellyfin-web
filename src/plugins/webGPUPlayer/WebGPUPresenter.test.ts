@@ -215,6 +215,93 @@ type SurfaceHarness = {
     surface: PresentationSurface
 };
 
+let resizeObserverMocks: TestResizeObserver[] = [];
+
+class TestResizeObserver implements ResizeObserver {
+    private readonly callback: ResizeObserverCallback;
+    private readonly observedElements = new Set<Element>();
+
+    constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        resizeObserverMocks.push(this);
+    }
+
+    disconnect(): void {
+        this.observedElements.clear();
+    }
+
+    observe(target: Element): void {
+        this.observedElements.add(target);
+    }
+
+    unobserve(target: Element): void {
+        this.observedElements.delete(target);
+    }
+
+    invokeCallback(): void {
+        this.callback([], this);
+    }
+
+    notify(target: Element): void {
+        if (this.observedElements.has(target)) {
+            this.invokeCallback();
+        }
+    }
+}
+
+function notifyResizeObservers(target: Element): void {
+    for (const resizeObserver of resizeObserverMocks) {
+        resizeObserver.notify(target);
+    }
+}
+
+let mutationObserverMocks: TestMutationObserver[] = [];
+
+class TestMutationObserver implements MutationObserver {
+    private readonly callback: MutationCallback;
+    private readonly observedNodes = new Set<Node>();
+
+    constructor(callback: MutationCallback) {
+        this.callback = callback;
+        mutationObserverMocks.push(this);
+    }
+
+    disconnect(): void {
+        this.observedNodes.clear();
+    }
+
+    observe(target: Node): void {
+        this.observedNodes.add(target);
+    }
+
+    takeRecords(): MutationRecord[] {
+        return [];
+    }
+
+    invokeCallback(): void {
+        this.callback([], this);
+    }
+
+    notify(target: Node): boolean {
+        if (!this.observedNodes.has(target)) {
+            return false;
+        }
+
+        this.invokeCallback();
+        return true;
+    }
+}
+
+function notifyMutationObservers(target: Node): number {
+    let notificationCount = 0;
+    for (const mutationObserver of mutationObserverMocks) {
+        if (mutationObserver.notify(target)) {
+            notificationCount += 1;
+        }
+    }
+    return notificationCount;
+}
+
 const originalCanvasGetContext = Object.getOwnPropertyDescriptor(
     HTMLCanvasElement.prototype,
     'getContext'
@@ -224,6 +311,7 @@ const originalGPU = Object.getOwnPropertyDescriptor(navigator, 'gpu');
 const originalGPUBufferUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUBufferUsage');
 const originalGPUTextureUsage = Object.getOwnPropertyDescriptor(globalThis, 'GPUTextureUsage');
 const originalGPUValidationError = Object.getOwnPropertyDescriptor(globalThis, 'GPUValidationError');
+const originalMutationObserver = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver');
 const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
 const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
 
@@ -601,6 +689,8 @@ const VIDEO_READY_STATE_CURRENT_DATA = 2;
 
 describe('WebGPUPresenter', () => {
     beforeEach(() => {
+        mutationObserverMocks = [];
+        resizeObserverMocks = [];
         webSettingsMockState.hdrToneMappingEnabled = false;
         rawHDRAuthorizationMockState.authorized = true;
         rawHDRAuthorizationMockState.prewarmCalls = [];
@@ -634,12 +724,13 @@ describe('WebGPUPresenter', () => {
             // eslint-disable-next-line @typescript-eslint/naming-convention
             value: { COPY_DST: 2, TEXTURE_BINDING: 4 }
         });
+        Object.defineProperty(globalThis, 'MutationObserver', {
+            configurable: true,
+            value: TestMutationObserver
+        });
         Object.defineProperty(globalThis, 'ResizeObserver', {
             configurable: true,
-            value: class {
-                disconnect = vi.fn();
-                observe = vi.fn();
-            }
+            value: TestResizeObserver
         });
         vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     });
@@ -654,6 +745,7 @@ describe('WebGPUPresenter', () => {
         restoreProperty(globalThis, 'GPUBufferUsage', originalGPUBufferUsage);
         restoreProperty(globalThis, 'GPUTextureUsage', originalGPUTextureUsage);
         restoreProperty(globalThis, 'GPUValidationError', originalGPUValidationError);
+        restoreProperty(globalThis, 'MutationObserver', originalMutationObserver);
         restoreProperty(globalThis, 'ResizeObserver', originalResizeObserver);
         restoreProperty(window, 'devicePixelRatio', originalDevicePixelRatio);
         restoreProperty(window, 'isSecureContext', originalSecureContext);
@@ -1105,6 +1197,435 @@ describe('WebGPUPresenter', () => {
         presenter.endSession(3);
         window.dispatchEvent(new Event('resize'));
         expect(refreshHandler).toHaveBeenCalledTimes(2);
+    });
+
+    it('tracks ResizeObserver geometry changes without refreshing an unchanged layout', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        let layoutHeight = 720;
+        let layoutWidth = 1_280;
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, get: (): number => layoutHeight },
+            clientWidth: { configurable: true, get: (): number => layoutWidth }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const canvas = surfaceHarness.surface.container.querySelector('canvas');
+
+        notifyResizeObservers(surfaceHarness.surface.video);
+        expect(refreshHandler).not.toHaveBeenCalled();
+
+        layoutHeight = 225;
+        layoutWidth = 400;
+        notifyResizeObservers(surfaceHarness.surface.container);
+        expect(refreshHandler).toHaveBeenCalledOnce();
+        expect(canvas).toMatchObject({ height: 225, width: 400 });
+        expect(canvas?.style.height).toBe('225px');
+        expect(canvas?.style.width).toBe('400px');
+
+        layoutHeight = 720;
+        layoutWidth = 1_280;
+        notifyResizeObservers(surfaceHarness.surface.container);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+        expect(canvas).toMatchObject({ height: 720, width: 1_280 });
+        expect(canvas?.style.height).toBe('720px');
+        expect(canvas?.style.width).toBe('1280px');
+
+        notifyResizeObservers(surfaceHarness.surface.video);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+    });
+
+    it('restores transient animation geometry when the final motion event fires', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        let layoutHeight = 720;
+        let layoutWidth = 1_280;
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, get: (): number => layoutHeight },
+            clientWidth: { configurable: true, get: (): number => layoutWidth }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const canvas = surfaceHarness.surface.container.querySelector('canvas');
+
+        layoutHeight = 225;
+        layoutWidth = 400;
+        surfaceHarness.surface.container.dispatchEvent(
+            new Event('animationstart', { bubbles: true })
+        );
+        expect(refreshHandler).toHaveBeenCalledOnce();
+        expect(canvas).toMatchObject({ height: 225, width: 400 });
+
+        layoutHeight = 720;
+        layoutWidth = 1_280;
+        surfaceHarness.surface.container.dispatchEvent(
+            new Event('animationend', { bubbles: true })
+        );
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+        expect(canvas).toMatchObject({ height: 720, width: 1_280 });
+        expect(canvas?.style.height).toBe('720px');
+        expect(canvas?.style.width).toBe('1280px');
+    });
+
+    it('remeasures a restored surface on the first frame after seek', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        let layoutHeight = 720;
+        let layoutWidth = 1_280;
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, get: (): number => layoutHeight },
+            clientWidth: { configurable: true, get: (): number => layoutWidth }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn(), vi.fn());
+        const firstFrame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: firstFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const canvas = surfaceHarness.surface.container.querySelector('canvas');
+
+        layoutHeight = 225;
+        layoutWidth = 400;
+        presenter.refresh(1);
+        expect(canvas).toMatchObject({ height: 225, width: 400 });
+
+        layoutHeight = 720;
+        layoutWidth = 1_280;
+        presenter.seek(2);
+        const secondFrame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: secondFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(3),
+            outputMode: 'video-frame'
+        }, 2)).toBe(true);
+
+        expect(canvas).toMatchObject({ height: 720, width: 1_280 });
+        expect(canvas?.style.height).toBe('720px');
+        expect(canvas?.style.width).toBe('1280px');
+    });
+
+    it('observes object-fit and object-position changes without source dimension changes', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness(1_000, 1_000);
+        surfaceHarness.surface.video.style.objectFit = 'fill';
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const firstFrame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: firstFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(mutationObserverMocks).toHaveLength(1);
+        expect(gpuHarness.devices[0].renderPassSetViewport).toHaveBeenLastCalledWith(
+            0,
+            0,
+            1_000,
+            1_000,
+            0,
+            1
+        );
+        const videoRectangle = surfaceHarness.surface.video.getBoundingClientRect as MockFunction;
+        const rectangleCallCount = videoRectangle.mock.calls.length;
+
+        surfaceHarness.surface.video.style.objectFit = 'contain';
+        expect(window.getComputedStyle(surfaceHarness.surface.video).objectFit).toBe('contain');
+        expect(notifyMutationObservers(surfaceHarness.surface.video)).toBe(1);
+        expect(videoRectangle).toHaveBeenCalledTimes(rectangleCallCount + 1);
+        expect(refreshHandler).toHaveBeenCalledOnce();
+        surfaceHarness.surface.video.style.objectPosition = '50% 75%';
+        notifyMutationObservers(surfaceHarness.surface.video);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+
+        surfaceHarness.surface.video.classList.add('geometry-unchanged');
+        notifyMutationObservers(surfaceHarness.surface.video);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+
+        const secondFrame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: secondFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(3),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        expect(gpuHarness.devices[0].renderPassSetViewport).toHaveBeenLastCalledWith(
+            0,
+            328.125,
+            1_000,
+            562.5,
+            0,
+            1
+        );
+    });
+
+    it('observes instantaneous style and class changes on the surface ancestor chain', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        const surfaceAncestor = document.createElement('section');
+        document.body.appendChild(surfaceAncestor);
+        surfaceAncestor.appendChild(surfaceHarness.surface.container);
+        let layoutHeight = 720;
+        let layoutWidth = 1_280;
+        Object.defineProperties(surfaceHarness.surface.container, {
+            clientHeight: { configurable: true, get: (): number => layoutHeight },
+            clientWidth: { configurable: true, get: (): number => layoutWidth }
+        });
+        surfaceHarness.surface.container.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(
+            () => createRectangle(0, 0, layoutWidth, layoutHeight)
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const refreshHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), refreshHandler);
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const canvas = surfaceHarness.surface.container.querySelector('canvas');
+
+        layoutHeight = 225;
+        layoutWidth = 400;
+        surfaceAncestor.classList.add('compact-player-layout');
+        expect(notifyMutationObservers(surfaceAncestor)).toBe(1);
+        expect(refreshHandler).toHaveBeenCalledOnce();
+        expect(canvas).toMatchObject({ height: 225, width: 400 });
+
+        layoutHeight = 720;
+        layoutWidth = 1_280;
+        surfaceAncestor.style.transform = 'none';
+        expect(notifyMutationObservers(surfaceAncestor)).toBe(1);
+        expect(refreshHandler).toHaveBeenCalledTimes(2);
+        expect(canvas).toMatchObject({ height: 720, width: 1_280 });
+    });
+
+    it('moves presentation resources and observers when the surface is replaced', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const firstSurfaceHarness = createSurfaceHarness();
+        const secondSurfaceHarness = createSurfaceHarness(640, 360);
+        const addEventListenerSpy = vi.spyOn(
+            firstSurfaceHarness.surface.container,
+            'addEventListener'
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        presenter.startSession(1);
+        presenter.attach(firstSurfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            firstSurfaceHarness.requestVideoFrameCallback
+        ).toHaveBeenCalledOnce());
+        expect(firstSurfaceHarness.surface.container.querySelector(
+            '.webgpuPlayerCanvas'
+        )).toBeInstanceOf(HTMLCanvasElement);
+        const staleResizeObserver = resizeObserverMocks[0];
+        const staleMutationObserver = mutationObserverMocks[0];
+        const animationEndRegistration = addEventListenerSpy.mock.calls.find(
+            (call: unknown[]) => call[0] === 'animationend'
+        );
+        const staleMotionHandler = animationEndRegistration?.[1] as EventListener | undefined;
+        expect(staleResizeObserver).toBeDefined();
+        expect(staleMutationObserver).toBeDefined();
+        expect(staleMotionHandler).toBeDefined();
+
+        presenter.attach(secondSurfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            secondSurfaceHarness.requestVideoFrameCallback
+        ).toHaveBeenCalledOnce());
+
+        expect(firstSurfaceHarness.cancelVideoFrameCallback).toHaveBeenCalledWith(1);
+        expect(firstSurfaceHarness.surface.container.querySelector(
+            '.webgpuPlayerCanvas'
+        )).toBeNull();
+        expect(secondSurfaceHarness.surface.container.querySelector(
+            '.webgpuPlayerCanvas'
+        )).toBeInstanceOf(HTMLCanvasElement);
+        expect(contextHarness.unconfigure).toHaveBeenCalledOnce();
+        expect(contextHarness.configure).toHaveBeenCalledTimes(2);
+
+        firstSurfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+        expect(gpuHarness.devices[0].queueSubmit).not.toHaveBeenCalled();
+        secondSurfaceHarness.callbacks.get(1)?.(performance.now(), createFrameMetadata());
+        await vi.waitFor(() => expect(
+            secondSurfaceHarness.requestVideoFrameCallback
+        ).toHaveBeenCalledTimes(2));
+        const canvas = secondSurfaceHarness.surface.container.querySelector('canvas');
+        expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
+        expect(canvas).toMatchObject({
+            height: 360,
+            width: 640
+        });
+
+        Object.defineProperties(secondSurfaceHarness.surface.container, {
+            clientHeight: { configurable: true, value: 180 },
+            clientWidth: { configurable: true, value: 320 }
+        });
+        const secondContainerRectangle = vi.fn(
+            () => createRectangle(0, 0, 320, 180)
+        );
+        const secondVideoRectangle = vi.fn(
+            () => createRectangle(0, 0, 320, 180)
+        );
+        secondSurfaceHarness.surface.container.getBoundingClientRect = secondContainerRectangle;
+        secondSurfaceHarness.surface.video.getBoundingClientRect = secondVideoRectangle;
+
+        staleResizeObserver?.invokeCallback();
+        staleMutationObserver?.invokeCallback();
+        const staleMotionEvent = new Event('animationend');
+        Object.defineProperty(staleMotionEvent, 'target', {
+            configurable: true,
+            value: firstSurfaceHarness.surface.container
+        });
+        staleMotionHandler?.(staleMotionEvent);
+
+        expect(secondContainerRectangle).not.toHaveBeenCalled();
+        expect(secondVideoRectangle).not.toHaveBeenCalled();
+        expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
+        expect(canvas).toMatchObject({ height: 360, width: 640 });
+
+        notifyResizeObservers(secondSurfaceHarness.surface.container);
+        expect(secondContainerRectangle).toHaveBeenCalledOnce();
+        expect(secondVideoRectangle).toHaveBeenCalledOnce();
+        expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledTimes(2);
+        expect(canvas).toMatchObject({ height: 180, width: 320 });
     });
 
     it.each([

@@ -5,6 +5,11 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from '../MediaTime';
+import {
+    getWebGPUAudioOutputManager,
+    type WebGPUAudioOutputManager,
+    type WebGPUAudioOutputTargetLease
+} from '../WebGPUAudioOutputManager';
 import { requireMicroseconds } from './TimeMath';
 import {
     MAXIMUM_NATIVE_AUDIO_PENDING_BYTE_LENGTH,
@@ -74,6 +79,7 @@ export type OwnedNativeMediaAudioTelemetry = {
 };
 
 export type OwnedNativeMediaAudioBackendOptions = {
+    audioOutputManager?: WebGPUAudioOutputManager
     appendElement?: (audioElement: HTMLAudioElement) => void
     createAudioElement?: () => HTMLAudioElement
     createMediaSource?: () => MediaSource
@@ -141,6 +147,8 @@ export default class OwnedNativeMediaAudioBackend {
     private clockQualified = false;
     private destroyed = false;
     private readonly appendElement: (audioElement: HTMLAudioElement) => void;
+    private readonly audioOutputManager: WebGPUAudioOutputManager;
+    private audioOutputTargetLease: WebGPUAudioOutputTargetLease | null = null;
     private readonly createAudioElement: () => HTMLAudioElement;
     private readonly createMediaSource: () => MediaSource;
     private readonly createObjectURL: (mediaSource: MediaSource) => string;
@@ -162,6 +170,7 @@ export default class OwnedNativeMediaAudioBackend {
 
     public constructor(options: OwnedNativeMediaAudioBackendOptions = {}) {
         this.appendElement = options.appendElement ?? appendDefaultAudioElement;
+        this.audioOutputManager = options.audioOutputManager ?? getWebGPUAudioOutputManager();
         this.createAudioElement = options.createAudioElement ?? createDefaultAudioElement;
         this.createMediaSource = options.createMediaSource ?? createDefaultMediaSource;
         this.createObjectURL = options.createObjectURL ?? createDefaultObjectURL;
@@ -219,6 +228,16 @@ export default class OwnedNativeMediaAudioBackend {
 
         this.configureAudioElement(audioElement, mediaSource, generation);
         this.appendElement(audioElement);
+        const audioOutputTargetLease = this.audioOutputManager.registerMediaElement(audioElement);
+        this.audioOutputTargetLease = audioOutputTargetLease;
+        await audioOutputTargetLease.ready;
+        if (!this.isSessionCurrent(generation, audioElement, mediaSource)) {
+            await audioOutputTargetLease.release();
+            if (this.audioOutputTargetLease === audioOutputTargetLease) {
+                this.audioOutputTargetLease = null;
+            }
+            throw new Error('Native audio output was superseded during startup');
+        }
         audioElement.src = objectURL;
 
         const opened = await this.waitForMediaSourceOpen(mediaSource, generation);
@@ -277,11 +296,18 @@ export default class OwnedNativeMediaAudioBackend {
             return false;
         }
         if (!playing) {
+            await this.audioOutputTargetLease?.setIntendedRunning(false);
             audioElement.pause();
             this.state = 'paused';
             return true;
         }
-        await audioElement.play();
+        await this.audioOutputTargetLease?.setIntendedRunning(true);
+        try {
+            await audioElement.play();
+        } catch (error) {
+            await this.audioOutputTargetLease?.setIntendedRunning(false);
+            throw error;
+        }
         if (!this.isSessionCurrent(generation, audioElement, this.mediaSource)) {
             this.staleOperationCount += 1;
             return false;
@@ -682,13 +708,16 @@ export default class OwnedNativeMediaAudioBackend {
     private async teardownActiveSession(): Promise<void> {
         const audioElement = this.audioElement;
         const objectURL = this.objectURL;
+        const audioOutputTargetLease = this.audioOutputTargetLease;
         this.activeGeneration = null;
+        this.audioOutputTargetLease = null;
         if (audioElement) {
             // Silence the retired sink before asynchronous SourceBuffer cleanup can block
             audioElement.muted = true;
             audioElement.pause();
         }
         this.cancelAppendRoomWaiters();
+        await audioOutputTargetLease?.release();
         await this.appendOperationTail.catch((): void => undefined);
         this.appendOperationTail = Promise.resolve(true);
         this.pendingAppendCount = 0;

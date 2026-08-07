@@ -2,6 +2,11 @@ import {
     secondsToMicroseconds,
     type Microseconds
 } from '../MediaTime';
+import {
+    getWebGPUAudioOutputManager,
+    type WebGPUAudioOutputManager,
+    type WebGPUAudioOutputTargetLease
+} from '../WebGPUAudioOutputManager';
 import type {
     AudioTelemetryListener,
     AudioWorkletOutputController
@@ -50,7 +55,8 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
     public constructor(
         private readonly audioContextReference: SharedBrowserAudioContextReference,
-        private readonly workletLease: SharedBrowserAudioWorkletLease
+        private readonly workletLease: SharedBrowserAudioWorkletLease,
+        private readonly audioOutputTargetLease: WebGPUAudioOutputTargetLease
     ) {
         this.audioContext = audioContextReference.audioContext;
         this.output = workletLease.output;
@@ -125,18 +131,24 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
     public setPlaying(playing: boolean): Promise<void> {
         this.output.setPlaying(playing);
-        if (!playing || this.audioContext.state === 'running') {
-            return Promise.resolve();
+        const routingPromise = this.audioOutputTargetLease.setIntendedRunning(playing);
+        if (!playing) {
+            return routingPromise;
         }
 
         if (this.resumePromise) {
             return this.resumePromise;
         }
 
-        const resumePromise = waitForBrowserAudioOperation(
-            this.audioContext.resume(),
-            'AudioContext resume'
-        ).finally((): void => {
+        const resumePromise = routingPromise.then((): Promise<void> => {
+            if (this.audioContext.state === 'running') {
+                return Promise.resolve();
+            }
+            return waitForBrowserAudioOperation(
+                this.audioContext.resume(),
+                'AudioContext resume'
+            );
+        }).finally((): void => {
             if (this.resumePromise === resumePromise) {
                 this.resumePromise = null;
             }
@@ -300,6 +312,8 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
             outputReleaseFailed = true;
         }
 
+        await this.audioOutputTargetLease.release();
+
         try {
             if (outputReleaseFailed) {
                 await this.audioContextReference.invalidate();
@@ -320,7 +334,8 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
 async function createOutput(
     configuration: DecodeWorkerAudioConfiguration,
-    prewarmedAudioContext: BrowserAudioContextPrewarmLease | null
+    prewarmedAudioContext: BrowserAudioContextPrewarmLease | null,
+    audioOutputManager: WebGPUAudioOutputManager
 ): Promise<CustomAudioOutputBinding> {
     try {
         assertSupportedCustomAudioOutputLayout(
@@ -340,6 +355,7 @@ async function createOutput(
     const audioContextReference = consumedPrewarm
         ?? acquireSharedBrowserAudioContext(configuration.sampleRate);
     const audioContext = audioContextReference.audioContext;
+    const audioOutputTargetLease = audioOutputManager.registerAudioContext(audioContext);
     let workletLease: SharedBrowserAudioWorkletLease | null = null;
     let workletLeasePromise: Promise<SharedBrowserAudioWorkletLease> | null = null;
     try {
@@ -354,6 +370,7 @@ async function createOutput(
             audioContextReference.resumePromise,
             consumedPrewarm ? 'Prewarmed AudioContext resume' : 'AudioContext resume'
         );
+        await audioOutputTargetLease.ready;
         if (!audioContextReference.isValid()) {
             throw new Error('AudioContext was invalidated while preparing custom audio output');
         }
@@ -365,7 +382,11 @@ async function createOutput(
             workletLeasePromise,
             'AudioWorklet output creation'
         );
-        const managedOutput = new BrowserCustomAudioOutput(audioContextReference, workletLease);
+        const managedOutput = new BrowserCustomAudioOutput(
+            audioContextReference,
+            workletLease,
+            audioOutputTargetLease
+        );
         return {
             bridge: new CustomDecodeAudioBridge(workletLease.output),
             configuration: { ...configuration },
@@ -378,6 +399,7 @@ async function createOutput(
             ).catch((): void => undefined);
         }
         await workletLease?.invalidate().catch((): void => undefined);
+        await audioOutputTargetLease.release().catch((): void => undefined);
         await audioContextReference.invalidate().catch((): void => undefined);
         throw error;
     }
@@ -385,12 +407,13 @@ async function createOutput(
 
 /** Creates exact-rate browser PCM outputs for a combined custom A/V session. */
 export function createBrowserCustomAudioOutputFactory(
-    prewarmedAudioContext: BrowserAudioContextPrewarmLease | null = null
+    prewarmedAudioContext: BrowserAudioContextPrewarmLease | null = null,
+    audioOutputManager: WebGPUAudioOutputManager = getWebGPUAudioOutputManager()
 ): CustomAudioOutputFactory {
     let availablePrewarm = prewarmedAudioContext;
     return (configuration: DecodeWorkerAudioConfiguration): Promise<CustomAudioOutputBinding> => {
         const selectedPrewarm = availablePrewarm;
         availablePrewarm = null;
-        return createOutput(configuration, selectedPrewarm);
+        return createOutput(configuration, selectedPrewarm, audioOutputManager);
     };
 }

@@ -13,13 +13,16 @@ import {
     type AudioDownmixSettings
 } from './custom/CustomAudioDownmix';
 
-export const WEBGPU_USER_SETTINGS_VERSION = 1;
+export const WEBGPU_USER_SETTINGS_VERSION = 2;
 export const WEBGPU_USER_SETTINGS_STORAGE_KEY = 'webGPUPlaybackSettings';
+const PREVIOUS_WEBGPU_USER_SETTINGS_VERSION = 1;
+const MAXIMUM_AUDIO_OUTPUT_DEVICE_ID_LENGTH = 1_024;
 
 export type WebGPUUserSettings = Readonly<{
     audio: Readonly<{
         downmix: AudioDownmixSettings
         forceStereoDownmix: boolean
+        outputDeviceId: string | null
     }>
     render: Readonly<{
         automaticInputPeakNits: boolean
@@ -47,6 +50,18 @@ function getRecord(value: unknown, key: string): Record<string, unknown> {
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
     return typeof value === 'boolean' ? value : fallback;
+}
+
+function normalizeAudioOutputDeviceId(value: unknown): string | null {
+    if (value === null || value === undefined || value === '' || value === 'default') {
+        return null;
+    }
+    if (typeof value !== 'string'
+        || value.length > MAXIMUM_AUDIO_OUTPUT_DEVICE_ID_LENGTH
+        || value.includes('\0')) {
+        return null;
+    }
+    return value;
 }
 
 function normalizeNumber(
@@ -77,7 +92,8 @@ export function createDefaultWebGPUUserSettings(): WebGPUUserSettings {
     return {
         audio: {
             downmix: createDefaultAudioDownmixSettings(),
-            forceStereoDownmix: false
+            forceStereoDownmix: false,
+            outputDeviceId: null
         },
         render: {
             automaticInputPeakNits: true,
@@ -90,7 +106,9 @@ export function createDefaultWebGPUUserSettings(): WebGPUUserSettings {
 /** Normalizes persisted input through the same ranges consumed by renderer validation. */
 export function normalizeWebGPUUserSettings(value: unknown): WebGPUUserSettings {
     const defaults = createDefaultWebGPUUserSettings();
-    if (!isRecord(value) || value.version !== WEBGPU_USER_SETTINGS_VERSION) {
+    if (!isRecord(value)
+        || (value.version !== WEBGPU_USER_SETTINGS_VERSION
+            && value.version !== PREVIOUS_WEBGPU_USER_SETTINGS_VERSION)) {
         return defaults;
     }
 
@@ -189,7 +207,10 @@ export function normalizeWebGPUUserSettings(value: unknown): WebGPUUserSettings 
             forceStereoDownmix: normalizeBoolean(
                 audio.forceStereoDownmix,
                 defaults.audio.forceStereoDownmix
-            )
+            ),
+            outputDeviceId: value.version === WEBGPU_USER_SETTINGS_VERSION ?
+                normalizeAudioOutputDeviceId(audio.outputDeviceId) :
+                null
         },
         render: {
             automaticInputPeakNits: normalizeBoolean(

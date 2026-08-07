@@ -1,6 +1,12 @@
 import { HtmlVideoPlayer } from 'plugins/htmlVideoPlayer/plugin';
 import Events from 'utils/events';
 
+import {
+    getWebGPUAudioOutputManager,
+    type WebGPUAudioOutputManager,
+    type WebGPUAudioOutputTargetLease
+} from './WebGPUAudioOutputManager';
+
 export const HTML_PLAYER_EVENTS = [
     'beginFetch',
     'endFetch',
@@ -37,7 +43,11 @@ export class HTMLPlayerDelegate {
     private readonly backendStoppedHandler: BackendStoppedHandler;
     private readonly backendErrorHandler: BackendErrorHandler;
     private readonly eventHandlers = new Map<HTMLPlayerEventName, PlayerEventHandler>();
+    private readonly audioOutputManager: WebGPUAudioOutputManager;
 
+    private audioOutputElement: HTMLMediaElement | null = null;
+    private audioOutputRevision = 0;
+    private audioOutputTargetLease: WebGPUAudioOutputTargetLease | null = null;
     private forwardingGeneration: number | null = null;
     private sessionGeneration: number | null = null;
     private stopGeneration: number | null = null;
@@ -49,17 +59,20 @@ export class HTMLPlayerDelegate {
     constructor(
         eventTarget: object,
         backendStoppedHandler: BackendStoppedHandler,
-        backendErrorHandler: BackendErrorHandler
+        backendErrorHandler: BackendErrorHandler,
+        audioOutputManager: WebGPUAudioOutputManager = getWebGPUAudioOutputManager()
     ) {
         this.eventTarget = eventTarget;
         this.backendStoppedHandler = backendStoppedHandler;
         this.backendErrorHandler = backendErrorHandler;
-        this.player = new HtmlVideoPlayer(eventTarget, true, true);
+        this.audioOutputManager = audioOutputManager;
+        this.player = new HtmlVideoPlayer(eventTarget, true, true, this.prepareAudioOutput);
     }
 
     /** Starts event forwarding for a new backend playback session. */
     beginSession(generation: number): void {
         this.detachEventHandlers();
+        this.releaseAudioOutputTarget();
         this.forwardingGeneration = generation;
         this.sessionGeneration = generation;
         this.stopGeneration = null;
@@ -77,6 +90,7 @@ export class HTMLPlayerDelegate {
                 if (eventName === 'error') {
                     this.forwardingGeneration = null;
                     this.detachEventHandlers();
+                    this.releaseAudioOutputTarget();
                     this.backendErrorHandler(generation);
                     Events.trigger(this.eventTarget, eventName, eventArguments);
                     return;
@@ -91,6 +105,7 @@ export class HTMLPlayerDelegate {
                 // or play calls cannot forward the same backend stop again.
                 this.forwardingGeneration = null;
                 this.detachEventHandlers();
+                this.releaseAudioOutputTarget();
                 this.backendStoppedHandler(generation);
                 Events.trigger(this.eventTarget, eventName, eventArguments);
             };
@@ -147,6 +162,7 @@ export class HTMLPlayerDelegate {
         }
 
         this.destroyClaimedGeneration = generation;
+        this.releaseAudioOutputTarget();
         try {
             this.player.destroy();
             this.resolveReusableStop(undefined);
@@ -167,6 +183,7 @@ export class HTMLPlayerDelegate {
 
         this.forwardingGeneration = null;
         this.detachEventHandlers();
+        this.releaseAudioOutputTarget();
     }
 
     private stopDestructively(generation: number): Promise<unknown> {
@@ -284,5 +301,42 @@ export class HTMLPlayerDelegate {
         }
 
         this.eventHandlers.clear();
+    }
+
+    private readonly prepareAudioOutput = async (
+        mediaElement: HTMLMediaElement
+    ): Promise<void> => {
+        if (this.audioOutputElement === mediaElement && this.audioOutputTargetLease) {
+            await this.audioOutputTargetLease.ready;
+            return;
+        }
+
+        const revision = this.audioOutputRevision + 1;
+        this.audioOutputRevision = revision;
+        const previousTargetLease = this.audioOutputTargetLease;
+        this.audioOutputElement = null;
+        this.audioOutputTargetLease = null;
+        await previousTargetLease?.release();
+        if (this.audioOutputRevision !== revision) {
+            return;
+        }
+
+        const targetLease = this.audioOutputManager.registerMediaElement(mediaElement);
+        this.audioOutputElement = mediaElement;
+        this.audioOutputTargetLease = targetLease;
+        await targetLease.ready;
+        if (this.audioOutputRevision !== revision
+            || this.audioOutputElement !== mediaElement
+            || this.audioOutputTargetLease !== targetLease) {
+            await targetLease.release();
+        }
+    };
+
+    private releaseAudioOutputTarget(): void {
+        this.audioOutputRevision += 1;
+        this.audioOutputElement = null;
+        const targetLease = this.audioOutputTargetLease;
+        this.audioOutputTargetLease = null;
+        void targetLease?.release();
     }
 }

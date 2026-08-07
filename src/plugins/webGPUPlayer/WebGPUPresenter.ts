@@ -83,6 +83,14 @@ import identityShader from './shaders/identity.wgsl';
 const CANVAS_CLASS = 'webgpuPlayerCanvas';
 const CANVAS_VISIBLE_CLASS = 'webgpuPlayerCanvas-visible';
 const FLOATS_PER_PRESENTATION_UNIFORM = 4;
+const LAYOUT_MOTION_END_EVENTS = [
+    'animationcancel',
+    'animationend',
+    'transitioncancel',
+    'transitionend'
+] as const;
+const LAYOUT_MOTION_ITERATION_EVENT = 'animationiteration';
+const LAYOUT_MOTION_START_EVENTS = [ 'animationstart', 'transitionrun' ] as const;
 const MAX_DEVICE_RECOVERY_ATTEMPTS = 1;
 const MIN_CANVAS_DIMENSION = 1;
 const VIDEO_READY_STATE_CURRENT_DATA = 2;
@@ -609,11 +617,15 @@ export default class WebGPUPresenter {
     private dolbyVisionEnhancementUniformBuffer: GPUBuffer | null = null;
     private initializationFailureReason: PresentationFallbackReason = 'gpu-unavailable';
     private initializationPromise: Promise<boolean> | null = null;
+    private layoutHandlingRevision = 0;
+    private layoutInvalidationHandler: (() => void) | null = null;
+    private layoutMutationObserver: MutationObserver | null = null;
     private pendingFrameCallback: PendingFrameCallback | null = null;
     private pendingColorConfiguration: PendingColorConfiguration | null = null;
     private pendingSubmissionValidation: PendingSubmissionValidation | null = null;
     private pipeline: GPURenderPipeline | null = null;
     private pipelineShaderCode: string | null = null;
+    private presentationLayoutDirty = true;
     private presentationUniformBuffer: GPUBuffer | null = null;
     private renderSettingsUniformBuffer: GPUBuffer | null = null;
     private resizeObserver: ResizeObserver | null = null;
@@ -649,7 +661,7 @@ export default class WebGPUPresenter {
     /** Starts a new presentation session without delaying HTML playback. */
     startSession(generation: number): void {
         this.cancelFrameCallback();
-        this.unbindResizeHandling();
+        this.unbindLayoutHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
@@ -692,8 +704,22 @@ export default class WebGPUPresenter {
             return;
         }
 
+        const previousSurface = this.surface;
+        if (
+            previousSurface
+            && (
+                previousSurface.container !== surface.container
+                || previousSurface.video !== surface.video
+            )
+        ) {
+            this.cancelFrameCallback();
+            this.discardPendingSubmissionValidation();
+            this.unbindLayoutHandling();
+            this.removeCanvas();
+        }
+
         this.surface = surface;
-        this.cachedPresentationLayout = null;
+        this.invalidatePresentationLayout();
         void this.activateSurface(generation);
     }
 
@@ -708,6 +734,7 @@ export default class WebGPUPresenter {
         this.colorConfigurationRevision += 1;
         this.pendingColorConfiguration = null;
         this.activeGeneration = generation;
+        this.invalidatePresentationLayout();
         if (this.settings.mode === 'hdr-to-sdr') {
             this.writeRenderSettingsUniform(this.settings);
             this.dynamicHDR10PlusSettingsActive = false;
@@ -724,13 +751,13 @@ export default class WebGPUPresenter {
         }
 
         if (this.decodedFramePushActive) {
-            if (!this.updateCachedPresentationLayoutAfterResize()) {
+            if (!this.resynchronizeCachedPresentationLayout()) {
                 return;
             }
             this.requestDecodedPresentationRefresh(generation);
             return;
         }
-        this.cachedPresentationLayout = null;
+        this.invalidatePresentationLayout();
         this.renderCurrentFrameOrFallback(generation);
     }
 
@@ -751,7 +778,7 @@ export default class WebGPUPresenter {
         this.pendingColorConfiguration = null;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
-        this.unbindResizeHandling();
+        this.unbindLayoutHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
@@ -1870,7 +1897,7 @@ export default class WebGPUPresenter {
     private suspendForColorConfiguration(): void {
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
-        this.unbindResizeHandling();
+        this.unbindLayoutHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
@@ -2252,7 +2279,7 @@ export default class WebGPUPresenter {
             surface.container.appendChild(canvas);
             this.canvas = canvas;
             this.canvasContext = canvasContext;
-            this.bindResizeHandling(surface);
+            this.bindLayoutHandling(surface);
         }
 
         if (this.configuredDevice === device) {
@@ -3004,6 +3031,7 @@ export default class WebGPUPresenter {
         sourceHeight: number
     ): CachedPresentationLayout | null {
         if (sourceWidth <= 0 || sourceHeight <= 0) {
+            this.invalidatePresentationLayout();
             return null;
         }
 
@@ -3011,6 +3039,7 @@ export default class WebGPUPresenter {
         const cachedLayout = this.cachedPresentationLayout;
         if (
             cachedLayout
+            && !this.presentationLayoutDirty
             && cachedLayout.devicePixelRatio === devicePixelRatio
             && cachedLayout.videoHeight === sourceHeight
             && cachedLayout.videoWidth === sourceWidth
@@ -3018,6 +3047,7 @@ export default class WebGPUPresenter {
             return cachedLayout;
         }
 
+        this.invalidatePresentationLayout();
         const geometry = this.synchronizeCanvasGeometry(
             surface,
             canvas,
@@ -3042,6 +3072,7 @@ export default class WebGPUPresenter {
             videoWidth: sourceWidth
         };
         this.cachedPresentationLayout = layout;
+        this.presentationLayoutDirty = false;
         return layout;
     }
 
@@ -3093,12 +3124,16 @@ export default class WebGPUPresenter {
         }
     }
 
-    private readonly handleResize = (): void => {
+    private invalidatePresentationLayout(): void {
+        this.presentationLayoutDirty = true;
+    }
+
+    private readonly handleLayoutInvalidation = (): void => {
         if (!this.sessionActive || this.fallbackLatched) {
             return;
         }
 
-        if (!this.updateCachedPresentationLayoutAfterResize()) {
+        if (!this.resynchronizeCachedPresentationLayout()) {
             return;
         }
         if (this.decodedFramePushActive) {
@@ -3108,39 +3143,26 @@ export default class WebGPUPresenter {
         this.renderCurrentFrameOrFallback(this.activeGeneration);
     };
 
-    private updateCachedPresentationLayoutAfterResize(): boolean {
+    private resynchronizeCachedPresentationLayout(): boolean {
         const cachedLayout = this.cachedPresentationLayout;
         const surface = this.surface;
         const canvas = this.canvas;
         const device = this.device;
+        this.invalidatePresentationLayout();
         if (!cachedLayout || !surface || !canvas || !device) {
             return false;
         }
 
-        const devicePixelRatio = Math.max(window.devicePixelRatio || 1, 1);
-        const geometry = this.synchronizeCanvasGeometry(
+        const updatedLayout = this.getPresentationLayout(
             surface,
             canvas,
             device,
-            devicePixelRatio
-        );
-        if (!geometry) {
-            return false;
-        }
-        const presentation = this.calculateTexturePresentation(
-            surface.video,
-            geometry,
             cachedLayout.videoWidth,
             cachedLayout.videoHeight
         );
-        const updatedLayout: CachedPresentationLayout = {
-            devicePixelRatio,
-            geometry,
-            presentation,
-            videoHeight: cachedLayout.videoHeight,
-            videoWidth: cachedLayout.videoWidth
-        };
-        this.cachedPresentationLayout = updatedLayout;
+        if (!updatedLayout) {
+            return false;
+        }
         return !this.presentationLayoutsMatch(cachedLayout, updatedLayout);
     }
 
@@ -3217,20 +3239,128 @@ export default class WebGPUPresenter {
         }
     }
 
-    private bindResizeHandling(surface: PresentationSurface): void {
-        this.unbindResizeHandling();
+    private readonly handleLayoutMotionStart = (event: Event): void => {
+        if (!this.isObservedLayoutTarget(event.target)) {
+            return;
+        }
+
+        this.handleLayoutInvalidation();
+    };
+
+    private readonly handleLayoutMotionIteration = (event: Event): void => {
+        if (!this.isObservedLayoutTarget(event.target)) {
+            return;
+        }
+
+        this.handleLayoutInvalidation();
+    };
+
+    private readonly handleLayoutMotionEnd = (event: Event): void => {
+        if (!this.isObservedLayoutTarget(event.target)) {
+            return;
+        }
+
+        // The final event is required because transforms do not trigger ResizeObserver
+        this.handleLayoutInvalidation();
+    };
+
+    private isObservedLayoutTarget(target: EventTarget | null): boolean {
+        if (!(target instanceof HTMLElement)) {
+            return false;
+        }
+
+        return target.isSameNode(this.surface?.container ?? null)
+            || target.isSameNode(this.surface?.video ?? null);
+    }
+
+    private bindLayoutHandling(surface: PresentationSurface): void {
+        this.unbindLayoutHandling();
+        const layoutHandlingRevision = this.layoutHandlingRevision;
+        const layoutInvalidationHandler = (): void => {
+            if (this.layoutHandlingRevision !== layoutHandlingRevision) {
+                return;
+            }
+            this.handleLayoutInvalidation();
+        };
+        this.layoutInvalidationHandler = layoutInvalidationHandler;
         if (typeof ResizeObserver === 'function') {
-            this.resizeObserver = new ResizeObserver(this.handleResize);
+            this.resizeObserver = new ResizeObserver(layoutInvalidationHandler);
             this.resizeObserver.observe(surface.container);
             this.resizeObserver.observe(surface.video);
         }
-        window.addEventListener('resize', this.handleResize);
+        if (typeof MutationObserver === 'function') {
+            this.layoutMutationObserver = new MutationObserver(
+                layoutInvalidationHandler
+            );
+            const observerOptions: MutationObserverInit = {
+                attributeFilter: [ 'class', 'style' ],
+                attributes: true
+            };
+            const mutationTargets: HTMLElement[] = [];
+            mutationTargets.push(surface.video);
+            let mutationTarget: HTMLElement | null = surface.container;
+            while (mutationTarget) {
+                mutationTargets.push(mutationTarget);
+                mutationTarget = mutationTarget.parentElement;
+            }
+            for (const target of mutationTargets) {
+                this.layoutMutationObserver.observe(target, observerOptions);
+            }
+        }
+        for (const eventName of LAYOUT_MOTION_START_EVENTS) {
+            surface.container.addEventListener(
+                eventName,
+                this.handleLayoutMotionStart,
+                true
+            );
+        }
+        surface.container.addEventListener(
+            LAYOUT_MOTION_ITERATION_EVENT,
+            this.handleLayoutMotionIteration,
+            true
+        );
+        for (const eventName of LAYOUT_MOTION_END_EVENTS) {
+            surface.container.addEventListener(
+                eventName,
+                this.handleLayoutMotionEnd,
+                true
+            );
+        }
+        window.addEventListener('resize', layoutInvalidationHandler);
     }
 
-    private unbindResizeHandling(): void {
+    private unbindLayoutHandling(): void {
+        this.layoutHandlingRevision += 1;
+        const container = this.surface?.container;
+        if (container) {
+            for (const eventName of LAYOUT_MOTION_START_EVENTS) {
+                container.removeEventListener(
+                    eventName,
+                    this.handleLayoutMotionStart,
+                    true
+                );
+            }
+            container.removeEventListener(
+                LAYOUT_MOTION_ITERATION_EVENT,
+                this.handleLayoutMotionIteration,
+                true
+            );
+            for (const eventName of LAYOUT_MOTION_END_EVENTS) {
+                container.removeEventListener(
+                    eventName,
+                    this.handleLayoutMotionEnd,
+                    true
+                );
+            }
+        }
+        this.layoutMutationObserver?.disconnect();
+        this.layoutMutationObserver = null;
         this.resizeObserver?.disconnect();
         this.resizeObserver = null;
-        window.removeEventListener('resize', this.handleResize);
+        if (this.layoutInvalidationHandler) {
+            window.removeEventListener('resize', this.layoutInvalidationHandler);
+            this.layoutInvalidationHandler = null;
+        }
     }
 
     private cancelFrameCallback(): void {
@@ -3266,6 +3396,7 @@ export default class WebGPUPresenter {
         this.canvas = null;
         this.canvasContext = null;
         this.cachedPresentationLayout = null;
+        this.invalidatePresentationLayout();
         this.configuredDevice = null;
     }
 
@@ -3311,7 +3442,7 @@ export default class WebGPUPresenter {
         this.deviceResourceEpoch += 1;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
-        this.unbindResizeHandling();
+        this.unbindLayoutHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();
@@ -3574,7 +3705,7 @@ export default class WebGPUPresenter {
         this.telemetry.state = 'fallback';
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
-        this.unbindResizeHandling();
+        this.unbindLayoutHandling();
         this.removeCanvas();
         this.destroyRawPlaneTextures();
         this.destroyDolbyVisionRPUStorageBuffer();

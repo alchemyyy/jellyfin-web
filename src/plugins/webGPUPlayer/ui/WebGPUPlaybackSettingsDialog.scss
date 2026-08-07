@@ -125,6 +125,7 @@
     }
 
     .webgpuSettingsDefaultButton,
+    .webgpuSettingsChooseAudioOutput,
     .webgpuSettingsResetRender,
     .webgpuSettingsResetAudio,
     .webgpuSettingsResetAll {
@@ -136,6 +137,11 @@
     .webgpuSettingsDefaultButton {
         min-width: 4.8em;
         justify-self: end;
+    }
+
+    .webgpuSettingsChooseAudioOutput {
+        align-self: end;
+        white-space: nowrap;
     }
 
     .webgpuSettingsSlider {

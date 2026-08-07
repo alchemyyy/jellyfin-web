@@ -378,6 +378,10 @@ export class HtmlVideoPlayer {
      */
     #playSessionGeneration = 0;
     /**
+     * @type {((mediaElement: HTMLMediaElement) => Promise<void>) | null}
+     */
+    #prepareAudioOutput = null;
+    /**
      * @type {{ generation: number, mediaElement?: HTMLVideoElement, resolve: () => void } | null}
      */
     #pendingPlay = null;
@@ -427,14 +431,22 @@ export class HtmlVideoPlayer {
      * @type {any | undefined}
      */
     #lastProfile;
+    /**
+     * @param {any} playbackManagerPlayer
+     * @param {boolean} forceCustomSubtitleElements
+     * @param {boolean} useWebGPUHLSRuntime
+     * @param {((mediaElement: HTMLMediaElement) => Promise<void>) | null} prepareAudioOutput
+     */
     constructor(
         playbackManagerPlayer,
         forceCustomSubtitleElements = false,
-        useWebGPUHLSRuntime = false
+        useWebGPUHLSRuntime = false,
+        prepareAudioOutput = null
     ) {
         this.#playbackManagerPlayer = playbackManagerPlayer || this;
         this.#forceCustomSubtitleElements = forceCustomSubtitleElements;
         this.#useWebGPUHLSRuntime = useWebGPUHLSRuntime;
+        this.#prepareAudioOutput = prepareAudioOutput;
 
         if (browser.edgeUwp) {
             this.name = 'Windows Video Player';
@@ -824,6 +836,10 @@ export class HtmlVideoPlayer {
         if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
             return null;
         }
+        await this.#prepareAudioOutput?.(elem);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return null;
+        }
 
         this.#markPendingPlaySource(playSessionGeneration, elem);
         elem.removeEventListener('error', this.onError);
@@ -853,6 +869,10 @@ export class HtmlVideoPlayer {
         if (options.resetSubtitleOffset !== false) this.resetSubtitleOffset();
 
         const elem = await this.createMediaElement(options, playSessionGeneration);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return;
+        }
+        await this.#prepareAudioOutput?.(elem);
         if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
             return;
         }
@@ -3010,7 +3030,28 @@ export class HtmlVideoPlayer {
     unpause() {
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
-            mediaElement.play();
+            let playPromise;
+            // play() can throw before returning the promise handled below
+            // eslint-disable-next-line sonarjs/no-try-promise
+            try {
+                playPromise = mediaElement.play();
+            } catch (error) {
+                console.error('error calling video.play: ' + error);
+                return;
+            }
+
+            if (!playPromise) {
+                return;
+            }
+
+            void playPromise.catch(function (error) {
+                const errorName = String(error?.name || '').toLowerCase();
+                if (errorName === 'aborterror' && mediaElement.paused) {
+                    return;
+                }
+
+                console.error('error calling video.play: ' + error);
+            });
         }
     }
 
@@ -3280,22 +3321,21 @@ export class HtmlVideoPlayer {
         let height = Math.round(rect.height * devicePixelRatio);
         let width = Math.round(rect.width * devicePixelRatio);
 
-        const viewInfos = [];
         // Don't show player dimensions on smart TVs because the app UI could be lower
         // resolution than the video and this causes users to think there is a problem
         if (width && height && !browser.tv) {
-            viewInfos.push(`${width}x${height}`);
+            videoCategory.stats.push({
+                label: globalize.translate('LabelPlayerDimensions'),
+                value: `${width}x${height}`
+            });
         }
 
         height = mediaElement.videoHeight;
         width = mediaElement.videoWidth;
         if (width && height) {
-            viewInfos.push(`${width}x${height}`);
-        }
-        if (viewInfos.length) {
             videoCategory.stats.push({
-                label: globalize.translate('LabelPlayerSizes'),
-                value: viewInfos.join(' / ')
+                label: globalize.translate('LabelVideoResolution'),
+                value: `${width}x${height}`
             });
         }
 

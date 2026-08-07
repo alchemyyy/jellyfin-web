@@ -4,6 +4,7 @@ import {
     microsecondsToMilliseconds,
     secondsToMicroseconds
 } from '../MediaTime';
+import { WebGPUAudioOutputManager } from '../WebGPUAudioOutputManager';
 import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
 
 const audioWorkletMockState = vi.hoisted(() => ({
@@ -41,7 +42,7 @@ import {
 
 let fakeMaximumChannelCount = 2;
 
-class FakeAudioContext {
+class FakeAudioContext extends EventTarget {
     public static readonly instances: FakeAudioContext[] = [];
     public baseLatency = 0.01;
     public readonly close = vi.fn((): Promise<void> => Promise.resolve());
@@ -58,6 +59,11 @@ class FakeAudioContext {
         return Promise.resolve();
     });
     public readonly sampleRate: number;
+    public readonly setSinkId = vi.fn((sinkId: string): Promise<void> => {
+        this.sinkId = sinkId;
+        return Promise.resolve();
+    });
+    public sinkId = '';
     public currentTime = 10;
     public outputLatency = 0.04;
     public state: AudioContextState = 'suspended';
@@ -67,6 +73,7 @@ class FakeAudioContext {
     });
 
     public constructor(public readonly options?: AudioContextOptions) {
+        super();
         this.sampleRate = options?.sampleRate ?? 48_000;
         FakeAudioContext.instances.push(this);
     }
@@ -232,6 +239,10 @@ describe('BrowserCustomAudioOutput', () => {
             telemetryIntervalFrames: 4_096
         });
         expect(audioContext.resume).toHaveBeenCalledOnce();
+        expect(audioContext.setSinkId).toHaveBeenCalledWith('');
+        expect(audioContext.setSinkId.mock.invocationCallOrder[0]).toBeLessThan(
+            audioWorkletMockState.create.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
+        );
         expect(binding.configuration).toEqual({
             channelCount: 2,
             codec: 'flac',
@@ -279,6 +290,52 @@ describe('BrowserCustomAudioOutput', () => {
         expect(workletControllers).toHaveLength(1);
         expect(workletControllers[0].deactivate).toHaveBeenCalledTimes(10);
         expect(workletControllers[0].destroy).not.toHaveBeenCalled();
+    });
+
+    it('reapplies default routing before reusing a warm pooled context', async () => {
+        audioWorkletMockState.create.mockImplementation((): WorkletControllerHarness => (
+            createWorkletController()
+        ));
+        const mediaDevices = new EventTarget() as EventTarget & {
+            enumerateDevices: () => Promise<MediaDeviceInfo[]>
+        };
+        mediaDevices.enumerateDevices = (): Promise<MediaDeviceInfo[]> => Promise.resolve([ {
+            deviceId: 'speaker-a',
+            groupId: '',
+            kind: 'audiooutput',
+            label: 'Speakers',
+            toJSON: (): object => ({})
+        } as MediaDeviceInfo ]);
+        const audioOutputManager = new WebGPUAudioOutputManager({
+            getMediaDevices: () => mediaDevices as unknown as MediaDevices,
+            initialSelectedDeviceId: 'speaker-a'
+        });
+        const configuration = {
+            channelCount: 2,
+            codec: 'aac',
+            sampleRate: 48_000
+        } as const;
+        const firstBinding = await createBrowserCustomAudioOutputFactory(
+            null,
+            audioOutputManager
+        )(configuration);
+        const audioContext = FakeAudioContext.instances[0];
+        await firstBinding.output.destroy();
+        expect(audioContext.setSinkId).toHaveBeenLastCalledWith('speaker-a');
+
+        await audioOutputManager.setSelectedDeviceId(null);
+        const secondBinding = await createBrowserCustomAudioOutputFactory(
+            null,
+            audioOutputManager
+        )(configuration);
+
+        expect(FakeAudioContext.instances).toHaveLength(1);
+        expect(audioContext.setSinkId.mock.calls.map(call => call[0])).toEqual([
+            'speaker-a',
+            ''
+        ]);
+        await secondBinding.output.destroy();
+        await audioOutputManager.destroy();
     });
 
     it.each([

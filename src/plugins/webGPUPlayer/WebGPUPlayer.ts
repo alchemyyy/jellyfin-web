@@ -41,6 +41,10 @@ import {
     type WebGPUUserSettings
 } from './WebGPUUserSettings';
 import {
+    getWebGPUAudioOutputManager,
+    type WebGPUAudioOutputManager
+} from './WebGPUAudioOutputManager';
+import {
     assertValidAudioDownmixSettings,
     type AudioDownmixSettings
 } from './custom/CustomAudioDownmix';
@@ -620,6 +624,14 @@ function getDecodedAudioDownmixSettings(
         undefined;
 }
 
+function initializeWebGPUAudioOutputManager(): WebGPUAudioOutputManager {
+    const audioOutputManager = getWebGPUAudioOutputManager();
+    void audioOutputManager.setSelectedDeviceId(
+        loadWebGPUUserSettings().audio.outputDeviceId
+    );
+    return audioOutputManager;
+}
+
 /**
  * Jellyfin-facing player that owns the HTML player as its playback backend.
  * WebGPU presentation is optional and must never replace backend playback.
@@ -695,10 +707,12 @@ export default class WebGPUPlayer {
     private lastKnownTimeMicroseconds: Microseconds = millisecondsToMicroseconds(0);
 
     constructor() {
+        const audioOutputManager = initializeWebGPUAudioOutputManager();
         this.htmlDelegate = new HTMLPlayerDelegate(
             this,
             this.handleBackendStopped,
-            this.handleBackendError
+            this.handleBackendError,
+            audioOutputManager
         );
         this.presenter = new WebGPUPresenter(
             this.handlePresentationFallback,
@@ -2337,7 +2351,8 @@ export default class WebGPUPlayer {
             this.customPlaybackController = customPlaybackController;
             this.customPlaybackAudioSettings = {
                 downmix: { ...webGPUUserSettings.audio.downmix },
-                forceStereoDownmix: webGPUUserSettings.audio.forceStereoDownmix
+                forceStereoDownmix: webGPUUserSettings.audio.forceStereoDownmix,
+                outputDeviceId: webGPUUserSettings.audio.outputDeviceId
             };
             this.customPlaybackBackendGeneration = backendGeneration;
             this.customPlaybackFrameGeneration = presentationGeneration;

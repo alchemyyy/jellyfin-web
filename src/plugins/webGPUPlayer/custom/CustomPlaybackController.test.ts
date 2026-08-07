@@ -14,7 +14,7 @@ import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from './CustomAudioDownmixAlgorithm';
 import type { AudioDownmixSettings } from './CustomAudioDownmix';
 import type CustomDecodeAudioBridge from './CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from './CustomDecodeAudioBridge';
-import type {
+import CustomDecodeSession, {
     CustomDecodeAudioBridgeFactory,
     CustomDecodeNativeAudioBridgeFactory,
     CustomDecodeSessionEvent,
@@ -37,6 +37,61 @@ import type {
 vi.mock('./CustomDecode.worker', () => ({
     default: class MockBundledWorker {}
 }));
+
+type ControllerDecodeWorkerMessageHandler = (event: MessageEvent<unknown>) => void;
+
+class ControllerDecodeWorker {
+    private readonly messageHandlers = new Set<ControllerDecodeWorkerMessageHandler>();
+    public readonly postedMessages: unknown[] = [];
+    public readonly terminate = vi.fn();
+
+    public addEventListener(
+        type: string,
+        handler: EventListenerOrEventListenerObject
+    ): void {
+        if (type === 'message') {
+            this.messageHandlers.add(handler as ControllerDecodeWorkerMessageHandler);
+        }
+    }
+
+    public emitMessage(data: unknown): void {
+        for (const handler of this.messageHandlers) {
+            handler({ data } as MessageEvent<unknown>);
+        }
+    }
+
+    public postMessage(message: unknown): void {
+        this.postedMessages.push(message);
+    }
+
+    public removeEventListener(
+        type: string,
+        handler: EventListenerOrEventListenerObject
+    ): void {
+        if (type === 'message') {
+            this.messageHandlers.delete(handler as ControllerDecodeWorkerMessageHandler);
+        }
+    }
+}
+
+function emitControllerDecodedFrame(
+    worker: ControllerDecodeWorker,
+    generation: number,
+    mediaTimeMicroseconds: Microseconds
+): VideoFrame & { close: ReturnType<typeof vi.fn> } {
+    const frame = { close: vi.fn() } as unknown as VideoFrame & {
+        close: ReturnType<typeof vi.fn>
+    };
+    worker.emitMessage({
+        durationMicroseconds: millisecondsToMicroseconds(40),
+        frame,
+        generation,
+        mediaTimeMicroseconds,
+        outputMode: 'video-frame',
+        type: 'frame'
+    });
+    return frame;
+}
 
 function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
     return {
@@ -1177,7 +1232,7 @@ describe('CustomPlaybackController', () => {
         expect(harness.controller.currentTimeMicroseconds).toBe(5_750_000);
     });
 
-    it('renegotiates after sustained video starvation', async () => {
+    it('intentionally defers the 10-second starvation bound until RAF polling resumes', async () => {
         const harness = createControllerHarness(false);
         await startReadyPlayback(harness, false);
 
@@ -1198,21 +1253,217 @@ describe('CustomPlaybackController', () => {
         }) ]);
     });
 
-    it('renegotiates when decoded video falls materially behind the clock', async () => {
+    it('discards seek preroll and recovers on the first current frame', async () => {
         const harness = createControllerHarness(false);
         await startReadyPlayback(harness, false);
-        const lateFrame = createDecodedFrame(secondsToMicroseconds(5));
-        harness.videoDecodeSession.queueFrame(lateFrame);
+        const seekPromise = harness.controller.seek(secondsToMicroseconds(42));
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!generation) {
+            throw new Error('Seek generation did not start');
+        }
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+        await seekPromise;
+
+        const prerollFrame = createDecodedFrame(secondsToMicroseconds(38));
+        harness.videoDecodeSession.queueFrame(prerollFrame);
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(prerollFrame);
+        expect(prerollFrame.frame.close).toHaveBeenCalledOnce();
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+        expect(harness.controller.getTelemetry()).toMatchObject({
+            discardedStaleVideoFrameCount: 1,
+            lastVideoDecodeLag: {
+                frameEndTimeMicroseconds: secondsToMicroseconds(38.04),
+                gapMicroseconds: secondsToMicroseconds(3.96),
+                generation,
+                postSeek: true,
+                targetTimeMicroseconds: secondsToMicroseconds(42)
+            }
+        });
+        const telemetry = harness.controller.getTelemetry();
+        if (!telemetry.lastVideoDecodeLag) {
+            throw new Error('Expected video decode lag telemetry');
+        }
+        telemetry.lastVideoDecodeLag.targetTimeMicroseconds = secondsToMicroseconds(0);
+        expect(harness.controller.getTelemetry().lastVideoDecodeLag?.targetTimeMicroseconds)
+            .toBe(secondsToMicroseconds(42));
+
+        const currentFrame = createDecodedFrame(secondsToMicroseconds(42));
+        harness.videoDecodeSession.queueFrame(currentFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(currentFrame);
+        expect(harness.controller.notifyFramePresented(currentFrame)).toBe(true);
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+    });
+
+    it('recovers from a transient scheduler delay after releasing its stale frame', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true);
+        const staleFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(staleFrame);
         harness.setMonotonicTime(secondsToMicroseconds(13));
 
         expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(staleFrame);
+        expect(harness.controller.playbackState).toBe('playing');
 
-        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledWith(lateFrame);
+        harness.setMonotonicTime(millisecondsToMicroseconds(13_040));
+        const currentFrame = createDecodedFrame(millisecondsToMicroseconds(8_040));
+        harness.videoDecodeSession.queueFrame(currentFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(currentFrame);
+        expect(harness.controller.notifyFramePresented(currentFrame)).toBe(true);
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+        expect(harness.controller.getTelemetry().lastVideoDecodeLag).toMatchObject({
+            postSeek: false,
+            targetTimeMicroseconds: secondsToMicroseconds(8)
+        });
+    });
+
+    it('replenishes real decode-session credit after stale VideoFrame discard', async () => {
+        const worker = new ControllerDecodeWorker();
+        const fallbackRequests: CustomPlaybackFallbackRequest[] = [];
+        const decodeSessionHolder: { current: CustomDecodeSession | null } = {
+            current: null
+        };
+        let monotonicTimeMicroseconds = secondsToMicroseconds(10);
+        const controller = new CustomPlaybackController({
+            fallbackHook: (request: CustomPlaybackFallbackRequest): void => {
+                fallbackRequests.push(request);
+            },
+            monotonicTimeSource: (): Microseconds => monotonicTimeMicroseconds,
+            pipelineStopTimeoutMicroseconds: millisecondsToMicroseconds(100),
+            startupTimeoutMicroseconds: millisecondsToMicroseconds(100),
+            videoDecodeSessionFactory: (
+                eventHandler,
+                audioBridgeFactory,
+                nativeAudioBridgeFactory
+            ): CustomDecodeSession => {
+                const createdDecodeSession = new CustomDecodeSession(
+                    eventHandler,
+                    () => worker as unknown as Worker,
+                    null,
+                    audioBridgeFactory,
+                    nativeAudioBridgeFactory
+                );
+                decodeSessionHolder.current = createdDecodeSession;
+                return createdDecodeSession;
+            }
+        });
+        const decodeSession = decodeSessionHolder.current;
+        if (!decodeSession) {
+            throw new Error('Real video decode session factory was not called');
+        }
+
+        const startPromise = controller.play(createPlayOptions());
+        await flushAsyncWork();
+        const generation = decodeSession.getTelemetry().activeGeneration;
+        if (generation === null) {
+            throw new Error('Real video decode generation did not start');
+        }
+        worker.emitMessage({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation,
+            type: 'ready'
+        });
+        const staleVideoFrame = emitControllerDecodedFrame(
+            worker,
+            generation,
+            secondsToMicroseconds(5)
+        );
+        await expect(startPromise).resolves.toMatchObject({ generation, status: 'started' });
+
+        monotonicTimeMicroseconds = secondsToMicroseconds(13);
+        expect(controller.takeCurrentFrame()).toBeNull();
+        expect(staleVideoFrame.close).toHaveBeenCalledOnce();
+        expect(decodeSession.getTelemetry()).toMatchObject({
+            pendingFrameCount: 0,
+            queuedFrameCount: 0,
+            takenFrameCount: 1
+        });
+        expect(worker.postedMessages.at(-1)).toEqual({
+            frameCredits: 1,
+            generation,
+            type: 'pull'
+        });
+        expect(worker.postedMessages).toHaveLength(2);
+
+        const currentVideoFrame = emitControllerDecodedFrame(
+            worker,
+            generation,
+            secondsToMicroseconds(8)
+        );
+        const currentPresentationFrame = controller.takeCurrentFrame();
+        expect(currentPresentationFrame?.frame).toBe(currentVideoFrame);
+        expect(decodeSession.getTelemetry().pendingFrameCount).toBe(1);
+
+        currentVideoFrame.close();
+        if (!currentPresentationFrame) {
+            throw new Error('Expected the replacement decoded VideoFrame');
+        }
+        expect(controller.notifyFramePresented(currentPresentationFrame)).toBe(true);
+        expect(decodeSession.getTelemetry().pendingFrameCount).toBe(0);
+        expect(worker.postedMessages.at(-1)).toEqual({
+            frameCredits: 1,
+            generation,
+            type: 'pull'
+        });
+        expect(worker.postedMessages).toHaveLength(3);
+        expect(staleVideoFrame.close).toHaveBeenCalledOnce();
+        expect(currentVideoFrame.close).toHaveBeenCalledOnce();
+        expect(fallbackRequests).toHaveLength(0);
+
+        const destroyPromise = controller.destroy();
+        expect(worker.postedMessages.at(-1)).toEqual({ generation, type: 'stop' });
+        worker.emitMessage({ generation, type: 'stopped' });
+        await destroyPromise;
+        expect(staleVideoFrame.close).toHaveBeenCalledOnce();
+        expect(currentVideoFrame.close).toHaveBeenCalledOnce();
+    });
+
+    it('renegotiates after sustained ordinary playback decode lag', async () => {
+        const harness = createControllerHarness(false, {
+            playbackStallTimeoutMicroseconds: millisecondsToMicroseconds(100)
+        });
+        await startReadyPlayback(harness, false);
+        harness.setMonotonicTime(secondsToMicroseconds(13));
+        const firstStaleFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(firstStaleFrame);
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(13_050));
+        const secondStaleFrame = createDecodedFrame(millisecondsToMicroseconds(5_040));
+        harness.videoDecodeSession.queueFrame(secondStaleFrame);
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(13_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.videoDecodeSession.discardFrame).toHaveBeenCalledTimes(2);
         expect(harness.controller.playbackState).toBe('fallback');
         expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
             disposition: 'renegotiate-source',
             reason: 'playback-stalled'
         }) ]);
+        expect(harness.controller.getTelemetry()).toMatchObject({
+            discardedStaleVideoFrameCount: 2,
+            lastErrorMessage: expect.stringContaining('post-seek false')
+        });
     });
 
     it('does not count a user pause toward the sustained starvation bound', async () => {
@@ -1228,6 +1479,47 @@ describe('CustomPlaybackController', () => {
         harness.controller.resume();
         expect(harness.controller.takeCurrentFrame()).toBeNull();
 
+        expect(harness.controller.playbackState).toBe('playing');
+        expect(harness.fallbackRequests).toHaveLength(0);
+    });
+
+    it('refreshes a paused seek after discarding stale preroll', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        harness.controller.pause();
+        const seekPromise = harness.controller.seek(secondsToMicroseconds(42));
+        await flushAsyncWork();
+        const generation = harness.videoDecodeSession.starts.at(-1)?.generation;
+        if (!generation) {
+            throw new Error('Paused seek generation did not start');
+        }
+        harness.videoDecodeSession.emit({
+            audio: null,
+            codec: 'hvc1.2.4.L153.B0',
+            generation,
+            type: 'ready'
+        });
+        await seekPromise;
+        expect(harness.controller.playbackState).toBe('paused');
+
+        const prerollFrame = createDecodedFrame(secondsToMicroseconds(38));
+        harness.videoDecodeSession.queueFrame(prerollFrame);
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(secondsToMicroseconds(30));
+        expect(harness.controller.playbackState).toBe('paused');
+        expect(harness.fallbackRequests).toHaveLength(0);
+
+        const currentFrame = createDecodedFrame(secondsToMicroseconds(42));
+        harness.videoDecodeSession.queueFrame(currentFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(currentFrame);
+        expect(harness.controller.notifyFramePresented(currentFrame)).toBe(true);
+        expect(harness.controller.playbackState).toBe('paused');
+        expect(harness.controller.getTelemetry().lastVideoDecodeLag).toMatchObject({
+            generation,
+            postSeek: true
+        });
+
+        harness.controller.resume();
         expect(harness.controller.playbackState).toBe('playing');
         expect(harness.fallbackRequests).toHaveLength(0);
     });

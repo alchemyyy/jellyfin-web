@@ -48,6 +48,7 @@ import type {
     CustomPlaybackStartResult,
     CustomPlaybackState,
     CustomPlaybackTelemetry,
+    CustomPlaybackVideoDecodeLagTelemetry,
     CustomVideoDecodeSession,
     CustomVideoDecodeSessionFactory
 } from './CustomPlaybackControllerTypes';
@@ -400,11 +401,13 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private audioOutputPromiseConfiguration: DecodeWorkerAudioConfiguration | null = null;
     private audioPath: CustomPlaybackTelemetry['audioPath'] = 'disabled';
     private audioTelemetryUnsubscribe: (() => void) | null = null;
+    private awaitingPostSeekVideoFrame = false;
     private readonly clock: CustomPlaybackClock;
     private clockStarvation: ClockStarvation | null = null;
     private currentGeneration = 0;
     private currentSource: CustomPlaybackPlayOptions | null = null;
     private destroyed = false;
+    private discardedStaleVideoFrameCount = 0;
     private destroyPromise: Promise<void> | null = null;
     private readonly eventHandler: CustomPlaybackControllerEventHandler;
     private fallbackCount = 0;
@@ -413,6 +416,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private readonly fallbackHook: CustomPlaybackHTMLFallbackHook;
     private lastErrorMessage: string | null = null;
     private lastTimeUpdateMonotonicMicroseconds: Microseconds | null = null;
+    private lastVideoDecodeLag: CustomPlaybackVideoDecodeLagTelemetry | null = null;
     private readonly monotonicTimeSource: () => Microseconds;
     private readonly maximumVideoDecodeLagMicroseconds: Microseconds;
     private muted = false;
@@ -439,6 +443,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
     private readonly videoDecodeSession: CustomVideoDecodeSession;
     private readonly timeUpdateIntervalMicroseconds: Microseconds;
     private volume = 1;
+    private videoDecodeLagWaitActive = false;
     private videoFrameMissStartedAtMicroseconds: Microseconds | null = null;
     private waitingForVideoFrame = false;
     private videoStarvationAnchorMediaTimeMicroseconds: Microseconds | null = null;
@@ -783,15 +788,15 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         if (!presentationFrame && this.state === 'playing') {
             this.handleMissingVideoFrame(generation);
         } else if (presentationFrame) {
-            if (this.hasExcessiveVideoDecodeLag(presentationFrame, targetTimeMicroseconds)) {
-                this.videoDecodeSession.discardFrame(presentationFrame);
-                this.activateFallback(
-                    generation,
-                    'playback-stalled',
-                    'Custom video decoding fell behind the playback clock'
-                );
+            if (this.handleExcessivelyLaggingVideoFrame(
+                presentationFrame,
+                targetTimeMicroseconds,
+                generation
+            )) {
                 return null;
             }
+            this.awaitingPostSeekVideoFrame = false;
+            this.videoDecodeLagWaitActive = false;
             this.videoFrameMissStartedAtMicroseconds = null;
             this.pendingPresentationFrames.add(presentationFrame);
             this.recoverVideoStarvation(presentationFrame);
@@ -879,10 +884,14 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             audioPath: this.audioPath,
             clock: this.clock.snapshot(),
             currentTimeMicroseconds,
+            discardedStaleVideoFrameCount: this.discardedStaleVideoFrameCount,
             durationMicroseconds: this.durationMicroseconds,
             fallbackCount: this.fallbackCount,
             fallbackReason: this.fallbackReason,
             lastErrorMessage: this.lastErrorMessage,
+            lastVideoDecodeLag: this.lastVideoDecodeLag ?
+                { ...this.lastVideoDecodeLag } :
+                null,
             muted: this.muted,
             normalizationGain: this.normalizationGain,
             playCount: this.playCount,
@@ -927,8 +936,11 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.fallbackGeneration = null;
         this.fallbackReason = null;
         this.lastErrorMessage = null;
+        this.lastVideoDecodeLag = null;
         this.startupDurationMicroseconds = null;
         this.lastTimeUpdateMonotonicMicroseconds = null;
+        this.discardedStaleVideoFrameCount = 0;
+        this.awaitingPostSeekVideoFrame = phase === 'seeking';
         this.resetDrainAndStarvationState();
         this.playCount += 1;
         this.audioPath = options.audioTrackIndex === null ? 'disabled' : 'pending';
@@ -1218,6 +1230,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.pendingEndedGeneration = null;
         this.clockStarvation = null;
         this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoDecodeLagWaitActive = false;
         this.videoFrameMissStartedAtMicroseconds = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
@@ -1378,6 +1391,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         const playbackWasWaiting = this.hasActivePlaybackWait();
         this.clockStarvation = null;
         this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoDecodeLagWaitActive = false;
         this.videoFrameMissStartedAtMicroseconds = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;
@@ -1880,19 +1894,67 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
             return;
         }
 
+        this.beginVideoFrameWait(generation, monotonicTimeMicroseconds);
+    }
+
+    private handleStaleVideoFrame(
+        generation: number,
+        videoDecodeLag: CustomPlaybackVideoDecodeLagTelemetry
+    ): void {
+        this.lastVideoDecodeLag = { ...videoDecodeLag };
+        this.discardedStaleVideoFrameCount += 1;
+        this.videoDecodeLagWaitActive = true;
+        this.videoFrameMissStartedAtMicroseconds = null;
+        this.beginVideoFrameWait(generation, this.readMonotonicTime());
+    }
+
+    private handleExcessivelyLaggingVideoFrame(
+        presentationFrame: DecodedPresentationFrame,
+        targetTimeMicroseconds: Microseconds,
+        generation: number
+    ): boolean {
+        const videoDecodeLag = this.getExcessiveVideoDecodeLag(
+            presentationFrame,
+            targetTimeMicroseconds,
+            generation
+        );
+        if (!videoDecodeLag) {
+            return false;
+        }
+        // Seek preroll and a delayed RAF can each produce one stale frame
+        // Release its decode credit and apply the bounded starvation policy
+        if (!this.discardStaleVideoFrame(presentationFrame)) {
+            this.activateFallback(
+                generation,
+                'lifecycle-failed',
+                'A stale custom video frame could not be released'
+            );
+            return true;
+        }
+
+        this.handleStaleVideoFrame(generation, videoDecodeLag);
+        this.emitTimeUpdateIfDue();
+        this.completeEndedPlaybackIfDrained(generation);
+        return true;
+    }
+
+    private beginVideoFrameWait(
+        generation: number,
+        monotonicTimeMicroseconds: Microseconds
+    ): void {
         const playbackWasWaiting = this.hasActivePlaybackWait();
         this.beginVideoStarvationIfNeeded();
         this.waitingForVideoFrame = true;
-        if (!playbackWasWaiting) {
-            this.playbackStarvationStartedAtMicroseconds = monotonicTimeMicroseconds;
+        if (playbackWasWaiting || this.state !== 'playing') {
+            return;
         }
-        if (!playbackWasWaiting) {
-            this.emitEvent({
-                generation,
-                reason: 'video-frame',
-                type: 'waiting'
-            });
-        }
+
+        this.playbackStarvationStartedAtMicroseconds = monotonicTimeMicroseconds;
+        this.emitEvent({
+            generation,
+            reason: 'video-frame',
+            type: 'waiting'
+        });
     }
 
     private hasActivePlaybackWait(): boolean {
@@ -1917,23 +1979,72 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.activateFallback(
             generation,
             'playback-stalled',
-            'Custom playback remained starved beyond its bounded timeout'
+            this.getPlaybackStallMessage(generation)
         );
         return true;
     }
 
-    private hasExcessiveVideoDecodeLag(
+    private getPlaybackStallMessage(generation: number): string {
+        const videoDecodeLag = this.lastVideoDecodeLag;
+        if (!this.videoDecodeLagWaitActive
+            || !videoDecodeLag
+            || videoDecodeLag.generation !== generation) {
+            return 'Custom playback remained starved beyond its bounded timeout';
+        }
+
+        return 'Custom video decoding remained behind the playback clock'
+            + `: target ${videoDecodeLag.targetTimeMicroseconds} microseconds`
+            + `, stale frame end ${videoDecodeLag.frameEndTimeMicroseconds} microseconds`
+            + `, gap ${videoDecodeLag.gapMicroseconds} microseconds`
+            + `, post-seek ${videoDecodeLag.postSeek}`;
+    }
+
+    private getExcessiveVideoDecodeLag(
         presentationFrame: DecodedPresentationFrame,
-        targetTimeMicroseconds: Microseconds
-    ): boolean {
+        targetTimeMicroseconds: Microseconds,
+        generation: number
+    ): CustomPlaybackVideoDecodeLagTelemetry | null {
         const frameEndMicroseconds = addMicroseconds(
             presentationFrame.mediaTimeMicroseconds,
             presentationFrame.durationMicroseconds > 0 ?
                 presentationFrame.durationMicroseconds :
                 ZERO_MICROSECONDS
         );
-        return targetTimeMicroseconds - frameEndMicroseconds
-            > this.maximumVideoDecodeLagMicroseconds;
+        const gapMicroseconds = requireMicroseconds(
+            targetTimeMicroseconds - frameEndMicroseconds,
+            'Video decode lag'
+        );
+        if (gapMicroseconds <= this.maximumVideoDecodeLagMicroseconds) {
+            return null;
+        }
+
+        return {
+            frameEndTimeMicroseconds: frameEndMicroseconds,
+            gapMicroseconds,
+            generation,
+            postSeek: this.awaitingPostSeekVideoFrame,
+            targetTimeMicroseconds
+        };
+    }
+
+    private discardStaleVideoFrame(
+        presentationFrame: DecodedPresentationFrame
+    ): boolean {
+        let released = false;
+        try {
+            released = this.videoDecodeSession.discardFrame(presentationFrame);
+        } catch {
+            released = false;
+        } finally {
+            if (presentationFrame.outputMode === 'video-frame') {
+                try {
+                    presentationFrame.frame.close();
+                } catch {
+                    // Ownership still ends if a platform close implementation throws
+                }
+            }
+        }
+        return released;
     }
 
     private clearPlaybackStarvationIfRecovered(): void {
@@ -2180,6 +2291,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         this.pendingPresentationFrames.clear();
         this.clockStarvation = null;
         this.playbackStarvationStartedAtMicroseconds = null;
+        this.videoDecodeLagWaitActive = false;
         this.videoFrameMissStartedAtMicroseconds = null;
         this.videoStarvationAnchorMediaTimeMicroseconds = null;
         this.videoStarvationAnchorMonotonicTimeMicroseconds = null;

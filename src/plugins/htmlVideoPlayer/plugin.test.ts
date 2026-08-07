@@ -7,6 +7,7 @@ import Events from 'utils/events';
 
 type Deferred<Value> = {
     promise: Promise<Value>
+    reject: (reason?: unknown) => void
     resolve: (value: Value) => void
 };
 
@@ -61,6 +62,12 @@ type HtmlVideoPlayerTestHarness = {
     currentTime: (timeMilliseconds?: number) => number | undefined
     currentSrc: () => string | undefined
     destroy: () => void
+    getStats: () => Promise<{
+        categories: Array<{
+            stats: Array<{ label: string, value: string }>
+            type?: string
+        }>
+    }>
     getPresentationSurface: () => { container: HTMLDivElement, video: HTMLVideoElement } | null
     isFetching: boolean
     onError: (event: Event) => void
@@ -71,6 +78,7 @@ type HtmlVideoPlayerTestHarness = {
     notifyCustomPlaybackVolumeChange: () => boolean
     notifyCustomPlaybackWaiting: () => boolean
     onPlay: () => void
+    pause: () => void
     play: (options: ReturnType<typeof createPlayOptions>) => Promise<unknown>
     prepareCustomPlayback: (options: ReturnType<typeof createPlayOptions>) => Promise<
         { container: HTMLDivElement, video: HTMLVideoElement } | string | null
@@ -78,6 +86,7 @@ type HtmlVideoPlayerTestHarness = {
     setAspectRatio: (aspectRatio: string) => void
     setSubtitleStreamIndex: (index: number) => void
     stop: (destroyPlayer: boolean) => Promise<void>
+    unpause: () => void
     updateVideoUrl: (options: ReturnType<typeof createPlayOptions>, playSessionGeneration?: number) => Promise<void>
     updateSubtitleText: (timeMilliseconds: number) => void
 };
@@ -406,10 +415,14 @@ function createDeferred<Value>(): Deferred<Value> {
     let resolvePromise: (value: Value) => void = () => {
         throw new Error('Deferred promise was not initialized');
     };
-    const promise = new Promise<Value>((resolve) => {
+    let rejectPromise: (reason?: unknown) => void = () => {
+        throw new Error('Deferred promise was not initialized');
+    };
+    const promise = new Promise<Value>((resolve, reject) => {
         resolvePromise = resolve;
+        rejectPromise = reject;
     });
-    return { promise, resolve: resolvePromise };
+    return { promise, reject: rejectPromise, resolve: resolvePromise };
 }
 
 function createFetchResponse(trackEvents: SubtitleTrackEvent[]): Response {
@@ -508,6 +521,10 @@ async function createPlayer(useWebGPUHLSRuntime = false): Promise<HtmlVideoPlaye
 
 beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window, 'devicePixelRatio', {
+        configurable: true,
+        value: 1
+    });
     vi.mocked(browser.supportsCssAnimation).mockReturnValue(false);
     htmlMediaHelperMock.applySrc.mockImplementation((element: { src: string }, source: string) => {
         element.src = source;
@@ -613,6 +630,160 @@ describe('HtmlVideoPlayer custom presentation shell', () => {
         player.onPlay();
 
         expect(unpauseListener).toHaveBeenCalledOnce();
+    });
+});
+
+describe('HtmlVideoPlayer stats and playback controls', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    it('labels transformed player dimensions separately from intrinsic video resolution', async () => {
+        const player = await createPlayer();
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Video presentation surface was not created');
+        }
+
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true,
+            value: 2
+        });
+        vi.spyOn(surface.video, 'getBoundingClientRect')
+            .mockReturnValue(createRectangle(0, 0, 400, 225));
+        Object.defineProperty(surface.video, 'videoWidth', {
+            configurable: true,
+            value: 1920
+        });
+        Object.defineProperty(surface.video, 'videoHeight', {
+            configurable: true,
+            value: 1080
+        });
+
+        const statistics = (await player.getStats()).categories.flatMap((category) => category.stats);
+
+        expect(statistics).toContainEqual({
+            label: 'LabelPlayerDimensions',
+            value: '800x450'
+        });
+        expect(statistics).toContainEqual({
+            label: 'LabelVideoResolution',
+            value: '1920x1080'
+        });
+        expect(statistics.some((statistic) => statistic.label === 'LabelPlayerSizes')).toBe(false);
+
+        player.destroy();
+    });
+
+    it('consumes the AbortError from a play request interrupted by pause', async () => {
+        const player = await createPlayer();
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Video presentation surface was not created');
+        }
+
+        const pendingPlay = createDeferred<void>();
+        let paused = false;
+        Object.defineProperty(surface.video, 'paused', {
+            configurable: true,
+            get: () => paused
+        });
+        vi.spyOn(surface.video, 'play').mockReturnValue(pendingPlay.promise);
+        vi.spyOn(surface.video, 'pause').mockImplementation(() => {
+            paused = true;
+        });
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        player.unpause();
+        player.pause();
+        pendingPlay.reject(new DOMException(
+            'The play() request was interrupted by a call to pause().',
+            'AbortError'
+        ));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(surface.video.play).toHaveBeenCalledOnce();
+        expect(surface.video.pause).toHaveBeenCalledOnce();
+        expect(consoleError).not.toHaveBeenCalled();
+
+        player.destroy();
+    });
+
+    it('keeps an AbortError visible when playback remains unpaused', async () => {
+        const player = await createPlayer();
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Video presentation surface was not created');
+        }
+
+        Object.defineProperty(surface.video, 'paused', {
+            configurable: true,
+            value: false
+        });
+        vi.spyOn(surface.video, 'play').mockRejectedValue(new DOMException(
+            'The play() request was interrupted by a new load request.',
+            'AbortError'
+        ));
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        player.unpause();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(consoleError).toHaveBeenCalledOnce();
+        expect(consoleError.mock.calls[0]?.[0]).toContain('error calling video.play');
+        expect(consoleError.mock.calls[0]?.[0]).toContain('AbortError');
+
+        player.destroy();
+    });
+
+    it('keeps unexpected asynchronous play failures visible', async () => {
+        const player = await createPlayer();
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Video presentation surface was not created');
+        }
+
+        const playbackError = new DOMException('The media format is unsupported', 'NotSupportedError');
+        vi.spyOn(surface.video, 'play').mockRejectedValue(playbackError);
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        player.unpause();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(consoleError).toHaveBeenCalledOnce();
+        expect(consoleError.mock.calls[0]?.[0]).toContain('error calling video.play');
+        expect(consoleError.mock.calls[0]?.[0]).toContain('NotSupportedError');
+
+        player.destroy();
+    });
+
+    it('keeps synchronous play failures visible', async () => {
+        const player = await createPlayer();
+        const surface = player.getPresentationSurface();
+        expect(surface).not.toBeNull();
+        if (!surface) {
+            throw new Error('Video presentation surface was not created');
+        }
+
+        const playbackError = new DOMException('The media element is unavailable', 'InvalidStateError');
+        vi.spyOn(surface.video, 'play').mockImplementation(() => {
+            throw playbackError;
+        });
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        expect(() => player.unpause()).not.toThrow();
+        expect(consoleError).toHaveBeenCalledOnce();
+        expect(consoleError.mock.calls[0]?.[0]).toContain('error calling video.play');
+        expect(consoleError.mock.calls[0]?.[0]).toContain('InvalidStateError');
+
+        player.destroy();
     });
 });
 
@@ -926,6 +1097,29 @@ describe('HtmlVideoPlayer subtitle generations', () => {
 describe('HtmlVideoPlayer play generations', () => {
     afterEach(() => {
         document.body.innerHTML = '';
+    });
+
+    it('awaits WebGPU audio routing before assigning an autoplay source', async () => {
+        const outputReady = createDeferred<void>();
+        const prepareAudioOutput = vi.fn(
+            async (): Promise<void> => outputReady.promise
+        );
+        const player = new HtmlVideoPlayer(
+            undefined,
+            true,
+            true,
+            prepareAudioOutput
+        ) as unknown as HtmlVideoPlayerTestHarness;
+
+        const playPromise = player.play(createPlayOptions('https://example.test/routed.mp4'));
+        await vi.waitFor(() => expect(prepareAudioOutput).toHaveBeenCalledTimes(1));
+        expect(htmlMediaHelperMock.applySrc).not.toHaveBeenCalled();
+        expect(htmlMediaHelperMock.playWithPromise).not.toHaveBeenCalled();
+
+        outputReady.resolve(undefined);
+        await playPromise;
+        expect(htmlMediaHelperMock.applySrc).toHaveBeenCalledTimes(1);
+        expect(htmlMediaHelperMock.playWithPromise).toHaveBeenCalledTimes(1);
     });
 
     it('resolves a superseded play and blocks its deferred source continuation', async () => {

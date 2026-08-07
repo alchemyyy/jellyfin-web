@@ -1,4 +1,5 @@
 import layoutManager from 'components/layoutManager';
+import globalize from 'lib/globalize';
 import { webGPUAudioDownmixAlgorithm } from 'scripts/settings/userSettings';
 
 import 'elements/emby-button/emby-button';
@@ -14,6 +15,11 @@ import {
     type RenderSettings
 } from '../RenderSettings';
 import type WebGPUPlayer from '../WebGPUPlayer';
+import {
+    getWebGPUAudioOutputManager,
+    type WebGPUAudioOutputMessageCode,
+    type WebGPUAudioOutputSnapshot
+} from '../WebGPUAudioOutputManager';
 import {
     createConfiguredHDRRenderSettings,
     createDefaultWebGPUUserSettings,
@@ -394,8 +400,35 @@ function createPanelHTML(): string {
 
                 <section class="webgpuSettingsSection" aria-labelledby="webgpu-audio-title">
                     <h3 class="webgpuSettingsSectionTitle" id="webgpu-audio-title">
-                        Audio downmix
+                        ${globalize.translate('WebGPUAudioOutputAndDownmix')}
                     </h3>
+                    <div class="webgpuSettingsSelectRow">
+                        <div class="selectContainer webgpuSettingsSelectContainer">
+                            <select
+                                aria-describedby="webgpu-audio-output-description"
+                                data-audio-output-select
+                                id="webgpu-audio-output"
+                                is="emby-select"
+                                label="${globalize.translate('LabelAudioOutput')}"
+                            ></select>
+                        </div>
+                        <button
+                            class="raised webgpuSettingsChooseAudioOutput"
+                            data-audio-output-picker
+                            is="emby-button"
+                            type="button"
+                        >${globalize.translate('ButtonChooseAudioOutput')}</button>
+                    </div>
+                    <div
+                        class="fieldDescription"
+                        id="webgpu-audio-output-description"
+                    >${globalize.translate('WebGPUAudioOutputDescription')}</div>
+                    <div
+                        aria-live="polite"
+                        class="webgpuSettingsStatus"
+                        data-audio-output-status
+                        role="status"
+                    ></div>
                     <div class="webgpuSettingsSelectRow">
                         <div class="selectContainer webgpuSettingsSelectContainer">
                             <select
@@ -457,7 +490,7 @@ function createPanelHTML(): string {
                         class="raised webgpuSettingsResetAudio"
                         is="emby-button"
                         type="button"
-                    >Reset audio downmix</button>
+                    >Reset audio</button>
                 </section>
 
                 <div class="webgpuSettingsFooter">
@@ -483,6 +516,67 @@ function requireElement<ElementType extends Element>(
 
 function setStatus(element: HTMLElement, message: string): void {
     element.textContent = message;
+}
+
+function getAudioOutputMessageTranslationKey(
+    messageCode: WebGPUAudioOutputMessageCode
+): string {
+    switch (messageCode) {
+        case 'applying':
+            return 'WebGPUAudioOutputStatusApplying';
+        case 'default-active':
+            return 'WebGPUAudioOutputStatusDefaultActive';
+        case 'default-enumeration-failed':
+            return 'WebGPUAudioOutputStatusDefaultEnumerationFailed';
+        case 'default-fallback':
+            return 'WebGPUAudioOutputStatusDefaultFallback';
+        case 'default-saved':
+            return 'WebGPUAudioOutputStatusDefaultSaved';
+        case 'picker-cancelled':
+            return 'WebGPUAudioOutputStatusPickerCancelled';
+        case 'picker-failed':
+            return 'WebGPUAudioOutputStatusPickerFailed';
+        case 'picker-invalid-device':
+            return 'WebGPUAudioOutputStatusPickerInvalidDevice';
+        case 'picker-not-allowed':
+            return 'WebGPUAudioOutputStatusPickerNotAllowed';
+        case 'picker-not-found':
+            return 'WebGPUAudioOutputStatusPickerNotFound';
+        case 'picker-unavailable':
+            return 'WebGPUAudioOutputStatusPickerUnavailable';
+        case 'picker-user-action-required':
+            return 'WebGPUAudioOutputStatusPickerUserActionRequired';
+        case 'route-failed':
+            return 'WebGPUAudioOutputStatusRouteFailed';
+        case 'selected-active':
+            return 'WebGPUAudioOutputStatusSelectedActive';
+        case 'selected-enumeration-failed':
+            return 'WebGPUAudioOutputStatusSelectedEnumerationFailed';
+        case 'selected-fallback':
+            return 'WebGPUAudioOutputStatusSelectedFallback';
+        case 'selected-saved':
+            return 'WebGPUAudioOutputStatusSelectedSaved';
+        case 'selected-unavailable-default':
+            return 'WebGPUAudioOutputStatusSelectedUnavailableDefault';
+        case 'selected-unavailable-fallback':
+            return 'WebGPUAudioOutputStatusSelectedUnavailableFallback';
+    }
+}
+
+function getMissingSelectedOutputLabel(snapshot: WebGPUAudioOutputSnapshot): string {
+    const selectedDeviceActive = snapshot.selectedDeviceId !== null
+        && snapshot.activeDeviceId === snapshot.selectedDeviceId;
+    if (selectedDeviceActive || snapshot.selectedDeviceAvailability === 'active') {
+        return globalize.translate('WebGPUSelectedAudioOutputActive');
+    }
+    switch (snapshot.selectedDeviceAvailability) {
+        case 'available':
+            return globalize.translate('WebGPUSelectedAudioOutputAvailable');
+        case 'unavailable':
+            return globalize.translate('WebGPUPreviouslySelectedAudioOutputUnavailable');
+        case 'unknown':
+            return globalize.translate('WebGPUSelectedAudioOutputAvailabilityUnknown');
+    }
 }
 
 function positionPanelBelowPlaybackInfo(panel: HTMLElement): void {
@@ -514,7 +608,10 @@ function positionPanelBelowPlaybackInfo(panel: HTMLElement): void {
     );
 }
 
-function createPanelController(player: WebGPUPlayer): ActivePanel {
+function createPanelController(
+    player: WebGPUPlayer,
+    invokingElement: HTMLElement | null
+): ActivePanel {
     const panel = document.createElement('aside');
     panel.classList.add('webgpuSettingsPanel');
     if (layoutManager.tv) {
@@ -526,6 +623,18 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
     const cleanupCallbacks: Array<() => void> = [];
     const renderStatus = requireElement<HTMLElement>(panel, '[data-render-status]');
     const audioStatus = requireElement<HTMLElement>(panel, '[data-audio-status]');
+    const audioOutputStatus = requireElement<HTMLElement>(
+        panel,
+        '[data-audio-output-status]'
+    );
+    const audioOutputSelect = requireElement<HTMLSelectElement>(
+        panel,
+        '[data-audio-output-select]'
+    );
+    const audioOutputPicker = requireElement<HTMLButtonElement>(
+        panel,
+        '[data-audio-output-picker]'
+    );
     const automaticInputPeakCheckbox = requireElement<HTMLInputElement>(
         panel,
         '[data-setting-checkbox="automaticInputPeakNits"]'
@@ -543,9 +652,64 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
         '[data-setting-select="audioDownmixAlgorithm"]'
     );
     let settings = loadWebGPUUserSettings();
+    const audioOutputManager = getWebGPUAudioOutputManager();
     let audioDownmixAlgorithm: CustomAudioDownmixAlgorithm =
         webGPUAudioDownmixAlgorithm();
     let renderFrameRequest: number | null = null;
+    let audioOutputSelectionRevision = 0;
+    let panelActive = true;
+
+    const invalidatePendingAudioOutputSelection = (): void => {
+        audioOutputSelectionRevision += 1;
+        audioOutputManager.cancelAudioOutputSelectionRequest();
+    };
+
+    const synchronizeAudioOutputControls = (
+        snapshot: WebGPUAudioOutputSnapshot
+    ): void => {
+        if (!panelActive) {
+            return;
+        }
+        while (audioOutputSelect.firstChild) {
+            audioOutputSelect.removeChild(audioOutputSelect.firstChild);
+        }
+        const defaultOption = document.createElement('option');
+        defaultOption.textContent = globalize.translate('Default');
+        defaultOption.value = '';
+        audioOutputSelect.appendChild(defaultOption);
+        let outputNumber = 1;
+        for (const device of snapshot.devices) {
+            const option = document.createElement('option');
+            option.textContent = device.label || globalize.translate(
+                'WebGPUUnnamedAudioOutput',
+                outputNumber
+            );
+            option.value = device.deviceId;
+            audioOutputSelect.appendChild(option);
+            outputNumber += 1;
+        }
+        const selectedDeviceListed = snapshot.selectedDeviceId === null
+            || snapshot.devices.some(device => device.deviceId === snapshot.selectedDeviceId);
+        if (snapshot.selectedDeviceId && !selectedDeviceListed) {
+            const selectedOption = document.createElement('option');
+            selectedOption.disabled = snapshot.selectedDeviceAvailability === 'unavailable'
+                && snapshot.activeDeviceId !== snapshot.selectedDeviceId;
+            selectedOption.textContent = getMissingSelectedOutputLabel(snapshot);
+            selectedOption.value = snapshot.selectedDeviceId;
+            audioOutputSelect.appendChild(selectedOption);
+        }
+        audioOutputSelect.value = snapshot.selectedDeviceId ?? '';
+        audioOutputPicker.disabled = !snapshot.pickerAvailable;
+        audioOutputPicker.title = snapshot.pickerAvailable ?
+            globalize.translate('WebGPUAuthorizeAudioOutput') :
+            globalize.translate('WebGPUAudioOutputPickerUnavailable');
+        const pickerMessage = snapshot.pickerAvailable ? '' :
+            ` ${globalize.translate('WebGPUAudioOutputPickerUnavailableHelp')}`;
+        const statusMessage = globalize.translate(
+            getAudioOutputMessageTranslationKey(snapshot.messageCode)
+        );
+        setStatus(audioOutputStatus, `${statusMessage}${pickerMessage}`);
+    };
 
     const synchronizeControls = (): void => {
         for (const configuration of NUMERIC_CONTROL_CONFIGURATIONS) {
@@ -625,6 +789,54 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
         settings = saveWebGPUUserSettings(settings);
         synchronizeControls();
     };
+
+    const commitAudioOutputDevice = (deviceId: string | null): void => {
+        settings = normalizeWebGPUUserSettings({
+            ...settings,
+            audio: {
+                ...settings.audio,
+                outputDeviceId: deviceId
+            }
+        });
+        persistSettings();
+        void audioOutputManager.setSelectedDeviceId(settings.audio.outputDeviceId);
+        synchronizeAudioOutputControls(audioOutputManager.getSnapshot());
+    };
+
+    const onAudioOutputChange = (): void => {
+        invalidatePendingAudioOutputSelection();
+        commitAudioOutputDevice(audioOutputSelect.value || null);
+    };
+    audioOutputSelect.addEventListener('change', onAudioOutputChange);
+    cleanupCallbacks.push((): void => {
+        audioOutputSelect.removeEventListener('change', onAudioOutputChange);
+    });
+
+    const onChooseAudioOutput = (): void => {
+        const selectionRevision = audioOutputSelectionRevision + 1;
+        audioOutputSelectionRevision = selectionRevision;
+        const selectionPromise = audioOutputManager.requestAudioOutputSelection();
+        void selectionPromise.then((selectedDeviceId): void => {
+            if (!panelActive
+                || audioOutputSelectionRevision !== selectionRevision
+                || !selectedDeviceId) {
+                return;
+            }
+            commitAudioOutputDevice(selectedDeviceId);
+        });
+    };
+    audioOutputPicker.addEventListener('click', onChooseAudioOutput);
+    cleanupCallbacks.push((): void => {
+        audioOutputPicker.removeEventListener('click', onChooseAudioOutput);
+    });
+
+    const unsubscribeAudioOutput = audioOutputManager.subscribe(
+        synchronizeAudioOutputControls
+    );
+    cleanupCallbacks.push(unsubscribeAudioOutput);
+    if (audioOutputManager.getSnapshot().selectedDeviceId !== settings.audio.outputDeviceId) {
+        void audioOutputManager.setSelectedDeviceId(settings.audio.outputDeviceId);
+    }
 
     const applyAudioDownmixSettings = (
         includeForceStereoStatus: boolean,
@@ -822,10 +1034,13 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
         '.webgpuSettingsResetAudio'
     );
     const onResetAudio = (): void => {
+        invalidatePendingAudioOutputSelection();
         settings = resetWebGPUAudioSettings(settings);
         audioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
         webGPUAudioDownmixAlgorithm(audioDownmixAlgorithm);
         persistSettings();
+        void audioOutputManager.setSelectedDeviceId(settings.audio.outputDeviceId);
+        synchronizeAudioOutputControls(audioOutputManager.getSnapshot());
         applyAudioDownmixSettings(true, true);
     };
     resetAudioButton.addEventListener('click', onResetAudio);
@@ -835,10 +1050,13 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
 
     const resetAllButton = requireElement<HTMLButtonElement>(panel, '.webgpuSettingsResetAll');
     const onResetAll = (): void => {
+        invalidatePendingAudioOutputSelection();
         settings = createDefaultWebGPUUserSettings();
         audioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM;
         webGPUAudioDownmixAlgorithm(audioDownmixAlgorithm);
         persistSettings();
+        void audioOutputManager.setSelectedDeviceId(settings.audio.outputDeviceId);
+        synchronizeAudioOutputControls(audioOutputManager.getSnapshot());
         scheduleRenderSettings();
         applyAudioDownmixSettings(true, true);
     };
@@ -860,12 +1078,17 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
             return;
         }
         resolved = true;
+        panelActive = false;
+        invalidatePendingAudioOutputSelection();
         if (renderFrameRequest !== null) {
             cancelAnimationFrame(renderFrameRequest);
             applyRenderSettings();
         }
         for (const cleanupCallback of cleanupCallbacks) {
             cleanupCallback();
+        }
+        if (invokingElement?.isConnected) {
+            invokingElement.focus();
         }
         resolvePanel?.();
         resolvePanel = null;
@@ -927,6 +1150,7 @@ function createPanelController(player: WebGPUPlayer): ActivePanel {
 
     document.body.appendChild(panel);
     updatePanelPosition();
+    closeButton.focus();
 
     return { element: panel, promise };
 }
@@ -941,7 +1165,9 @@ export function showWebGPUPlaybackSettingsPanel(player: WebGPUPlayer): Promise<v
         return activePanel.promise;
     }
 
-    const createdPanel = createPanelController(player);
+    const activeElement = document.activeElement;
+    const invokingElement = activeElement instanceof HTMLElement ? activeElement : null;
+    const createdPanel = createPanelController(player, invokingElement);
     const promise = createdPanel.promise.finally((): void => {
         if (activePanel?.element === createdPanel.element) {
             activePanel = null;

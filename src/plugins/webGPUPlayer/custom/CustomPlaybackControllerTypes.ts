@@ -148,6 +148,14 @@ export type CustomPlaybackClock = {
     synchronize: (mediaTimeMicroseconds: Microseconds) => void
 };
 
+export type CustomPlaybackVideoDecodeLagTelemetry = {
+    frameEndTimeMicroseconds: Microseconds
+    gapMicroseconds: Microseconds
+    generation: number
+    postSeek: boolean
+    targetTimeMicroseconds: Microseconds
+};
+
 export type CustomPlaybackTelemetry = {
     activeGeneration: number | null
     audioBridge: CustomDecodeAudioBridgeTelemetry | null
@@ -155,10 +163,12 @@ export type CustomPlaybackTelemetry = {
     audioPath: 'disabled' | 'pending' | 'ready' | 'unavailable'
     clock: MediaClockSnapshot
     currentTimeMicroseconds: Microseconds
+    discardedStaleVideoFrameCount: number
     durationMicroseconds: Microseconds | null
     fallbackCount: number
     fallbackReason: CustomPlaybackFallbackReason | null
     lastErrorMessage: string | null
+    lastVideoDecodeLag: CustomPlaybackVideoDecodeLagTelemetry | null
     muted: boolean
     normalizationGain: number
     playCount: number
