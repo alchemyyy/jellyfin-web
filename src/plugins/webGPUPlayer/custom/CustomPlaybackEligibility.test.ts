@@ -1924,7 +1924,7 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
-    it('does not fall back from raw Profile 8.1 based on source resolution', () => {
+    it('prefers the native Profile 8.1 HDR10 base independently of source resolution', () => {
         const profile8Options = createOptions({
             mediaSource: {
                 Container: 'mkv',
@@ -1985,13 +1985,16 @@ describe('CustomPlaybackEligibility', () => {
             capabilities,
             eligibilityOptions
         )).toMatchObject({
-            dolbyVisionProfile: 8,
+            dolbyVisionProfile: null,
             eligible: true,
             hdr: true,
             maximumCodedHeight: 2_160,
             maximumCodedWidth: 3_840,
-            rawVideoFrameFormat: 'I420P10',
-            videoOutputMode: 'raw-planes'
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
         });
 
         const mediaSource = profile8Options.mediaSource as {
@@ -2005,9 +2008,80 @@ describe('CustomPlaybackEligibility', () => {
             capabilities,
             eligibilityOptions
         )).toMatchObject({
+            dolbyVisionProfile: null,
+            eligible: true,
+            nativeHDRTransfer: 'pq',
+            neutralizeHDRColorMetadata: true,
+            rawVideoFrameFormat: null,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
+    it('retains raw Profile 8.1 reconstruction when its native HDR10 base is unavailable', () => {
+        const profile8Options = createOptions({
+            mediaSource: {
+                Container: 'mkv',
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        AverageFrameRate: 23.976025,
+                        BitDepth: 10,
+                        BitRate: 91_000_000,
+                        BlPresentFlag: true,
+                        Codec: 'hevc',
+                        ColorPrimaries: 'bt2020',
+                        ColorRange: 'tv',
+                        ColorSpace: 'bt2020nc',
+                        ColorTransfer: 'smpte2084',
+                        DvBlSignalCompatibilityId: 1,
+                        DvProfile: 8,
+                        ElPresentFlag: false,
+                        Height: 2_160,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Level: 153,
+                        Profile: 'Main 10',
+                        RealFrameRate: 23.976025,
+                        RpuPresentFlag: true,
+                        Type: 'Video',
+                        VideoRange: 'HDR',
+                        VideoRangeType: 'DOVIWithHDR10',
+                        Width: 3_840
+                    },
+                    {
+                        BitDepth: 24,
+                        Channels: 2,
+                        Codec: 'flac',
+                        Index: 1,
+                        SampleRate: 48_000,
+                        Type: 'Audio'
+                    }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+        const capabilities = createCapabilities();
+        capabilities.nativeHDRHEVC = undefined;
+
+        expect(getCustomPlaybackEligibility(
+            profile8Options,
+            capabilities,
+            {
+                allowDolbyVision: true,
+                allowNativeDolbyVisionProfile8HDR10Base: true,
+                allowNativeHDR: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [
+                    'external-hevc-main10-bt709-limited:pq-v1'
+                ],
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toMatchObject({
             dolbyVisionProfile: 8,
             eligible: true,
             rawVideoFrameFormat: 'I420P10',
+            videoDecoderBackend: 'bundled-hevc',
             videoOutputMode: 'raw-planes'
         });
     });

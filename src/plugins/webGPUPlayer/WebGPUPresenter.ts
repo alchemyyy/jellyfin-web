@@ -1058,7 +1058,8 @@ export default class WebGPUPresenter {
      */
     presentDecodedFrame(
         decodedFrame: DecodedPresentationFrame,
-        generation: number
+        generation: number,
+        videoFrameSubmissionCompleted?: (gpuWorkCompleted: boolean) => void
     ): boolean {
         try {
             if (!this.isCurrent(generation) || this.fallbackLatched) {
@@ -1125,6 +1126,15 @@ export default class WebGPUPresenter {
                 );
                 this.recordDolbyVisionProfile7Presentation(submission);
             });
+            if (
+                decodedFrame.outputMode === 'video-frame'
+                && videoFrameSubmissionCompleted
+            ) {
+                this.notifyWhenGPUWorkCompleted(
+                    submission.device,
+                    videoFrameSubmissionCompleted
+                );
+            }
             return true;
         } catch (error) {
             console.warn('WebGPU decoded frame presentation failed', error);
@@ -2895,6 +2905,24 @@ export default class WebGPUPresenter {
         };
         this.pendingSubmissionValidation = pendingValidation;
         void this.resolveSubmissionValidation(pendingValidation, validatedHandler);
+    }
+
+    /** Releases external VideoFrame backpressure only after GPU use finishes. */
+    private notifyWhenGPUWorkCompleted(
+        device: GPUDevice,
+        completedHandler: (gpuWorkCompleted: boolean) => void
+    ): void {
+        const notify = (gpuWorkCompleted: boolean): void => {
+            try {
+                completedHandler(gpuWorkCompleted);
+            } catch (error) {
+                console.warn('Decoded VideoFrame completion handler failed', error);
+            }
+        };
+        void device.queue.onSubmittedWorkDone().then(
+            (): void => notify(true),
+            (): void => notify(false)
+        );
     }
 
     private async resolveSubmissionValidation(

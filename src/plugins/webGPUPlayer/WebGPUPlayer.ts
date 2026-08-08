@@ -1478,6 +1478,10 @@ export default class WebGPUPlayer {
         if (customPlaybackController) {
             const customTelemetry = customPlaybackController.getTelemetry();
             const presentationTelemetry = this.presenter.getTelemetry();
+            const eligibility = this.lastCustomPlaybackEligibility;
+            const videoPath = eligibility?.eligible === true ?
+                `${eligibility.videoDecoderBackend} / ${eligibility.videoOutputMode}` :
+                'unknown';
             return Promise.resolve({
                 categories: [
                     {
@@ -1493,6 +1497,10 @@ export default class WebGPUPlayer {
                     },
                     {
                         stats: [
+                            {
+                                label: 'Video path',
+                                value: videoPath
+                            },
                             {
                                 label: 'Decoded / presented frames',
                                 value: `${customTelemetry.videoDecode.receivedFrameCount} / ${presentationTelemetry.presentedFrameCount}`
@@ -2791,57 +2799,127 @@ export default class WebGPUPlayer {
             return;
         }
 
-        this.customPlaybackFrameCallback = globalThis.requestAnimationFrame((): void => {
-            this.customPlaybackFrameCallback = null;
-            if (!this.isCustomPlaybackCurrent(
+        const backendGeneration = this.backendSessionGeneration;
+        this.customPlaybackFrameCallback = globalThis.requestAnimationFrame(
+            (): void => this.handleCustomPlaybackAnimationFrame(
                 customPlaybackController,
-                this.backendSessionGeneration
-            ) || this.customPlaybackFrameGeneration !== generation) {
-                return;
-            }
+                backendGeneration,
+                generation,
+                continueWhilePlaying
+            )
+        );
+    }
 
-            const decodedFrame: DecodedPresentationFrame | null =
-                customPlaybackController.takeCurrentFrame();
-            let presentationTemporarilyBusy = false;
-            if (decodedFrame) {
-                const frameSubmitted = this.presenter.presentDecodedFrame(
+    private handleCustomPlaybackAnimationFrame(
+        customPlaybackController: CustomPlaybackController,
+        backendGeneration: number,
+        presentationGeneration: number,
+        continueWhilePlaying: boolean
+    ): void {
+        this.customPlaybackFrameCallback = null;
+        if (!this.isCustomPlaybackCurrent(customPlaybackController, backendGeneration)
+            || this.customPlaybackFrameGeneration !== presentationGeneration) {
+            return;
+        }
+
+        const decodedFrame = customPlaybackController.takeCurrentFrame();
+        const presentationState = decodedFrame ?
+            this.presentCustomPlaybackFrame(
+                customPlaybackController,
+                backendGeneration,
+                presentationGeneration,
+                decodedFrame
+            ) :
+            'no-frame';
+        if (presentationState === 'failed') {
+            return;
+        }
+
+        if (continueWhilePlaying && customPlaybackController.playbackState === 'playing') {
+            this.scheduleCustomPlaybackFrame(customPlaybackController, true);
+            return;
+        }
+        if ((presentationState === 'no-frame' || presentationState === 'temporarily-busy')
+            && customPlaybackController.playbackState === 'paused') {
+            // A paused seek still needs to wait for and display its first frame
+            this.scheduleCustomPlaybackFrame(customPlaybackController, false);
+        }
+    }
+
+    private presentCustomPlaybackFrame(
+        customPlaybackController: CustomPlaybackController,
+        backendGeneration: number,
+        presentationGeneration: number,
+        decodedFrame: DecodedPresentationFrame
+    ): 'failed' | 'presented' | 'temporarily-busy' {
+        const videoFrameSubmissionCompleted = decodedFrame.outputMode === 'video-frame' ?
+            (gpuWorkCompleted: boolean): void => {
+                this.handleDecodedVideoFrameSubmissionCompleted(
+                    customPlaybackController,
+                    backendGeneration,
+                    presentationGeneration,
                     decodedFrame,
-                    generation
+                    gpuWorkCompleted
                 );
-                if (!frameSubmitted) {
-                    const frameDiscarded = customPlaybackController.notifyFrameDiscarded(
-                        decodedFrame
-                    );
-                    presentationTemporarilyBusy = frameDiscarded
-                        && this.presenter.getTelemetry().state === 'initializing';
-                    if (!presentationTemporarilyBusy) {
-                        this.requestCustomPlaybackFallbackForError(
-                            customPlaybackController,
-                            this.backendSessionGeneration,
-                            new Error('Decoded frame did not reach WebGPU submission')
-                        );
-                        return;
-                    }
-                }
-                if (frameSubmitted
-                    && !customPlaybackController.notifyFramePresented(decodedFrame)) {
-                    this.requestCustomPlaybackFallbackForError(
-                        customPlaybackController,
-                        this.backendSessionGeneration,
-                        new Error('Decoded frame did not reach WebGPU submission')
-                    );
-                    return;
-                }
+            } :
+            undefined;
+        const frameSubmitted = this.presenter.presentDecodedFrame(
+            decodedFrame,
+            presentationGeneration,
+            videoFrameSubmissionCompleted
+        );
+        if (!frameSubmitted) {
+            const frameDiscarded = customPlaybackController.notifyFrameDiscarded(decodedFrame);
+            if (frameDiscarded && this.presenter.getTelemetry().state === 'initializing') {
+                return 'temporarily-busy';
             }
-            if (continueWhilePlaying
-                && customPlaybackController.playbackState === 'playing') {
-                this.scheduleCustomPlaybackFrame(customPlaybackController, true);
-            } else if ((!decodedFrame || presentationTemporarilyBusy)
-                && customPlaybackController.playbackState === 'paused') {
-                // A paused seek still needs to wait for and display its first frame
-                this.scheduleCustomPlaybackFrame(customPlaybackController, false);
-            }
-        });
+            this.requestCustomPlaybackFallbackForError(
+                customPlaybackController,
+                backendGeneration,
+                new Error('Decoded frame did not reach WebGPU submission')
+            );
+            return 'failed';
+        }
+        if (decodedFrame.outputMode === 'raw-planes'
+            && !customPlaybackController.notifyFramePresented(decodedFrame)) {
+            this.requestCustomPlaybackFallbackForError(
+                customPlaybackController,
+                backendGeneration,
+                new Error('Decoded frame did not reach WebGPU submission')
+            );
+            return 'failed';
+        }
+        return 'presented';
+    }
+
+    private handleDecodedVideoFrameSubmissionCompleted(
+        customPlaybackController: CustomPlaybackController,
+        backendGeneration: number,
+        presentationGeneration: number,
+        decodedFrame: DecodedPresentationFrame,
+        gpuWorkCompleted: boolean
+    ): void {
+        let frameAcknowledged = false;
+        try {
+            frameAcknowledged = gpuWorkCompleted ?
+                customPlaybackController.notifyFramePresented(decodedFrame) :
+                customPlaybackController.notifyFrameDiscarded(decodedFrame);
+        } catch {
+            frameAcknowledged = false;
+        }
+        if (
+            frameAcknowledged
+            || !this.isCustomPlaybackCurrent(customPlaybackController, backendGeneration)
+            || this.customPlaybackFrameGeneration !== presentationGeneration
+        ) {
+            return;
+        }
+
+        this.requestCustomPlaybackFallbackForError(
+            customPlaybackController,
+            backendGeneration,
+            new Error('Decoded frame GPU release could not be acknowledged')
+        );
     }
 
     private cancelCustomPlaybackFrameCallback(): void {

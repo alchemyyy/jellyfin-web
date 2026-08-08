@@ -171,6 +171,7 @@ type MockFunction = ReturnType<typeof vi.fn>;
 
 type Deferred<Value> = {
     promise: Promise<Value>
+    reject: (error: unknown) => void
     resolve: (value: Value) => void
 };
 
@@ -194,6 +195,7 @@ type DeviceHarness = {
     lost: Deferred<GPUDeviceLostInfo>
     popErrorScope: MockFunction
     pushErrorScope: MockFunction
+    queueOnSubmittedWorkDone: MockFunction
     queueSubmit: MockFunction
     queueWriteBuffer: MockFunction
     queueWriteTexture: MockFunction
@@ -316,13 +318,17 @@ const originalResizeObserver = Object.getOwnPropertyDescriptor(globalThis, 'Resi
 const originalSecureContext = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
 
 function createDeferred<Value>(): Deferred<Value> {
+    let rejectPromise: (error: unknown) => void = () => {
+        throw new Error('Deferred promise was not initialized');
+    };
     let resolvePromise: (value: Value) => void = () => {
         throw new Error('Deferred promise was not initialized');
     };
-    const promise = new Promise<Value>(resolve => {
+    const promise = new Promise<Value>((resolve, reject) => {
+        rejectPromise = reject;
         resolvePromise = resolve;
     });
-    return { promise, resolve: resolvePromise };
+    return { promise, reject: rejectPromise, resolve: resolvePromise };
 }
 
 function createCanvasContextHarness(): CanvasContextHarness {
@@ -359,6 +365,7 @@ function createDeviceHarness(): DeviceHarness {
         getBindGroupLayout: vi.fn(() => ({}))
     };
     const queueSubmit = vi.fn();
+    const queueOnSubmittedWorkDone = vi.fn(() => Promise.resolve());
     const queueWriteBuffer = vi.fn();
     const queueWriteTexture = vi.fn();
     const importExternalTexture = vi.fn(() => ({}));
@@ -396,6 +403,7 @@ function createDeviceHarness(): DeviceHarness {
         popErrorScope,
         pushErrorScope,
         queue: {
+            onSubmittedWorkDone: queueOnSubmittedWorkDone,
             submit: queueSubmit,
             writeBuffer: queueWriteBuffer,
             writeTexture: queueWriteTexture
@@ -421,6 +429,7 @@ function createDeviceHarness(): DeviceHarness {
         lost,
         popErrorScope,
         pushErrorScope,
+        queueOnSubmittedWorkDone,
         queueSubmit,
         queueWriteBuffer,
         queueWriteTexture,
@@ -1036,6 +1045,88 @@ describe('WebGPUPresenter', () => {
             lastPresentedMediaTimeMicroseconds: 2_000_000,
             presentationSource: 'decoded'
         });
+    });
+
+    it('holds decoded VideoFrame backpressure until submitted GPU work finishes', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        const submittedWork = createDeferred<void>();
+        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(
+            submittedWork.promise
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const closeFrame = vi.fn();
+        const submissionCompleted = vi.fn();
+        const frame = {
+            close: closeFrame,
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1, submissionCompleted)).toBe(true);
+
+        expect(gpuHarness.devices[0].queueSubmit).toHaveBeenCalledOnce();
+        expect(gpuHarness.devices[0].queueOnSubmittedWorkDone).toHaveBeenCalledOnce();
+        expect(closeFrame).toHaveBeenCalledOnce();
+        expect(submissionCompleted).not.toHaveBeenCalled();
+
+        submittedWork.resolve();
+        await vi.waitFor(() => expect(submissionCompleted).toHaveBeenCalledWith(true));
+    });
+
+    it('releases decoded VideoFrame backpressure when submitted work rejects', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        const submittedWork = createDeferred<void>();
+        gpuHarness.devices[0].queueOnSubmittedWorkDone.mockReturnValueOnce(
+            submittedWork.promise
+        );
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const submissionCompleted = vi.fn();
+        const frame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1, submissionCompleted)).toBe(true);
+
+        submittedWork.reject(new Error('device lost'));
+        await vi.waitFor(() => expect(submissionCompleted).toHaveBeenCalledWith(false));
     });
 
     it('presents neutralized native Main10 frames through the authorized HDR shader', async () => {

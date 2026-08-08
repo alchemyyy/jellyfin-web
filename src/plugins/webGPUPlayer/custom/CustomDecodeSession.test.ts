@@ -1396,9 +1396,12 @@ describe('CustomDecodeSession', () => {
         );
 
         startSession(session, 1);
-        const queuedOldFrame = emitFrame(workers[0], 1, 1_000_000);
+        const pendingOldFrame = emitFrame(workers[0], 1, 1_000_000);
+        const queuedOldFrame = emitFrame(workers[0], 1, 1_100_000);
+        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(pendingOldFrame);
         startSession(session, 2);
 
+        expect(pendingOldFrame.close).toHaveBeenCalledOnce();
         expect(queuedOldFrame.close).toHaveBeenCalledOnce();
         expect(workers[0].postedMessages.at(-1)).toEqual({ generation: 1, type: 'stop' });
 
@@ -1410,6 +1413,7 @@ describe('CustomDecodeSession', () => {
         expect(workers[0].terminate).toHaveBeenCalledOnce();
 
         const currentFrame = emitFrame(workers[1], 2, 1_000_000);
+        expect(session.takeFrame(secondsToMicroseconds(1))?.frame).toBe(currentFrame);
         const stopPromise = session.stop();
         expect(currentFrame.close).toHaveBeenCalledOnce();
         expect(workers[1].postedMessages.at(-1)).toEqual({ generation: 2, type: 'stop' });

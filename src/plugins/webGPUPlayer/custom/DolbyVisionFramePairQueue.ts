@@ -137,6 +137,7 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
                     - baseFrame.mediaTimeMicroseconds;
                 if (Math.abs(timestampDelta)
                     <= DOLBY_VISION_FRAME_PAIR_TOLERANCE_MICROSECONDS) {
+                    this.requireReadyPairCapacity();
                     this.baseFrames.shift();
                     this.enhancementFrames.shift();
                     this.readyPairs.push({
@@ -177,6 +178,7 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
     }
 
     private queueBaseOnlyPair(): void {
+        this.requireReadyPairCapacity();
         const baseFrame = this.baseFrames.shift();
         if (!baseFrame) {
             return;
@@ -185,5 +187,11 @@ export default class DolbyVisionFramePairQueue<BaseFrame, EnhancementFrame> {
             baseFrame: baseFrame.frame,
             enhancementFrame: null
         });
+    }
+
+    private requireReadyPairCapacity(): void {
+        if (this.readyPairs.length >= MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH) {
+            throw new RangeError('Decoded Dolby Vision frame pair queue exceeded its bound');
+        }
     }
 }

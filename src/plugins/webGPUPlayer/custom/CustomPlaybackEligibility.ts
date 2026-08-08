@@ -872,6 +872,46 @@ function getAuthorizedDolbyVisionHDR10BaseMetadata(
         null;
 }
 
+/** Selects an independently authorized native Dolby Vision HDR10 base route. */
+function selectNativeDolbyVisionHDR10BaseOutput(
+    options: unknown,
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream
+): VideoOutputSelection | null {
+    const colorMetadata = getAuthorizedDolbyVisionHDR10BaseMetadata(
+        options,
+        eligibilityOptions
+    );
+    if (colorMetadata === null || eligibilityOptions.allowNativeHDR !== true) {
+        return null;
+    }
+
+    const routeKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
+    if (
+        routeKey === null
+        || !(eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(routeKey)
+        || !hasExplicitNativeHDRChromaticity(videoStream)
+        || !supportsNativeHDRHEVC(capabilities.nativeHDRHEVC, videoCodec, videoStream)
+    ) {
+        return null;
+    }
+
+    return {
+        hdr: true,
+        maximumCodedHeight: Number(videoStream.Height),
+        maximumCodedWidth: Number(videoStream.Width),
+        nativeHDRTransfer: 'pq',
+        nativeVideoDecoderRequired: true,
+        neutralizeHDRColorMetadata: true,
+        rawVideoFrameFormat: null,
+        status: 'selected',
+        videoDecoderBackend: 'native',
+        videoOutputMode: 'video-frame'
+    };
+}
+
 function selectDolbyVisionVideoOutput(
     options: unknown,
     capabilities: CustomDecodeCapabilities,
@@ -909,6 +949,20 @@ function selectDolbyVisionVideoOutput(
             videoOutputMode: 'video-frame'
         };
     }
+
+    const nativeHDR10BaseSelection = selectNativeDolbyVisionHDR10BaseOutput(
+        options,
+        capabilities,
+        eligibilityOptions,
+        videoCodec,
+        videoStream
+    );
+
+    // Profile 8.1 has an HDR10-compatible base and prefers native surface decode
+    if (descriptor.profile === 8 && nativeHDR10BaseSelection !== null) {
+        return nativeHDR10BaseSelection;
+    }
+
     const rawPresentationAllowed = descriptor.profile === 7 ?
         eligibilityOptions.allowDolbyVisionProfile7 === true :
         eligibilityOptions.allowDolbyVision === true;
@@ -943,36 +997,8 @@ function selectDolbyVisionVideoOutput(
         };
     }
 
-    const dolbyVisionHDR10BaseMetadata = getAuthorizedDolbyVisionHDR10BaseMetadata(
-        options,
-        eligibilityOptions
-    );
-    const dolbyVisionHDR10BaseRouteKey = dolbyVisionHDR10BaseMetadata ?
-        getExternalHDRAuthorizationRouteKey(dolbyVisionHDR10BaseMetadata) :
-        null;
-    const nativeHDRCapability = capabilities.nativeHDRHEVC;
-    if (
-        eligibilityOptions.allowNativeHDR === true
-        && dolbyVisionHDR10BaseMetadata !== null
-        && dolbyVisionHDR10BaseRouteKey !== null
-        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(
-            dolbyVisionHDR10BaseRouteKey
-        )
-        && hasExplicitNativeHDRChromaticity(videoStream)
-        && supportsNativeHDRHEVC(nativeHDRCapability, videoCodec, videoStream)
-    ) {
-        return {
-            hdr: true,
-            maximumCodedHeight: Number(videoStream.Height),
-            maximumCodedWidth: Number(videoStream.Width),
-            nativeHDRTransfer: 'pq',
-            nativeVideoDecoderRequired: true,
-            neutralizeHDRColorMetadata: true,
-            rawVideoFrameFormat: null,
-            status: 'selected',
-            videoDecoderBackend: 'native',
-            videoOutputMode: 'video-frame'
-        };
+    if (nativeHDR10BaseSelection !== null) {
+        return nativeHDR10BaseSelection;
     }
 
     return {

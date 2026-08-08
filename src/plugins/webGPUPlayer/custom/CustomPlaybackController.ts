@@ -824,7 +824,7 @@ export default class CustomPlaybackController implements DecodedFrameProvider {
         return this.takeFrame(this.getCurrentPresentationTargetTime());
     }
 
-    /** Acknowledges that a transferred decoded frame reached GPU submission. */
+    /** Acknowledges the renderer's safe release point for a transferred frame. */
     public notifyFramePresented(presentationFrame: DecodedPresentationFrame): boolean {
         if (!this.pendingPresentationFrames.delete(presentationFrame)) {
             return false;

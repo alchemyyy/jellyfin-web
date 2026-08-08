@@ -533,7 +533,14 @@ vi.mock('./WebGPUPresenter', () => {
         configureColorPipeline = vi.fn(() => Promise.resolve(true));
         setDecodedFrameProvider = vi.fn();
         setDecodedFramePushMode = vi.fn();
-        presentDecodedFrame = vi.fn(() => true);
+        presentDecodedFrame = vi.fn((
+            _decodedFrame: unknown,
+            _generation: number,
+            videoFrameSubmissionCompleted?: (gpuWorkCompleted: boolean) => void
+        ): boolean => {
+            videoFrameSubmissionCompleted?.(true);
+            return true;
+        });
         seek = vi.fn();
         refresh = vi.fn();
         endSession = vi.fn();
@@ -3327,9 +3334,129 @@ describe('WebGPUPlayer HTML delegation', () => {
 
         runNextAnimationFrame();
 
-        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(decodedFrame, 1);
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(
+            decodedFrame,
+            1,
+            expect.any(Function)
+        );
         expect(customPlaybackController.notifyFramePresented).toHaveBeenCalledWith(decodedFrame);
         expect(animationFrameMockState.callbacks.size).toBe(1);
+    });
+
+    it('acknowledges a decoded VideoFrame only after GPU work completes', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000,
+            outputMode: 'video-frame'
+        };
+        const submissionCompletionHandlers: Array<(gpuWorkCompleted: boolean) => void> = [];
+        presenter.presentDecodedFrame.mockImplementationOnce((
+            _frame: unknown,
+            _generation: number,
+            completedHandler: (gpuWorkCompleted: boolean) => void
+        ): boolean => {
+            submissionCompletionHandlers.push(completedHandler);
+            return true;
+        });
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+
+        runNextAnimationFrame();
+
+        expect(customPlaybackController.notifyFramePresented).not.toHaveBeenCalled();
+        expect(submissionCompletionHandlers).toHaveLength(1);
+        submissionCompletionHandlers[0](true);
+        expect(customPlaybackController.notifyFramePresented).toHaveBeenCalledWith(decodedFrame);
+    });
+
+    it('discards a decoded VideoFrame after submitted GPU work rejects', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000,
+            outputMode: 'video-frame'
+        };
+        const submissionCompletionHandlers: Array<(gpuWorkCompleted: boolean) => void> = [];
+        presenter.presentDecodedFrame.mockImplementationOnce((
+            _frame: unknown,
+            _generation: number,
+            completedHandler: (gpuWorkCompleted: boolean) => void
+        ): boolean => {
+            submissionCompletionHandlers.push(completedHandler);
+            return true;
+        });
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+
+        runNextAnimationFrame();
+        expect(submissionCompletionHandlers).toHaveLength(1);
+        submissionCompletionHandlers[0](false);
+
+        expect(customPlaybackController.notifyFramePresented).not.toHaveBeenCalled();
+        expect(customPlaybackController.notifyFrameDiscarded).toHaveBeenCalledWith(decodedFrame);
+    });
+
+    it('ignores stale GPU completion after custom playback stops', async () => {
+        const player = new WebGPUPlayer();
+        const backend = getBackend();
+        const presenter = getPresenter();
+        const container = document.createElement('div');
+        const video = document.createElement('video');
+        container.appendChild(video);
+        backend.presentationSurface = { container, video };
+        webSettingsMockState.customDecodeEnabled = true;
+        customDecodeMockState.eligible = true;
+
+        await player.play(createKnownSDRPlayOptions({ playMethod: 'DirectPlay' }));
+        const customPlaybackController = getCustomPlaybackController();
+        const decodedFrame = {
+            durationMicroseconds: 41_667,
+            frame: { close: vi.fn() },
+            mediaTimeMicroseconds: 1_000_000,
+            outputMode: 'video-frame'
+        };
+        const submissionCompletionHandlers: Array<(gpuWorkCompleted: boolean) => void> = [];
+        presenter.presentDecodedFrame.mockImplementationOnce((
+            _frame: unknown,
+            _generation: number,
+            completedHandler: (gpuWorkCompleted: boolean) => void
+        ): boolean => {
+            submissionCompletionHandlers.push(completedHandler);
+            return true;
+        });
+        customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
+
+        runNextAnimationFrame();
+        expect(submissionCompletionHandlers).toHaveLength(1);
+        await player.stop(false);
+        customPlaybackController.notifyFrameDiscarded.mockReturnValueOnce(false);
+        submissionCompletionHandlers[0](false);
+
+        expect(customPlaybackController.notifyFrameDiscarded).toHaveBeenCalledWith(decodedFrame);
+        expect(backend.play).not.toHaveBeenCalled();
     });
 
     it('does not acknowledge a decoded frame rejected by the presenter', async () => {
@@ -3421,7 +3548,11 @@ describe('WebGPUPlayer HTML delegation', () => {
         customPlaybackController.takeCurrentFrame.mockReturnValueOnce(decodedFrame);
         runNextAnimationFrame();
 
-        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(decodedFrame, 1);
+        expect(presenter.presentDecodedFrame).toHaveBeenCalledWith(
+            decodedFrame,
+            1,
+            expect.any(Function)
+        );
         expect(customPlaybackController.notifyFramePresented).toHaveBeenCalledWith(decodedFrame);
         expect(animationFrameMockState.callbacks.size).toBe(0);
     });
@@ -3921,6 +4052,10 @@ describe('WebGPUPlayer HTML delegation', () => {
         expect(stats.categories[0].stats).toContainEqual({
             label: 'Playback pipeline',
             value: 'WebCodecs / WebGPU'
+        });
+        expect(stats.categories[1].stats).toContainEqual({
+            label: 'Video path',
+            value: 'native / video-frame'
         });
         expect(backend.getStats).not.toHaveBeenCalled();
         expect(player.updateRenderSettings(settings)).toBe(true);

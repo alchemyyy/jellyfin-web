@@ -715,7 +715,7 @@ export default class CustomDecodeSession implements DecodedFrameProvider {
         return selectedQueuedFrame.presentationFrame;
     }
 
-    /** Releases one selected frame credit after successful GPU submission. */
+    /** Releases one selected frame credit at the renderer's safe release point. */
     public acknowledgeFrame(presentationFrame: DecodedPresentationFrame): boolean {
         return this.releasePendingFrame(presentationFrame);
     }

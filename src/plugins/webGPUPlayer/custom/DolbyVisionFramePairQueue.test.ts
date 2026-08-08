@@ -175,6 +175,31 @@ describe('DolbyVisionFramePairQueue', () => {
         );
     });
 
+    it('fails closed before the ready-pair ownership queue can grow past its bound', () => {
+        const queue = new DolbyVisionFramePairQueue<TestFrame, TestFrame>(
+            (): void => undefined,
+            (): void => undefined
+        );
+        queue.finishEnhancement();
+        for (
+            let frameIndex = 0;
+            frameIndex < MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH;
+            frameIndex += 1
+        ) {
+            queue.enqueueBaseFrame({
+                frame: createFrame(`base-${frameIndex}`),
+                mediaTimeMicroseconds: requireMicroseconds(frameIndex * 1_000)
+            });
+        }
+
+        expect(() => queue.enqueueBaseFrame({
+            frame: createFrame('overflow'),
+            mediaTimeMicroseconds: requireMicroseconds(
+                MAXIMUM_DOLBY_VISION_FRAME_PAIR_QUEUE_LENGTH * 1_000
+            )
+        })).toThrow('frame pair queue exceeded its bound');
+    });
+
     it('closes every retained ownership unit exactly once', () => {
         const closeBaseFrame = vi.fn();
         const closeEnhancementFrame = vi.fn();
