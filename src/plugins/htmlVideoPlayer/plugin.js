@@ -34,7 +34,9 @@ import {
     handleHlsJsMediaError,
     getSavedVolume,
     isValidDuration,
-    getBufferedRanges
+    getBufferedRanges,
+    getHLSPlaybackPosition,
+    prepareHLSSeek
 } from '../../components/htmlMediaHelper';
 import itemHelper from '../../components/itemHelper';
 import globalize from '../../lib/globalize';
@@ -1043,7 +1045,7 @@ export class HtmlVideoPlayer {
          */
         const elem = e.target;
         // get the player position and the transcoding offset
-        const time = elem.currentTime;
+        const time = getHLSPlaybackPosition(this._hlsPlayer, elem.currentTime);
 
         if (time && !this.#timeUpdated) {
             this.#timeUpdated = true;
@@ -2007,12 +2009,15 @@ export class HtmlVideoPlayer {
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
             if (val != null) {
-                mediaElement.currentTime = val / 1000;
+                const targetTimeSeconds = val / 1000;
+                this.#currentTime = targetTimeSeconds;
+                prepareHLSSeek(this._hlsPlayer, targetTimeSeconds);
+                mediaElement.currentTime = targetTimeSeconds;
                 return;
             }
 
             const currentTime = this.#currentTime;
-            if (currentTime) {
+            if (currentTime != null) {
                 return currentTime * 1000;
             }
 
