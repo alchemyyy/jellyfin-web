@@ -1,74 +1,104 @@
-<h1 align="center">Jellyfin Web</h1>
-<h3 align="center">Part of the <a href="https://jellyfin.org">Jellyfin Project</a></h3>
+# Jellyfin Web with WebGPU Player
 
----
+A fork of [Jellyfin Web](https://github.com/jellyfin/jellyfin-web) that adds a
+WebGPU video player. It direct-plays formats that stock Jellyfin Web would
+transcode. Video is decoded in the browser with WebCodecs or bundled
+WebAssembly decoders, then drawn with WebGPU, including HDR and Dolby Vision
+tone mapping.
 
-<p align="center">
-<img alt="Logo Banner" src="https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/SVG/banner-logo-solid.svg?sanitize=true"/>
-<br/>
-<br/>
-<a href="https://github.com/jellyfin/jellyfin-web">
-<img alt="GPL 2.0 License" src="https://img.shields.io/github/license/jellyfin/jellyfin-web.svg"/>
-</a>
-<a href="https://github.com/jellyfin/jellyfin-web/releases">
-<img alt="Current Release" src="https://img.shields.io/github/release/jellyfin/jellyfin-web.svg"/>
-</a>
-<a href="https://translate.jellyfin.org/projects/jellyfin/jellyfin-web/?utm_source=widget">
-<img src="https://translate.jellyfin.org/widgets/jellyfin/-/jellyfin-web/svg-badge.svg" alt="Translation Status"/>
-</a>
-<br/>
-<a href="https://opencollective.com/jellyfin">
-<img alt="Donate" src="https://img.shields.io/opencollective/all/jellyfin.svg?label=backers"/>
-</a>
-<a href="https://features.jellyfin.org">
-<img alt="Feature Requests" src="https://img.shields.io/badge/fider-vote%20on%20features-success.svg"/>
-</a>
-<a href="https://matrix.to/#/+jellyfin:matrix.org">
-<img alt="Chat on Matrix" src="https://img.shields.io/matrix/jellyfin:matrix.org.svg?logo=matrix"/>
-</a>
-<a href="https://www.reddit.com/r/jellyfin">
-<img alt="Join our Subreddit" src="https://img.shields.io/badge/reddit-r%2Fjellyfin-%23FF5700.svg"/>
-</a>
-</p>
+## What it adds
 
-Jellyfin Web is the frontend used for most of the clients available for end users, such as desktop browsers, Android, and iOS. We welcome all contributions and pull requests! If you have a larger feature in mind please open an issue so we can discuss the implementation before you start. Translations can be improved very easily from our <a href="https://translate.jellyfin.org/projects/jellyfin/jellyfin-web">Weblate</a> instance. Look through the following graphic to see if your native language could use some work!
+- **Direct play in the browser** for:
+  - HEVC, including HDR10, HDR10+, HLG, and the 4:2:2 and 4:4:4 range
+    extensions
+  - Dolby Vision profiles 5, 7, and 8
+  - MPEG-2 and VC-1 in Matroska, and JPEG 2000
+  - DTS (including DTS-HD MA), TrueHD, E-AC-3, and AC-3 audio, with a choice of
+    stereo downmix
+- **Capability checks.** The player tells the server only about formats it can
+  handle in this browser on this GPU, based on tests it runs in the browser.
+  Everything else transcodes as usual.
+- **Automatic fallback.** If WebGPU or a decoder fails, playback continues in
+  the standard HTML player.
+- **WebGPU rendering of regular playback**, for HDR tone mapping and color
+  controls.
 
-<a href="https://translate.jellyfin.org/engage/jellyfin/?utm_source=widget">
-<img src="https://translate.jellyfin.org/widgets/jellyfin/-/jellyfin-web/multi-auto.svg" alt="Detailed Translation Status"/>
-</a>
+## Requirements
 
-## Build Process
+- **Jellyfin server:** the version named in the release. The web client must
+  match the server version.
+- **Browser:** Chrome or Edge. Browsers without WebGPU and WebCodecs use the
+  standard HTML player.
+- **HTTPS:** WebGPU only runs in a secure context, so reach Jellyfin over HTTPS
+  (for example through a reverse proxy) or at `localhost`.
 
-### Dependencies
+## Install
 
-- [Node.js](https://nodejs.org/en/download)
-- npm (included in Node.js)
+1. Download the archive for your server version from
+   [Releases](https://github.com/alchemyyy/jellyfin-web/releases).
+2. Stop Jellyfin and back up its web directory:
+   - Windows: `C:\Program Files\Jellyfin\Server\jellyfin-web`
+   - Debian and Ubuntu: `/usr/share/jellyfin/web`
+   - Docker (official image): `/jellyfin/jellyfin-web`
+3. Replace the directory's contents with the archive's contents. For Docker,
+   mount the extracted archive over `/jellyfin/jellyfin-web`. Alternatively,
+   start Jellyfin with `--webdir <path>` or `JELLYFIN_WEB_DIR=<path>`.
+4. Start Jellyfin, then hard-refresh open browser tabs so they load the new
+   scripts.
 
-### Getting Started
+To uninstall, restore the backed-up web directory.
 
-1. Clone or download this repository.
+## Use
 
-   ```sh
-   git clone https://github.com/jellyfin/jellyfin-web.git
-   cd jellyfin-web
-   ```
+The WebGPU player is selected automatically. To change this for one browser,
+open **Settings > Playback > Preferred video player** and choose Auto, WebGPU,
+or HTML. The same page sets the stereo downmix algorithm.
 
-2. Install build dependencies in the project directory.
+Server-wide switches are in the web directory's `config.json`:
+`enableWebGPUCustomDecode` and `enableWebGPUHDRToneMapping`.
 
-   ```sh
-   npm install
-   ```
+## Note: HEVC 4:2:2 direct play
 
-3. Run the web client with webpack for local development.
+When FFprobe reports no bit depth for a file, stock Jellyfin infers it only for
+4:2:0 and 4:4:4 pixel formats. Such HEVC 4:2:2 files therefore transcode
+instead of direct playing. The server fix is the single commit on the
+[`derive-422-bit-depth`](https://github.com/alchemyyy/jellyfin/tree/derive-422-bit-depth)
+branch, which is based on upstream Jellyfin.
 
-   ```sh
-   npm start
-   ```
+## Building from source
 
-4. Build the client with sourcemaps available.
+Requires Node.js 24 and npm 11. Two git submodules live in `vendor/`, so clone
+with `--recurse-submodules` or run `git submodule update --init`:
 
-   ```sh
-   npm run build:development
-   ```
+- `vendor/webgpu-player/`: the
+  [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player) engine, installed
+  as an npm workspace.
+- `vendor/webgpu-player-hls/`: the patched
+  [hls.js](https://github.com/alchemyyy/hls.js/tree/fix/cals2) (branch
+  `fix/cals2`). Build it once with `npm ci` and `npm run build` in that folder.
 
-Review the [Contributing Guide](./CONTRIBUTING.md) for more information on our process and tech stack.
+Then run `npm ci` and `npm run build:production`. The output is in `dist/`.
+
+Design notes for the player and this fork's integration (architecture,
+negotiation, codec support, module map, and settled decisions) are in the
+engine's [`.agents/`](https://github.com/alchemyyy/WebGPU-Player/tree/master/.agents)
+folder, checked out at `vendor/webgpu-player/.agents/`.
+
+## Credits
+
+- [Mediabunny](https://github.com/Vanilagy/mediabunny) (MPL-2.0) demuxes media
+  for in-browser decoding and remuxes audio to fragmented MP4 for native
+  playback. Its [`@mediabunny/ac3`](https://www.npmjs.com/package/@mediabunny/ac3)
+  extension supplies the AC-3 decoder.
+- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later) supplies the E-AC-3,
+  TrueHD/MLP, MPEG-2 Video, and VC-1 decoders, compiled to WebAssembly from a
+  pinned revision. `@mediabunny/ac3` is built on FFmpeg as well.
+  - Each decoder's license, bridge source, and source notice ship in the web
+    directory's `libraries/` folder.
+  - The corresponding FFmpeg and libdcadec source is published with each
+    [WebGPU Player](https://github.com/alchemyyy/WebGPU-Player) release.
+
+## License
+
+GPL-2.0, like Jellyfin Web. Bundled third-party decoders keep their own
+licenses.

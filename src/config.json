@@ -1,6 +1,8 @@
 {
   "includeCorsCredentials": false,
   "multiserver": false,
+  "enableWebGPUCustomDecode": true,
+  "enableWebGPUHDRToneMapping": true,
   "themes": [
     {
       "name": "Apple TV",
@@ -35,6 +37,7 @@
     "playAccessValidation/plugin",
     "experimentalWarnings/plugin",
     "htmlAudioPlayer/plugin",
+    "webGPUPlayer/plugin",
     "htmlVideoPlayer/plugin",
     "photoPlayer/plugin",
     "comicsPlayer/plugin",

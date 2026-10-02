@@ -142,7 +142,8 @@ class HtmlVideoPlayer extends NoActivePlayer {
      * @returns {boolean} _true _ if playback rate is supported, false otherwise.
      */
     hasPlaybackRate() {
-        return true;
+        return typeof this.player.supports !== 'function'
+            || this.player.supports('PlaybackRate');
     }
 
     /**

@@ -33,6 +33,18 @@ try {
 
 const NODE_MODULES_REGEX = /[\\/]node_modules[\\/]/;
 
+const WEBGPU_PLAYER_DIRECTORY = path.resolve(__dirname, 'vendor/webgpu-player');
+// The WebGPU player engine assembles its served libraries and workers before webpack copies them
+require('child_process').execFileSync(
+    process.execPath,
+    [
+        path.join(WEBGPU_PLAYER_DIRECTORY, 'scripts', 'build.mjs'),
+        ...(DEV_MODE ? [] : [ '--production' ])
+    ],
+    { stdio: 'inherit' }
+);
+const WEBGPU_PLAYER_BUILD_INFO = require(path.join(WEBGPU_PLAYER_DIRECTORY, 'dist', 'build-info.json'));
+
 const THEMES = fg.globSync('themes/**/*.scss', { cwd: path.resolve(__dirname, 'src') });
 const THEMES_BY_ID = THEMES.reduce((acc, theme) => {
     acc[theme.substring(0, theme.lastIndexOf('/'))] = `./${theme}`;
@@ -47,6 +59,9 @@ const config = {
         ...THEMES_BY_ID
     },
     resolve: {
+        alias: {
+            'webgpu-player': path.join(WEBGPU_PLAYER_DIRECTORY, 'src')
+        },
         extensions: ['.tsx', '.ts', '.js'],
         modules: [
             path.resolve(__dirname, 'src'),
@@ -63,6 +78,7 @@ const config = {
             __PACKAGE_JSON_NAME__: JSON.stringify(packageJson.name),
             __PACKAGE_JSON_VERSION__: JSON.stringify(packageJson.version),
             __USE_SYSTEM_FONTS__: !!JSON.parse(process.env.USE_SYSTEM_FONTS || '0'),
+            __WEBGPU_PLAYER_ASSET_KEY__: JSON.stringify(WEBGPU_PLAYER_BUILD_INFO.assetKey),
             __WEBPACK_SERVE__: !!JSON.parse(process.env.WEBPACK_SERVE || '0')
         }),
         new CleanWebpackPlugin(),
@@ -88,6 +104,13 @@ const config = {
                     from: 'touchicon*.png',
                     context: path.resolve(__dirname, 'node_modules/@jellyfin/ux-web/favicons'),
                     to: 'favicons'
+                },
+                {
+                    // The engine assembles every worker, decoder, license, and qualification asset it serves
+                    from: path.join(WEBGPU_PLAYER_DIRECTORY, 'dist', 'libraries'),
+                    // Preserve the exact vendor artifacts in production
+                    info: { minimized: true },
+                    to: 'libraries'
                 },
                 ...Assets.map(asset => {
                     return {
@@ -192,6 +215,9 @@ const config = {
             },
             {
                 test: /\.(js|jsx|mjs)$/,
+                // Emit `new URL()` module assets such as the libbitsub worker glue verbatim
+                // The worker imports that module directly and cannot resolve core-js imports injected by babel
+                dependency: { not: [ 'url' ] },
                 include: [
                     path.resolve(__dirname, 'node_modules/@jellyfin/libass-wasm'),
                     path.resolve(__dirname, 'node_modules/@jellyfin/sdk'),
@@ -272,7 +298,13 @@ const config = {
                 test: /\.worker\.ts$/,
                 exclude: /node_modules/,
                 use: [
-                    'worker-loader',
+                    {
+                        loader: 'worker-loader',
+                        options: {
+                            chunkFilename: '[name].[contenthash].worker.chunk.js',
+                            filename: '[name].[contenthash].bundle.js'
+                        }
+                    },
                     {
                         loader: 'ts-loader',
                         options: {

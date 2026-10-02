@@ -51,12 +51,8 @@ function supportsFade() {
 }
 
 function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: hls }) => {
-        hls.DefaultConfig.lowLatencyMode = false;
-        hls.DefaultConfig.backBufferLength = Infinity;
-        hls.DefaultConfig.liveBackBufferLength = 90;
-        window.Hls = hls;
-        callback();
+    import('hls.js/dist/hls.js').then(({ default: HLSRuntime }) => {
+        callback(HLSRuntime);
     });
 }
 
@@ -176,10 +172,13 @@ class HtmlAudioPlayer {
 
             return enableHlsPlayer(val, options.item, options.mediaSource, 'Audio').then(function () {
                 return new Promise(function (resolve, reject) {
-                    requireHlsPlayer(async () => {
+                    requireHlsPlayer(async (HLSRuntime) => {
                         const includeCorsCredentials = await getIncludeCorsCredentials();
 
-                        const hls = new Hls({
+                        const hls = new HLSRuntime({
+                            backBufferLength: Infinity,
+                            liveBackBufferLength: 90,
+                            lowLatencyMode: false,
                             manifestLoadingTimeOut: 20000,
                             xhrSetup: function (xhr) {
                                 xhr.withCredentials = includeCorsCredentials;
@@ -188,7 +187,15 @@ class HtmlAudioPlayer {
                         hls.loadSource(val);
                         hls.attachMedia(elem);
 
-                        htmlMediaHelper.bindEventsToHlsPlayer(self, hls, elem, onError, resolve, reject);
+                        htmlMediaHelper.bindEventsToHlsPlayer(
+                            self,
+                            hls,
+                            elem,
+                            onError,
+                            resolve,
+                            reject,
+                            { hlsRuntime: HLSRuntime }
+                        );
 
                         self._hlsPlayer = hls;
 

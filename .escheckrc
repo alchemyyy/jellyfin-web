@@ -3,8 +3,13 @@
     "files": "./dist/**/*.js",
     "not": [
         "./dist/libraries/pdf.worker.js",
+        "./dist/libraries/hevcjs/hevc-decode.js",
+        "./dist/libraries/legacy-video/*.js",
+        "./dist/libraries/openjpeg/*.js",
         "./dist/libraries/worker-bundle.js",
+        "./dist/libraries/webgpu-player/*.js",
         "./dist/libbitsub.*.js",
+        "./dist/node_modules.mediabunny.*.chunk.js",
         "./dist/serviceworker.js"
     ]
 }
