@@ -46,6 +46,7 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
+import { shouldPreferHDRHLSRendition } from './HLSRenditionPreference';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -583,7 +584,9 @@ export class HtmlVideoPlayer {
                     manifestLoadingTimeOut: 20000,
                     maxBufferLength: maxBufferLength,
                     maxMaxBufferLength: maxBufferLength,
-                    videoPreference: { preferHDR: true },
+                    videoPreference: {
+                        preferHDR: shouldPreferHDRHLSRendition(options)
+                    },
                     workerPath: 'libraries/hls.worker.js',
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
