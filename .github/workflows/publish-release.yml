@@ -1,0 +1,133 @@
+name: Publish-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag. Leave empty for <branch>-<UTC date>-<short commit>
+        required: false
+        type: string
+      publish:
+        description: Publish a GitHub release. When off, the archive is only uploaded as a workflow artifact
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish-release:
+    name: Build and publish jellyfin-web 📦
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      ARCHIVE_NAME: jellyfin-web-dist.zip
+      HLS_DIR: vendor/webgpu-player-hls
+      HLS_MODULE_DIR: node_modules/hls.js
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The engine's nested codec submodules are not needed, because its codec builds are committed
+          submodules: true
+
+      - name: Resolve the release tag
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}-$(date -u +%Y%m%d)-${GITHUB_SHA::7}}"
+          # Fail before the build rather than after it
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::error::Release $tag already exists"
+            exit 1
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Setup node environment
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            vendor/webgpu-player-hls/package-lock.json
+          check-latest: true
+
+      - name: Build hls.js
+        working-directory: vendor/webgpu-player-hls
+        run: |
+          # Skip install scripts; the build needs none of them (they fetch test tooling and set up git hooks)
+          npm ci --no-audit --ignore-scripts
+          # The bundles plus the type declarations that client code imports from hls.js
+          # This runs before the root install, so the type build cannot pick up conflicting @types from the fork's node_modules
+          npm run build
+          test -f dist/hls.js
+          test -f dist/hls.worker.js
+          test -f dist/hls.d.ts
+
+      - name: Install Node.js dependencies
+        run: npm ci --no-audit
+
+      - name: Copy hls.js into node_modules
+        run: |
+          # Replace a link to the submodule with a copy, as build_jellyfin_web.bat does
+          if [ -L "$HLS_MODULE_DIR" ]; then
+            rm "$HLS_MODULE_DIR"
+          fi
+          mkdir -p "$HLS_MODULE_DIR/dist"
+          cp "$HLS_DIR/package.json" "$HLS_MODULE_DIR/"
+          cp -R "$HLS_DIR/dist/." "$HLS_MODULE_DIR/dist/"
+
+      - name: Run a production build
+        run: npm run build:production
+
+      - name: Create the archive
+        run: |
+          test -f dist/index.html
+          (cd dist && zip -q -r -9 "../$ARCHIVE_NAME" .)
+          unzip -tq "$ARCHIVE_NAME"
+
+      - name: Publish the release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          engine_url="$(git config -f .gitmodules --get submodule.webgpu-player.url)"
+          hls_url="$(git config -f .gitmodules --get submodule.webgpu-player-hls.url)"
+          engine_commit="$(git -C vendor/webgpu-player rev-parse HEAD)"
+          hls_commit="$(git -C "$HLS_DIR" rev-parse HEAD)"
+          cat > release-notes.md <<EOF
+          Built from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA} by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Bundled submodules:
+          - WebGPU player engine: ${engine_url%.git}/commit/${engine_commit}
+          - hls.js: ${hls_url%.git}/commit/${hls_commit}
+
+          \`${ARCHIVE_NAME}\` holds the contents of the built \`dist\` folder.
+          EOF
+          gh release create "$RELEASE_TAG" "$ARCHIVE_NAME" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --notes-file release-notes.md
+
+      - name: Upload the archive
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Upload the zip as-is; the artifact takes the file's name
+          archive: false
+          path: ${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
