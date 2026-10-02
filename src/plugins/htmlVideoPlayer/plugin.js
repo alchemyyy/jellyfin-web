@@ -121,14 +121,8 @@ function enableNativeTrackSupport(mediaSource, track) {
 }
 
 function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: hls }) => {
-        hls.DefaultConfig.lowLatencyMode = false;
-        hls.DefaultConfig.backBufferLength = Infinity;
-        hls.DefaultConfig.liveBackBufferLength = 90;
-        // Give cold storage enough time to start producing a segment
-        hls.DefaultConfig.fragLoadPolicy.default.maxTimeToFirstByteMs = HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS;
-        window.Hls = hls;
-        callback();
+    import('hls.js/dist/hls.js').then(({ default: HLSRuntime }) => {
+        callback(HLSRuntime);
     });
 }
 
@@ -554,7 +548,7 @@ export class HtmlVideoPlayer {
      */
     setSrcWithHlsJs(elem, options, url) {
         return new Promise((resolve, reject) => {
-            requireHlsPlayer(async () => {
+            requireHlsPlayer(async (HLSRuntime) => {
                 let maxBufferLength = 30;
 
                 // Some browsers cannot handle huge fragments in high bitrate.
@@ -567,7 +561,17 @@ export class HtmlVideoPlayer {
 
                 const includeCorsCredentials = await getIncludeCorsCredentials();
 
-                const hls = new Hls({
+                const hls = new HLSRuntime({
+                    backBufferLength: Infinity,
+                    liveBackBufferLength: 90,
+                    lowLatencyMode: false,
+                    // Give cold storage enough time to start producing a segment
+                    fragLoadPolicy: {
+                        default: {
+                            ...HLSRuntime.DefaultConfig.fragLoadPolicy.default,
+                            maxTimeToFirstByteMs: HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS
+                        }
+                    },
                     startPosition: options.playerStartPositionTicks / 10000000,
                     manifestLoadingTimeOut: 20000,
                     maxBufferLength: maxBufferLength,
@@ -581,7 +585,7 @@ export class HtmlVideoPlayer {
                 hls.loadSource(url);
                 hls.attachMedia(elem);
 
-                bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject);
+                bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject, { hlsRuntime: HLSRuntime });
 
                 this._hlsPlayer = hls;
 
