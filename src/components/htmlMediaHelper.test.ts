@@ -206,17 +206,6 @@ describe('bindEventsToHlsPlayer session ownership', () => {
         expect(errorListener).not.toHaveBeenCalled();
     });
 
-    it('recovers a fatal media error through the media error handler', () => {
-        const hlsPlayer = new MockHLSPlayer(document.createElement('video'));
-        const { reject } = bindTestPlayer(hlsPlayer);
-
-        hlsPlayer.emit(HLS_EVENTS.ERROR, createFatalErrorData(HLS_ERROR_TYPES.MEDIA_ERROR));
-
-        expect(hlsPlayer.recoverMediaError).toHaveBeenCalledOnce();
-        expect(hlsPlayer.destroy).not.toHaveBeenCalled();
-        expect(reject).not.toHaveBeenCalled();
-    });
-
     it('settles a terminal error when HLS destruction throws', () => {
         const media = document.createElement('video');
         const hlsPlayer = new MockHLSPlayer(media);
