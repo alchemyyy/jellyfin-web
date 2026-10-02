@@ -259,41 +259,99 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
-export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
-    hls.on(Hls.Events.MANIFEST_PARSED, function () {
-        playWithPromise(elem, onErrorFn).then(resolve, function () {
-            if (reject) {
-                reject();
-                reject = null;
+export function bindEventsToHlsPlayer(
+    instance,
+    hls,
+    elem,
+    onErrorFn,
+    resolve,
+    reject,
+    sessionCallbacks
+) {
+    const isCurrent = sessionCallbacks?.isCurrent;
+    const onEstablishedError = sessionCallbacks?.onEstablishedError;
+    const hlsRuntime = sessionCallbacks?.hlsRuntime;
+    if (!hlsRuntime) {
+        throw new TypeError('The owning hls.js runtime is required');
+    }
+    let startupSettled = false;
+    let terminalErrorSignaled = false;
+    const isCurrentHlsSession = function () {
+        if (typeof isCurrent === 'function') {
+            return isCurrent();
+        }
+        return instance._hlsPlayer === hls;
+    };
+    const signalTerminalError = function (errorType) {
+        if (terminalErrorSignaled || !isCurrentHlsSession()) {
+            return;
+        }
+
+        terminalErrorSignaled = true;
+        const rejectCurrentSource = !startupSettled ? reject : null;
+        startupSettled = true;
+        reject = null;
+        try {
+            hls.destroy();
+        } catch (error) {
+            console.error('Failed to destroy terminal HLS session', error);
+        } finally {
+            if (instance._hlsPlayer === hls) {
+                instance._hlsPlayer = null;
             }
+            if (rejectCurrentSource) {
+                rejectCurrentSource(errorType);
+            } else if (typeof onEstablishedError === 'function') {
+                onEstablishedError(errorType);
+            } else {
+                onErrorInternal(instance, errorType);
+            }
+        }
+    };
+
+    hls.on(hlsRuntime.Events.MANIFEST_PARSED, function () {
+        if (!isCurrentHlsSession() || terminalErrorSignaled) {
+            return;
+        }
+        playWithPromise(elem, onErrorFn).then(function () {
+            if (isCurrentHlsSession() && !terminalErrorSignaled) {
+                startupSettled = true;
+                reject = null;
+                resolve();
+            }
+        }, function () {
+            if (!isCurrentHlsSession() || terminalErrorSignaled || !reject) {
+                return;
+            }
+            const rejectCurrentSource = reject;
+            startupSettled = true;
+            reject = null;
+            rejectCurrentSource();
         });
     });
 
-    hls.on(Hls.Events.ERROR, function (event, data) {
+    hls.on(hlsRuntime.Events.ERROR, function (event, data) {
+        if (!isCurrentHlsSession() || terminalErrorSignaled) {
+            return;
+        }
+
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
 
         // try to recover network error
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR
+        if (data.type === hlsRuntime.ErrorTypes.NETWORK_ERROR
                 && data.response?.code && data.response.code >= 400
         ) {
             console.debug('hls.js response error code: ' + data.response.code);
 
             // Trigger failure differently depending on whether this is prior to start of playback, or after
-            hls.destroy();
-
-            if (reject) {
-                reject(MediaError.SERVER_ERROR);
-                reject = null;
-            } else {
-                onErrorInternal(instance, MediaError.SERVER_ERROR);
-            }
+            signalTerminalError(MediaError.SERVER_ERROR);
 
             return;
         }
 
         if (data.fatal) {
             switch (data.type) {
-                case Hls.ErrorTypes.NETWORK_ERROR:
+                case hlsRuntime.ErrorTypes.NETWORK_ERROR:
 
                     if (data.response && data.response.code === 0) {
                         // This could be a CORS error related to access control response headers
@@ -301,21 +359,14 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                         console.debug('hls.js response error code: ' + data.response.code);
 
                         // Trigger failure differently depending on whether this is prior to start of playback, or after
-                        hls.destroy();
-
-                        if (reject) {
-                            reject(MediaError.NETWORK_ERROR);
-                            reject = null;
-                        } else {
-                            onErrorInternal(instance, MediaError.NETWORK_ERROR);
-                        }
+                        signalTerminalError(MediaError.NETWORK_ERROR);
                     } else {
                         console.debug('fatal network error encountered, try to recover');
                         hls.startLoad();
                     }
 
                     break;
-                case Hls.ErrorTypes.MEDIA_ERROR:
+                case hlsRuntime.ErrorTypes.MEDIA_ERROR:
                     console.debug('fatal media error encountered, try to recover');
                     handleHlsJsMediaError(instance, reject);
                     reject = null;
@@ -325,14 +376,7 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                     console.debug('Cannot recover from hls error - destroy and trigger error');
                     // cannot recover
                     // Trigger failure differently depending on whether this is prior to start of playback, or after
-                    hls.destroy();
-
-                    if (reject) {
-                        reject();
-                        reject = null;
-                    } else {
-                        onErrorInternal(instance, MediaError.FATAL_HLS_ERROR);
-                    }
+                    signalTerminalError(MediaError.FATAL_HLS_ERROR);
                     break;
             }
         }
