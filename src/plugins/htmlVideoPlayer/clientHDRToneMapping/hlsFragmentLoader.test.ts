@@ -1,11 +1,13 @@
-import type {
-    FragmentLoaderContext,
-    HlsConfig,
-    Loader,
-    LoaderCallbacks,
-    LoaderConfiguration,
-    LoaderResponse,
-    LoaderStats
+import {
+    LoaderContextType,
+    type FragmentLoaderContext,
+    type HlsConfig,
+    type Loader,
+    type LoaderCallbacks,
+    type LoaderConfiguration,
+    type LoaderResponse,
+    type LoaderStats,
+    type NullableNetworkDetails
 } from 'hls.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,7 +66,7 @@ class FakeDefaultLoader implements Loader<FragmentLoaderContext> {
             response,
             this.stats,
             this.context,
-            networkDetails
+            networkDetails as NullableNetworkDetails
         );
     }
 }
@@ -477,6 +479,7 @@ function createFragmentContext(
     return {
         url: 'https://example.test/fragment.m4s',
         responseType: 'arraybuffer',
+        type: LoaderContextType.MEDIA_FRAGMENT,
         frag: fragment,
         part: null
     };

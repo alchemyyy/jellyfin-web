@@ -16,9 +16,14 @@
     "checkJs": false,
     "strictNullChecks": true,
     "jsx": "react-jsx",
-    "downlevelIteration": true
+    "downlevelIteration": true,
+    "paths": {
+      "webgpu-player/*": ["../vendor/webgpu-player/src/*"]
+    }
   },
   "include": [
-    "src"
+    "src",
+    "vendor/webgpu-player/src",
+    "vendor/webgpu-player-integ-tests"
   ]
 }

@@ -1,7 +1,18 @@
 import DefaultConfig from '../../config.json';
 import fetchLocal from '../../utils/fetchLocal.ts';
 
+const HTML_VIDEO_PLAYER_PLUGIN = 'htmlVideoPlayer/plugin';
+const WEBGPU_VIDEO_PLAYER_PLUGIN = 'webGPUPlayer/plugin';
+
 let data;
+
+function ensureVideoPlayerPlugins(configuredPlugins) {
+    const plugins = configuredPlugins.filter(plugin => plugin !== WEBGPU_VIDEO_PLAYER_PLUGIN);
+    const htmlPlayerIndex = plugins.indexOf(HTML_VIDEO_PLAYER_PLUGIN);
+    const insertionIndex = htmlPlayerIndex < 0 ? plugins.length : htmlPlayerIndex;
+    plugins.splice(insertionIndex, 0, WEBGPU_VIDEO_PLAYER_PLUGIN);
+    return plugins;
+}
 
 async function getConfig() {
     if (data) return Promise.resolve(data);
@@ -111,9 +122,28 @@ export function getPlugins() {
         if (!config.plugins) {
             console.error('web config is invalid, missing plugins:', config);
         }
-        return config.plugins || DefaultConfig.plugins;
+        return ensureVideoPlayerPlugins(config.plugins || DefaultConfig.plugins);
     }).catch(error => {
         console.log('cannot get web config:', error);
-        return DefaultConfig.plugins;
+        return ensureVideoPlayerPlugins(DefaultConfig.plugins);
+    });
+}
+
+export function getWebGPUCustomDecodeEnabled() {
+    return getConfig().then(config => !!config.enableWebGPUCustomDecode).catch(error => {
+        console.log('cannot get web config:', error);
+        return false;
+    });
+}
+
+/** Returns the already-loaded custom decode flag without delaying playback. */
+export function isWebGPUCustomDecodeEnabled() {
+    return !!(data || DefaultConfig).enableWebGPUCustomDecode;
+}
+
+export function getWebGPUHDRToneMappingEnabled() {
+    return getConfig().then(config => !!config.enableWebGPUHDRToneMapping).catch(error => {
+        console.log('cannot get web config:', error);
+        return false;
     });
 }

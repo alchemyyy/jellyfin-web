@@ -1,0 +1,7 @@
+[submodule "webgpu-player"]
+	path = vendor/webgpu-player
+	url = https://github.com/alchemyyy/WebGPU-Player.git
+[submodule "webgpu-player-hls"]
+	path = vendor/webgpu-player-hls
+	url = https://github.com/alchemyyy/hls.js.git
+	branch = fix/cals2

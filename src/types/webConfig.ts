@@ -14,6 +14,8 @@ export interface MenuLink {
 export interface WebConfig {
     includeCorsCredentials?: boolean
     multiserver?: boolean
+    enableWebGPUCustomDecode?: boolean
+    enableWebGPUHDRToneMapping?: boolean
     themes?: Theme[]
     menuLinks?: MenuLink[]
     servers?: string[]

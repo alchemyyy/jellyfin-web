@@ -5,6 +5,7 @@ import Screenfull from 'screenfull';
 import { useCustomSubtitles } from 'apps/legacy/features/playback/utils/subtitleStyles';
 import subtitleAppearanceHelper from 'components/subtitlesettings/subtitleappearancehelper';
 import { AppFeature } from 'constants/appFeature';
+import { PLAYBACK_SUPERSEDED } from 'constants/playbackResult';
 import { PluginType } from 'constants/pluginType';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { currentSettings as userSettings } from 'scripts/settings/userSettings';
@@ -64,6 +65,14 @@ const CLIENT_HDR_TONE_MAPPING_POST_PROCESSING_CLASS =
     'clientHDRToneMappingPostProcessing';
 const CLIENT_HDR_TONE_MAPPING_SATURATION_PROPERTY =
     '--client-hdr-tone-mapping-saturation';
+
+const HLS_MINIMUM_BUFFER_LENGTH_SECONDS = 6;
+const HLS_MAXIMUM_BUFFER_LENGTH_SECONDS = 30;
+const HLS_HIGH_BITRATE_BITS_PER_SECOND = 25000000;
+const MILLISECONDS_PER_SECOND = 1000;
+const TICKS_PER_SECOND = 10000000;
+const MINIMUM_SUBTITLE_CANVAS_DIMENSION = 1;
+const CUSTOM_SUBTITLE_CANVAS_CLASS = 'htmlVideoPlayerCustomSubtitleCanvas';
 
 /**
  * Returns resolved URL.
@@ -134,10 +143,32 @@ function enableNativeTrackSupport(mediaSource, track) {
     return true;
 }
 
-function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: HLSRuntime }) => {
-        callback(HLSRuntime);
-    });
+function getHLSBufferConfiguration(player, useWebGPUHLSRuntime) {
+    if (useWebGPUHLSRuntime) {
+        return {
+            backBufferLength: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            frontBufferFlushThreshold: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            maxBufferLength: HLS_MINIMUM_BUFFER_LENGTH_SECONDS,
+            maxMaxBufferLength: HLS_MAXIMUM_BUFFER_LENGTH_SECONDS
+        };
+    }
+
+    let maxBufferLength = HLS_MAXIMUM_BUFFER_LENGTH_SECONDS;
+
+    // Some browsers cannot handle huge fragments in high bitrate.
+    // This issue usually happens when using HWA encoders with a high bitrate setting.
+    // Limit the BufferLength to 6s, it works fine when playing 4k 120Mbps over HLS on chrome.
+    // https://github.com/video-dev/hls.js/issues/876
+    if ((browser.chrome || browser.edgeChromium || browser.firefox) && playbackManager.getMaxStreamingBitrate(player) >= HLS_HIGH_BITRATE_BITS_PER_SECOND) {
+        maxBufferLength = HLS_MINIMUM_BUFFER_LENGTH_SECONDS;
+    }
+
+    return {
+        backBufferLength: Number.POSITIVE_INFINITY,
+        liveBackBufferLength: 90,
+        maxBufferLength,
+        maxMaxBufferLength: maxBufferLength
+    };
 }
 
 function getMediaStreamVideoTracks(mediaSource) {
@@ -228,6 +259,25 @@ function getBitmapSubtitleDisplaySettings() {
     };
 }
 
+/**
+ * Maps the player aspect ratio onto the libbitsub aspect mode for source-less custom playback.
+ * The libbitsub overlay spans the whole video element when the video has no intrinsic size.
+ * The subtitle mapping therefore follows the object-fit that the custom presenter applies to decoded frames.
+ *
+ * @param {string} aspectRatio - Player aspect ratio.
+ * @returns {string} libbitsub aspect mode.
+ */
+function getCustomBitmapSubtitleAspectMode(aspectRatio) {
+    switch (aspectRatio) {
+        case 'cover':
+            return 'cover';
+        case 'fill':
+            return 'stretch';
+        default:
+            return 'contain';
+    }
+}
+
 function getSubtitleTimeOffset(playOptions, subtitleOffset = 0) {
     return ((playOptions?.transcodingOffsetTicks || 0) / 10000000) + subtitleOffset;
 }
@@ -269,6 +319,22 @@ export class HtmlVideoPlayer {
      */
     #videoDialog;
     /**
+     * Player identity owned by PlaybackManager. This differs from `this` when
+     * HtmlVideoPlayer is composed inside another local player.
+     *
+     * @type {object}
+     */
+    #playbackManagerPlayer;
+    /**
+     * @type {boolean}
+     */
+    #forceCustomSubtitleElements;
+    /**
+     * Selects the isolated hls.js runtime used by the owned WebGPU fallback.
+     * @type {boolean}
+     */
+    #useWebGPUHLSRuntime;
+    /**
      * @type {number | undefined}
      */
     #subtitleTrackIndexToSetOnPlaying;
@@ -285,9 +351,18 @@ export class HtmlVideoPlayer {
      */
     #currentAssRenderer;
     /**
+     * @type {HTMLCanvasElement | null | undefined}
+     */
+    #currentAssCanvas;
+    /**
      * @type {any | null | undefined}
      */
     #currentBitmapSubRenderer;
+    /**
+     * Bitmap subtitle renderers whose libbitsub load has not settled yet
+     * @type {WeakSet<object>}
+     */
+    #loadingBitmapSubRenderers = new WeakSet();
     /**
      * @type {number | undefined}
      */
@@ -337,7 +412,11 @@ export class HtmlVideoPlayer {
      */
     #fetchQueue = 0;
     /**
-     * @type {Map<number, { token: symbol, active: boolean }>}
+     * @type {number}
+     */
+    #fetchQueueGeneration = 0;
+    /**
+     * @type {Map<number, { token: symbol, active: boolean, sessionGeneration: number }>}
      */
     #pendingSubtitleLoads = new Map();
     /**
@@ -352,6 +431,14 @@ export class HtmlVideoPlayer {
      * @type {boolean | undefined}
      */
     #timeUpdated;
+    /**
+     * @type {boolean}
+     */
+    #customPlaybackActive = false;
+    /**
+     * @type {boolean}
+     */
+    #customPlaybackPaused = true;
     /**
      * @type {number | null | undefined}
      */
@@ -372,6 +459,38 @@ export class HtmlVideoPlayer {
      * @type {number | undefined}
      */
     #clientHDRToneMappingPostProcessingSaturation;
+    /**
+     * @type {number}
+     */
+    #playSessionGeneration = 0;
+    /**
+     * @type {((mediaElement: HTMLMediaElement) => Promise<void>) | null}
+     */
+    #prepareAudioOutput = null;
+    /**
+     * @type {{ generation: number, mediaElement?: HTMLVideoElement, resolve: () => void } | null}
+     */
+    #pendingPlay = null;
+    /**
+     * @type {number}
+     */
+    #subtitleSessionGeneration = 0;
+    /**
+     * @type {number}
+     */
+    #primarySubtitleSelectionGeneration = 0;
+    /**
+     * @type {number}
+     */
+    #secondarySubtitleSelectionGeneration = 0;
+    /**
+     * @type {number}
+     */
+    #primarySubtitleRenderGeneration = 0;
+    /**
+     * @type {number}
+     */
+    #secondarySubtitleRenderGeneration = 0;
 
     /**
      * @private (used in other files)
@@ -398,13 +517,243 @@ export class HtmlVideoPlayer {
      * @type {any | undefined}
      */
     #lastProfile;
+    /**
+     * @param {any} playbackManagerPlayer
+     * @param {boolean} forceCustomSubtitleElements
+     * @param {boolean} useWebGPUHLSRuntime
+     * @param {((mediaElement: HTMLMediaElement) => Promise<void>) | null} prepareAudioOutput
+     */
+    constructor(
+        playbackManagerPlayer,
+        forceCustomSubtitleElements = false,
+        useWebGPUHLSRuntime = false,
+        prepareAudioOutput = null
+    ) {
+        this.#playbackManagerPlayer = playbackManagerPlayer || this;
+        this.#forceCustomSubtitleElements = forceCustomSubtitleElements;
+        this.#useWebGPUHLSRuntime = useWebGPUHLSRuntime;
+        this.#prepareAudioOutput = prepareAudioOutput;
 
-    constructor() {
         if (browser.edgeUwp) {
             this.name = 'Windows Video Player';
         } else {
             this.name = 'Html Video Player';
         }
+    }
+
+    /**
+     * Returns the presentation surface owned by this player instance.
+     *
+     * @returns {{ container: HTMLDivElement, video: HTMLVideoElement } | null}
+     */
+    getPresentationSurface() {
+        const container = this.#videoDialog;
+        const video = this.#mediaElement;
+
+        if (!container || !video || video.parentElement !== container) {
+            return null;
+        }
+
+        return { container, video };
+    }
+
+    /**
+     * Reports whether playback negotiation should request client HDR tone mapping for this player.
+     * Only the stock instance runs the fMP4 HLS loader; the WebGPU player tone maps in its own pipeline.
+     *
+     * @returns {boolean}
+     */
+    supportsClientHDRToneMapping() {
+        return !this.#useWebGPUHLSRuntime;
+    }
+
+    /**
+     * Invalidates and resolves the current asynchronous playback setup.
+     * @param {boolean} pauseSource Whether to pause a source already assigned by setup.
+     */
+    cancelPendingPlay(pauseSource = true) {
+        const pendingPlay = this.#pendingPlay;
+        if (!pendingPlay) {
+            return;
+        }
+
+        this.#playSessionGeneration++;
+        this.#pendingPlay = null;
+        this.#customPlaybackActive = false;
+        if (pauseSource && pendingPlay.mediaElement === this.#mediaElement) {
+            pendingPlay.mediaElement.pause();
+        }
+        pendingPlay.resolve(PLAYBACK_SUPERSEDED);
+
+        // These players can retain callbacks that would otherwise start stale media.
+        destroyHlsPlayer(this);
+        destroyFlvPlayer(this);
+    }
+
+    /**
+     * Invalidates the current playback generation, including established sessions.
+     * @private
+     */
+    #invalidatePlaySession(pauseSource = true) {
+        const playSessionGeneration = this.#playSessionGeneration;
+        this.cancelPendingPlay(pauseSource);
+        if (this.#playSessionGeneration === playSessionGeneration) {
+            this.#playSessionGeneration++;
+        }
+    }
+
+    /**
+     * Checks whether asynchronous playback setup still owns this player and element.
+     * @private
+     */
+    #isPlaySessionCurrent(playSessionGeneration, mediaElement) {
+        if (playSessionGeneration !== this.#playSessionGeneration) {
+            return false;
+        }
+
+        return mediaElement === undefined || mediaElement === this.#mediaElement;
+    }
+
+    /**
+     * Records the element whose source has started for the pending play.
+     * @private
+     */
+    #markPendingPlaySource(playSessionGeneration, mediaElement) {
+        if (
+            this.#pendingPlay?.generation === playSessionGeneration
+            && this.#isPlaySessionCurrent(playSessionGeneration, mediaElement)
+        ) {
+            this.#pendingPlay.mediaElement = mediaElement;
+        }
+    }
+
+    /**
+     * Invalidates every pending subtitle operation from the current source.
+     * @private
+     */
+    #invalidateSubtitleSession() {
+        const wasFetching = this.isFetching;
+        this.#subtitleSessionGeneration++;
+        this.#fetchQueue = 0;
+        this.#fetchQueueGeneration = this.#subtitleSessionGeneration;
+        this.isFetching = false;
+        this.setSubtitleOffset.cancel();
+        if (wasFetching) {
+            // Balance the abandoned session's beginFetch, because its late completions are discarded
+            Events.trigger(this, 'endFetch');
+        }
+    }
+
+    /**
+     * Starts an asynchronous subtitle selection for one displayed track.
+     * @private
+     */
+    #beginSubtitleSelection(targetTextTrackIndex) {
+        let selectionGeneration;
+        if (this.isSecondaryTrack(targetTextTrackIndex)) {
+            this.#secondarySubtitleSelectionGeneration++;
+            selectionGeneration = this.#secondarySubtitleSelectionGeneration;
+        } else {
+            this.#primarySubtitleSelectionGeneration++;
+            selectionGeneration = this.#primarySubtitleSelectionGeneration;
+        }
+
+        return {
+            selectionGeneration,
+            sessionGeneration: this.#subtitleSessionGeneration,
+            targetTextTrackIndex
+        };
+    }
+
+    /**
+     * Checks whether an asynchronous subtitle selection still targets this source.
+     * @private
+     */
+    #isSubtitleSelectionCurrent(subtitleSelection) {
+        if (subtitleSelection.sessionGeneration !== this.#subtitleSessionGeneration) {
+            return false;
+        }
+
+        if (this.isSecondaryTrack(subtitleSelection.targetTextTrackIndex)) {
+            return subtitleSelection.selectionGeneration === this.#secondarySubtitleSelectionGeneration;
+        }
+
+        return subtitleSelection.selectionGeneration === this.#primarySubtitleSelectionGeneration;
+    }
+
+    /**
+     * Starts asynchronous rendering for one displayed subtitle track.
+     * @private
+     */
+    #beginSubtitleRender(targetTextTrackIndex) {
+        let renderGeneration;
+        if (this.isSecondaryTrack(targetTextTrackIndex)) {
+            this.#secondarySubtitleRenderGeneration++;
+            renderGeneration = this.#secondarySubtitleRenderGeneration;
+        } else {
+            this.#primarySubtitleRenderGeneration++;
+            renderGeneration = this.#primarySubtitleRenderGeneration;
+        }
+
+        return {
+            renderGeneration,
+            sessionGeneration: this.#subtitleSessionGeneration,
+            targetTextTrackIndex
+        };
+    }
+
+    /**
+     * Captures the current render generation without starting new work.
+     * @private
+     */
+    #captureSubtitleRender(targetTextTrackIndex) {
+        const renderGeneration = this.isSecondaryTrack(targetTextTrackIndex) ?
+            this.#secondarySubtitleRenderGeneration :
+            this.#primarySubtitleRenderGeneration;
+
+        return {
+            renderGeneration,
+            sessionGeneration: this.#subtitleSessionGeneration,
+            targetTextTrackIndex
+        };
+    }
+
+    /**
+     * Invalidates pending rendering for one subtitle track, or both when omitted.
+     * @private
+     */
+    #invalidateSubtitleRender(targetTextTrackIndex) {
+        if (this.isPrimaryTrack(targetTextTrackIndex)) {
+            this.#primarySubtitleRenderGeneration++;
+            return;
+        }
+
+        if (this.isSecondaryTrack(targetTextTrackIndex)) {
+            this.#secondarySubtitleRenderGeneration++;
+            return;
+        }
+
+        this.#primarySubtitleRenderGeneration++;
+        this.#secondarySubtitleRenderGeneration++;
+    }
+
+    /**
+     * Checks whether asynchronous subtitle rendering still targets this source and element.
+     * @private
+     */
+    #isSubtitleRenderCurrent(subtitleRender, videoElement) {
+        if (
+            subtitleRender.sessionGeneration !== this.#subtitleSessionGeneration
+            || videoElement !== this.#mediaElement
+        ) {
+            return false;
+        }
+
+        if (this.isSecondaryTrack(subtitleRender.targetTextTrackIndex)) {
+            return subtitleRender.renderGeneration === this.#secondarySubtitleRenderGeneration;
+        }
+
+        return subtitleRender.renderGeneration === this.#primarySubtitleRenderGeneration;
     }
 
     currentSrc() {
@@ -414,7 +763,16 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    incrementFetchQueue() {
+    incrementFetchQueue(sessionGeneration) {
+        if (sessionGeneration !== this.#subtitleSessionGeneration) {
+            return;
+        }
+
+        if (this.#fetchQueueGeneration !== sessionGeneration) {
+            this.#fetchQueue = 0;
+            this.#fetchQueueGeneration = sessionGeneration;
+        }
+
         if (this.#fetchQueue <= 0) {
             this.isFetching = true;
             Events.trigger(this, 'beginFetch');
@@ -426,7 +784,14 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    decrementFetchQueue() {
+    decrementFetchQueue(sessionGeneration) {
+        if (
+            sessionGeneration !== this.#subtitleSessionGeneration
+            || this.#fetchQueueGeneration !== sessionGeneration
+        ) {
+            return;
+        }
+
         this.#fetchQueue--;
 
         if (this.#fetchQueue <= 0) {
@@ -445,7 +810,7 @@ export class HtmlVideoPlayer {
         }
 
         pendingLoad.active = true;
-        this.incrementFetchQueue();
+        this.incrementFetchQueue(pendingLoad.sessionGeneration);
     }
 
     /**
@@ -459,7 +824,7 @@ export class HtmlVideoPlayer {
 
         this.#pendingSubtitleLoads.delete(targetTextTrackIndex);
         if (pendingLoad.active) {
-            this.decrementFetchQueue();
+            this.decrementFetchQueue(pendingLoad.sessionGeneration);
         }
     }
 
@@ -468,17 +833,20 @@ export class HtmlVideoPlayer {
      */
     createBitmapSubtitleRendererOptions(videoElement, track, item, targetTextTrackIndex) {
         const loadToken = Symbol(String(targetTextTrackIndex));
-        const displaySettings = getBitmapSubtitleDisplaySettings();
+        const displaySettings = this.#customPlaybackActive ?
+            { aspectMode: getCustomBitmapSubtitleAspectMode(this.getAspectRatio()) } :
+            getBitmapSubtitleDisplaySettings();
         this.endPendingSubtitleLoad(targetTextTrackIndex);
         this.#pendingSubtitleLoads.set(targetTextTrackIndex, {
             token: loadToken,
-            active: false
+            active: false,
+            sessionGeneration: this.#subtitleSessionGeneration
         });
 
         return {
             video: videoElement,
             subUrl: getTextTrackUrl(track, item),
-            timeOffset: getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset),
+            timeOffset: this.#getBitmapSubtitleTimeOffset(videoElement),
             streamingLoad: true,
             rangeRequests: true,
             prefetchWindow: { before: 1, after: 2 },
@@ -490,9 +858,23 @@ export class HtmlVideoPlayer {
     }
 
     /**
+     * Prewarms the shared libbitsub worker before a bitmap subtitle track is selected.
      * @private
      */
-    updateVideoUrl(streamInfo) {
+    #prewarmBitmapSubtitleWorker() {
+        void import('libbitsub')
+            .then(({ warmup }) => warmup())
+            .catch((error) => console.warn('[libbitsub] worker prewarm failed; renderer fallback will be used', error));
+    }
+
+    /**
+     * @private
+     */
+    updateVideoUrl(streamInfo, playSessionGeneration = this.#playSessionGeneration) {
+        if (!this.#isPlaySessionCurrent(playSessionGeneration)) {
+            return Promise.resolve();
+        }
+
         const mediaSource = streamInfo.mediaSource;
         const item = streamInfo.item;
 
@@ -511,12 +893,20 @@ export class HtmlVideoPlayer {
                 type: 'GET',
                 url: hlsPlaylistUrl
 
-            }).then(function () {
+            }).then(() => {
+                if (!this.#isPlaySessionCurrent(playSessionGeneration)) {
+                    return;
+                }
+
                 console.debug(`completed prefetching hls playlist: ${hlsPlaylistUrl}`);
 
                 loading.hide();
                 streamInfo.url = hlsPlaylistUrl;
-            }, function () {
+            }, () => {
+                if (!this.#isPlaySessionCurrent(playSessionGeneration)) {
+                    return;
+                }
+
                 console.error(`error prefetching hls playlist: ${hlsPlaylistUrl}`);
 
                 loading.hide();
@@ -527,6 +917,120 @@ export class HtmlVideoPlayer {
     }
 
     async play(options) {
+        this.#customPlaybackActive = false;
+        this.#customPlaybackPaused = true;
+        this.#invalidatePlaySession();
+        const playSessionGeneration = this.#playSessionGeneration;
+        let resolveCancellation;
+        const cancellationPromise = new Promise((resolve) => {
+            resolveCancellation = resolve;
+        });
+        const pendingPlay = {
+            generation: playSessionGeneration,
+            resolve: resolveCancellation
+        };
+        this.#pendingPlay = pendingPlay;
+
+        const setupPromise = this.#setUpPlay(options, playSessionGeneration).catch((error) => {
+            if (this.#isPlaySessionCurrent(playSessionGeneration)) {
+                this.#playSessionGeneration++;
+                destroyHlsPlayer(this);
+                destroyFlvPlayer(this);
+            }
+
+            throw error;
+        });
+        try {
+            return await Promise.race([setupPromise, cancellationPromise]);
+        } finally {
+            if (this.#pendingPlay?.generation === playSessionGeneration) {
+                this.#pendingPlay = null;
+            }
+        }
+    }
+
+    /**
+     * Creates the normal video, subtitle, and OSD surface without assigning a
+     * native media source. A composed player can then own demux and decode.
+     *
+     * @param {any} options
+     * @returns {Promise<{ container: HTMLDivElement, video: HTMLVideoElement } | string | null>}
+     */
+    async prepareCustomPlayback(options) {
+        this.#invalidatePlaySession();
+        this.#customPlaybackActive = true;
+        this.#customPlaybackPaused = true;
+        const playSessionGeneration = this.#playSessionGeneration;
+        let resolveCancellation;
+        const cancellationPromise = new Promise((resolve) => {
+            resolveCancellation = resolve;
+        });
+        const pendingPlay = {
+            generation: playSessionGeneration,
+            resolve: resolveCancellation
+        };
+        this.#pendingPlay = pendingPlay;
+
+        const setupPromise = this.#setUpCustomPlayback(options, playSessionGeneration).catch((error) => {
+            if (this.#isPlaySessionCurrent(playSessionGeneration)) {
+                this.#playSessionGeneration++;
+                this.#customPlaybackActive = false;
+            }
+            throw error;
+        });
+        try {
+            return await Promise.race([setupPromise, cancellationPromise]);
+        } finally {
+            if (this.#pendingPlay?.generation === playSessionGeneration) {
+                this.#pendingPlay = null;
+            }
+        }
+    }
+
+    /**
+     * @private
+     */
+    async #setUpCustomPlayback(options, playSessionGeneration) {
+        this.#invalidateSubtitleSession();
+        this.destroyCustomTrack(this.#mediaElement);
+        this.#started = false;
+        this.#timeUpdated = false;
+        this.#currentTime = null;
+        this.#detectedAspectRatio = this.#getDetectedAspectRatio(options);
+
+        if (options.resetSubtitleOffset !== false) this.resetSubtitleOffset();
+
+        // Custom playback advertises external PGS without the HTML PGS setting
+        this.#prewarmBitmapSubtitleWorker();
+
+        const elem = await this.createMediaElement(options, playSessionGeneration);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return null;
+        }
+        await this.#prepareAudioOutput?.(elem);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return null;
+        }
+
+        this.#markPendingPlaySource(playSessionGeneration, elem);
+        elem.removeEventListener('error', this.onError);
+        destroyHlsPlayer(this);
+        destroyFlvPlayer(this);
+        destroyCastPlayer(this);
+        resetSrc(elem);
+        this.#configureTrackSelection(options, true);
+        this._currentPlayOptions = options;
+        this.#currentSrc = options.url;
+        this.#applyAspectRatio(options.aspectRatio || this.getAspectRatio());
+        return this.getPresentationSurface();
+    }
+
+    /**
+     * Sets up one playback generation.
+     * @private
+     */
+    async #setUpPlay(options, playSessionGeneration) {
+        this.#invalidateSubtitleSession();
         this.#started = false;
         this.#timeUpdated = false;
 
@@ -536,23 +1040,37 @@ export class HtmlVideoPlayer {
         if (options.resetSubtitleOffset !== false) this.resetSubtitleOffset();
 
         if (appSettings.get('subtitlerenderpgs') === 'true') {
-            void import('libbitsub')
-                .then(({ warmup }) => warmup())
-                .catch((error) => console.warn('[libbitsub] worker prewarm failed; renderer fallback will be used', error));
+            this.#prewarmBitmapSubtitleWorker();
         }
 
-        const elem = await this.createMediaElement(options);
+        const elem = await this.createMediaElement(options, playSessionGeneration);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return;
+        }
+        await this.#prepareAudioOutput?.(elem);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return;
+        }
+
         this.#applyAspectRatio(options.aspectRatio || this.getAspectRatio());
 
-        await this.updateVideoUrl(options);
-        return this.setCurrentSrc(elem, options);
+        await this.updateVideoUrl(options, playSessionGeneration);
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return;
+        }
+
+        return this.setCurrentSrc(elem, options, playSessionGeneration);
     }
 
     /**
      * @private
      */
-    setSrcWithFlvJs(elem, options, url) {
+    setSrcWithFlvJs(elem, options, url, playSessionGeneration) {
         return import('flv.js').then(({ default: flvjs }) => {
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                return;
+            }
+
             const flvPlayer = flvjs.createPlayer({
                 type: 'flv',
                 url: url
@@ -561,11 +1079,22 @@ export class HtmlVideoPlayer {
                 seekType: 'range',
                 lazyLoad: false
             });
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                flvPlayer.destroy();
+                return;
+            }
 
-            flvPlayer.attachMediaElement(elem);
-            flvPlayer.load();
-
+            this.#markPendingPlaySource(playSessionGeneration, elem);
             this._flvPlayer = flvPlayer;
+            flvPlayer.attachMediaElement(elem);
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                return;
+            }
+
+            flvPlayer.load();
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                return;
+            }
 
             // This is needed in setCurrentTrackElement
             this.#currentSrc = url;
@@ -577,98 +1106,167 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    setSrcWithHlsJs(elem, options, url) {
+    setSrcWithHlsJs(elem, options, url, playSessionGeneration) {
         return new Promise((resolve, reject) => {
-            requireHlsPlayer(async (HLSRuntime) => {
-                let maxBufferLength = 30;
-
-                // Some browsers cannot handle huge fragments in high bitrate.
-                // This issue usually happens when using HWA encoders with a high bitrate setting.
-                // Limit the BufferLength to 6s, it works fine when playing 4k 120Mbps over HLS on chrome.
-                // https://github.com/video-dev/hls.js/issues/876
-                if ((browser.chrome || browser.edgeChromium || browser.firefox) && playbackManager.getMaxStreamingBitrate(this) >= 25000000) {
-                    maxBufferLength = 6;
+            let sourceRejected = false;
+            let sourceResolved = false;
+            const resolveSource = (value) => {
+                sourceResolved = true;
+                resolve(value);
+            };
+            const rejectSource = (error) => {
+                if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                    resolve();
+                    return;
                 }
 
-                const includeCorsCredentials = await getIncludeCorsCredentials();
-                const clientHDRToneMappingPreset =
-                    userSettings.clientHDRToneMappingPreset();
-                const clientHDRToneMappingBT2390Parameters = {
-                    kneeOffset: userSettings.clientHDRToneMappingBT2390KneeOffset(),
-                    sourcePeakNits: userSettings.clientHDRToneMappingBT2390SourcePeakNits(),
-                    targetPeakNits: userSettings.clientHDRToneMappingBT2390TargetPeakNits()
-                };
-                const clientHDRToneMappingSession = {
-                    hlsPlayer: null
-                };
-                const clientHDRToneMappingConfig = createClientHDRToneMappingHlsConfig(
-                    HLSRuntime,
-                    options.mediaSource,
-                    userSettings.enableClientHDRToneMapping()
-                        && isClientHDRToneMappingRuntimeAvailable(),
-                    clientHDRToneMappingPreset,
-                    clientHDRToneMappingBT2390Parameters,
-                    (initializationSegmentTransformed) => {
-                        if (
-                            !clientHDRToneMappingSession.hlsPlayer
-                            || this._hlsPlayer
-                                !== clientHDRToneMappingSession.hlsPlayer
-                        ) {
-                            return;
-                        }
+                if (!sourceResolved) {
+                    sourceRejected = true;
+                    reject(error);
+                    return;
+                }
 
-                        if (initializationSegmentTransformed) {
-                            this.#startClientHDRToneMappingPostProcessing(
-                                elem,
-                                clientHDRToneMappingPreset,
-                                clientHDRToneMappingBT2390Parameters
-                            );
-                        } else {
-                            this.#stopClientHDRToneMappingPostProcessing();
-                        }
+                this.#invalidatePlaySession(false);
+                destroyHlsPlayer(this);
+                onErrorInternal(this, error || MediaError.FATAL_HLS_ERROR);
+            };
+
+            import('hls.js/dist/hls.js').then(async ({ default: HLSRuntime }) => {
+                try {
+                    if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        resolve();
+                        return;
                     }
-                );
 
-                const hls = new HLSRuntime({
-                    backBufferLength: Infinity,
-                    liveBackBufferLength: 90,
-                    lowLatencyMode: false,
-                    // Give cold storage enough time to start producing a segment
-                    fragLoadPolicy: {
-                        default: {
-                            ...HLSRuntime.DefaultConfig.fragLoadPolicy.default,
-                            maxTimeToFirstByteMs: HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS
+                    const includeCorsCredentials = await getIncludeCorsCredentials();
+                    if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        resolve();
+                        return;
+                    }
+
+                    const clientHDRToneMappingPreset =
+                        userSettings.clientHDRToneMappingPreset();
+                    const clientHDRToneMappingBT2390Parameters = {
+                        kneeOffset: userSettings.clientHDRToneMappingBT2390KneeOffset(),
+                        sourcePeakNits: userSettings.clientHDRToneMappingBT2390SourcePeakNits(),
+                        targetPeakNits: userSettings.clientHDRToneMappingBT2390TargetPeakNits()
+                    };
+                    const clientHDRToneMappingSession = {
+                        hlsPlayer: null
+                    };
+                    // The fMP4 AGTM loader targets native presentation, not the WebGPU HLS runtime
+                    const clientHDRToneMappingConfig = createClientHDRToneMappingHlsConfig(
+                        HLSRuntime,
+                        options.mediaSource,
+                        !this.#useWebGPUHLSRuntime
+                            && userSettings.enableClientHDRToneMapping()
+                            && isClientHDRToneMappingRuntimeAvailable(),
+                        clientHDRToneMappingPreset,
+                        clientHDRToneMappingBT2390Parameters,
+                        (initializationSegmentTransformed) => {
+                            if (
+                                !clientHDRToneMappingSession.hlsPlayer
+                                || this._hlsPlayer
+                                    !== clientHDRToneMappingSession.hlsPlayer
+                            ) {
+                                return;
+                            }
+
+                            if (initializationSegmentTransformed) {
+                                this.#startClientHDRToneMappingPostProcessing(
+                                    elem,
+                                    clientHDRToneMappingPreset,
+                                    clientHDRToneMappingBT2390Parameters
+                                );
+                            } else {
+                                this.#stopClientHDRToneMappingPostProcessing();
+                            }
                         }
-                    },
-                    startPosition: options.playerStartPositionTicks / 10000000,
-                    manifestLoadingTimeOut: 20000,
-                    maxBufferLength: maxBufferLength,
-                    maxMaxBufferLength: maxBufferLength,
-                    videoPreference: {
-                        preferHDR: shouldPreferHDRHLSRendition(options)
-                    },
-                    workerPath: 'libraries/hls.worker.js',
-                    xhrSetup(xhr) {
-                        xhr.withCredentials = includeCorsCredentials;
-                    },
-                    ...clientHDRToneMappingConfig
-                });
-                if (clientHDRToneMappingConfig.fLoader) {
-                    // Chrome cannot re-register one timed metadata track on a
-                    // SourceBuffer, so keep this HLS session on one level.
-                    hls.on(HLSRuntime.Events.MANIFEST_PARSED, () => {
-                        hls.loadLevel = hls.firstLevel;
+                    );
+
+                    const hls = new HLSRuntime({
+                        ...getHLSBufferConfiguration(this, this.#useWebGPUHLSRuntime),
+                        // Give cold storage enough time to start producing a segment
+                        fragLoadPolicy: {
+                            default: {
+                                ...HLSRuntime.DefaultConfig.fragLoadPolicy.default,
+                                maxTimeToFirstByteMs: HLS_FRAGMENT_TIME_TO_FIRST_BYTE_MS
+                            }
+                        },
+                        startPosition: options.playerStartPositionTicks / 10000000,
+                        manifestLoadingTimeOut: 20000,
+                        lowLatencyMode: false,
+                        videoPreference: {
+                            preferHDR: shouldPreferHDRHLSRendition(options)
+                        },
+                        workerPath: 'libraries/hls.worker.js',
+                        xhrSetup(xhr) {
+                            xhr.withCredentials = includeCorsCredentials;
+                        },
+                        ...clientHDRToneMappingConfig
                     });
+                    if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        hls.destroy();
+                        resolve();
+                        return;
+                    }
+
+                    if (clientHDRToneMappingConfig.fLoader) {
+                        // Chrome cannot re-register one timed metadata track on a
+                        // SourceBuffer, so keep this HLS session on one level.
+                        hls.on(HLSRuntime.Events.MANIFEST_PARSED, () => {
+                            hls.loadLevel = hls.firstLevel;
+                        });
+                    }
+                    clientHDRToneMappingSession.hlsPlayer = hls;
+
+                    this.#markPendingPlaySource(playSessionGeneration, elem);
+                    this._hlsPlayer = hls;
+                    hls.loadSource(url);
+                    if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        resolve();
+                        return;
+                    }
+
+                    hls.attachMedia(elem);
+                    if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        resolve();
+                        return;
+                    }
+
+                    bindEventsToHlsPlayer(
+                        this,
+                        hls,
+                        elem,
+                        this.onError,
+                        resolveSource,
+                        rejectSource,
+                        {
+                            hlsRuntime: HLSRuntime,
+                            isCurrent: () => this.#isPlaySessionCurrent(playSessionGeneration, elem)
+                                && this._hlsPlayer === hls,
+                            onEstablishedError: rejectSource
+                        }
+                    );
+                    if (sourceRejected || !this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        return;
+                    }
+
+                    // This is needed in setCurrentTrackElement
+                    this.#currentSrc = url;
+                } catch (error) {
+                    if (this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        reject(error);
+                    } else {
+                        resolve();
+                    }
                 }
-                clientHDRToneMappingSession.hlsPlayer = hls;
-                this._hlsPlayer = hls;
-                hls.loadSource(url);
-                hls.attachMedia(elem);
-
-                bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject, { hlsRuntime: HLSRuntime });
-
-                // This is needed in setCurrentTrackElement
-                this.#currentSrc = url;
+            }, (error) => {
+                if (this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                    reject(error);
+                } else {
+                    resolve();
+                }
             });
         });
     }
@@ -676,7 +1274,47 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    async setCurrentSrc(elem, options) {
+    #configureTrackSelection(options, customAudio) {
+        let secondaryTrackValid = true;
+
+        this.#subtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSubtitleStreamIndex;
+        if (this.#subtitleTrackIndexToSetOnPlaying != null && this.#subtitleTrackIndexToSetOnPlaying >= 0) {
+            const initialSubtitleStream = options.mediaSource.MediaStreams[this.#subtitleTrackIndexToSetOnPlaying];
+            if (!initialSubtitleStream || initialSubtitleStream.DeliveryMethod === 'Encode') {
+                this.#subtitleTrackIndexToSetOnPlaying = -1;
+                secondaryTrackValid = false;
+            }
+            // secondary track should not be shown if primary track is no longer a valid pair
+            if (initialSubtitleStream && !playbackManager.trackHasSecondarySubtitleSupport(initialSubtitleStream, this.#playbackManagerPlayer)) {
+                secondaryTrackValid = false;
+            }
+        } else {
+            secondaryTrackValid = false;
+        }
+
+        this.#audioTrackIndexToSetOnPlaying = customAudio || options.playMethod === 'Transcode' ? null : options.mediaSource.DefaultAudioStreamIndex;
+
+        if (secondaryTrackValid) {
+            this.#secondarySubtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSecondarySubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSecondarySubtitleStreamIndex;
+            if (this.#secondarySubtitleTrackIndexToSetOnPlaying != null && this.#secondarySubtitleTrackIndexToSetOnPlaying >= 0) {
+                const initialSecondarySubtitleStream = options.mediaSource.MediaStreams[this.#secondarySubtitleTrackIndexToSetOnPlaying];
+                if (!initialSecondarySubtitleStream || !playbackManager.trackHasSecondarySubtitleSupport(initialSecondarySubtitleStream, this.#playbackManagerPlayer)) {
+                    this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
+                }
+            }
+        } else {
+            this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
+        }
+    }
+
+    /**
+     * @private
+     */
+    async setCurrentSrc(elem, options, playSessionGeneration = this.#playSessionGeneration) {
+        if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+            return;
+        }
+
         this.#stopClientHDRToneMappingPostProcessing();
         elem.removeEventListener('error', this.onError);
 
@@ -692,39 +1330,8 @@ export class HtmlVideoPlayer {
         destroyHlsPlayer(this);
         destroyFlvPlayer(this);
         destroyCastPlayer(this);
-
-        let secondaryTrackValid = true;
-
-        this.#subtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSubtitleStreamIndex;
-        if (this.#subtitleTrackIndexToSetOnPlaying != null && this.#subtitleTrackIndexToSetOnPlaying >= 0) {
-            const initialSubtitleStream = options.mediaSource.MediaStreams[this.#subtitleTrackIndexToSetOnPlaying];
-            if (!initialSubtitleStream || initialSubtitleStream.DeliveryMethod === 'Encode') {
-                this.#subtitleTrackIndexToSetOnPlaying = -1;
-                secondaryTrackValid = false;
-            }
-            // secondary track should not be shown if primary track is no longer a valid pair
-            if (initialSubtitleStream && !playbackManager.trackHasSecondarySubtitleSupport(initialSubtitleStream, this)) {
-                secondaryTrackValid = false;
-            }
-        } else {
-            secondaryTrackValid = false;
-        }
-
-        this.#audioTrackIndexToSetOnPlaying = options.playMethod === 'Transcode' ? null : options.mediaSource.DefaultAudioStreamIndex;
-
+        this.#configureTrackSelection(options, false);
         this._currentPlayOptions = options;
-
-        if (secondaryTrackValid) {
-            this.#secondarySubtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSecondarySubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSecondarySubtitleStreamIndex;
-            if (this.#secondarySubtitleTrackIndexToSetOnPlaying != null && this.#secondarySubtitleTrackIndexToSetOnPlaying >= 0) {
-                const initialSecondarySubtitleStream = options.mediaSource.MediaStreams[this.#secondarySubtitleTrackIndexToSetOnPlaying];
-                if (!initialSecondarySubtitleStream || !playbackManager.trackHasSecondarySubtitleSupport(initialSecondarySubtitleStream, this)) {
-                    this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
-                }
-            }
-        } else {
-            this.#secondarySubtitleTrackIndexToSetOnPlaying = -1;
-        }
 
         const crossOrigin = getCrossOriginValue(options.mediaSource);
         if (crossOrigin) {
@@ -732,23 +1339,38 @@ export class HtmlVideoPlayer {
         }
 
         if (enableHlsJsPlayerForCodecs(options.mediaSource, 'Video') && isHls(options.mediaSource)) {
-            return this.setSrcWithHlsJs(elem, options, val);
+            return this.setSrcWithHlsJs(elem, options, val, playSessionGeneration);
         } else if (options.playMethod !== 'Transcode' && options.mediaSource.Container?.toUpperCase() === 'FLV') {
-            return this.setSrcWithFlvJs(elem, options, val);
+            return this.setSrcWithFlvJs(elem, options, val, playSessionGeneration);
         } else {
             elem.autoplay = true;
 
             const includeCorsCredentials = await getIncludeCorsCredentials();
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                return;
+            }
+
             if (includeCorsCredentials) {
                 // Safari will not send cookies without this
                 elem.crossOrigin = 'use-credentials';
             }
 
-            return applySrc(elem, val, options).then(() => {
-                this.#currentSrc = val;
+            const player = this;
+            const guardedSourceElement = {
+                set src(source) {
+                    if (player.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                        player.#markPendingPlaySource(playSessionGeneration, elem);
+                        elem.src = source;
+                    }
+                }
+            };
+            await applySrc(guardedSourceElement, val, options);
+            if (!this.#isPlaySessionCurrent(playSessionGeneration, elem)) {
+                return;
+            }
 
-                return playWithPromise(elem, this.onError);
-            });
+            this.#currentSrc = val;
+            return playWithPromise(elem, this.onError);
         }
     }
 
@@ -805,10 +1427,19 @@ export class HtmlVideoPlayer {
         // if .ass currently rendering
         if (this.#currentAssRenderer) {
             this.updateCurrentTrackOffset(offsetValue);
-            this.#currentAssRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, offsetValue);
+            if (this.#customPlaybackActive) {
+                this.#currentAssRenderer.resetRenderAheadCache?.(false);
+                this.#renderCustomSpecializedSubtitles();
+            } else {
+                this.#currentAssRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, offsetValue);
+            }
         } else if (this.#currentBitmapSubRenderer) {
             this.updateCurrentTrackOffset(offsetValue);
-            this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, offsetValue);
+            if (this.#customPlaybackActive) {
+                this.#renderCustomSpecializedSubtitles();
+            } else {
+                this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, offsetValue);
+            }
         } else {
             const trackElements = this.getTextTracks();
             // if .vtt currently rendering
@@ -878,10 +1509,16 @@ export class HtmlVideoPlayer {
      * and allow it to disable and clear the active cue.
      * @private
      */
-    forceClearTextTrackActiveCues(currentTrack) {
+    forceClearTextTrackActiveCues(currentTrack, currentTrackIndex) {
         if (currentTrack.activeCues) {
+            const subtitleRender = this.#captureSubtitleRender(currentTrackIndex);
+            const videoElement = this.#mediaElement;
             currentTrack.mode = 'disabled';
             setTimeout(() => {
+                if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                    return;
+                }
+
                 currentTrack.mode = 'showing';
             }, 0);
         }
@@ -909,7 +1546,7 @@ export class HtmlVideoPlayer {
                 });
 
             if (shouldClearActiveCues) {
-                this.forceClearTextTrackActiveCues(currentTrack);
+                this.forceClearTextTrackActiveCues(currentTrack, currentTrackIndex);
             }
         }
     }
@@ -1027,6 +1664,10 @@ export class HtmlVideoPlayer {
     }
 
     stop(destroyPlayer) {
+        this.#customPlaybackActive = false;
+        this.#customPlaybackPaused = true;
+        this.#invalidatePlaySession(false);
+        this.#invalidateSubtitleSession();
         const elem = this.#mediaElement;
         const src = this.#currentSrc;
 
@@ -1036,6 +1677,8 @@ export class HtmlVideoPlayer {
             }
 
             onEndedInternal(this, elem, this.onError);
+            this.#currentSrc = undefined;
+            this.#currentTime = null;
         }
 
         this.destroyCustomTrack(elem);
@@ -1048,6 +1691,10 @@ export class HtmlVideoPlayer {
     }
 
     destroy() {
+        this.#customPlaybackActive = false;
+        this.#customPlaybackPaused = true;
+        this.#invalidatePlaySession();
+        this.#invalidateSubtitleSession();
         this.setSubtitleOffset.cancel();
         this.#stopClientHDRToneMappingPostProcessing();
 
@@ -1080,6 +1727,10 @@ export class HtmlVideoPlayer {
 
             videoElement.parentNode.removeChild(videoElement);
         }
+
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
+        this._currentPlayOptions = null;
 
         const dlg = this.#videoDialog;
         if (dlg) {
@@ -1181,8 +1832,12 @@ export class HtmlVideoPlayer {
          * @type {HTMLMediaElement}
          */
         const elem = e.target;
+        this.#invalidatePlaySession(false);
+        this.#invalidateSubtitleSession();
         this.destroyCustomTrack(elem);
         onEndedInternal(this, elem, this.onError);
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
     };
 
     /**
@@ -1252,13 +1907,286 @@ export class HtmlVideoPlayer {
         }
 
         if (this.#secondarySubtitleTrackIndexToSetOnPlaying != null && this.#secondarySubtitleTrackIndexToSetOnPlaying >= 0) {
+            const secondarySubtitleTrackIndex = this.#secondarySubtitleTrackIndexToSetOnPlaying;
+            const subtitleSessionGeneration = this.#subtitleSessionGeneration;
+            const videoElement = this.#mediaElement;
             /**
              * Using a 0ms timeout to set the secondary subtitles because of some weird race condition when
              * setting both primary and secondary tracks at the same time.
              * The `TextTrack` content and cues will somehow get mixed up and each track will play a mix of both languages.
              * Putting this in a timeout fixes it completely.
              */
-            setTimeout(() => this.setSecondarySubtitleStreamIndex(this.#secondarySubtitleTrackIndexToSetOnPlaying), 0);
+            setTimeout(() => {
+                if (
+                    subtitleSessionGeneration !== this.#subtitleSessionGeneration
+                    || videoElement !== this.#mediaElement
+                ) {
+                    return;
+                }
+
+                this.setSecondarySubtitleStreamIndex(secondarySubtitleTrackIndex);
+            }, 0);
+        }
+    }
+
+    /**
+     * Activates the existing Jellyfin playback UI for a source decoded by a
+     * composed player rather than by the owned video element.
+     *
+     * @param {boolean} emitUnpause
+     * @returns {boolean}
+     */
+    notifyCustomPlaybackPlaying(emitUnpause = true) {
+        if (!this.#customPlaybackActive || !this.#mediaElement) {
+            return false;
+        }
+
+        this.#customPlaybackPaused = false;
+        if (emitUnpause) {
+            Events.trigger(this, 'unpause');
+        }
+        this.#startPlaybackPresentation(this.#mediaElement, false);
+        this.#updateCustomAssPlaybackState();
+        Events.trigger(this, 'playing');
+        return true;
+    }
+
+    /** Updates DOM subtitles and forwards one custom-clock time event. */
+    notifyCustomPlaybackTimeUpdate(timeMilliseconds) {
+        if (!this.#customPlaybackActive || !Number.isFinite(timeMilliseconds)) {
+            return false;
+        }
+
+        this.#currentTime = timeMilliseconds / 1000;
+        const transcodingOffsetMilliseconds = (this._currentPlayOptions?.transcodingOffsetTicks || 0) / 10000;
+        this.updateSubtitleText(timeMilliseconds + transcodingOffsetMilliseconds);
+        this.#renderCustomSpecializedSubtitles(timeMilliseconds);
+        Events.trigger(this, 'timeupdate');
+        return true;
+    }
+
+    /** Forwards a custom-clock pause without touching the source-less video. */
+    notifyCustomPlaybackPaused() {
+        if (!this.#customPlaybackActive) {
+            return false;
+        }
+
+        this.#customPlaybackPaused = true;
+        this.#updateCustomAssPlaybackState();
+        Events.trigger(this, 'pause');
+        return true;
+    }
+
+    /** Forwards custom decoder starvation to the normal Jellyfin event path. */
+    notifyCustomPlaybackWaiting() {
+        if (!this.#customPlaybackActive) {
+            return false;
+        }
+
+        this.#customPlaybackPaused = true;
+        this.#updateCustomAssPlaybackState();
+        Events.trigger(this, 'waiting');
+        return true;
+    }
+
+    /** Ends a custom source exactly once through the HTML player's stop path. */
+    notifyCustomPlaybackEnded() {
+        const elem = this.#mediaElement;
+        if (!this.#customPlaybackActive || !elem) {
+            return false;
+        }
+
+        this.#customPlaybackActive = false;
+        this.#customPlaybackPaused = true;
+        this.#invalidatePlaySession(false);
+        this.#invalidateSubtitleSession();
+        this.destroyCustomTrack(elem);
+        onEndedInternal(this, elem, this.onError);
+        this.#currentSrc = undefined;
+        this.#currentTime = null;
+        return true;
+    }
+
+    /** Returns the exact custom-clock time expected by specialized renderers. */
+    #getCustomSubtitleTimeSeconds(timeMilliseconds = (this.#currentTime || 0) * MILLISECONDS_PER_SECOND) {
+        const transcodingOffsetSeconds = (this._currentPlayOptions?.transcodingOffsetTicks || 0)
+            / TICKS_PER_SECOND;
+        const subtitleOffsetSeconds = Number.isFinite(this.#currentTrackOffset) ?
+            this.#currentTrackOffset :
+            0;
+        return timeMilliseconds / MILLISECONDS_PER_SECOND
+            + transcodingOffsetSeconds
+            + subtitleOffsetSeconds;
+    }
+
+    /**
+     * Returns the libbitsub offset added to the owned video time.
+     * The renderer samples `video.currentTime + timeOffset` on every animation frame and when a worker render settles.
+     * A source-less custom video never advances, so the offset carries the whole custom clock.
+     */
+    #getBitmapSubtitleTimeOffset(videoElement, customTimeMilliseconds) {
+        if (!this.#customPlaybackActive) {
+            return getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
+        }
+
+        const videoTimeSeconds = Number.isFinite(videoElement?.currentTime) ? videoElement.currentTime : 0;
+        return this.#getCustomSubtitleTimeSeconds(customTimeMilliseconds) - videoTimeSeconds;
+    }
+
+    /** Creates a canvas owned by one source-less subtitle renderer. */
+    #createCustomSubtitleCanvas(videoElement) {
+        const canvas = document.createElement('canvas');
+        canvas.classList.add(CUSTOM_SUBTITLE_CANVAS_CLASS);
+        canvas.setAttribute('aria-hidden', 'true');
+        videoElement.parentElement?.appendChild(canvas);
+        this.#synchronizeCustomSubtitleCanvas(canvas, videoElement);
+        return canvas;
+    }
+
+    /** Aligns a source-less subtitle canvas with the owned video surface. */
+    #synchronizeCustomSubtitleCanvas(canvas, videoElement) {
+        const container = videoElement.parentElement;
+        if (!container) {
+            return null;
+        }
+
+        const containerRectangle = container.getBoundingClientRect();
+        const videoRectangle = videoElement.getBoundingClientRect();
+        const containerScaleX = container.clientWidth > 0 ?
+            containerRectangle.width / container.clientWidth :
+            1;
+        const containerScaleY = container.clientHeight > 0 ?
+            containerRectangle.height / container.clientHeight :
+            1;
+        const normalizedScaleX = containerScaleX > 0 ? containerScaleX : 1;
+        const normalizedScaleY = containerScaleY > 0 ? containerScaleY : 1;
+        const fallbackWidth = videoElement.clientWidth || container.clientWidth;
+        const fallbackHeight = videoElement.clientHeight || container.clientHeight;
+        const width = Math.max(
+            MINIMUM_SUBTITLE_CANVAS_DIMENSION,
+            videoRectangle.width > 0 ? videoRectangle.width / normalizedScaleX : fallbackWidth
+        );
+        const height = Math.max(
+            MINIMUM_SUBTITLE_CANVAS_DIMENSION,
+            videoRectangle.height > 0 ? videoRectangle.height / normalizedScaleY : fallbackHeight
+        );
+        const left = videoRectangle.width > 0 ?
+            (videoRectangle.left - containerRectangle.left) / normalizedScaleX :
+            videoElement.offsetLeft;
+        const top = videoRectangle.height > 0 ?
+            (videoRectangle.top - containerRectangle.top) / normalizedScaleY :
+            videoElement.offsetTop;
+
+        canvas.style.left = `${left}px`;
+        canvas.style.top = `${top}px`;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        return { height, width };
+    }
+
+    /** Keeps source-less subtitle canvases aligned after aspect or viewport changes. */
+    #synchronizeCustomSubtitleCanvases() {
+        if (!this.#customPlaybackActive || !this.#mediaElement) {
+            return;
+        }
+
+        if (this.#currentAssCanvas) {
+            const geometry = this.#synchronizeCustomSubtitleCanvas(
+                this.#currentAssCanvas,
+                this.#mediaElement
+            );
+            if (geometry && this.#currentAssRenderer?.resize) {
+                const pixelRatio = Math.max(window.devicePixelRatio || 1, 1);
+                const width = Math.max(
+                    MINIMUM_SUBTITLE_CANVAS_DIMENSION,
+                    Math.round(geometry.width * pixelRatio)
+                );
+                const height = Math.max(
+                    MINIMUM_SUBTITLE_CANVAS_DIMENSION,
+                    Math.round(geometry.height * pixelRatio)
+                );
+                this.#currentAssRenderer.resize(width, height, 0, 0);
+            }
+        }
+    }
+
+    /** Advances ASS/SSA and bitmap renderers from the source-less custom clock. */
+    #renderCustomSpecializedSubtitles(
+        timeMilliseconds = (this.#currentTime || 0) * MILLISECONDS_PER_SECOND
+    ) {
+        if (!this.#customPlaybackActive) {
+            return;
+        }
+
+        this.#synchronizeCustomSubtitleCanvases();
+        const timeSeconds = this.#getCustomSubtitleTimeSeconds(timeMilliseconds);
+        if (this.#currentAssRenderer?.setCurrentTime) {
+            this.#currentAssRenderer.setCurrentTime(timeSeconds);
+        }
+        if (this.#currentBitmapSubRenderer) {
+            this.#currentBitmapSubRenderer.timeOffset = this.#getBitmapSubtitleTimeOffset(
+                this.#mediaElement,
+                timeMilliseconds
+            );
+        }
+    }
+
+    /** Keeps libass animations and render-ahead state aligned with playback. */
+    #updateCustomAssPlaybackState() {
+        if (!this.#customPlaybackActive || !this.#currentAssRenderer?.setIsPaused) {
+            return;
+        }
+
+        this.#currentAssRenderer.setIsPaused(
+            this.#customPlaybackPaused,
+            this.#getCustomSubtitleTimeSeconds()
+        );
+    }
+
+    /**
+     * @private
+     */
+    #startPlaybackPresentation(elem, seekNativeSource) {
+        if (this.#started) {
+            return;
+        }
+
+        this.#started = true;
+        elem.removeAttribute('controls');
+        loading.hide();
+
+        if (seekNativeSource) {
+            seekOnPlaybackStart(this, elem, this._currentPlayOptions.playerStartPositionTicks, () => {
+                if (this.#currentAssRenderer) {
+                    this.#currentAssRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
+                    this.#currentAssRenderer.resize();
+                    this.#currentAssRenderer.resetRenderAheadCache(false);
+                }
+
+                if (this.#currentBitmapSubRenderer) {
+                    this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
+                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
+                }
+            });
+        }
+
+        if (this._currentPlayOptions.fullscreen) {
+            const subtitleSessionGeneration = this.#subtitleSessionGeneration;
+            const videoElement = this.#mediaElement;
+            appRouter.showVideoOsd().then(() => {
+                if (
+                    subtitleSessionGeneration !== this.#subtitleSessionGeneration
+                    || videoElement !== this.#mediaElement
+                ) {
+                    return;
+                }
+
+                this.onNavigatedToOsd();
+            });
+        } else {
+            setBackdropTransparency(TRANSPARENCY_LEVEL.Backdrop);
+            this.#videoDialog.classList.remove('videoPlayerContainer-onTop');
+            this.onStartedAndNavigatedToOsd();
         }
     }
 
@@ -1271,34 +2199,7 @@ export class HtmlVideoPlayer {
          * @type {HTMLMediaElement}
          */
         const elem = e.target;
-        if (!this.#started) {
-            this.#started = true;
-            elem.removeAttribute('controls');
-
-            loading.hide();
-
-            seekOnPlaybackStart(this, e.target, this._currentPlayOptions.playerStartPositionTicks, () => {
-                if (this.#currentAssRenderer) {
-                    this.#currentAssRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                    this.#currentAssRenderer.resize();
-                    this.#currentAssRenderer.resetRenderAheadCache(false);
-                }
-
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
-
-            if (this._currentPlayOptions.fullscreen) {
-                appRouter.showVideoOsd().then(this.onNavigatedToOsd);
-            } else {
-                setBackdropTransparency(TRANSPARENCY_LEVEL.Backdrop);
-                this.#videoDialog.classList.remove('videoPlayerContainer-onTop');
-
-                this.onStartedAndNavigatedToOsd();
-            }
-        }
+        this.#startPlaybackPresentation(elem, true);
         // Reapply detected aspect ratio now that video dimensions are available
         if (this.getAspectRatio() === 'detected') {
             this.#applyAspectRatio('detected');
@@ -1310,6 +2211,10 @@ export class HtmlVideoPlayer {
      * @private
      */
     onPlay = () => {
+        if (this._currentPlayOptions?.suppressInitialUnpause === true) {
+            this._currentPlayOptions.suppressInitialUnpause = false;
+            return;
+        }
         Events.trigger(this, 'unpause');
     };
 
@@ -1327,6 +2232,7 @@ export class HtmlVideoPlayer {
             // Only trigger this if there is media info
             // Avoid triggering in situations where it might not actually have a video stream (audio only live tv channel)
             if (!mediaSource || mediaSource.RunTimeTicks) {
+                this.#invalidatePlaySession(false);
                 onErrorInternal(this, MediaError.NO_MEDIA_ERROR);
             }
         }
@@ -1400,6 +2306,8 @@ export class HtmlVideoPlayer {
                 return;
         }
 
+        this.#invalidatePlaySession(false);
+        this.#invalidateSubtitleSession();
         onErrorInternal(this, type);
     };
 
@@ -1477,21 +2385,26 @@ export class HtmlVideoPlayer {
             this.endPendingSubtitleLoad(targetTrackIndex);
         }
 
+        this.#invalidateSubtitleRender(targetTrackIndex);
         this.destroyCustomRenderedTrackElements(targetTrackIndex);
         this.destroyNativeTracks(videoElement, targetTrackIndex);
         this.destroyStoredTrackInfo(targetTrackIndex);
 
         const octopus = this.#currentAssRenderer;
+        this.#currentAssRenderer = null;
+        const assCanvas = this.#currentAssCanvas;
+        this.#currentAssCanvas = null;
         if (octopus) {
             octopus.dispose();
         }
-        this.#currentAssRenderer = null;
+        assCanvas?.remove();
 
         const pgsOrVobSubRenderer = this.#currentBitmapSubRenderer;
-        if (pgsOrVobSubRenderer) {
+        this.#currentBitmapSubRenderer = null;
+        // A renderer disposed mid-load loses its libbitsub worker session, so a loading renderer is released when its load settles
+        if (pgsOrVobSubRenderer && !this.#loadingBitmapSubRenderers.has(pgsOrVobSubRenderer)) {
             pgsOrVobSubRenderer.dispose();
         }
-        this.#currentBitmapSubRenderer = null;
     }
 
     /**
@@ -1508,12 +2421,13 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    async fetchSubtitles(track, item) {
+    async fetchSubtitles(track, item, subtitleRender) {
         if (window.Windows && itemHelper.isLocalItem(item)) {
             return this.fetchSubtitlesUwp(track, item);
         }
 
-        this.incrementFetchQueue();
+        const sessionGeneration = subtitleRender.sessionGeneration;
+        this.incrementFetchQueue(sessionGeneration);
         try {
             const response = await fetch(getTextTrackUrl(track, item, '.js'));
 
@@ -1523,14 +2437,18 @@ export class HtmlVideoPlayer {
 
             return response.json();
         } finally {
-            this.decrementFetchQueue();
+            this.decrementFetchQueue(sessionGeneration);
         }
     }
 
     /**
      * @private
      */
-    setTrackForDisplay(videoElement, track, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
+    setTrackForDisplay(videoElement, track, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX, subtitleSelection) {
+        if (subtitleSelection && !this.#isSubtitleSelectionCurrent(subtitleSelection)) {
+            return;
+        }
+
         if (!track) {
             // Destroy all tracks by passing undefined if there is no valid primary track
             this.destroyCustomTrack(videoElement, this.isSecondaryTrack(targetTextTrackIndex) ? targetTextTrackIndex : undefined);
@@ -1557,16 +2475,60 @@ export class HtmlVideoPlayer {
         } else {
             this.#customTrackIndex = track.Index;
         }
-        this.renderTracksEvents(videoElement, track, item, targetTextTrackIndex);
+        const subtitleRender = this.#beginSubtitleRender(targetTextTrackIndex);
+        this.renderTracksEvents(videoElement, track, item, targetTextTrackIndex, subtitleRender);
+    }
+
+    /** Installs one generation-owned ASS renderer. */
+    #installAssRenderer(SubtitlesOctopus, options, videoElement, subtitleRender) {
+        if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+            return;
+        }
+
+        const customCanvas = this.#customPlaybackActive ?
+            this.#createCustomSubtitleCanvas(videoElement) :
+            null;
+        const rendererOptions = customCanvas ? {
+            ...options,
+            canvas: customCanvas,
+            renderAhead: 0,
+            timeOffset: 0
+        } : {
+            ...options,
+            video: videoElement
+        };
+        let renderer;
+        try {
+            renderer = new SubtitlesOctopus(rendererOptions);
+        } catch (error) {
+            customCanvas?.remove();
+            throw error;
+        }
+
+        if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+            renderer.dispose();
+            customCanvas?.remove();
+            return;
+        }
+
+        this.#currentAssRenderer = renderer;
+        this.#currentAssCanvas = customCanvas;
+        if (customCanvas) {
+            this.#synchronizeCustomSubtitleCanvases();
+            this.#renderCustomSpecializedSubtitles();
+            this.#updateCustomAssPlaybackState();
+        }
     }
 
     /**
      * @private
      */
-    renderSsaAss(videoElement, track, item) {
+    renderSsaAss(videoElement, track, item, subtitleRender) {
         const supportedFonts = ['application/vnd.ms-opentype', 'application/x-truetype-font', 'font/otf', 'font/ttf', 'font/woff', 'font/woff2'];
         const availableFonts = [];
-        const attachments = this._currentPlayOptions.mediaSource.MediaAttachments || [];
+        const mediaSource = this._currentPlayOptions.mediaSource;
+        const attachments = mediaSource.MediaAttachments || [];
+        const transcodingOffsetTicks = this._currentPlayOptions.transcodingOffsetTicks || 0;
         const apiClient = ServerConnections.getApiClient(item);
         attachments.forEach(i => {
             // we only require font files and ignore embedded media attachments like covers as there are cases where ffmpeg fails to extract those
@@ -1580,25 +2542,38 @@ export class HtmlVideoPlayer {
         });
         const htmlVideoPlayer = this;
         import('@jellyfin/libass-wasm').then(({ default: SubtitlesOctopus }) => {
-            const mediaSource = this._currentPlayOptions.mediaSource;
+            if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                return;
+            }
+
             const videoStream = getMediaStreamVideoTracks(mediaSource)[0];
 
             const options = {
-                video: videoElement,
                 subUrl: getTextTrackUrl(track, item),
                 fonts: availableFonts,
                 workerUrl: `${appRouter.baseUrl()}/libraries/subtitles-octopus-worker.js`,
                 legacyWorkerUrl: `${appRouter.baseUrl()}/libraries/subtitles-octopus-worker-legacy.js`,
                 onError() {
+                    if (!htmlVideoPlayer.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                        return;
+                    }
+
                     // HACK: Clear JavascriptSubtitlesOctopus: it gets disposed when an error occurs
                     htmlVideoPlayer.#currentAssRenderer = null;
+                    const assCanvas = htmlVideoPlayer.#currentAssCanvas;
+                    htmlVideoPlayer.#currentAssCanvas = null;
+                    assCanvas?.remove();
 
                     // HACK: Give JavascriptSubtitlesOctopus time to dispose itself
                     setTimeout(() => {
-                        onErrorInternal(this, MediaError.ASS_RENDER_ERROR);
+                        if (!htmlVideoPlayer.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                            return;
+                        }
+
+                        onErrorInternal(htmlVideoPlayer, MediaError.ASS_RENDER_ERROR);
                     }, 0);
                 },
-                timeOffset: (this._currentPlayOptions.transcodingOffsetTicks || 0) / 10000000,
+                timeOffset: transcodingOffsetTicks / 10000000,
 
                 // new octopus options; override all, even defaults
                 renderMode: 'wasm-blend',
@@ -1619,36 +2594,95 @@ export class HtmlVideoPlayer {
                 resolveUrl(options.workerUrl),
                 resolveUrl(options.legacyWorkerUrl)
             ]).then(([config, workerUrl, legacyWorkerUrl]) => {
+                if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                    return;
+                }
+
                 options.workerUrl = workerUrl;
                 options.legacyWorkerUrl = legacyWorkerUrl;
 
                 if (config.EnableFallbackFont) {
                     apiClient.getJSON(fallbackFontList).then((fontFiles = []) => {
+                        if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                            return;
+                        }
+
                         fontFiles.forEach(font => {
                             const fontUrl = apiClient.getUrl(`/FallbackFont/Fonts/${encodeURIComponent(font.Name)}`, {
                                 ApiKey: apiClient.accessToken()
                             });
                             availableFonts.push(fontUrl);
                         });
-                        this.#currentAssRenderer = new SubtitlesOctopus(options);
+                        this.#installAssRenderer(
+                            SubtitlesOctopus,
+                            options,
+                            videoElement,
+                            subtitleRender
+                        );
                     });
                 } else {
-                    this.#currentAssRenderer = new SubtitlesOctopus(options);
+                    this.#installAssRenderer(
+                        SubtitlesOctopus,
+                        options,
+                        videoElement,
+                        subtitleRender
+                    );
                 }
             });
         });
     }
 
     /**
+     * Installs one generation-owned libbitsub renderer.
+     *
+     * @param {Function} BitmapSubtitleRenderer - The libbitsub `PgsRenderer` or `VobSubRenderer` class.
+     * @param {object} options - Renderer options whose callbacks act on the current renderer.
+     * @param {HTMLVideoElement} videoElement - Owned video element sampled by libbitsub.
+     * @param {object} subtitleRender - Render generation that requested the renderer.
+     * @param {() => void} endPendingLoad - Ends only this renderer's pending load.
+     */
+    #installBitmapSubtitleRenderer(BitmapSubtitleRenderer, options, videoElement, subtitleRender, endPendingLoad) {
+        if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+            endPendingLoad();
+            return;
+        }
+
+        let renderer = null;
+        const settleLoad = (onSettled) => (...settledArguments) => {
+            this.#loadingBitmapSubRenderers.delete(renderer);
+            if (renderer === this.#currentBitmapSubRenderer) {
+                onSettled?.(...settledArguments);
+                return;
+            }
+
+            // A renderer retired while loading is released here, after libbitsub has published its worker session
+            endPendingLoad();
+            renderer?.dispose();
+        };
+        renderer = new BitmapSubtitleRenderer({
+            ...options,
+            onLoaded: settleLoad(options.onLoaded),
+            onError: settleLoad(options.onError)
+        });
+        this.#loadingBitmapSubRenderers.add(renderer);
+        this.#currentBitmapSubRenderer = renderer;
+        requestAnimationFrame(() => {
+            if (this.#currentBitmapSubRenderer === renderer) {
+                renderer.updateCanvasSize?.();
+            }
+        });
+    }
+
+    /**
      * @private
      */
-    renderPgs(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
+    renderPgs(videoElement, track, item, targetTextTrackIndex, subtitleRender) {
         const options = this.createBitmapSubtitleRendererOptions(videoElement, track, item, targetTextTrackIndex);
         const onLoaded = options.onLoaded;
         const onError = options.onError;
         options.onLoaded = () => {
             if (this.#currentBitmapSubRenderer) {
-                this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
+                this.#currentBitmapSubRenderer.timeOffset = this.#getBitmapSubtitleTimeOffset(videoElement);
                 this.#currentBitmapSubRenderer.updateCanvasSize?.();
             }
             onLoaded?.();
@@ -1663,12 +2697,7 @@ export class HtmlVideoPlayer {
             }
         };
         import('libbitsub').then((libbitsub) => {
-            this.#currentBitmapSubRenderer = new libbitsub.PgsRenderer(options);
-            requestAnimationFrame(() => {
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
+            this.#installBitmapSubtitleRenderer(libbitsub.PgsRenderer, options, videoElement, subtitleRender, onLoaded);
         }).catch((error) => {
             this.endPendingSubtitleLoad(targetTextTrackIndex);
             console.error(error);
@@ -1678,7 +2707,7 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    renderVobSub(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
+    renderVobSub(videoElement, track, item, targetTextTrackIndex, subtitleRender) {
         const options = {
             ...this.createBitmapSubtitleRendererOptions(videoElement, track, item, targetTextTrackIndex),
             fileName: getSubtitleFileNameHint(track)
@@ -1687,7 +2716,7 @@ export class HtmlVideoPlayer {
         const onError = options.onError;
         options.onLoaded = () => {
             if (this.#currentBitmapSubRenderer) {
-                this.#currentBitmapSubRenderer.timeOffset = getSubtitleTimeOffset(this._currentPlayOptions, this.#currentTrackOffset);
+                this.#currentBitmapSubRenderer.timeOffset = this.#getBitmapSubtitleTimeOffset(videoElement);
                 this.#currentBitmapSubRenderer.setDebandEnabled?.(true);
                 this.#currentBitmapSubRenderer.setDebandThreshold?.(VOBSUB_DEBAND_THRESHOLD);
                 this.#currentBitmapSubRenderer.setDebandRange?.(VOBSUB_DEBAND_RANGE);
@@ -1705,12 +2734,7 @@ export class HtmlVideoPlayer {
             }
         };
         import('libbitsub').then((libbitsub) => {
-            this.#currentBitmapSubRenderer = new libbitsub.VobSubRenderer(options);
-            requestAnimationFrame(() => {
-                if (this.#currentBitmapSubRenderer) {
-                    this.#currentBitmapSubRenderer.updateCanvasSize?.();
-                }
-            });
+            this.#installBitmapSubtitleRenderer(libbitsub.VobSubRenderer, options, videoElement, subtitleRender, onLoaded);
         }).catch((error) => {
             this.endPendingSubtitleLoad(targetTextTrackIndex);
             console.error(error);
@@ -1720,16 +2744,17 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    renderSubtitlesWithCustomElement(videoElement, track, item, targetTextTrackIndex) {
-        this.fetchSubtitles(track, item).then((subtitleData) => {
-            // Exit if the video element was destroyed while fetching subtitles
-            if (!this.#mediaElement) return;
+    renderSubtitlesWithCustomElement(videoElement, track, item, targetTextTrackIndex, subtitleRender) {
+        this.fetchSubtitles(track, item, subtitleRender).then((subtitleData) => {
+            if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                return;
+            }
 
             const subtitleAppearance = userSettings.getSubtitleAppearanceSettings();
             const subtitleVerticalPosition = parseInt(subtitleAppearance.verticalPosition, 10);
 
             if (!this.#videoSubtitlesElem && !this.isSecondaryTrack(targetTextTrackIndex)) {
-                let subtitlesContainer = document.querySelector('.videoSubtitles');
+                let subtitlesContainer = this.#videoDialog?.querySelector('.videoSubtitles');
                 if (!subtitlesContainer) {
                     subtitlesContainer = document.createElement('div');
                     subtitlesContainer.classList.add('videoSubtitles');
@@ -1742,7 +2767,7 @@ export class HtmlVideoPlayer {
                 videoElement.parentNode.appendChild(subtitlesContainer);
                 this.#currentTrackEvents = subtitleData.TrackEvents;
             } else if (!this.#videoSecondarySubtitlesElem && this.isSecondaryTrack(targetTextTrackIndex)) {
-                const subtitlesContainer = document.querySelector('.videoSubtitles');
+                const subtitlesContainer = this.#videoDialog?.querySelector('.videoSubtitles');
                 if (!subtitlesContainer) return;
                 const secondarySubtitlesElement = document.createElement('div');
                 secondarySubtitlesElement.classList.add('videoSecondarySubtitlesInner');
@@ -1797,26 +2822,27 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    async renderTracksEvents(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX) {
-        if (!itemHelper.isLocalItem(item) || track.IsExternal) {
+    async renderTracksEvents(videoElement, track, item, targetTextTrackIndex = PRIMARY_TEXT_TRACK_INDEX, subtitleRender) {
+        const supportsSpecializedRenderer = !itemHelper.isLocalItem(item) || track.IsExternal;
+        if (supportsSpecializedRenderer) {
             const format = (track.Codec || '').toLowerCase();
             if (ASS_SUBTITLE_CODECS.includes(format)) {
-                this.renderSsaAss(videoElement, track, item);
+                this.renderSsaAss(videoElement, track, item, subtitleRender);
                 return;
             }
             if (format === 'pgssub') {
-                this.renderPgs(videoElement, track, item, targetTextTrackIndex);
+                this.renderPgs(videoElement, track, item, targetTextTrackIndex, subtitleRender);
                 return;
             }
             if (VOBSUB_SUBTITLE_CODECS.includes(format)) {
-                this.renderVobSub(videoElement, track, item, targetTextTrackIndex);
+                this.renderVobSub(videoElement, track, item, targetTextTrackIndex, subtitleRender);
                 return;
             }
+        }
 
-            if (useCustomSubtitles(userSettings)) {
-                this.renderSubtitlesWithCustomElement(videoElement, track, item, targetTextTrackIndex);
-                return;
-            }
+        if (this.#forceCustomSubtitleElements || (supportsSpecializedRenderer && useCustomSubtitles(userSettings))) {
+            this.renderSubtitlesWithCustomElement(videoElement, track, item, targetTextTrackIndex, subtitleRender);
+            return;
         }
 
         let trackElement = null;
@@ -1842,9 +2868,10 @@ export class HtmlVideoPlayer {
         }
 
         // download the track json
-        this.fetchSubtitles(track, item).then(data => {
-            // Exit if the video element was destroyed while fetching subtitles
-            if (!this.#mediaElement) return;
+        this.fetchSubtitles(track, item, subtitleRender).then(data => {
+            if (!this.#isSubtitleRenderCurrent(subtitleRender, videoElement)) {
+                return;
+            }
 
             console.debug(`downloaded ${data.TrackEvents.length} track events`);
 
@@ -1912,6 +2939,9 @@ export class HtmlVideoPlayer {
     setCurrentTrackElement(streamIndex, targetTextTrackIndex) {
         console.debug(`setting new text track index to: ${streamIndex}`);
 
+        const normalizedTargetTextTrackIndex = this.isSecondaryTrack(targetTextTrackIndex) ? SECONDARY_TEXT_TRACK_INDEX : PRIMARY_TEXT_TRACK_INDEX;
+        const subtitleSelection = this.#beginSubtitleSelection(normalizedTargetTextTrackIndex);
+        const videoElement = this.#mediaElement;
         const mediaStreamTextTracks = getMediaStreamTextTracks(this._currentPlayOptions.mediaSource);
 
         let track = streamIndex === -1 ? null : mediaStreamTextTracks.filter(function (t) {
@@ -1939,12 +2969,16 @@ export class HtmlVideoPlayer {
         const player = this;
 
         sessionPromise.then((s) => {
+            if (!player.#isSubtitleSelectionCurrent(subtitleSelection) || videoElement !== player.#mediaElement) {
+                return;
+            }
+
             if (!s.TranscodingInfo || s.TranscodingInfo.IsVideoDirect) {
                 // restore recorded delivery method if any
                 mediaStreamTextTracks.forEach((t) => {
                     t.DeliveryMethod = t.realDeliveryMethod ?? t.DeliveryMethod;
                 });
-                player.setTrackForDisplay(player.#mediaElement, track, targetTextTrackIndex);
+                player.setTrackForDisplay(videoElement, track, normalizedTargetTextTrackIndex, subtitleSelection);
                 if (enableNativeTrackSupport(player._currentPlayOptions?.mediaSource, track)) {
                     if (streamIndex !== -1) {
                         player.setCueAppearance();
@@ -1962,7 +2996,7 @@ export class HtmlVideoPlayer {
                     t.DeliveryMethod = 'Encode';
                 });
                 // unset stream when switching to transcode
-                player.setTrackForDisplay(player.#mediaElement, null, -1);
+                player.setTrackForDisplay(videoElement, null, -1, subtitleSelection);
             }
         });
     }
@@ -1970,11 +3004,19 @@ export class HtmlVideoPlayer {
     /**
      * @private
      */
-    createMediaElement(options) {
-        const dlg = document.querySelector('.videoPlayerContainer');
+    createMediaElement(options, playSessionGeneration = this.#playSessionGeneration) {
+        if (!this.#isPlaySessionCurrent(playSessionGeneration)) {
+            return Promise.resolve(null);
+        }
+
+        const dlg = this.#videoDialog;
 
         if (!dlg) {
             return import('./style.scss').then(() => {
+                if (!this.#isPlaySessionCurrent(playSessionGeneration)) {
+                    return null;
+                }
+
                 if (options.fullscreen) loading.show();
 
                 const playerDlg = document.createElement('div');
@@ -2034,15 +3076,21 @@ export class HtmlVideoPlayer {
                     // Enter fullscreen in the webOS browser to hide the top bar
                     if (!window.NativeShell && browser.web0s && Screenfull.isEnabled) {
                         Screenfull.request().then(() => {
-                            this.forcedFullscreen = true;
+                            if (this.#isPlaySessionCurrent(playSessionGeneration, videoElement)) {
+                                this.forcedFullscreen = true;
+                            }
                         });
                         return videoElement;
                     }
 
                     // don't animate on smart tv's, too slow
-                    if (!browser.slow && browser.supportsCssAnimation()) {
-                        return zoomIn(playerDlg).then(function () {
-                            return videoElement;
+                    if (
+                        !this.#customPlaybackActive
+                        && !browser.slow
+                        && browser.supportsCssAnimation()
+                    ) {
+                        return zoomIn(playerDlg).then(() => {
+                            return this.#isPlaySessionCurrent(playSessionGeneration, videoElement) ? videoElement : null;
                         });
                     }
                 }
@@ -2057,12 +3105,17 @@ export class HtmlVideoPlayer {
                 // Enter fullscreen in the webOS browser to hide the top bar
                 if (!this.forcedFullscreen && !window.NativeShell && browser.web0s && Screenfull.isEnabled) {
                     Screenfull.request().then(() => {
-                        this.forcedFullscreen = true;
+                        if (this.#isPlaySessionCurrent(playSessionGeneration, this.#mediaElement)) {
+                            this.forcedFullscreen = true;
+                        }
                     });
                 }
             }
 
-            const videoElement = dlg.querySelector('video');
+            const videoElement = this.#mediaElement;
+            if (!videoElement) {
+                return Promise.reject(new Error('Owned video element is missing'));
+            }
             if (options.backdropUrl) {
                 // update backdrop image
                 videoElement.poster = options.backdropUrl;
@@ -2159,6 +3212,14 @@ export class HtmlVideoPlayer {
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
             if (val != null) {
+                if (this.#customPlaybackActive) {
+                    this.#currentTime = val / MILLISECONDS_PER_SECOND;
+                    this.#currentAssRenderer?.resetRenderAheadCache?.(false);
+                    this.#renderCustomSpecializedSubtitles(val);
+                    this.#updateCustomAssPlaybackState();
+                    return;
+                }
+
                 const targetTimeSeconds = val / 1000;
                 this.#currentTime = targetTimeSeconds;
                 prepareHLSSeek(this._hlsPlayer, targetTimeSeconds);
@@ -2329,7 +3390,28 @@ export class HtmlVideoPlayer {
     unpause() {
         const mediaElement = this.#mediaElement;
         if (mediaElement) {
-            mediaElement.play();
+            let playPromise;
+            // play() can throw before returning the promise handled below
+            // eslint-disable-next-line sonarjs/no-try-promise
+            try {
+                playPromise = mediaElement.play();
+            } catch (error) {
+                console.error('error calling video.play: ' + error);
+                return;
+            }
+
+            if (!playPromise) {
+                return;
+            }
+
+            void playPromise.catch(function (error) {
+                const errorName = String(error?.name || '').toLowerCase();
+                if (errorName === 'aborterror' && mediaElement.paused) {
+                    return;
+                }
+
+                console.error('error calling video.play: ' + error);
+            });
         }
     }
 
@@ -2457,8 +3539,15 @@ export class HtmlVideoPlayer {
         }
 
         if (this.#currentBitmapSubRenderer) {
+            if (this.#customPlaybackActive) {
+                this.#currentBitmapSubRenderer.setDisplaySettings?.({
+                    aspectMode: getCustomBitmapSubtitleAspectMode(val)
+                });
+            }
             this.#currentBitmapSubRenderer.updateCanvasSize?.();
         }
+
+        this.#synchronizeCustomSubtitleCanvases();
     }
 
     setAspectRatio(val) {
