@@ -331,7 +331,10 @@ class HtmlAudioPlayer {
 
         function onTimeUpdate() {
             // Get the player position + the transcoding offset
-            const time = this.currentTime;
+            const time = htmlMediaHelper.getHLSPlaybackPosition(
+                self._hlsPlayer,
+                this.currentTime
+            );
 
             // Don't trigger events after user stop
             if (!self._isFadingOut) {
@@ -436,12 +439,15 @@ class HtmlAudioPlayer {
         const mediaElement = this._mediaElement;
         if (mediaElement) {
             if (val != null) {
-                mediaElement.currentTime = val / 1000;
+                const positionSeconds = val / 1000;
+                htmlMediaHelper.prepareHLSSeek(this._hlsPlayer, positionSeconds);
+                this._currentTime = positionSeconds;
+                mediaElement.currentTime = positionSeconds;
                 return;
             }
 
             const currentTime = this._currentTime;
-            if (currentTime) {
+            if (currentTime != null) {
                 return currentTime * 1000;
             }
 
