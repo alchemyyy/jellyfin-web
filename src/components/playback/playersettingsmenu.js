@@ -4,6 +4,71 @@ import globalize from 'lib/globalize';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import qualityoptions from '../qualityOptions';
 
+const builtInMenuItemIds = new Set([
+    'aspectratio',
+    'playbackrate',
+    'quality',
+    'repeatmode',
+    'stats',
+    'suboffset'
+]);
+
+function warnInvalidSettingsMenuItem(item, reason) {
+    console.warn('[playerSettingsMenu] Ignoring invalid player settings menu item:', reason, item);
+}
+
+function getContributedSettingsMenuItems(player) {
+    if (!player || typeof player.getSettingsMenuItems !== 'function') {
+        return [];
+    }
+
+    const contributions = player.getSettingsMenuItems();
+    if (!Array.isArray(contributions)) {
+        warnInvalidSettingsMenuItem(contributions, 'getSettingsMenuItems() must return an array');
+        return [];
+    }
+
+    const contributedItems = [];
+    const itemIds = new Set(builtInMenuItemIds);
+
+    for (const contribution of contributions) {
+        if (!contribution || typeof contribution !== 'object') {
+            warnInvalidSettingsMenuItem(contribution, 'the descriptor must be an object');
+            continue;
+        }
+
+        if (typeof contribution.id !== 'string' || !contribution.id.trim()) {
+            warnInvalidSettingsMenuItem(contribution, 'id must be a non-empty string');
+            continue;
+        }
+
+        if (typeof contribution.name !== 'string' || !contribution.name.trim()) {
+            warnInvalidSettingsMenuItem(contribution, 'name must be a non-empty string');
+            continue;
+        }
+
+        if (contribution.secondaryText !== undefined && typeof contribution.secondaryText !== 'string') {
+            warnInvalidSettingsMenuItem(contribution, 'secondaryText must be a string when provided');
+            continue;
+        }
+
+        if (typeof contribution.onSelect !== 'function') {
+            warnInvalidSettingsMenuItem(contribution, 'onSelect must be a function');
+            continue;
+        }
+
+        if (itemIds.has(contribution.id)) {
+            warnInvalidSettingsMenuItem(contribution, 'id must be unique and must not match a built-in item');
+            continue;
+        }
+
+        itemIds.add(contribution.id);
+        contributedItems.push(contribution);
+    }
+
+    return contributedItems;
+}
+
 function showQualityMenu(player, btn) {
     const videoStream = playbackManager.currentMediaSource(player).MediaStreams.filter(function (stream) {
         return stream.Type === 'Video';
@@ -240,11 +305,22 @@ function showWithUser(options, player, user) {
         });
     }
 
+    const contributedItemsById = new Map();
+    const contributedItems = getContributedSettingsMenuItems(player);
+    for (const contributedItem of contributedItems) {
+        menuItems.push({
+            name: contributedItem.name,
+            id: contributedItem.id,
+            secondaryText: contributedItem.secondaryText
+        });
+        contributedItemsById.set(contributedItem.id, contributedItem);
+    }
+
     return actionsheet.show({
         items: menuItems,
         positionTo: options.positionTo
     }).then(function (id) {
-        return handleSelectedOption(id, options, player);
+        return handleSelectedOption(id, options, player, contributedItemsById);
     });
 }
 
@@ -262,7 +338,7 @@ export function show(options) {
     });
 }
 
-function handleSelectedOption(id, options, player) {
+function handleSelectedOption(id, options, player, contributedItemsById) {
     switch (id) {
         case 'quality':
             return showQualityMenu(player, options.positionTo);
@@ -284,6 +360,11 @@ function handleSelectedOption(id, options, player) {
             return Promise.resolve();
         default:
             break;
+    }
+
+    const contributedItem = contributedItemsById.get(id);
+    if (contributedItem) {
+        return contributedItem.onSelect();
     }
 
     return Promise.reject();

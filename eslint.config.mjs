@@ -40,6 +40,16 @@ export default tseslint.config(
             'node_modules',
             'coverage',
             'dist',
+            // The engine lints its own tooling; the fork also lints its sources and tests below
+            'vendor/webgpu-player/codecs',
+            'vendor/webgpu-player/dist',
+            'vendor/webgpu-player/fixtures',
+            'vendor/webgpu-player/node_modules',
+            'vendor/webgpu-player/scripts',
+            'vendor/webgpu-player/tools',
+            'vendor/webgpu-player/*.{js,mjs,ts}',
+            // The hls.js fork lints itself
+            'vendor/webgpu-player-hls',
             '.idea',
             '.vscode'
         ]
@@ -55,6 +65,8 @@ export default tseslint.config(
             'array-callback-return': ['error', { 'checkForEach': true }],
             'curly': ['error', 'multi-line', 'consistent'],
             'default-case-last': 'error',
+            // The WebGPU player engine submodule resolves through the tsconfig path alias, which tsc checks
+            'import/no-unresolved': ['error', { 'ignore': ['^webgpu-player/'] }],
             'max-params': ['error', 7],
             'new-cap': [
                 'error',
@@ -175,7 +187,7 @@ export default tseslint.config(
 
     // Config files use node globals
     {
-        ignores: [ 'src' ],
+        ignores: [ 'src', 'vendor/webgpu-player-integ-tests', 'vendor/webgpu-player/src', 'vendor/webgpu-player/test' ],
         languageOptions: {
             globals: {
                 ...globals.node
@@ -186,7 +198,7 @@ export default tseslint.config(
     // Config files are commonjs by default
     {
         files: [ '**/*.{cjs,js}' ],
-        ignores: [ 'src' ],
+        ignores: [ 'src', 'vendor/webgpu-player-integ-tests', 'vendor/webgpu-player/src', 'vendor/webgpu-player/test' ],
         languageOptions: {
             sourceType: 'commonjs'
         },
@@ -198,7 +210,10 @@ export default tseslint.config(
     // App files
     {
         files: [
-            'src/**/*.{js,jsx,ts,tsx}'
+            'src/**/*.{js,jsx,ts,tsx}',
+            'vendor/webgpu-player-integ-tests/**/*.{js,jsx,ts,tsx}',
+            'vendor/webgpu-player/src/**/*.ts',
+            'vendor/webgpu-player/test/**/*.ts'
         ],
         languageOptions: {
             parserOptions: {
@@ -229,6 +244,7 @@ export default tseslint.config(
                 __PACKAGE_JSON_NAME__: false,
                 __PACKAGE_JSON_VERSION__: false,
                 __USE_SYSTEM_FONTS__: false,
+                __WEBGPU_PLAYER_ASSET_KEY__: false,
                 __WEBPACK_SERVE__: false
             }
         },
