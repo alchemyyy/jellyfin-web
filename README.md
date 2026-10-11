@@ -1,3 +1,23 @@
+# UPDATE: Hello everyone! This project has moved to its own plugin: https://github.com/alchemyyy/jellyfin-plugin-webgpu-player
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# OLD README
+
+
 # Jellyfin Web with WebGPU Player
 
 A fork of [Jellyfin Web](https://github.com/jellyfin/jellyfin-web) that adds a
