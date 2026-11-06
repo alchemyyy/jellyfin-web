@@ -1,3 +1,28 @@
+<h1 align="center">Update</h1>
+
+<h2 align="center">
+  Howdy! This is now a plugin here:
+  <a href="https://github.com/alchemyyy/jellyfin-plugin-webgpu-player">jellyfin-plugin-webgpu-player</a>
+</h2>
+
+<br>
+<br>
+
+<p align="center">The plugin has an overhauled player compared to this hacky proof-of-concept. It also supports "shaders" like Anime4K, smooth motion, etc. and is now super modular: <a href="https://github.com/alchemyyy/WebGPU-Player">WebGPU-Player</a></p>
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+
+
 # Jellyfin Web with WebGPU Player
 
 A fork of [Jellyfin Web](https://github.com/jellyfin/jellyfin-web) that adds a
